@@ -1,0 +1,60 @@
+defmodule IexCode.Kanban.Task do
+  use Ecto.Schema
+  import Ecto.Changeset
+
+  @primary_key {:id, :binary_id, autogenerate: true}
+  @foreign_key_type :binary_id
+
+  @statuses ~w(triage todo scheduled ready running blocked review done)
+  @priorities ~w(low medium high critical)
+
+  schema "kanban_tasks" do
+    field :title, :string
+    field :description, :string
+    field :status, :string, default: "triage"
+    field :priority, :string, default: "medium"
+    field :assignee, :string, default: "default"
+    field :worker_pid, :string
+    field :estimate, :string
+    field :latest_summary, :string
+    field :tags, {:array, :string}, default: []
+    field :steps_completed, :integer, default: 0
+    field :steps_total, :integer, default: 0
+    field :scheduled_at, :utc_datetime
+    field :cron_expression, :string
+    field :metadata, :map, default: %{}
+
+    belongs_to :project, IexCode.Projects.Project
+    belongs_to :session, IexCode.Sessions.Session
+
+    timestamps(type: :utc_datetime)
+  end
+
+  def changeset(task, attrs) do
+    task
+    |> cast(attrs, [
+      :project_id,
+      :session_id,
+      :title,
+      :description,
+      :status,
+      :priority,
+      :assignee,
+      :worker_pid,
+      :estimate,
+      :latest_summary,
+      :tags,
+      :steps_completed,
+      :steps_total,
+      :scheduled_at,
+      :cron_expression,
+      :metadata
+    ])
+    |> validate_required([:title, :project_id])
+    |> validate_inclusion(:status, @statuses)
+    |> validate_inclusion(:priority, @priorities)
+  end
+
+  def statuses, do: @statuses
+  def priorities, do: @priorities
+end

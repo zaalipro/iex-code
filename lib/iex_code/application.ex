@@ -1,0 +1,54 @@
+defmodule IexCode.Application do
+  @moduledoc false
+
+  use Application
+
+  @impl true
+  def start(_type, _args) do
+    children =
+      [
+        IexCodeWeb.Telemetry,
+        IexCode.Repo,
+        {Ecto.Migrator,
+         repos: Application.fetch_env!(:iex_code, :ecto_repos), skip: skip_migrations?()},
+        {DNSCluster, query: Application.get_env(:iex_code, :dns_cluster_query) || :ignore},
+        {Phoenix.PubSub, name: IexCode.PubSub},
+        {Registry, keys: :unique, name: IexCode.SessionRegistry},
+        {Registry, keys: :unique, name: IexCode.Engine.AgentRegistry},
+        {Task.Supervisor, name: IexCode.TaskSupervisor},
+        IexCode.Engine.SessionSupervisor,
+        IexCode.Engine.AgentSupervisor,
+        IexCodeWeb.Endpoint,
+        desktop_child()
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    opts = [strategy: :one_for_one, name: IexCode.Supervisor]
+    Supervisor.start_link(children, opts)
+  end
+
+  defp desktop_child do
+    if Application.get_env(:iex_code, :start_desktop_window, false) do
+      {Desktop.Window,
+       [
+         app: :iex_code,
+         id: IexCodeWindow,
+         title: "IexCode - Desktop AI Coding Harness",
+         size: {1440, 920},
+         url: &IexCodeWeb.Endpoint.url/0
+       ]}
+    else
+      nil
+    end
+  end
+
+  @impl true
+  def config_change(changed, _new, removed) do
+    IexCodeWeb.Endpoint.config_change(changed, removed)
+    :ok
+  end
+
+  defp skip_migrations?() do
+    System.get_env("RELEASE_NAME") == nil
+  end
+end

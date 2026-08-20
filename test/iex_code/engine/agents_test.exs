@@ -1,0 +1,163 @@
+defmodule IexCode.Engine.AgentsTest do
+  use IexCode.DataCase, async: false
+  alias IexCode.{Projects, Sessions}
+  alias IexCode.Engine.{AgentRegistry, AgentSupervisor}
+  alias IexCode.Engine.Agents.{PlannerAgent, ExplorerAgent, CoderAgent, VerifierAgent}
+
+  setup do
+    {:ok, project} = Projects.create_project(%{name: "Agents Test Proj", root_path: File.cwd!()})
+
+    {:ok, session} =
+      Sessions.create_session(%{project_id: project.id, title: "Agents Test Session"})
+
+    %{session: session, project: project}
+  end
+
+  describe "AgentRegistry and AgentSupervisor" do
+    test "AgentRegistry resolves via_tuples and normalized types", %{session: session} do
+      session_id = session.id
+
+      assert {:via, Registry, {AgentRegistry, {^session_id, :planner}}} =
+               AgentRegistry.via_tuple(session.id, :planner)
+
+      assert {:via, Registry, {AgentRegistry, {^session_id, :explorer}}} =
+               AgentRegistry.via_tuple(session.id, "explorer")
+
+      assert {:via, Registry, {AgentRegistry, {^session_id, :coder}}} =
+               AgentRegistry.via_tuple(session.id, "CoderAgent")
+
+      assert {:via, Registry, {AgentRegistry, {^session_id, :verifier}}} =
+               AgentRegistry.via_tuple(session.id, "VerifierAgent")
+    end
+
+    test "AgentSupervisor starts, finds, and terminates all 4 subagents", %{session: session} do
+      # 1. Start subagents
+      assert {:ok, planner_pid} = AgentSupervisor.start_agent(session.id, :planner)
+      assert {:ok, explorer_pid} = AgentSupervisor.start_agent(session.id, :explorer)
+      assert {:ok, coder_pid} = AgentSupervisor.start_agent(session.id, :coder)
+      assert {:ok, verifier_pid} = AgentSupervisor.start_agent(session.id, :verifier)
+
+      assert is_pid(planner_pid) and Process.alive?(planner_pid)
+      assert is_pid(explorer_pid) and Process.alive?(explorer_pid)
+      assert is_pid(coder_pid) and Process.alive?(coder_pid)
+      assert is_pid(verifier_pid) and Process.alive?(verifier_pid)
+
+      # 2. Idempotent start returns existing pid
+      assert {:ok, ^planner_pid} = AgentSupervisor.start_agent(session.id, :planner)
+
+      # 3. Lookup via registry & supervisor
+      assert AgentRegistry.whereis(session.id, :planner) == planner_pid
+      assert AgentSupervisor.find_agent(session.id, :explorer) == explorer_pid
+      assert length(AgentRegistry.list_agents(session.id)) == 4
+
+      # 4. Stop single agent
+      assert :ok = AgentSupervisor.stop_agent(session.id, :planner)
+      refute Process.alive?(planner_pid)
+      assert AgentRegistry.whereis(session.id, :planner) == nil
+
+      # 5. Stop all agents
+      assert :ok = AgentSupervisor.stop_all_agents(session.id)
+      assert AgentRegistry.list_agents(session.id) == []
+    end
+  end
+
+  describe "PlannerAgent GenServer" do
+    test "plans goal decomposition and tracks state", %{session: session, project: project} do
+      {:ok, pid} =
+        AgentSupervisor.start_agent(session.id, :planner, project_root: project.root_path)
+
+      Ecto.Adapters.SQL.Sandbox.allow(IexCode.Repo, self(), pid)
+
+      assert {:ok, plan} = PlannerAgent.plan(session.id, "Design a key-value store module")
+      assert is_binary(plan) and byte_size(plan) > 0
+
+      state = PlannerAgent.get_state(session.id)
+      assert state.status == :idle
+      assert state.last_result == plan
+      assert plan in state.history
+
+      # Clean up
+      AgentSupervisor.stop_agent(session.id, :planner)
+    end
+  end
+
+  describe "ExplorerAgent GenServer" do
+    test "explores codebase and searches AST symbols", %{session: session, project: project} do
+      {:ok, pid} =
+        AgentSupervisor.start_agent(session.id, :explorer, project_root: project.root_path)
+
+      Ecto.Adapters.SQL.Sandbox.allow(IexCode.Repo, self(), pid)
+
+      assert {:ok, summary} = ExplorerAgent.explore(session.id, "Find all modules in workspace")
+      assert is_binary(summary)
+
+      # AST search
+      assert {:ok, syms} = ExplorerAgent.search_ast(session.id, %{type: "module"})
+      assert is_list(syms)
+
+      # Grep search
+      assert {:ok, grep_res} = ExplorerAgent.grep(session.id, "defmodule")
+      assert is_binary(grep_res)
+
+      state = ExplorerAgent.get_state(session.id)
+      assert state.status == :idle
+
+      AgentSupervisor.stop_agent(session.id, :explorer)
+    end
+  end
+
+  describe "CoderAgent GenServer" do
+    @tag :tmp_dir
+    test "generates code and applies atomic patches", %{session: session, tmp_dir: tmp_dir} do
+      file_path = Path.join(tmp_dir, "lib_test.ex")
+      File.write!(file_path, "defmodule TempMod do\n  def old_val, do: 1\nend")
+
+      {:ok, pid} = AgentSupervisor.start_agent(session.id, :coder, project_root: tmp_dir)
+      Ecto.Adapters.SQL.Sandbox.allow(IexCode.Repo, self(), pid)
+
+      # Test patch application
+      patch = %{
+        path: "lib_test.ex",
+        target: "def old_val, do: 1",
+        replacement: "def new_val, do: 2"
+      }
+
+      assert {:ok, patch_summary} =
+               CoderAgent.apply_patches(session.id, [patch], project_root: tmp_dir)
+
+      assert patch_summary.applied == 1
+
+      content = File.read!(file_path)
+      assert String.contains?(content, "def new_val, do: 2")
+
+      # Test code synthesis call
+      assert {:ok, code_result} =
+               CoderAgent.code(session.id, "Update value to 2", project_root: tmp_dir)
+
+      assert is_binary(code_result)
+
+      AgentSupervisor.stop_agent(session.id, :coder)
+    end
+  end
+
+  describe "VerifierAgent GenServer" do
+    @tag :tmp_dir
+    test "checks compilation and returns verification verdict", %{
+      session: session,
+      tmp_dir: tmp_dir
+    } do
+      File.write!(Path.join(tmp_dir, "lib_val.ex"), "defmodule LibVal do\n  def ok, do: :ok\nend")
+
+      {:ok, pid} = AgentSupervisor.start_agent(session.id, :verifier, project_root: tmp_dir)
+      Ecto.Adapters.SQL.Sandbox.allow(IexCode.Repo, self(), pid)
+
+      assert {:ok, compile_out} = VerifierAgent.check_compile(session.id, project_root: tmp_dir)
+      assert is_binary(compile_out)
+
+      state = VerifierAgent.get_state(session.id)
+      assert state.status == :idle
+
+      AgentSupervisor.stop_agent(session.id, :verifier)
+    end
+  end
+end

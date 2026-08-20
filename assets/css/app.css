@@ -1,0 +1,375 @@
+/* See the Tailwind configuration guide for advanced usage
+   https://tailwindcss.com/docs/configuration */
+
+@import "tailwindcss" source(none);
+@import "phoenix-colocated/iex_code/colocated.css";
+@source "../css";
+@source "../js";
+@source "../../lib/iex_code_web";
+@source "../../_build/dev/phoenix-colocated/iex_code/*/";
+
+@plugin "../vendor/heroicons";
+
+@plugin "../vendor/daisyui" {
+  themes: false;
+}
+
+@plugin "../vendor/daisyui-theme" {
+  name: "dark";
+  default: true;
+  prefersdark: true;
+  color-scheme: "dark";
+  --color-base-100: #0a0d12;
+  --color-base-200: #11151c;
+  --color-base-300: #161b22;
+  --color-base-content: #f0f6fc;
+  --color-primary: #ff5e3a;
+  --color-primary-content: #ffffff;
+  --color-secondary: #a855f7;
+  --color-secondary-content: #ffffff;
+  --color-accent: #22c55e;
+  --color-accent-content: #022c22;
+  --color-neutral: #1c2128;
+  --color-neutral-content: #f9fafb;
+  --color-info: #38bdf8;
+  --color-info-content: #082f49;
+  --color-success: #22c55e;
+  --color-success-content: #064e3b;
+  --color-warning: #f59e0b;
+  --color-warning-content: #451a03;
+  --color-error: #ef4444;
+  --color-error-content: #450a0a;
+}
+
+@custom-variant phx-click-loading (.phx-click-loading&, .phx-click-loading &);
+@custom-variant phx-submit-loading (.phx-submit-loading&, .phx-submit-loading &);
+@custom-variant phx-change-loading (.phx-change-loading&, .phx-change-loading &);
+@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
+
+[data-phx-session], [data-phx-teleported-src] { display: contents }
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #252d38;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #384252;
+}
+
+/* Rainbow border gradient glow for Prompt Box */
+.rainbow-box-wrapper {
+  position: relative;
+  background: #11151c;
+  border-radius: 1.25rem;
+  padding: 1px;
+}
+.rainbow-box-wrapper::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: 1.25rem;
+  padding: 1px;
+  background: linear-gradient(135deg, rgba(255, 126, 95, 0.45), rgba(254, 180, 123, 0.35), rgba(118, 178, 254, 0.35), rgba(182, 158, 254, 0.45), rgba(80, 227, 194, 0.35));
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+.rainbow-box-wrapper:focus-within::before {
+  background: linear-gradient(135deg, #ff7e5f, #feb47b, #76b2fe, #b69efe, #50e3c2);
+  box-shadow: 0 0 20px rgba(118, 178, 254, 0.15);
+}
+
+/* Card active top neon border */
+.card-running-glow {
+  position: relative;
+  border-top: 2px solid #22c55e;
+  box-shadow: 0 -4px 12px -2px rgba(34, 197, 94, 0.25);
+}
+
+/* Segmented progress bar */
+.segmented-bar {
+  display: flex;
+  gap: 4px;
+  height: 4px;
+  width: 100%;
+}
+.segmented-pill {
+  flex: 1;
+  height: 4px;
+  border-radius: 9999px;
+  background-color: #21262d;
+  transition: all 0.3s ease;
+}
+.segmented-pill-filled {
+  background-color: #22c55e;
+  box-shadow: 0 0 6px rgba(34, 197, 94, 0.4);
+}
+
+/* Tree view connecting lines */
+.tree-node-connector {
+  position: relative;
+}
+.tree-node-connector::before {
+  content: "";
+  position: absolute;
+  left: -0.75rem;
+  top: 1.1rem;
+  width: 0.65rem;
+  height: 1px;
+  background-color: #2a313c;
+}
+.tree-node-connector::after {
+  content: "";
+  position: absolute;
+  left: -0.75rem;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background-color: #2a313c;
+}
+.tree-node-connector:last-child::after {
+  height: 1.1rem;
+}
+
+/* Subtle smooth fade transitions */
+.transition-smooth {
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Kanban Accordion Columns (Matching Reference Image) */
+.vertical-text {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+}
+
+.kanban-col {
+  transition: all 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: width, flex, max-width;
+}
+
+.kanban-col-collapsed {
+  width: 44px;
+  min-width: 44px;
+  max-width: 44px;
+  cursor: pointer;
+}
+
+.kanban-col-expanded {
+  flex: 1;
+  min-width: 320px;
+  max-width: 460px;
+}
+
+/* Card dragging compact & translucent state (decreased size during dragging) */
+.card-dragging {
+  opacity: 0.35 !important;
+  transform: scale(0.92) !important;
+  filter: brightness(0.75);
+  border: 1px dashed #3b82f6 !important;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Luxury Glassmorphism Tooltip (Matching Reference Image) */
+.tooltip-trigger {
+  position: relative;
+}
+
+.luxury-tooltip {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 50%;
+  transform: translateX(-50%) translateY(4px) scale(0.95);
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+  z-index: 100;
+  min-width: 190px;
+  max-width: 280px;
+  padding: 10px 14px;
+  background: rgba(17, 21, 28, 0.96);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 1rem;
+  box-shadow: 0 16px 36px -4px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(255, 255, 255, 0.06);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: transform, opacity, visibility;
+  text-align: left;
+}
+
+.tooltip-trigger:hover .luxury-tooltip,
+.tooltip-trigger:focus-within .luxury-tooltip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0) scale(1);
+  pointer-events: auto;
+}
+
+/* Tooltip placements */
+.luxury-tooltip-bottom {
+  bottom: auto;
+  top: calc(100% + 10px);
+  transform: translateX(-50%) translateY(-4px) scale(0.95);
+}
+
+.tooltip-trigger:hover .luxury-tooltip-bottom,
+.tooltip-trigger:focus-within .luxury-tooltip-bottom {
+  transform: translateX(-50%) translateY(0) scale(1);
+}
+
+.luxury-tooltip-right {
+  bottom: auto;
+  top: 50%;
+  left: calc(100% + 10px);
+  transform: translateY(-50%) translateX(-4px) scale(0.95);
+}
+
+.tooltip-trigger:hover .luxury-tooltip-right,
+.tooltip-trigger:focus-within .luxury-tooltip-right {
+  transform: translateY(-50%) translateX(0) scale(1);
+}
+
+.luxury-tooltip-left {
+  bottom: auto;
+  top: 50%;
+  left: auto;
+  right: calc(100% + 10px);
+  transform: translateY(-50%) translateX(4px) scale(0.95);
+}
+
+.tooltip-trigger:hover .luxury-tooltip-left,
+.tooltip-trigger:focus-within .luxury-tooltip-left {
+  transform: translateY(-50%) translateX(0) scale(1);
+}
+
+/* Tally Tick Progress Bar (Matching Reference Image) */
+.tally-tick-bar {
+  display: flex;
+  gap: 2.5px;
+  height: 18px;
+  align-items: center;
+  width: 100%;
+}
+
+.tally-tick {
+  flex: 1;
+  height: 14px;
+  width: 2px;
+  border-radius: 1px;
+  background-color: #21262d;
+  transition: all 0.25s ease;
+}
+
+.tally-tick-active-orange {
+  background-color: #ff5e3a;
+  box-shadow: 0 0 6px rgba(255, 94, 58, 0.6);
+  height: 16px;
+}
+
+.tally-tick-active-emerald {
+  background-color: #22c55e;
+  box-shadow: 0 0 6px rgba(34, 197, 94, 0.6);
+  height: 16px;
+}
+
+.tally-tick-active-cyan {
+  background-color: #06b6d4;
+  box-shadow: 0 0 6px rgba(6, 182, 212, 0.6);
+  height: 16px;
+}
+
+/* ==========================================================================
+   Chat Scroll Assistant Minimap & Hover Preview Cards (Matching Reference Images)
+   ========================================================================== */
+
+.scroll-assistant-rail {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 1.5rem 0.5rem;
+  user-select: none;
+  z-index: 30;
+  height: 100%;
+}
+
+.scroll-timeline-track {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+  width: 24px;
+}
+
+.scroll-timeline-node {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 10px;
+  cursor: pointer;
+}
+
+.scroll-notch {
+  height: 2px;
+  width: 6px;
+  border-radius: 1px;
+  background-color: #30363d;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.scroll-notch-landmark {
+  width: 12px;
+  background-color: #6e7681;
+}
+
+.scroll-timeline-node:hover .scroll-notch {
+  width: 22px;
+  background-color: #ffffff;
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.7);
+}
+
+.scroll-timeline-node.is-active .scroll-notch {
+  width: 22px;
+  background-color: #ffffff;
+  box-shadow: 0 0 10px rgba(255, 255, 255, 0.9);
+}
+
+/* Hover Preview Card Popup (Matching media_1787243229747.png) */
+.scroll-preview-card {
+  position: absolute;
+  left: 28px;
+  top: 50%;
+  transform: translateY(-50%) translateX(-6px) scale(0.95);
+  background: rgba(22, 27, 34, 0.97);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 1rem;
+  box-shadow: 0 20px 40px -4px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(255, 255, 255, 0.05);
+  padding: 0.875rem 1rem;
+  width: 300px;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  z-index: 50;
+}
+
+.scroll-timeline-node:hover .scroll-preview-card {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(-50%) translateX(0) scale(1);
+  pointer-events: auto;
+}
+
