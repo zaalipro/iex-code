@@ -155,6 +155,10 @@ defmodule IexCodeWeb.WorkspaceLive do
      |> assign(:picker_month, 8)
      |> assign(:user_availability, "Available")
      |> assign(:user_availability_subtext, "Instant notifications & swarm active")
+     |> assign(:new_task_status, "scheduled")
+     |> assign(:new_task_priority, "medium")
+     |> assign(:new_task_assignee, "default")
+     |> assign(:open_modal_dropdown, nil)
      |> assign(:prompt_form, to_form(%{"prompt" => ""}))
      |> assign(
        :task_form,
@@ -518,7 +522,33 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("toggle_new_task_modal", _params, socket) do
-    {:noreply, assign(socket, :show_new_task_modal, !socket.assigns.show_new_task_modal)}
+    {:noreply,
+     socket
+     |> assign(:show_new_task_modal, !socket.assigns.show_new_task_modal)
+     |> assign(:open_modal_dropdown, nil)}
+  end
+
+  @impl true
+  def handle_event("toggle_modal_dropdown", %{"name" => name}, socket) do
+    new_state = if socket.assigns.open_modal_dropdown == name, do: nil, else: name
+    {:noreply, assign(socket, :open_modal_dropdown, new_state)}
+  end
+
+  @impl true
+  def handle_event("select_modal_status", %{"status" => status}, socket) do
+    {:noreply, socket |> assign(:new_task_status, status) |> assign(:open_modal_dropdown, nil)}
+  end
+
+  @impl true
+  def handle_event("select_modal_priority", %{"priority" => priority}, socket) do
+    {:noreply,
+     socket |> assign(:new_task_priority, priority) |> assign(:open_modal_dropdown, nil)}
+  end
+
+  @impl true
+  def handle_event("select_modal_assignee", %{"assignee" => assignee}, socket) do
+    {:noreply,
+     socket |> assign(:new_task_assignee, assignee) |> assign(:open_modal_dropdown, nil)}
   end
 
   @impl true
@@ -526,7 +556,14 @@ defmodule IexCodeWeb.WorkspaceLive do
     params = params["task"] || params[:task] || params
     title = params["title"] || params[:title] || ""
     sched_date = params["scheduled_at_date"] || params[:scheduled_at_date]
-    status = params["status"] || params[:status] || "ready"
+    status = params["status"] || params[:status] || socket.assigns.new_task_status || "ready"
+
+    priority =
+      params["priority"] || params[:priority] || socket.assigns.new_task_priority || "medium"
+
+    assignee =
+      params["assignee"] || params[:assignee] || socket.assigns.new_task_assignee || "default"
+
     cron_expr = params["cron_expression"] || params[:cron_expression]
     steps_total = params["steps_total"] || params[:steps_total] || "4"
     tag = params["tag"] || params[:tag]
@@ -551,8 +588,8 @@ defmodule IexCodeWeb.WorkspaceLive do
         session_id: socket.assigns.session.id,
         title: String.trim(to_string(title)),
         description: params["description"] || params[:description],
-        priority: params["priority"] || params[:priority] || "medium",
-        assignee: params["assignee"] || params[:assignee] || "default",
+        priority: priority,
+        assignee: assignee,
         status: status,
         scheduled_at: scheduled_at,
         cron_expression: cron_expr,

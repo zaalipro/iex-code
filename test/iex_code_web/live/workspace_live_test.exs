@@ -603,4 +603,70 @@ defmodule IexCodeWeb.WorkspaceLiveTest do
     assert html =~ "header-focus-time-btn"
     assert html =~ "Busy"
   end
+
+  test "F14: custom glassmorphic styled dropdown components for Status, Priority, and Assignee",
+       %{
+         conn: conn
+       } do
+    project = create_project_fixture(%{root_path: "/tmp/e2e_dropdown_project"})
+    session = create_session_fixture(project)
+    {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+    # 1. Open new task modal
+    html = render_click(view, "toggle_new_task_modal")
+    assert html =~ "new-task-modal"
+    assert html =~ "modal-status-dropdown-trigger"
+    assert html =~ "modal-priority-dropdown-trigger"
+    assert html =~ "modal-assignee-dropdown-trigger"
+
+    # 2. Toggle and select Status dropdown
+    html = render_click(view, "toggle_modal_dropdown", %{"name" => "modal_status"})
+    assert html =~ "modal-status-dropdown-menu"
+    assert html =~ "Ready (Agent Claimable)"
+    assert html =~ "Triage"
+
+    html = render_click(view, "select_modal_status", %{"status" => "ready"})
+    refute html =~ "modal-status-dropdown-menu"
+    assert html =~ "Ready (Agent Claimable)"
+
+    # 3. Toggle and select Priority dropdown
+    html = render_click(view, "toggle_modal_dropdown", %{"name" => "modal_priority"})
+    assert html =~ "modal-priority-dropdown-menu"
+    assert html =~ "Critical"
+    assert html =~ "High"
+
+    html = render_click(view, "select_modal_priority", %{"priority" => "critical"})
+    refute html =~ "modal-priority-dropdown-menu"
+    assert html =~ "Critical"
+
+    # 4. Toggle and select Assignee dropdown
+    html = render_click(view, "toggle_modal_dropdown", %{"name" => "modal_assignee"})
+    assert html =~ "modal-assignee-dropdown-menu"
+    assert html =~ "CoderAgent"
+    assert html =~ "PlannerAgent"
+
+    html = render_click(view, "select_modal_assignee", %{"assignee" => "coder"})
+    refute html =~ "modal-assignee-dropdown-menu"
+    assert html =~ "CoderAgent"
+
+    # 5. Submit form and verify created task has selected attributes
+    html =
+      view
+      |> form("#task-create-form", %{
+        "title" => "Build custom themed dropdowns",
+        "description" => "Ensure zero native browser select elements"
+      })
+      |> render_submit()
+
+    assert html =~ "Task created"
+
+    created_task =
+      IexCode.Kanban.list_tasks(project.id)
+      |> Enum.find(&(&1.title == "Build custom themed dropdowns"))
+
+    assert created_task != nil
+    assert created_task.status == "ready"
+    assert created_task.priority == "critical"
+    assert created_task.assignee == "coder"
+  end
 end

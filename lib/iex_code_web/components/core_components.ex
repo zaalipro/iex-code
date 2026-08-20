@@ -336,7 +336,11 @@ defmodule IexCodeWeb.CoreComponents do
         <select
           id={@id}
           name={@name}
-          class={[@class || "w-full select", @errors != [] && (@error_class || "select-error")]}
+          class={[
+            @class ||
+              "w-full bg-[#0d1117] border border-[#30363d] focus:border-[#ff5e3a] text-white rounded-xl px-3 py-2 text-xs font-sans focus:outline-hidden",
+            @errors != [] && (@error_class || "border-red-500 text-red-300")
+          ]}
           multiple={@multiple}
           {@rest}
         >

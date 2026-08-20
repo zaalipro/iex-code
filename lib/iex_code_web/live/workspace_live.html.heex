@@ -2239,48 +2239,217 @@
             ></textarea>
           </div>
 
-          <!-- Status & Priority Row (Image 1) -->
+          <%!-- Status & Priority Row (Custom Glassmorphic Dropdowns matching theme) --%>
           <div class="grid grid-cols-2 gap-3">
-            <div>
+            <%!-- Status Custom Dropdown --%>
+            <div class="relative">
               <label class="block text-gray-400 mb-1.5 font-semibold text-[11px]">Status</label>
-              <select
-                name="status"
-                class="w-full bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-2 text-white font-sans text-xs focus:outline-hidden focus:border-[#ff5e3a]"
+              <button
+                type="button"
+                id="modal-status-dropdown-trigger"
+                phx-click="toggle_modal_dropdown"
+                phx-value-name="modal_status"
+                class="w-full bg-[#0d1117] hover:bg-[#161b22] border border-[#30363d] hover:border-gray-500 rounded-xl px-3 py-2 text-white font-sans text-xs flex items-center justify-between transition-smooth cursor-pointer"
               >
-                <option value="scheduled" selected>Scheduled</option>
-                <option value="ready">Ready (Agent Claimable)</option>
-                <option value="triage">Triage</option>
-                <option value="todo">Todo</option>
-                <option value="running">Running</option>
-              </select>
+                <div class="flex items-center gap-2 truncate">
+                  <span class={[
+                    "w-2 h-2 rounded-full shrink-0",
+                    @new_task_status == "scheduled" &&
+                      "bg-amber-400 shadow-[0_0_6px_rgba(245,158,11,0.8)]",
+                    @new_task_status == "ready" &&
+                      "bg-emerald-400 shadow-[0_0_6px_rgba(34,197,94,0.8)]",
+                    @new_task_status == "triage" && "bg-purple-400",
+                    @new_task_status == "todo" && "bg-blue-400",
+                    @new_task_status == "running" &&
+                      "bg-cyan-400 shadow-[0_0_6px_rgba(6,182,212,0.8)]"
+                  ]}></span>
+                  <span class="capitalize font-medium truncate">
+                    {case @new_task_status do
+                      "ready" -> "Ready (Agent Claimable)"
+                      s -> String.capitalize(s)
+                    end}
+                  </span>
+                </div>
+                <.icon name="hero-chevron-down" class="w-3.5 h-3.5 text-gray-400 shrink-0 ml-1" />
+              </button>
+              <input type="text" name="status" value={@new_task_status} class="hidden" />
+
+              <%= if @open_modal_dropdown == "modal_status" do %>
+                <div
+                  id="modal-status-dropdown-menu"
+                  class="absolute left-0 top-full mt-1.5 w-full bg-[#1c2128] border border-[#30363d] rounded-2xl p-1.5 shadow-2xl z-50 animate-in fade-in zoom-in-95 font-sans space-y-0.5"
+                >
+                  <%= for {s_val, s_label, dot_class} <- [
+                    {"scheduled", "Scheduled", "bg-amber-400 shadow-[0_0_6px_rgba(245,158,11,0.8)]"},
+                    {"ready", "Ready (Agent Claimable)", "bg-emerald-400 shadow-[0_0_6px_rgba(34,197,94,0.8)]"},
+                    {"triage", "Triage", "bg-purple-400"},
+                    {"todo", "Todo", "bg-blue-400"},
+                    {"running", "Running", "bg-cyan-400 shadow-[0_0_6px_rgba(6,182,212,0.8)]"}
+                  ] do %>
+                    <button
+                      type="button"
+                      phx-click="select_modal_status"
+                      phx-value-status={s_val}
+                      class={[
+                        "w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs transition-smooth text-left cursor-pointer",
+                        @new_task_status == s_val && "bg-[#2d333b] text-white font-semibold",
+                        @new_task_status != s_val &&
+                          "text-gray-300 hover:bg-[#22272e] hover:text-white"
+                      ]}
+                    >
+                      <div class="flex items-center gap-2 truncate">
+                        <span class={["w-2 h-2 rounded-full shrink-0", dot_class]}></span>
+                        <span class="truncate">{s_label}</span>
+                      </div>
+                      <%= if @new_task_status == s_val do %>
+                        <.icon name="hero-check" class="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                      <% end %>
+                    </button>
+                  <% end %>
+                </div>
+              <% end %>
             </div>
-            <div>
+
+            <%!-- Priority Custom Dropdown --%>
+            <div class="relative">
               <label class="block text-gray-400 mb-1.5 font-semibold text-[11px]">Priority</label>
-              <select
-                name="priority"
-                class="w-full bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-2 text-white font-sans text-xs focus:outline-hidden focus:border-[#ff5e3a]"
+              <button
+                type="button"
+                id="modal-priority-dropdown-trigger"
+                phx-click="toggle_modal_dropdown"
+                phx-value-name="modal_priority"
+                class="w-full bg-[#0d1117] hover:bg-[#161b22] border border-[#30363d] hover:border-gray-500 rounded-xl px-3 py-2 text-white font-sans text-xs flex items-center justify-between transition-smooth cursor-pointer"
               >
-                <option value="medium" selected>Medium</option>
-                <option value="low">Low</option>
-                <option value="high">High</option>
-                <option value="critical">Critical</option>
-              </select>
+                <div class="flex items-center gap-2 truncate">
+                  <span class={[
+                    "w-2 h-2 rounded-full shrink-0",
+                    @new_task_priority == "critical" &&
+                      "bg-red-400 shadow-[0_0_6px_rgba(239,68,68,0.8)]",
+                    @new_task_priority == "high" &&
+                      "bg-orange-400 shadow-[0_0_6px_rgba(249,115,22,0.8)]",
+                    @new_task_priority == "medium" && "bg-blue-400",
+                    @new_task_priority == "low" && "bg-gray-400"
+                  ]}></span>
+                  <span class="capitalize font-medium truncate">{String.capitalize(
+                    @new_task_priority
+                  )}</span>
+                </div>
+                <.icon name="hero-chevron-down" class="w-3.5 h-3.5 text-gray-400 shrink-0 ml-1" />
+              </button>
+              <input type="text" name="priority" value={@new_task_priority} class="hidden" />
+
+              <%= if @open_modal_dropdown == "modal_priority" do %>
+                <div
+                  id="modal-priority-dropdown-menu"
+                  class="absolute left-0 top-full mt-1.5 w-full bg-[#1c2128] border border-[#30363d] rounded-2xl p-1.5 shadow-2xl z-50 animate-in fade-in zoom-in-95 font-sans space-y-0.5"
+                >
+                  <%= for {p_val, p_label, dot_class} <- [
+                    {"critical", "Critical", "bg-red-400 shadow-[0_0_6px_rgba(239,68,68,0.8)]"},
+                    {"high", "High", "bg-orange-400 shadow-[0_0_6px_rgba(249,115,22,0.8)]"},
+                    {"medium", "Medium", "bg-blue-400"},
+                    {"low", "Low", "bg-gray-400"}
+                  ] do %>
+                    <button
+                      type="button"
+                      phx-click="select_modal_priority"
+                      phx-value-priority={p_val}
+                      class={[
+                        "w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs transition-smooth text-left cursor-pointer",
+                        @new_task_priority == p_val && "bg-[#2d333b] text-white font-semibold",
+                        @new_task_priority != p_val &&
+                          "text-gray-300 hover:bg-[#22272e] hover:text-white"
+                      ]}
+                    >
+                      <div class="flex items-center gap-2 truncate">
+                        <span class={["w-2 h-2 rounded-full shrink-0", dot_class]}></span>
+                        <span class="truncate">{p_label}</span>
+                      </div>
+                      <%= if @new_task_priority == p_val do %>
+                        <.icon name="hero-check" class="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                      <% end %>
+                    </button>
+                  <% end %>
+                </div>
+              <% end %>
             </div>
           </div>
 
-          <!-- Assignee & Tag Row (Image 1) -->
+          <%!-- Assignee & Tag Row (Custom Glassmorphic Dropdown) --%>
           <div class="grid grid-cols-2 gap-3">
-            <div>
+            <%!-- Assignee Custom Dropdown --%>
+            <div class="relative">
               <label class="block text-gray-400 mb-1.5 font-semibold text-[11px]">Assignee</label>
-              <select
-                name="assignee"
-                class="w-full bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-2 text-white font-sans text-xs focus:outline-hidden focus:border-[#ff5e3a]"
+              <button
+                type="button"
+                id="modal-assignee-dropdown-trigger"
+                phx-click="toggle_modal_dropdown"
+                phx-value-name="modal_assignee"
+                class="w-full bg-[#0d1117] hover:bg-[#161b22] border border-[#30363d] hover:border-gray-500 rounded-xl px-3 py-2 text-white font-sans text-xs flex items-center justify-between transition-smooth cursor-pointer"
               >
-                <option value="default" selected>Default Worker</option>
-                <option value="planner">PlannerAgent</option>
-                <option value="coder">CoderAgent</option>
-                <option value="verifier">VerifierAgent</option>
-              </select>
+                <div class="flex items-center gap-2 truncate">
+                  <.icon
+                    name={
+                      case @new_task_assignee do
+                        "planner" -> "hero-sparkles"
+                        "coder" -> "hero-code-bracket"
+                        "verifier" -> "hero-check-badge"
+                        _ -> "hero-user-circle"
+                      end
+                    }
+                    class={[
+                      "w-3.5 h-3.5 shrink-0",
+                      @new_task_assignee == "planner" && "text-amber-400",
+                      @new_task_assignee == "coder" && "text-cyan-400",
+                      @new_task_assignee == "verifier" && "text-emerald-400",
+                      @new_task_assignee == "default" && "text-purple-400"
+                    ]}
+                  />
+                  <span class="font-medium truncate">
+                    {case @new_task_assignee do
+                      "planner" -> "PlannerAgent"
+                      "coder" -> "CoderAgent"
+                      "verifier" -> "VerifierAgent"
+                      _ -> "Default Worker"
+                    end}
+                  </span>
+                </div>
+                <.icon name="hero-chevron-down" class="w-3.5 h-3.5 text-gray-400 shrink-0 ml-1" />
+              </button>
+              <input type="text" name="assignee" value={@new_task_assignee} class="hidden" />
+
+              <%= if @open_modal_dropdown == "modal_assignee" do %>
+                <div
+                  id="modal-assignee-dropdown-menu"
+                  class="absolute left-0 top-full mt-1.5 w-full bg-[#1c2128] border border-[#30363d] rounded-2xl p-1.5 shadow-2xl z-50 animate-in fade-in zoom-in-95 font-sans space-y-0.5"
+                >
+                  <%= for {a_val, a_label, icon_name, icon_color} <- [
+                    {"default", "Default Worker", "hero-user-circle", "text-purple-400"},
+                    {"planner", "PlannerAgent", "hero-sparkles", "text-amber-400"},
+                    {"coder", "CoderAgent", "hero-code-bracket", "text-cyan-400"},
+                    {"verifier", "VerifierAgent", "hero-check-badge", "text-emerald-400"}
+                  ] do %>
+                    <button
+                      type="button"
+                      phx-click="select_modal_assignee"
+                      phx-value-assignee={a_val}
+                      class={[
+                        "w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs transition-smooth text-left cursor-pointer",
+                        @new_task_assignee == a_val && "bg-[#2d333b] text-white font-semibold",
+                        @new_task_assignee != a_val &&
+                          "text-gray-300 hover:bg-[#22272e] hover:text-white"
+                      ]}
+                    >
+                      <div class="flex items-center gap-2 truncate">
+                        <.icon name={icon_name} class={["w-3.5 h-3.5 shrink-0", icon_color]} />
+                        <span class="truncate">{a_label}</span>
+                      </div>
+                      <%= if @new_task_assignee == a_val do %>
+                        <.icon name="hero-check" class="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                      <% end %>
+                    </button>
+                  <% end %>
+                </div>
+              <% end %>
             </div>
             <div>
               <label class="block text-gray-400 mb-1.5 font-semibold text-[11px]">Tag</label>
@@ -2328,7 +2497,7 @@
                   </span>
                   <.icon name="hero-calendar" class="w-3.5 h-3.5 text-gray-400 hover:text-white" />
                 </div>
-                <input type="hidden" name="scheduled_at_date" value={@new_task_date} />
+                <input type="text" name="scheduled_at_date" value={@new_task_date} class="hidden" />
 
                 <%!-- Popover Calendar Card (Matching media_1787247860901.png) --%>
                 <%= if @show_date_picker_popover do %>
@@ -2430,7 +2599,12 @@
                   <span class="truncate">{@selected_time_slot}</span>
                   <.icon name="hero-clock" class="w-3.5 h-3.5 text-blue-400 shrink-0 ml-1" />
                 </div>
-                <input type="hidden" name="scheduled_at_time_slot" value={@selected_time_slot} />
+                <input
+                  type="text"
+                  name="scheduled_at_time_slot"
+                  value={@selected_time_slot}
+                  class="hidden"
+                />
               </div>
             </div>
 
