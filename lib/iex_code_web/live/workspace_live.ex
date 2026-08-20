@@ -144,12 +144,17 @@ defmodule IexCodeWeb.WorkspaceLive do
      |> assign(:show_custom_time_input, false)
      |> assign(:show_scheduled_task_modal, false)
      |> assign(:selected_scheduled_task, nil)
-     |> assign(:selected_calendar_date, "2026-08-16")
-     |> assign(:selected_calendar_day, 16)
-     |> assign(:new_task_date, "2026-08-16")
+     |> assign(:selected_calendar_date, "2026-08-20")
+     |> assign(:selected_calendar_day, 20)
+     |> assign(:new_task_date, "2026-08-20")
      |> assign(:new_task_time, "10:30 AM")
      |> assign(:new_task_schedule_type, "scheduled")
      |> assign(:picker_mode, :datetime)
+     |> assign(:show_date_picker_popover, false)
+     |> assign(:picker_year, 2026)
+     |> assign(:picker_month, 8)
+     |> assign(:user_availability, "Available")
+     |> assign(:user_availability_subtext, "Instant notifications & swarm active")
      |> assign(:prompt_form, to_form(%{"prompt" => ""}))
      |> assign(
        :task_form,
@@ -309,7 +314,94 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("select_schedule_status", %{"status" => status}, socket) do
-    {:noreply, assign(socket, :selected_schedule_status, status)}
+    subtext =
+      case status do
+        "Available" -> "Instant notifications & swarm active"
+        "Busy" -> "Deep focus · autonomous background mode"
+        "In-meeting" -> "Collaboration window · batched summaries"
+        "Offline" -> "Away · automated scheduled cron only"
+        _ -> "Active"
+      end
+
+    {:noreply,
+     socket
+     |> assign(:selected_schedule_status, status)
+     |> assign(:user_availability, status)
+     |> assign(:user_availability_subtext, subtext)}
+  end
+
+  @impl true
+  def handle_event("toggle_date_picker_popover", _params, socket) do
+    {:noreply,
+     assign(socket, :show_date_picker_popover, !socket.assigns.show_date_picker_popover)}
+  end
+
+  @impl true
+  def handle_event("close_date_picker_popover", _params, socket) do
+    {:noreply, assign(socket, :show_date_picker_popover, false)}
+  end
+
+  @impl true
+  def handle_event("picker_prev_month", _params, socket) do
+    month = socket.assigns.picker_month
+    year = socket.assigns.picker_year
+
+    {new_year, new_month} =
+      if month == 1, do: {year - 1, 12}, else: {year, month - 1}
+
+    {:noreply, socket |> assign(:picker_year, new_year) |> assign(:picker_month, new_month)}
+  end
+
+  @impl true
+  def handle_event("picker_next_month", _params, socket) do
+    month = socket.assigns.picker_month
+    year = socket.assigns.picker_year
+
+    {new_year, new_month} =
+      if month == 12, do: {year + 1, 1}, else: {year, month + 1}
+
+    {:noreply, socket |> assign(:picker_year, new_year) |> assign(:picker_month, new_month)}
+  end
+
+  @impl true
+  def handle_event("picker_select_day", %{"year" => y, "month" => m, "day" => d}, socket) do
+    y_int = if is_binary(y), do: String.to_integer(y), else: y
+    m_int = if is_binary(m), do: String.to_integer(m), else: m
+    d_int = if is_binary(d), do: String.to_integer(d), else: d
+
+    date = Date.new!(y_int, m_int, d_int)
+    date_str = Date.to_iso8601(date)
+
+    {:noreply,
+     socket
+     |> assign(:new_task_date, date_str)
+     |> assign(:selected_calendar_date, date_str)
+     |> assign(:selected_calendar_day, d_int)
+     |> assign(:picker_year, y_int)
+     |> assign(:picker_month, m_int)
+     |> assign(:show_date_picker_popover, false)}
+  end
+
+  @impl true
+  def handle_event("picker_today", _params, socket) do
+    today_str = "2026-08-20"
+
+    {:noreply,
+     socket
+     |> assign(:new_task_date, today_str)
+     |> assign(:selected_calendar_date, today_str)
+     |> assign(:selected_calendar_day, 20)
+     |> assign(:picker_year, 2026)
+     |> assign(:picker_month, 8)
+     |> assign(:show_date_picker_popover, false)}
+  end
+
+  @impl true
+  def handle_event("picker_clear", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:new_task_date, "")
+     |> assign(:show_date_picker_popover, false)}
   end
 
   @impl true
@@ -326,7 +418,11 @@ defmodule IexCodeWeb.WorkspaceLive do
     {:noreply,
      socket
      |> assign(:show_time_picker, false)
-     |> put_flash(:info, "Scheduled for #{date} · #{slot} (#{status})")}
+     |> assign(:user_availability, status)
+     |> put_flash(
+       :info,
+       "Scheduled for #{date} · #{slot} (#{status}) · Focus presence updated: #{status}"
+     )}
   end
 
   @impl true
@@ -1234,5 +1330,110 @@ defmodule IexCodeWeb.WorkspaceLive do
       end
     end
     |> Enum.filter(& &1)
+  end
+
+  defp month_name(1), do: "January"
+  defp month_name(2), do: "February"
+  defp month_name(3), do: "March"
+  defp month_name(4), do: "April"
+  defp month_name(5), do: "May"
+  defp month_name(6), do: "June"
+  defp month_name(7), do: "July"
+  defp month_name(8), do: "August"
+  defp month_name(9), do: "September"
+  defp month_name(10), do: "October"
+  defp month_name(11), do: "November"
+  defp month_name(12), do: "December"
+  defp month_name(_), do: "August"
+
+  defp format_date_display(nil), do: "08/20/2026"
+  defp format_date_display(""), do: "08/20/2026"
+
+  defp format_date_display(date_str) do
+    case Date.from_iso8601(date_str) do
+      {:ok, date} ->
+        m = String.pad_leading("#{date.month}", 2, "0")
+        d = String.pad_leading("#{date.day}", 2, "0")
+        "#{m}/#{d}/#{date.year}"
+
+      _ ->
+        date_str
+    end
+  end
+
+  defp calendar_grid_cells(year, month, selected_date_str) do
+    first_date = Date.new!(year, month, 1)
+    day_of_week = Date.day_of_week(first_date)
+    sunday_offset = if day_of_week == 7, do: 0, else: day_of_week
+    days_in_current = Date.days_in_month(first_date)
+
+    {prev_year, prev_month} =
+      if month == 1, do: {year - 1, 12}, else: {year, month - 1}
+
+    days_in_prev = Date.days_in_month(Date.new!(prev_year, prev_month, 1))
+
+    selected_date =
+      case Date.from_iso8601(selected_date_str || "") do
+        {:ok, d} -> d
+        _ -> nil
+      end
+
+    today = Date.new!(2026, 8, 20)
+
+    prev_cells =
+      if sunday_offset > 0 do
+        start_day = days_in_prev - sunday_offset + 1
+
+        for d <- start_day..days_in_prev do
+          cell_date = Date.new!(prev_year, prev_month, d)
+
+          %{
+            year: prev_year,
+            month: prev_month,
+            day: d,
+            is_current_month: false,
+            is_today: cell_date == today,
+            is_selected: cell_date == selected_date
+          }
+        end
+      else
+        []
+      end
+
+    current_cells =
+      for d <- 1..days_in_current do
+        cell_date = Date.new!(year, month, d)
+
+        %{
+          year: year,
+          month: month,
+          day: d,
+          is_current_month: true,
+          is_today: cell_date == today,
+          is_selected: cell_date == selected_date
+        }
+      end
+
+    total_so_far = length(prev_cells) + length(current_cells)
+    remaining = 42 - total_so_far
+
+    {next_year, next_month} =
+      if month == 12, do: {year + 1, 1}, else: {year, month + 1}
+
+    next_cells =
+      for d <- 1..remaining do
+        cell_date = Date.new!(next_year, next_month, d)
+
+        %{
+          year: next_year,
+          month: next_month,
+          day: d,
+          is_current_month: false,
+          is_today: cell_date == today,
+          is_selected: cell_date == selected_date
+        }
+      end
+
+    prev_cells ++ current_cells ++ next_cells
   end
 end

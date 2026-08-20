@@ -540,4 +540,67 @@ defmodule IexCodeWeb.WorkspaceLiveTest do
     assert html =~ "triggered and now running"
     refute html =~ "scheduled-task-detail-modal"
   end
+
+  test "F13: custom popover date picker and live availability status system", %{conn: conn} do
+    project = create_project_fixture(%{root_path: "/tmp/e2e_datepicker_project"})
+    session = create_session_fixture(project)
+    {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}")
+
+    # 1. Header live availability presence indicator
+    assert html =~ "header-focus-time-btn"
+    assert html =~ "Available"
+
+    # 2. Open new task modal and trigger custom date picker popover
+    html = render_click(view, "toggle_new_task_modal")
+    assert html =~ "new-task-modal"
+    assert html =~ "target-date-picker-trigger"
+
+    # Open popover
+    html = render_click(view, "toggle_date_picker_popover")
+    assert html =~ "custom-date-picker-popover"
+    assert html =~ "August 2026"
+    assert html =~ "Clear"
+    assert html =~ "Today"
+
+    # Navigate month
+    html = render_click(view, "picker_next_month")
+    assert html =~ "September 2026"
+
+    html = render_click(view, "picker_prev_month")
+    assert html =~ "August 2026"
+
+    # Select day 15
+    html =
+      render_click(view, "picker_select_day", %{"year" => "2026", "month" => "8", "day" => "15"})
+
+    refute html =~ "custom-date-picker-popover"
+    assert html =~ "08/15/2026"
+
+    # Re-open and click Today
+    html = render_click(view, "toggle_date_picker_popover")
+    assert html =~ "custom-date-picker-popover"
+    html = render_click(view, "picker_today")
+    assert html =~ "08/20/2026"
+
+    # 3. Test Presence & Focus Mode Modal with untruncated status pills
+    html = render_click(view, "open_time_picker")
+    assert html =~ "time-picker-modal"
+    assert html =~ "Set focus time &amp; presence"
+    assert html =~ "Available"
+    assert html =~ "Busy"
+    assert html =~ "In-meeting"
+    assert html =~ "Offline"
+    assert html =~ "Deep focus mode"
+    assert html =~ "Batched summaries"
+
+    # Switch status to Busy
+    html = render_click(view, "select_schedule_status", %{"status" => "Busy"})
+    assert html =~ "Deep focus mode"
+
+    # Apply presence
+    html = render_click(view, "apply_time_picker")
+    assert html =~ "Focus presence updated: Busy"
+    assert html =~ "header-focus-time-btn"
+    assert html =~ "Busy"
+  end
 end
