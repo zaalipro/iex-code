@@ -423,7 +423,8 @@ defmodule IexCodeWeb.WorkspaceLiveTest do
 
     # 5. Apply time picker
     html = render_click(view, "apply_time_picker")
-    assert html =~ "Focus time scheduled for 11:30 AM - 12:00 PM"
+    assert html =~ "Scheduled for"
+    assert html =~ "11:30 AM - 12:00 PM"
     refute html =~ "Set focus time"
 
     # 6. Test cancel button closes modal
@@ -462,5 +463,81 @@ defmodule IexCodeWeb.WorkspaceLiveTest do
     html = render_click(view, "scroll_to_message", %{"id" => "msg-0"})
     assert is_binary(html)
     assert Process.alive?(view.pid)
+  end
+
+  # ============================================================================
+  # F12: Scheduled Tab, Calendar Day Click, Task Details Modal & Scheduling
+  # ============================================================================
+
+  test "handles Scheduled tab navigation, calendar day click preselection, and task detail modal inspection",
+       %{
+         conn: conn,
+         workspace_path: path
+       } do
+    project = create_project_fixture(%{root_path: path})
+    session = create_session_fixture(project)
+    {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+    # 1. Verify "Scheduled" tab label
+    html = render(view)
+    assert html =~ "Scheduled"
+
+    # 2. Switch to Scheduled (calendar) tab
+    view
+    |> element("#tab-btn-calendar")
+    |> render_click()
+
+    html = render(view)
+    assert html =~ "August, 2026"
+    assert html =~ "calendar-day-16"
+    assert html =~ "calendar-day-7"
+
+    # 3. Click empty day (e.g. Day 18) -> opens Create Task modal with preselected date
+    html =
+      render_click(view, "select_calendar_day", %{
+        "day" => "18",
+        "date" => "2026-08-18"
+      })
+
+    assert html =~ "Create Agent Task"
+    assert html =~ "2026-08-18"
+    assert html =~ "Schedule &amp; Execution Time"
+
+    # 4. Create new scheduled task with target date via modal form
+    html =
+      view
+      |> form("#task-create-form", %{
+        "title" => "Run automated benchmark audit",
+        "description" => "Execute 500-level stress sweep",
+        "status" => "scheduled",
+        "priority" => "critical",
+        "assignee" => "verifier",
+        "scheduled_at_date" => "2026-08-18",
+        "cron_expression" => "0 12 * * *"
+      })
+      |> render_submit()
+
+    assert html =~ "Task created"
+    refute html =~ "Create Agent Task"
+
+    # 5. Find created task and click to open details modal
+    created_task =
+      IexCode.Kanban.list_tasks(project.id)
+      |> Enum.find(&(&1.title == "Run automated benchmark audit"))
+
+    assert created_task != nil
+
+    html = render_click(view, "show_scheduled_task", %{"id" => created_task.id})
+    assert html =~ "scheduled-task-detail-modal"
+    assert html =~ "Run automated benchmark audit"
+    assert html =~ "Execute 500-level stress sweep"
+    assert html =~ "Critical Priority"
+    assert html =~ "Run Now"
+    assert html =~ "Delete Task"
+
+    # 6. Run task from modal
+    html = render_click(view, "run_scheduled_task", %{"id" => created_task.id})
+    assert html =~ "triggered and now running"
+    refute html =~ "scheduled-task-detail-modal"
   end
 end

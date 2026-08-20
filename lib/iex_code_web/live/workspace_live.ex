@@ -142,6 +142,14 @@ defmodule IexCodeWeb.WorkspaceLive do
      |> assign(:selected_time_slot, "10:30 AM - 11:00 AM")
      |> assign(:selected_schedule_status, "Available")
      |> assign(:show_custom_time_input, false)
+     |> assign(:show_scheduled_task_modal, false)
+     |> assign(:selected_scheduled_task, nil)
+     |> assign(:selected_calendar_date, "2026-08-16")
+     |> assign(:selected_calendar_day, 16)
+     |> assign(:new_task_date, "2026-08-16")
+     |> assign(:new_task_time, "10:30 AM")
+     |> assign(:new_task_schedule_type, "scheduled")
+     |> assign(:picker_mode, :datetime)
      |> assign(:prompt_form, to_form(%{"prompt" => ""}))
      |> assign(
        :task_form,
@@ -150,7 +158,8 @@ defmodule IexCodeWeb.WorkspaceLive do
          "description" => "",
          "priority" => "medium",
          "assignee" => "default",
-         "steps_total" => "4"
+         "steps_total" => "4",
+         "status" => "ready"
        })
      )
      |> assign(:settings_form, Settings.change_settings(settings) |> to_form())
@@ -271,8 +280,18 @@ defmodule IexCodeWeb.WorkspaceLive do
   end
 
   @impl true
-  def handle_event("open_time_picker", _params, socket) do
-    {:noreply, assign(socket, :show_time_picker, true)}
+  def handle_event("open_time_picker", params, socket) do
+    mode =
+      case params["mode"] do
+        "date" -> :date
+        "time" -> :time
+        _ -> :datetime
+      end
+
+    {:noreply,
+     socket
+     |> assign(:picker_mode, mode)
+     |> assign(:show_time_picker, true)}
   end
 
   @impl true
@@ -282,7 +301,10 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("select_time_slot", %{"slot" => slot}, socket) do
-    {:noreply, assign(socket, :selected_time_slot, slot)}
+    {:noreply,
+     socket
+     |> assign(:selected_time_slot, slot)
+     |> assign(:new_task_time, slot)}
   end
 
   @impl true
@@ -299,11 +321,83 @@ defmodule IexCodeWeb.WorkspaceLive do
   def handle_event("apply_time_picker", _params, socket) do
     slot = socket.assigns.selected_time_slot
     status = socket.assigns.selected_schedule_status
+    date = socket.assigns.new_task_date
 
     {:noreply,
      socket
      |> assign(:show_time_picker, false)
-     |> put_flash(:info, "Focus time scheduled for #{slot} (#{status})")}
+     |> put_flash(:info, "Scheduled for #{date} · #{slot} (#{status})")}
+  end
+
+  @impl true
+  def handle_event("select_calendar_day", %{"day" => day, "date" => date}, socket) do
+    day_int = if is_binary(day), do: String.to_integer(day), else: day
+
+    {:noreply,
+     socket
+     |> assign(:selected_calendar_date, date)
+     |> assign(:selected_calendar_day, day_int)
+     |> assign(:new_task_date, date)
+     |> assign(:show_new_task_modal, true)}
+  end
+
+  @impl true
+  def handle_event("show_scheduled_task", %{"id" => task_id}, socket) do
+    task = Kanban.get_task(task_id) || Enum.find(socket.assigns.tasks, &(&1.id == task_id))
+
+    {:noreply,
+     socket
+     |> assign(:selected_scheduled_task, task)
+     |> assign(:show_scheduled_task_modal, true)}
+  end
+
+  @impl true
+  def handle_event("close_scheduled_task_modal", _params, socket) do
+    {:noreply, assign(socket, :show_scheduled_task_modal, false)}
+  end
+
+  @impl true
+  def handle_event("run_scheduled_task", %{"id" => task_id}, socket) do
+    case Kanban.get_task(task_id) do
+      nil ->
+        {:noreply, socket}
+
+      task ->
+        {:ok, updated} =
+          Kanban.update_task(task, %{status: "running", worker_pid: inspect(self())})
+
+        tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
+
+        {:noreply,
+         socket
+         |> assign(:tasks, tasks)
+         |> assign(:selected_task, updated)
+         |> assign(:show_scheduled_task_modal, false)
+         |> put_flash(:info, "Task '#{task.title}' triggered and now running")}
+    end
+  end
+
+  @impl true
+  def handle_event("delete_scheduled_task", %{"id" => task_id}, socket) do
+    case Kanban.get_task(task_id) do
+      nil ->
+        {:noreply, socket}
+
+      task ->
+        {:ok, _deleted} = Kanban.delete_task(task)
+        tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
+
+        {:noreply,
+         socket
+         |> assign(:tasks, tasks)
+         |> assign(:show_scheduled_task_modal, false)
+         |> put_flash(:info, "Scheduled task removed")}
+    end
+  end
+
+  @impl true
+  def handle_event("set_task_schedule_type", %{"type" => type}, socket) do
+    {:noreply, assign(socket, :new_task_schedule_type, type)}
   end
 
   @impl true
@@ -332,19 +426,43 @@ defmodule IexCodeWeb.WorkspaceLive do
   end
 
   @impl true
-  def handle_event("create_task", %{"title" => title} = params, socket) do
-    if String.trim(title) != "" do
+  def handle_event("create_task", params, socket) do
+    params = params["task"] || params[:task] || params
+    title = params["title"] || params[:title] || ""
+    sched_date = params["scheduled_at_date"] || params[:scheduled_at_date]
+    status = params["status"] || params[:status] || "ready"
+    cron_expr = params["cron_expression"] || params[:cron_expression]
+    steps_total = params["steps_total"] || params[:steps_total] || "4"
+    tag = params["tag"] || params[:tag]
+
+    if String.trim(to_string(title)) != "" do
+      scheduled_at =
+        if sched_date && to_string(sched_date) != "" do
+          case Date.from_iso8601(to_string(sched_date)) do
+            {:ok, date} -> DateTime.new!(date, ~T[10:30:00], "Etc/UTC")
+            _ -> nil
+          end
+        else
+          if status == "scheduled" do
+            DateTime.utc_now() |> DateTime.add(3600 * 24, :second)
+          else
+            nil
+          end
+        end
+
       attrs = %{
         project_id: socket.assigns.project.id,
         session_id: socket.assigns.session.id,
-        title: String.trim(title),
-        description: params["description"],
-        priority: params["priority"] || "medium",
-        assignee: params["assignee"] || "default",
-        status: params["status"] || "triage",
-        steps_total: String.to_integer(params["steps_total"] || "4"),
+        title: String.trim(to_string(title)),
+        description: params["description"] || params[:description],
+        priority: params["priority"] || params[:priority] || "medium",
+        assignee: params["assignee"] || params[:assignee] || "default",
+        status: status,
+        scheduled_at: scheduled_at,
+        cron_expression: cron_expr,
+        steps_total: String.to_integer(to_string(steps_total)),
         steps_completed: 0,
-        tags: if(params["tag"] && params["tag"] != "", do: [params["tag"]], else: ["Task"])
+        tags: if(tag && to_string(tag) != "", do: [to_string(tag)], else: ["Task"])
       }
 
       {:ok, task} = Kanban.create_task(attrs)
@@ -835,8 +953,11 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_info({:task_created, task}, socket) do
-    tasks = [task | socket.assigns.tasks]
-    {:noreply, assign(socket, :tasks, tasks)}
+    if Enum.any?(socket.assigns.tasks, &(&1.id == task.id)) do
+      {:noreply, socket}
+    else
+      {:noreply, assign(socket, :tasks, [task | socket.assigns.tasks])}
+    end
   end
 
   @impl true
@@ -929,9 +1050,77 @@ defmodule IexCodeWeb.WorkspaceLive do
         latest_summary: "Scheduled for next trigger at 00:00 UTC.",
         steps_total: 3,
         steps_completed: 0,
-        scheduled_at: DateTime.utc_now() |> DateTime.add(3600 * 4, :second),
+        scheduled_at: DateTime.new!(~D[2026-08-10], ~T[00:00:00], "Etc/UTC"),
         cron_expression: "0 0 * * *",
         tags: ["Cron", "Regression"]
+      },
+      %{
+        project_id: project_id,
+        session_id: session_id,
+        title: "AST indexer & schema cache sync",
+        description: "Rebuild AST semantic indices across all repository modules.",
+        status: "scheduled",
+        priority: "high",
+        assignee: "planner",
+        worker_pid: nil,
+        estimate: "15m",
+        latest_summary: "Ready to index 240 module ASTs.",
+        steps_total: 4,
+        steps_completed: 1,
+        scheduled_at: DateTime.new!(~D[2026-08-07], ~T[10:30:00], "Etc/UTC"),
+        cron_expression: "0 10 * * 5",
+        tags: ["AST", "Cron"]
+      },
+      %{
+        project_id: project_id,
+        session_id: session_id,
+        title: "Staging deployment canary validation",
+        description: "Run automated health probes and canary traffic test.",
+        status: "scheduled",
+        priority: "critical",
+        assignee: "verifier",
+        worker_pid: nil,
+        estimate: "20m",
+        latest_summary: "Staging canary container deployed.",
+        steps_total: 5,
+        steps_completed: 2,
+        scheduled_at: DateTime.new!(~D[2026-08-15], ~T[14:00:00], "Etc/UTC"),
+        cron_expression: nil,
+        tags: ["Staging", "Canary"]
+      },
+      %{
+        project_id: project_id,
+        session_id: session_id,
+        title: "Auto-heal swarm diagnostic cycle",
+        description: "Analyze error logs and suggest self-healing auto-fix patches.",
+        status: "scheduled",
+        priority: "high",
+        assignee: "coder",
+        worker_pid: nil,
+        estimate: "12m",
+        latest_summary: "Diagnostic triggers active.",
+        steps_total: 3,
+        steps_completed: 0,
+        scheduled_at: DateTime.new!(~D[2026-08-20], ~T[16:30:00], "Etc/UTC"),
+        cron_expression: "30 16 * * *",
+        tags: ["Heal", "Swarm"]
+      },
+      %{
+        project_id: project_id,
+        session_id: session_id,
+        title: "PubSub telemetry & channel optimizer",
+        description: "Optimize high-throughput PubSub buffer distribution.",
+        status: "scheduled",
+        priority: "medium",
+        assignee: "default",
+        worker_pid: nil,
+        estimate: "8m",
+        latest_summary: "Monitoring 60 concurrent channel streams.",
+        steps_total: 2,
+        steps_completed: 1,
+        scheduled_at: DateTime.new!(~D[2026-08-25], ~T[09:00:00], "Etc/UTC"),
+        cron_expression: nil,
+        tags: ["PubSub", "Perf"]
       }
     ]
 
@@ -939,6 +1128,13 @@ defmodule IexCodeWeb.WorkspaceLive do
       {:ok, task} = Kanban.create_task(attrs)
       task
     end
+  end
+
+  defp tasks_for_day(tasks, day) do
+    Enum.filter(tasks, fn task ->
+      (task.scheduled_at && task.scheduled_at.day == day) ||
+        (task.metadata && task.metadata["day"] == day)
+    end)
   end
 
   defp list_project_files(root_path) do
