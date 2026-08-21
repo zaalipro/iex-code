@@ -16,19 +16,22 @@ defmodule IexCode.SettingsTest do
       assert %AppSettings{} = settings
       assert settings.default_model == "gemini-3.7-flash-high"
       assert settings.openai_base_url == "https://cli.llmotions.com/v1"
-      assert settings.openai_api_key == "sk-zaali-secret"
+      # No default API key is ever injected; it must come from the environment or stay unset.
+      assert settings.openai_api_key in [nil, "", System.get_env("OPENAI_API_KEY")]
     end
 
     test "safely handles multiple AppSettings rows without raising MultipleResultsError" do
-      # Insert multiple rows directly into repo
+      # The singleton index (app_settings_singleton_index) now forbids a second row.
       {:ok, s1} = Repo.insert(%AppSettings{default_model: "model-1", openai_api_key: "k1"})
-      {:ok, s2} = Repo.insert(%AppSettings{default_model: "model-2", openai_api_key: "k2"})
 
-      # Must return latest without crashing
+      assert_raise Ecto.ConstraintError, fn ->
+        Repo.insert(%AppSettings{default_model: "model-2", openai_api_key: "k2"})
+      end
+
+      # get_settings() safely returns the single existing row
       settings = Settings.get_settings()
       assert %AppSettings{} = settings
-      assert settings.id in [s1.id, s2.id]
-      assert settings.openai_api_key in ["k1", "k2"]
+      assert settings.id == s1.id
     end
 
     test "updates existing settings idempotently" do

@@ -3,6 +3,7 @@ defmodule IexCode.Projects do
   Context for managing workspace projects.
   """
   import Ecto.Query, warn: false
+  require Logger
   alias IexCode.Repo
   alias IexCode.Projects.Project
 
@@ -18,57 +19,60 @@ defmodule IexCode.Projects do
     Repo.get_by(Project, root_path: Path.expand(path))
   end
 
+  @doc """
+  Returns the project for the given workspace path, creating it if needed.
+  On DB failure returns `{:error, reason}` — never an unsaved struct.
+  """
   def get_or_create_project(path, name \\ nil) do
     expanded = Path.expand(path)
     project_name = name || Path.basename(expanded)
 
-    try do
-      case get_project_by_path(expanded) do
-        nil ->
-          case create_project(%{
-                 name: project_name,
-                 root_path: expanded,
-                 last_opened_at: DateTime.utc_now() |> DateTime.truncate(:second)
-               }) do
-            {:ok, p} ->
-              {:ok, p}
+    case get_project_by_path(expanded) do
+      %Project{} = project ->
+        touch_project(project)
+        {:ok, project}
 
-            {:error, _} ->
-              case get_project_by_path(expanded) do
-                %Project{} = p ->
-                  {:ok, p}
+      nil ->
+        case create_project(%{
+               name: project_name,
+               root_path: expanded,
+               last_opened_at: DateTime.utc_now() |> DateTime.truncate(:second)
+             }) do
+          {:ok, p} ->
+            {:ok, p}
 
-                _ ->
-                  {:ok,
-                   %Project{id: Ecto.UUID.generate(), name: project_name, root_path: expanded}}
-              end
-          end
+          # Lost an insert race (unique root_path): another process won it.
+          {:error, %Ecto.Changeset{} = changeset} ->
+            case get_project_by_path(expanded) do
+              %Project{} = p ->
+                {:ok, p}
 
-        %Project{} = project ->
-          touch_project(project)
-          {:ok, project}
-      end
-    rescue
-      _ ->
-        {:ok, %Project{id: Ecto.UUID.generate(), name: project_name, root_path: expanded}}
-    catch
-      _, _ ->
-        {:ok, %Project{id: Ecto.UUID.generate(), name: project_name, root_path: expanded}}
+              nil ->
+                Logger.error(
+                  "Projects.get_or_create_project failed for #{expanded}: #{inspect(changeset.errors)}"
+                )
+
+                {:error, changeset}
+            end
+
+          {:error, reason} ->
+            Logger.error(
+              "Projects.get_or_create_project failed for #{expanded}: #{inspect(reason)}"
+            )
+
+            {:error, reason}
+        end
     end
+  rescue
+    e in [Exqlite.Error, DBConnection.ConnectionError] ->
+      Logger.error("Projects.get_or_create_project failed: #{Exception.message(e)}")
+      {:error, {:db_error, Exception.message(e)}}
   end
 
-  def create_project(attrs \\ %{}, retries \\ 20) do
+  def create_project(attrs \\ %{}) do
     %Project{}
     |> Project.changeset(attrs)
     |> Repo.insert()
-  rescue
-    e in [Exqlite.Error, DBConnection.ConnectionError] ->
-      if retries > 0 do
-        :timer.sleep(35)
-        create_project(attrs, retries - 1)
-      else
-        reraise e, __STACKTRACE__
-      end
   end
 
   def update_project(%Project{} = project, attrs) do

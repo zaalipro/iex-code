@@ -21,7 +21,7 @@ defmodule IexCode.MixProject do
   def application do
     [
       mod: {IexCode.Application, []},
-      extra_applications: [:logger, :runtime_tools]
+      extra_applications: [:logger, :runtime_tools, :desktop]
     ]
   end
 

@@ -37,11 +37,14 @@ defmodule IexCode.Engine.AgentRegistry do
 
   @doc """
   Returns a list of `{agent_type, pid}` tuples for all running subagents of a session.
+
+  Enumerates the Registry directly so non-canonical agent types are visible too,
+  not just the four canonical ones.
   """
   def list_agents(session_id) do
-    [:planner, :explorer, :coder, :verifier]
-    |> Enum.map(fn type -> {type, whereis(session_id, type)} end)
-    |> Enum.reject(fn {_type, pid} -> is_nil(pid) end)
+    __MODULE__
+    |> Registry.select([{{{session_id, :"$1"}, :"$2", :_}, [], [{{:"$1", :"$2"}}]}])
+    |> Enum.filter(fn {_type, pid} -> Process.alive?(pid) end)
   end
 
   @doc """
@@ -60,5 +63,12 @@ defmodule IexCode.Engine.AgentRegistry do
   def normalize_type("CoderAgent"), do: :coder
   def normalize_type("VerifierAgent"), do: :verifier
   def normalize_type(type) when is_atom(type), do: type
-  def normalize_type(type) when is_binary(type), do: type |> String.downcase() |> String.to_atom()
+
+  def normalize_type(type) when is_binary(type) do
+    String.to_existing_atom(String.downcase(type))
+  rescue
+    # Unknown agent type: keep the binary so we never create atoms dynamically.
+    # Registration and lookup both go through this function, so keys stay consistent.
+    _ -> type
+  end
 end

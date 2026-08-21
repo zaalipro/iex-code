@@ -34,11 +34,11 @@ defmodule IexCode.Engine.SwarmStressTest do
   describe "Self-Healing Loop Convergence" do
     @tag :tmp_dir
     @tag timeout: 180_000
-    test "converges and passes when AutoFix resolves a syntax error in workspace", %{
+    test "converges and passes when AutoFix resolves an unused variable warning in workspace", %{
       session: session,
       tmp_dir: tmp_dir
     } do
-      # Set up a workspace with an auto-fixable syntax error: "do :ok"
+      # Set up a workspace with an auto-fixable unused variable warning
       lib_path = Path.join(tmp_dir, "lib")
       File.mkdir_p!(lib_path)
 
@@ -46,7 +46,9 @@ defmodule IexCode.Engine.SwarmStressTest do
 
       File.write!(broken_file, """
       defmodule Calc do
-        def value, do :ok
+        def value(unused_flag) do
+          :ok
+        end
       end
       """)
 
@@ -54,7 +56,7 @@ defmodule IexCode.Engine.SwarmStressTest do
       {:ok, final_msg} =
         SwarmCoordinator.run(
           session.id,
-          "Fix syntax error in calc.ex",
+          "Fix unused variable in calc.ex",
           project_root: tmp_dir,
           max_retries: 3
         )
@@ -219,7 +221,9 @@ defmodule IexCode.Engine.SwarmStressTest do
     end
 
     @tag :tmp_dir
-    test "proposes and applies multi-file atomic fixes", %{tmp_dir: tmp_dir} do
+    test "proposes and applies fixes only for auto-fixable diagnostics in a batch", %{
+      tmp_dir: tmp_dir
+    } do
       lib_dir = Path.join(tmp_dir, "lib")
       File.mkdir_p!(lib_dir)
 
@@ -256,17 +260,18 @@ defmodule IexCode.Engine.SwarmStressTest do
         compilation_errors: [ce1, ce2]
       }
 
-      assert {:ok, patches} = AutoFix.generate_patch_proposals(tmp_dir, result)
-      assert length(patches) == 2
+      assert {:ok, [patch]} = AutoFix.generate_patch_proposals(tmp_dir, result)
+      assert patch.path == "lib/worker_one.ex"
 
       # Apply atomic multi-file patch
       assert {:ok, summary} = AutoFix.apply_auto_fix(tmp_dir, result)
-      assert summary.applied == 2
-      assert length(summary.patches) == 2
+      assert summary.applied == 1
+      assert length(summary.patches) == 1
 
-      # Verify files modified
+      # Only the unused-variable file is fixed; the syntax error is left untouched
       assert String.contains?(File.read!(file1), "_unused_val")
-      assert String.contains?(File.read!(file2), "do: :ok")
+      assert String.contains?(File.read!(file2), "do :ok")
+      refute String.contains?(File.read!(file2), "do: :ok")
     end
 
     @tag :tmp_dir

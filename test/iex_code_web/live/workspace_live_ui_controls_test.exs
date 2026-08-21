@@ -556,15 +556,15 @@ defmodule IexCodeWeb.WorkspaceLiveUIControlsTest do
       # 1. Run quick terminal action
       html = render_click(view, "quick_terminal", %{"cmd" => "echo 'hello terminal runner'"})
       assert html =~ "hello terminal runner"
-      assert html =~ "[Exit 0: OK]"
+      wait_for_terminal(view, &(&1 =~ "[Exit 0: OK]"))
 
       # 2. Run terminal form submit
-      html =
-        view
-        |> form("#terminal-form", %{"command" => "echo 'form execution test'"})
-        |> render_submit()
+      view
+      |> form("#terminal-form", %{"command" => "echo 'form execution test'"})
+      |> render_submit()
 
-      assert html =~ "form execution test"
+      wait_for_terminal(view, &(count_exit_markers(&1) >= 2))
+      assert render(view) =~ "form execution test"
 
       # 3. Stop terminal command
       html_stop = render_click(view, "stop_terminal_command")
@@ -586,5 +586,27 @@ defmodule IexCodeWeb.WorkspaceLiveUIControlsTest do
       render_click(view, "clear_terminal")
       refute render(view) =~ "Test suite 100% passed"
     end
+  end
+
+  # Terminal execution is async via Port: poll until the expected output
+  # (e.g. an exit marker) shows up in the rendered buffer.
+  defp wait_for_terminal(view, match?, deadline \\ 2000) do
+    html = render(view)
+
+    cond do
+      match?.(html) ->
+        html
+
+      deadline <= 0 ->
+        flunk("timed out waiting for expected terminal output")
+
+      true ->
+        Process.sleep(50)
+        wait_for_terminal(view, match?, deadline - 50)
+    end
+  end
+
+  defp count_exit_markers(html) do
+    html |> String.split("[Exit ") |> length() |> Kernel.-(1)
   end
 end

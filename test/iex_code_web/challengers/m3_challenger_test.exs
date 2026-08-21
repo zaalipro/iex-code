@@ -542,24 +542,23 @@ defmodule IexCodeWeb.M3ChallengerTest do
       |> render_click()
 
       # 1. Successful multi-line output
-      html =
-        view
-        |> form("#terminal-form", %{"command" => "echo 'Line A\nLine B\nLine C'"})
-        |> render_submit()
+      view
+      |> form("#terminal-form", %{"command" => "echo 'Line A\nLine B\nLine C'"})
+      |> render_submit()
 
+      html = wait_for_terminal(view, &(&1 =~ "[Exit 0: OK]"))
       assert html =~ "Line A"
       assert html =~ "Line B"
       assert html =~ "Line C"
-      assert html =~ "[Exit 0: OK]"
 
       # 2. Non-zero exit code command
-      html_err =
-        view
-        |> form("#terminal-form", %{"command" => "ls /non_existent_directory_for_challenge_test"})
-        |> render_submit()
+      view
+      |> form("#terminal-form", %{"command" => "ls /non_existent_directory_for_challenge_test"})
+      |> render_submit()
 
+      html_err = wait_for_terminal(view, &(&1 =~ ": Error]"))
       assert html_err =~ "[Exit"
-      assert html_err =~ "Error]"
+      assert html_err =~ ": Error]"
 
       # 3. Clear terminal output
       html_cleared = render_click(view, "clear_terminal")
@@ -596,6 +595,24 @@ defmodule IexCodeWeb.M3ChallengerTest do
       # Select non-existent file -> displays safe error message
       html_ghost = render_click(view, "select_file", %{"path" => "lib/non_existent_file.ex"})
       assert html_ghost =~ "Could not read file: :enoent"
+    end
+  end
+
+  # Terminal execution is async via Port: poll until the expected output
+  # (e.g. an exit marker) shows up in the rendered buffer.
+  defp wait_for_terminal(view, match?, deadline \\ 2000) do
+    html = render(view)
+
+    cond do
+      match?.(html) ->
+        html
+
+      deadline <= 0 ->
+        flunk("timed out waiting for expected terminal output")
+
+      true ->
+        Process.sleep(50)
+        wait_for_terminal(view, match?, deadline - 50)
     end
   end
 end

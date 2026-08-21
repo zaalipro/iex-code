@@ -346,11 +346,14 @@ defmodule IexCode.E2E.Tier5AdversarialConcurrencyTest do
   # 2. Memory & CPU Stability
   # ============================================================================
   describe "2. Memory & CPU Stability" do
-    test "M01: large output burst (>10MB) via run_command safely handled and sanitized without OOM",
+    test "M01: large output burst (>10MB) via run_command is capped and sanitized without OOM",
          %{
            workspace_path: ws
          } do
-      # Execute a shell command that generates ~12MB of output
+      # Execute a shell command that generates ~12MB of output. run_command
+      # intentionally caps captured output (@max_command_output, 256KB) to
+      # prevent OOM, so the result must be bounded, non-empty, and must
+      # preserve the beginning of the command's stdout.
       cmd = "python3 -c 'print(\"A\" * 12582912)'"
 
       mem_before = :erlang.memory(:total)
@@ -363,9 +366,14 @@ defmodule IexCode.E2E.Tier5AdversarialConcurrencyTest do
 
       duration_ms = System.monotonic_time(:millisecond) - start_t
 
-      # Verify output length is at least 12MB
-      assert byte_size(output) >= 12_000_000
+      # Output is capped well below the ~12MB the command emits
+      assert byte_size(output) > 0
+      assert byte_size(output) <= 1_000_000
       assert String.valid?(output)
+
+      # The prefix of the command's stdout survives truncation
+      assert String.starts_with?(output, "AAAA")
+      assert String.contains?(output, "[output truncated at")
 
       # Force GC and verify memory returns to stable level
       :erlang.garbage_collect(self())

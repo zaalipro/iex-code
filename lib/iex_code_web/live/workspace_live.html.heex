@@ -528,6 +528,8 @@
                     type="button"
                     phx-click="toggle_dropdown"
                     phx-value-name="priority"
+                    aria-haspopup="listbox"
+                    aria-expanded={@open_dropdown == "priority"}
                     class={[
                       "flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-mono transition-smooth",
                       @kanban_filter["priority"] != "" &&
@@ -598,6 +600,8 @@
                     type="button"
                     phx-click="toggle_dropdown"
                     phx-value-name="status"
+                    aria-haspopup="listbox"
+                    aria-expanded={@open_dropdown == "status"}
                     class={[
                       "flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-mono transition-smooth",
                       @kanban_filter["status"] != "" &&
@@ -669,6 +673,8 @@
                     type="button"
                     phx-click="toggle_dropdown"
                     phx-value-name="assignee"
+                    aria-haspopup="listbox"
+                    aria-expanded={@open_dropdown == "assignee"}
                     class={[
                       "flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-mono transition-smooth",
                       @kanban_filter["assignee"] != "" &&
@@ -917,17 +923,25 @@
               <div class="bg-[#161b22]/70 border border-[#21262d] rounded-2xl p-5 mb-4 relative">
                 <!-- Status Badge Top Right -->
                 <div class="absolute top-5 right-5 flex items-center gap-1.5 text-xs font-mono font-semibold">
-                  <%= if @session.status in ["running", :running] do %>
-                    <span class="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.8)] animate-pulse"></span>
-                    <span class="text-emerald-400">ACTIVE (RUNNING)</span>
-                  <% else %>
-                    <%= if @session.status in ["paused", :paused] do %>
+                  <%= cond do %>
+                    <% @session.status in ["running", :running] -> %>
+                      <span class="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.8)] animate-pulse"></span>
+                      <span class="text-emerald-400">ACTIVE (RUNNING)</span>
+                    <% @session.status in ["paused", :paused] -> %>
                       <span class="w-2 h-2 rounded-full bg-amber-400 shadow-[0_0_8px_rgba(245,158,11,0.8)]"></span>
                       <span class="text-amber-400">PAUSED</span>
-                    <% else %>
+                    <% @session.status in ["failed", :failed] -> %>
+                      <span class="w-2 h-2 rounded-full bg-rose-400 shadow-[0_0_8px_rgba(244,63,94,0.8)]"></span>
+                      <span class="text-rose-400">FAILED</span>
+                    <% @session.status in ["stopped", "cancelled", :stopped] -> %>
+                      <span class="w-2 h-2 rounded-full bg-gray-500"></span>
+                      <span class="text-gray-400">STOPPED</span>
+                    <% @session.status in ["completed", "done", :completed] -> %>
+                      <span class="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.8)]"></span>
+                      <span class="text-emerald-400">COMPLETED</span>
+                    <% true -> %>
                       <span class="w-2 h-2 rounded-full bg-gray-500"></span>
                       <span class="text-gray-400">IDLE</span>
-                    <% end %>
                   <% end %>
                 </div>
 
@@ -1011,6 +1025,9 @@
                   <div class="relative">
                     <button
                       phx-click="toggle_coach_menu"
+                      aria-haspopup="menu"
+                      aria-expanded={@open_dropdown == "coach_menu"}
+                      aria-label="Agent configuration menu"
                       class="p-1.5 rounded-lg hover:bg-[#161b22] text-gray-400 hover:text-white transition-smooth"
                       title="Agent Configuration Menu"
                     >
@@ -1088,6 +1105,32 @@
                     <.icon name="hero-stop" class="w-3.5 h-3.5" />
                     <span>STOP</span>
                   </button>
+
+                  <!-- Steering Input: mid-run guidance for the active swarm -->
+                  <.form
+                    for={to_form(%{"steering" => @steer_text})}
+                    id="steering-form"
+                    phx-submit="send_steering"
+                    class="flex items-center gap-1.5 ml-1"
+                  >
+                    <input
+                      type="text"
+                      name="steering"
+                      value={@steer_text}
+                      placeholder="Steer the swarm..."
+                      aria-label="Steering guidance for the active swarm"
+                      class="w-44 px-2.5 py-1.5 rounded-xl bg-[#161b22] border border-[#21262d] text-xs font-mono text-white placeholder-gray-500 focus:outline-none focus:border-amber-500 transition-smooth"
+                    />
+                    <button
+                      type="submit"
+                      phx-disable-with="Sending..."
+                      aria-label="Send steering guidance"
+                      class="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 transition-smooth font-semibold"
+                    >
+                      <.icon name="hero-paper-airplane" class="w-3.5 h-3.5" />
+                      <span>STEER</span>
+                    </button>
+                  </.form>
                 </div>
 
                 <div class="flex items-center gap-3">
@@ -1102,6 +1145,24 @@
                 </div>
               </div>
             </div>
+
+            <%!-- Visible error state for failed operations --%>
+            <% failed_ops = Enum.filter(@operations, &(&1.status == "failed")) %>
+            <%= if failed_ops != [] do %>
+              <div
+                role="alert"
+                class="flex items-center gap-2.5 px-4 py-3 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-xs font-mono text-rose-300"
+              >
+                <.icon name="hero-exclamation-triangle" class="w-4 h-4 text-rose-400 shrink-0" />
+                <span class="truncate">
+                  {length(failed_ops)} operation{if length(failed_ops) == 1, do: "", else: "s"} failed
+                  <%= latest_error = Enum.find_value(failed_ops, & &1.error_message)
+                  if latest_error do %>
+                    <span class="text-rose-400">· {latest_error}</span>
+                  <% end %>
+                </span>
+              </div>
+            <% end %>
 
             <.subagent_cards
               operations={@operations}
@@ -1127,10 +1188,11 @@
                   <h2 class="text-xl font-bold text-white tracking-tight font-sans">
                     {month_name(@calendar_month)}, {@calendar_year}
                   </h2>
+                  <% today = Date.utc_today() %>
                   <button
                     phx-click="select_calendar_day"
-                    phx-value-day="20"
-                    phx-value-date="2026-08-20"
+                    phx-value-day={today.day}
+                    phx-value-date={Date.to_iso8601(today)}
                     class="px-3 py-1 rounded-full bg-[#1c2128] border border-[#30363d] text-xs font-mono text-gray-300 hover:text-white transition-smooth"
                   >
                     Today
@@ -1138,12 +1200,14 @@
                   <div class="flex items-center gap-1 text-gray-400">
                     <button
                       phx-click="calendar_prev_month"
+                      aria-label="Previous month"
                       class="p-1 rounded-lg hover:bg-[#1c2128] text-gray-400 hover:text-white transition-smooth"
                     >
                       <.icon name="hero-chevron-left" class="w-4 h-4" />
                     </button>
                     <button
                       phx-click="calendar_next_month"
+                      aria-label="Next month"
                       class="p-1 rounded-lg hover:bg-[#1c2128] text-gray-400 hover:text-white transition-smooth"
                     >
                       <.icon name="hero-chevron-right" class="w-4 h-4" />
@@ -1190,7 +1254,7 @@
                     if cell.is_current_month, do: tasks_for_day(@tasks, cell.day), else: []
 
                   date_str =
-                    "#{@calendar_year}-#{String.pad_leading("#{@calendar_month}", 2, "0")}-#{String.pad_leading("#{cell.day}", 2, "0")}"
+                    "#{cell.year}-#{String.pad_leading("#{cell.month}", 2, "0")}-#{String.pad_leading("#{cell.day}", 2, "0")}"
 
                   cell_id =
                     if cell.is_current_month,
@@ -1427,7 +1491,10 @@
                         idx == 0 && "is-active"
                       ]}
                       data-target-msg-id={msg_id}
-                      onclick={"const el = document.getElementById('chat-msg-#{msg_id}'); if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }"}
+                      phx-click="scroll_to_msg"
+                      phx-value-id={msg_id}
+                      role="button"
+                      aria-label={"Jump to message ##{idx + 1}"}
                       title={"Jump to message ##{idx + 1}"}
                     >
                       <!-- Timeline Tick / Notch -->
@@ -1626,6 +1693,7 @@
               </div>
               <button
                 phx-click="close_task_drawer"
+                aria-label="Close task drawer"
                 class="text-gray-400 hover:text-white p-1 rounded-lg"
               >
                 <.icon name="hero-x-mark" class="w-4 h-4" />
@@ -1811,8 +1879,10 @@
                 class="flex flex-col gap-2"
               >
                 <textarea
+                  id="prompt-textarea"
                   name="prompt"
                   rows="2"
+                  phx-hook="KeyboardSubmit"
                   placeholder="What's my next task or swarm instruction? (e.g. /swarm fix authentication)"
                   class="w-full bg-transparent border-0 text-white placeholder-gray-500 font-sans text-sm focus:outline-none focus:ring-0 resize-none px-2 py-1"
                 ></textarea>
@@ -1827,6 +1897,9 @@
                         type="button"
                         phx-click="toggle_dropdown"
                         phx-value-name="model"
+                        aria-haspopup="listbox"
+                        aria-expanded={@open_dropdown == "model"}
+                        aria-label="Select AI model"
                         class="flex items-center bg-[#161b22] hover:bg-[#1c2128] border border-[#30363d] rounded-xl px-2.5 py-1 text-xs font-mono text-gray-200 transition-smooth"
                       >
                         <.icon name="hero-sparkles" class="w-3.5 h-3.5 text-amber-400 mr-1.5" />
@@ -1869,6 +1942,8 @@
                         type="button"
                         phx-click="toggle_tool"
                         phx-value-tool="ast_search"
+                        aria-label="Toggle AST search tool"
+                        aria-pressed={MapSet.member?(@active_tools, "ast_search")}
                         class={[
                           "p-1.5 rounded-lg border transition-smooth",
                           MapSet.member?(@active_tools, "ast_search") &&
@@ -1900,6 +1975,8 @@
                         type="button"
                         phx-click="toggle_tool"
                         phx-value-tool="swarm"
+                        aria-label="Toggle agent swarm coordinator tool"
+                        aria-pressed={MapSet.member?(@active_tools, "swarm")}
                         class={[
                           "p-1.5 rounded-lg border transition-smooth",
                           MapSet.member?(@active_tools, "swarm") &&
@@ -1931,6 +2008,8 @@
                         type="button"
                         phx-click="toggle_tool"
                         phx-value-tool="web_search"
+                        aria-label="Toggle live web search tool"
+                        aria-pressed={MapSet.member?(@active_tools, "web_search")}
                         class={[
                           "p-1.5 rounded-lg border transition-smooth",
                           MapSet.member?(@active_tools, "web_search") &&
@@ -1962,6 +2041,7 @@
                   <div class="tooltip-trigger">
                     <button
                       type="submit"
+                      phx-disable-with="Executing..."
                       class="px-4 py-1.5 rounded-xl bg-gradient-to-r from-[#ff7e5f] to-[#feb47b] text-white font-semibold text-xs font-mono shadow-md shadow-orange-500/20 hover:opacity-90 transition-smooth"
                     >
                       Execute
@@ -1988,7 +2068,12 @@
   <!-- Autonomous Goal Creation Modal -->
   <%= if @show_goal_modal do %>
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md p-4">
-      <div class="bg-[#11151c] border border-[#21262d] rounded-3xl w-full max-w-lg p-6 shadow-2xl font-sans text-xs space-y-4 animate-in fade-in zoom-in-95">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Create Autonomous Goal"
+        class="bg-[#11151c] border border-[#21262d] rounded-3xl w-full max-w-lg p-6 shadow-2xl font-sans text-xs space-y-4 animate-in fade-in zoom-in-95"
+      >
         <div class="flex items-center justify-between pb-3 border-b border-[#21262d]">
           <div class="flex items-center gap-2.5">
             <div class="w-8 h-8 rounded-xl bg-gradient-to-tr from-amber-500 to-orange-500 flex items-center justify-center text-white font-bold text-xs shadow-md">
@@ -2003,6 +2088,7 @@
           </div>
           <button
             phx-click="close_goal_modal"
+            aria-label="Close goal modal"
             class="text-gray-400 hover:text-white p-1 rounded-lg"
           >
             <.icon name="hero-x-mark" class="w-5 h-5" />
@@ -2050,6 +2136,7 @@
             </button>
             <button
               type="submit"
+              phx-disable-with="Launching..."
               class="px-5 py-2 bg-gradient-to-r from-amber-500 to-orange-500 text-white font-bold rounded-xl shadow-md"
             >
               Launch Goal
@@ -2063,7 +2150,12 @@
   <!-- Cancel Session Modal (Rollback vs Commit) -->
   <%= if @show_cancel_modal do %>
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md p-4">
-      <div class="bg-[#11151c] border border-[#21262d] rounded-3xl w-full max-w-md p-6 shadow-2xl font-sans text-xs space-y-4 animate-in fade-in zoom-in-95">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Stop and Cancel Session"
+        class="bg-[#11151c] border border-[#21262d] rounded-3xl w-full max-w-md p-6 shadow-2xl font-sans text-xs space-y-4 animate-in fade-in zoom-in-95"
+      >
         <div class="flex items-center justify-between pb-3 border-b border-[#21262d]">
           <div class="flex items-center gap-2.5 text-rose-400 font-bold">
             <.icon name="hero-stop-circle" class="w-5 h-5 text-rose-400" />
@@ -2071,6 +2163,7 @@
           </div>
           <button
             phx-click="close_cancel_modal"
+            aria-label="Close cancel session modal"
             class="text-gray-400 hover:text-white p-1 rounded-lg"
           >
             <.icon name="hero-x-mark" class="w-5 h-5" />
@@ -2130,7 +2223,12 @@
   <%= if @expanded_message_id do %>
     <% expanded_msg = Enum.find(@messages, &((&1.id || "") == @expanded_message_id)) %>
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-6">
-      <div class="bg-[#11151c] border border-[#21262d] rounded-3xl w-full max-w-3xl max-h-[85vh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in-95">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Message Inspector"
+        class="bg-[#11151c] border border-[#21262d] rounded-3xl w-full max-w-3xl max-h-[85vh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in-95"
+      >
         <div class="p-4 border-b border-[#21262d] bg-[#161b22] flex items-center justify-between">
           <div class="flex items-center gap-2">
             <.icon name="hero-chat-bubble-bottom-center-text" class="w-4 h-4 text-blue-400" />
@@ -2154,6 +2252,7 @@
             <% end %>
             <button
               phx-click="close_expand_message"
+              aria-label="Close message inspector"
               class="text-gray-400 hover:text-white p-1 rounded-lg"
             >
               <.icon name="hero-x-mark" class="w-5 h-5" />
@@ -2172,7 +2271,12 @@
   <!-- Settings Modal with Usage History -->
   <%= if @show_settings_modal do %>
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md p-4">
-      <div class="bg-[#11151c] border border-[#21262d] rounded-3xl w-full max-w-2xl p-6 shadow-2xl font-sans text-xs space-y-5 animate-in fade-in zoom-in-95 max-h-[90vh] overflow-y-auto">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="API and Usage History Settings"
+        class="bg-[#11151c] border border-[#21262d] rounded-3xl w-full max-w-2xl p-6 shadow-2xl font-sans text-xs space-y-5 animate-in fade-in zoom-in-95 max-h-[90vh] overflow-y-auto"
+      >
         <!-- Modal Header -->
         <div class="flex items-center justify-between pb-3 border-b border-[#21262d]">
           <div class="flex items-center gap-2.5">
@@ -2188,6 +2292,7 @@
           </div>
           <button
             phx-click="toggle_settings_modal"
+            aria-label="Close settings modal"
             class="text-gray-400 hover:text-white p-1 rounded-lg"
           >
             <.icon name="hero-x-mark" class="w-5 h-5" />
@@ -2293,7 +2398,15 @@
               <input
                 type="password"
                 name="settings[openai_api_key]"
-                value={@settings.openai_api_key}
+                value=""
+                placeholder={
+                  if key = @settings.openai_api_key do
+                    "•••• #{String.slice(key, -4..-1)}"
+                  else
+                    "Enter API key"
+                  end
+                }
+                aria-label="OpenAI or Proxy API key (leave blank to keep the stored key)"
                 class="w-full bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-2 text-white font-mono"
               />
             </div>
@@ -2327,6 +2440,7 @@
               </button>
               <button
                 type="submit"
+                phx-disable-with="Saving..."
                 class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-bold"
               >
                 Save Configuration
@@ -2341,12 +2455,18 @@
   <!-- New Project / Workspace Modal -->
   <%= if @show_project_modal do %>
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
-      <div class="bg-[#161b22] border border-[#30363d] rounded-2xl w-full max-w-md p-6 shadow-2xl font-mono text-xs">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Open Workspace Folder"
+        class="bg-[#161b22] border border-[#30363d] rounded-2xl w-full max-w-md p-6 shadow-2xl font-mono text-xs"
+      >
         <div class="flex items-center justify-between mb-4 border-b border-[#21262d] pb-3">
           <h3 class="text-sm font-bold text-white">Open Workspace Folder</h3>
           <button
             id="close-project-modal-btn"
             phx-click="toggle_project_modal"
+            aria-label="Close workspace modal"
             class="text-gray-400 hover:text-white"
           >✕</button>
         </div>
@@ -2376,7 +2496,11 @@
               phx-click="toggle_project_modal"
               class="px-4 py-2 bg-[#21262d] text-gray-300 rounded-lg"
             >Cancel</button>
-            <button type="submit" class="px-4 py-2 bg-emerald-600 text-white rounded-lg font-bold">Open</button>
+            <button
+              type="submit"
+              phx-disable-with="Opening..."
+              class="px-4 py-2 bg-emerald-600 text-white rounded-lg font-bold"
+            >Open</button>
           </div>
         </.form>
       </div>
@@ -2388,6 +2512,9 @@
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md animate-in fade-in duration-150">
       <div
         id="scheduled-task-detail-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Scheduled Task Details"
         class="bg-[#11151c] border border-[#21262d] rounded-3xl w-full max-w-lg p-6 shadow-2xl space-y-5 animate-in zoom-in-95 duration-150 font-sans"
       >
         <%!-- Modal Header --%>
@@ -2420,6 +2547,7 @@
           </div>
           <button
             phx-click="close_scheduled_task_modal"
+            aria-label="Close scheduled task details"
             class="text-gray-400 hover:text-white p-1 rounded-lg hover:bg-[#1c2128] transition-smooth"
             title="Close"
           >
@@ -2522,13 +2650,19 @@
   <!-- Edit Scheduled Task Modal -->
   <%= if @show_edit_scheduled_task_modal && @selected_scheduled_task do %>
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md animate-in fade-in duration-150">
-      <div class="bg-[#11151c] border border-[#21262d] rounded-3xl w-full max-w-lg p-6 shadow-2xl font-mono text-xs space-y-4 animate-in zoom-in-95 duration-150">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Edit Scheduled Task"
+        class="bg-[#11151c] border border-[#21262d] rounded-3xl w-full max-w-lg p-6 shadow-2xl font-mono text-xs space-y-4 animate-in zoom-in-95 duration-150"
+      >
         <div class="flex items-center justify-between pb-3 border-b border-[#21262d]">
           <h3 class="text-sm font-bold text-white flex items-center gap-2">
             <.icon name="hero-pencil-square" class="w-4 h-4 text-cyan-400" /> Edit Scheduled Task
           </h3>
           <button
             phx-click="close_edit_scheduled_task"
+            aria-label="Close edit scheduled task modal"
             class="text-gray-400 hover:text-white p-1 rounded-lg"
           >✕</button>
         </div>
@@ -2601,6 +2735,7 @@
             >Cancel</button>
             <button
               type="submit"
+              phx-disable-with="Saving..."
               class="px-5 py-2 bg-cyan-600 hover:bg-cyan-500 text-white rounded-xl font-bold"
             >Save Changes</button>
           </div>
@@ -2614,6 +2749,9 @@
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md animate-in fade-in duration-150">
       <div
         id="new-task-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Create Agent Task"
         class="bg-[#11151c] border border-[#21262d] rounded-3xl w-full max-w-lg p-6 shadow-2xl font-mono text-xs animate-in zoom-in-95 duration-150 space-y-4"
       >
         <%!-- Modal Header --%>
@@ -2623,6 +2761,7 @@
           </h3>
           <button
             phx-click="toggle_new_task_modal"
+            aria-label="Close create task modal"
             class="text-gray-400 hover:text-white p-1 rounded-lg hover:bg-[#1c2128]"
           >✕</button>
         </div>
@@ -2661,6 +2800,8 @@
                 id="modal-status-dropdown-trigger"
                 phx-click="toggle_modal_dropdown"
                 phx-value-name="modal_status"
+                aria-haspopup="listbox"
+                aria-expanded={@open_modal_dropdown == "modal_status"}
                 class="w-full bg-[#0d1117] hover:bg-[#161b22] border border-[#30363d] hover:border-gray-500 rounded-xl px-3 py-2 text-white font-sans text-xs flex items-center justify-between transition-smooth cursor-pointer"
               >
                 <div class="flex items-center gap-2 truncate">
@@ -2730,6 +2871,8 @@
                 id="modal-priority-dropdown-trigger"
                 phx-click="toggle_modal_dropdown"
                 phx-value-name="modal_priority"
+                aria-haspopup="listbox"
+                aria-expanded={@open_modal_dropdown == "modal_priority"}
                 class="w-full bg-[#0d1117] hover:bg-[#161b22] border border-[#30363d] hover:border-gray-500 rounded-xl px-3 py-2 text-white font-sans text-xs flex items-center justify-between transition-smooth cursor-pointer"
               >
                 <div class="flex items-center gap-2 truncate">
@@ -2796,6 +2939,8 @@
                 id="modal-assignee-dropdown-trigger"
                 phx-click="toggle_modal_dropdown"
                 phx-value-name="modal_assignee"
+                aria-haspopup="listbox"
+                aria-expanded={@open_modal_dropdown == "modal_assignee"}
                 class="w-full bg-[#0d1117] hover:bg-[#161b22] border border-[#30363d] hover:border-gray-500 rounded-xl px-3 py-2 text-white font-sans text-xs flex items-center justify-between transition-smooth cursor-pointer"
               >
                 <div class="flex items-center gap-2 truncate">
@@ -2899,6 +3044,10 @@
                 <div
                   id="target-date-picker-trigger"
                   phx-click="toggle_date_picker_popover"
+                  role="button"
+                  aria-haspopup="dialog"
+                  aria-expanded={@show_date_picker_popover}
+                  aria-label="Target date picker"
                   class="w-full bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-1.5 text-white font-mono text-xs flex items-center justify-between cursor-pointer hover:border-gray-400 transition-smooth select-none"
                   title="Click to open calendar date picker"
                 >
@@ -3040,6 +3189,7 @@
             >Cancel</button>
             <button
               type="submit"
+              phx-disable-with="Creating..."
               class="px-5 py-2 bg-[#ff5e3a] hover:bg-[#ff4e24] text-white rounded-xl font-bold shadow-lg shadow-orange-500/25 transition-smooth cursor-pointer"
             >Create Task</button>
           </div>
@@ -3054,6 +3204,9 @@
       <div
         class="bg-[#11151c] border border-[#21262d] rounded-3xl w-full max-w-md p-6 shadow-2xl space-y-5 animate-in zoom-in-95 duration-150"
         id="time-picker-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Set Focus Time and Presence"
       >
         <%!-- Modal Header --%>
         <div class="flex items-start justify-between">
@@ -3073,6 +3226,7 @@
           <button
             type="button"
             phx-click="close_time_picker"
+            aria-label="Close time picker"
             class="text-gray-400 hover:text-white p-1 rounded-lg transition-smooth cursor-pointer"
             title="Close"
           >

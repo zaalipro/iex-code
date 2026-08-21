@@ -46,12 +46,7 @@ defmodule IexCode.Tools.TestRunner do
 
     on_progress.(10, "Starting mix test in #{project_root}...")
 
-    task =
-      Task.async(fn ->
-        System.cmd("mix", args, cd: project_root, env: env, stderr_to_stdout: true)
-      end)
-
-    case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
+    case run_mix_test(args, project_root, env, timeout_ms) do
       {:ok, {raw_output, exit_code}} ->
         on_progress.(80, "Parsing test results...")
         result = Parser.parse(raw_output, exit_code)
@@ -63,9 +58,13 @@ defmodule IexCode.Tools.TestRunner do
 
         {:ok, result}
 
-      nil ->
+      {:error, :timeout} ->
         on_progress.(100, "Test execution timed out after #{timeout_ms}ms")
         {:error, :timeout}
+
+      {:error, reason} ->
+        on_progress.(100, "Test execution failed: #{inspect(reason)}")
+        {:error, reason}
     end
   end
 
@@ -84,6 +83,74 @@ defmodule IexCode.Tools.TestRunner do
   end
 
   # --- Internal Helpers ---
+
+  # Runs `mix test` through a Port so that on timeout we can kill the whole
+  # OS process tree (System.cmd gives no handle to the spawned process).
+  defp run_mix_test(args, project_root, env, timeout_ms) do
+    case System.find_executable("mix") do
+      nil ->
+        {:error, :mix_not_found}
+
+      mix_path ->
+        port =
+          Port.open(
+            {:spawn_executable, mix_path},
+            [
+              :binary,
+              :exit_status,
+              :stderr_to_stdout,
+              :hide,
+              cd: Path.expand(project_root),
+              args: args,
+              env: port_env(env)
+            ]
+          )
+
+        deadline = System.monotonic_time(:millisecond) + timeout_ms
+        collect_port_output(port, deadline, [], nil)
+    end
+  end
+
+  defp port_env(env) when is_map(env) do
+    Enum.map(env, fn {k, v} -> {String.to_charlist(k), String.to_charlist(v)} end)
+  end
+
+  defp collect_port_output(port, deadline, acc, status) do
+    now = System.monotonic_time(:millisecond)
+
+    receive do
+      {^port, {:data, data}} ->
+        collect_port_output(port, deadline, [data | acc], status)
+
+      {^port, {:exit_status, code}} ->
+        {:ok, {acc |> Enum.reverse() |> IO.iodata_to_binary(), code}}
+
+      {:EXIT, ^port, _reason} ->
+        {:ok, {acc |> Enum.reverse() |> IO.iodata_to_binary(), status || 1}}
+    after
+      max(0, deadline - now) ->
+        kill_port_tree(port)
+        {:error, :timeout}
+    end
+  end
+
+  # Best-effort: kill child processes first, then the mix/erl process itself.
+  defp kill_port_tree(port) do
+    os_pid =
+      case Port.info(port, :os_pid) do
+        {:os_pid, pid} -> List.to_string(pid)
+        _ -> nil
+      end
+
+    if os_pid do
+      System.cmd("pkill", ["-9", "-P", os_pid], stderr_to_stdout: true)
+      System.cmd("kill", ["-9", os_pid], stderr_to_stdout: true)
+    end
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
 
   defp build_mix_test_args(opts) do
     base_args = ["test", "--color"]

@@ -9,6 +9,13 @@ defmodule IexCode.Engine.Agents.VerifierAgent do
   alias IexCode.Tools
   alias IexCode.Tools.TestRunner
 
+  @outer_timeout 90_000
+  @inner_timeout 60_000
+  @history_limit 20
+
+  # Directories excluded from standalone workspace syntax validation
+  @excluded_validate_dirs ~w(_build deps node_modules .git tmp)
+
   defmodule State do
     defstruct [
       :session_id,
@@ -33,7 +40,7 @@ defmodule IexCode.Engine.Agents.VerifierAgent do
   Returns `{:ok, summary}` on success or `{:error, {:verification_failed, diagnostics}}` on failure.
   """
   def verify(target, opts \\ []) do
-    timeout = Keyword.get(opts, :timeout, 60_000)
+    timeout = Keyword.get(opts, :timeout, @outer_timeout)
     GenServer.call(resolve_target(target), {:verify, opts}, timeout)
   end
 
@@ -41,7 +48,7 @@ defmodule IexCode.Engine.Agents.VerifierAgent do
   Runs the ExUnit test runner for the workspace.
   """
   def run_tests(target, test_opts \\ []) do
-    timeout = Keyword.get(test_opts, :timeout, 60_000)
+    timeout = Keyword.get(test_opts, :timeout, @outer_timeout)
     GenServer.call(resolve_target(target), {:run_tests, test_opts}, timeout)
   end
 
@@ -84,6 +91,9 @@ defmodule IexCode.Engine.Agents.VerifierAgent do
       status: :idle
     }
 
+    set_cancelled?(session_id, false)
+    subscribe_steering(session_id)
+
     {:ok, state}
   end
 
@@ -103,50 +113,60 @@ defmodule IexCode.Engine.Agents.VerifierAgent do
         "Verifier: Checking compilation and test suite",
         %{command: if(mix_exs_exists, do: "mix compile", else: "standalone syntax validation")},
         fn progress ->
-          if mix_exs_exists do
-            progress.(20, "Running compilation check...")
-
-            compile_res =
-              OperationManager.run_sync_operation(
-                session_id,
-                parent_op_id,
-                "VerifierAgent",
-                "run_command",
-                "Verifier: mix compile check",
-                %{command: "mix compile"},
-                fn p ->
-                  Tools.execute(
-                    "run_command",
-                    %{"command" => "mix compile", "timeout_ms" => 20_000},
-                    project_root,
-                    p
-                  )
-                end
-              )
-
-            progress.(60, "Running test suite...")
-
-            test_runner_opts = [
-              project_root: project_root,
-              timeout_ms: Keyword.get(opts, :test_timeout_ms, 30_000)
-            ]
-
-            test_runner_opts =
-              if opts[:test_file],
-                do: Keyword.put(test_runner_opts, :file, opts[:test_file]),
-                else: test_runner_opts
-
-            test_res = TestRunner.run(test_runner_opts)
-
-            progress.(90, "Evaluating verification verdict...")
-
-            evaluate_mix_verdict(compile_res, test_res, progress)
+          if cancelled_fun(session_id).() do
+            progress.(100, "Verification cancelled")
+            verification_error(:cancelled, "Verification cancelled before it started")
           else
-            progress.(40, "Validating Elixir files syntax in workspace...")
-            validate_standalone_workspace(project_root, progress)
+            if mix_exs_exists do
+              progress.(20, "Running compilation check...")
+
+              compile_res =
+                OperationManager.run_sync_operation(
+                  session_id,
+                  parent_op_id,
+                  "VerifierAgent",
+                  "run_command",
+                  "Verifier: mix compile check",
+                  %{command: "mix compile"},
+                  fn p ->
+                    Tools.execute(
+                      "run_command",
+                      %{"command" => "mix compile", "timeout_ms" => 20_000},
+                      project_root,
+                      p
+                    )
+                  end
+                )
+
+              if cancelled_fun(session_id).() do
+                progress.(100, "Verification cancelled")
+                verification_error(:cancelled, "Verification cancelled before test run")
+              else
+                progress.(60, "Running test suite...")
+
+                test_runner_opts = [
+                  project_root: project_root,
+                  timeout_ms: Keyword.get(opts, :test_timeout_ms, 30_000)
+                ]
+
+                test_runner_opts =
+                  if opts[:test_file],
+                    do: Keyword.put(test_runner_opts, :file, opts[:test_file]),
+                    else: test_runner_opts
+
+                test_res = TestRunner.run(test_runner_opts)
+
+                progress.(90, "Evaluating verification verdict...")
+
+                evaluate_mix_verdict(compile_res, test_res, progress)
+              end
+            else
+              progress.(40, "Validating Elixir files syntax in workspace...")
+              validate_standalone_workspace(project_root, progress)
+            end
           end
         end,
-        Keyword.get(opts, :timeout, 60_000)
+        Keyword.get(opts, :inner_timeout, @inner_timeout)
       )
 
     case verify_res do
@@ -155,14 +175,21 @@ defmodule IexCode.Engine.Agents.VerifierAgent do
           state
           | status: :idle,
             last_result: summary_map,
-            history: [summary_map | state.history]
+            history: Enum.take([summary_map | state.history], @history_limit)
         }
 
         {:reply, {:ok, summary_map}, new_state}
 
+      {:error, {:verification_failed, _}} = err ->
+        new_state = %State{state | status: :idle, last_result: err}
+        {:reply, err, new_state}
+
+      # Normalize raw timeout/crash reasons into a structured verification failure
       {:error, reason} ->
-        new_state = %State{state | status: :idle, last_result: {:error, reason}}
-        {:reply, {:error, reason}, new_state}
+        err = verification_error(reason, "Verification error: #{format_reason(reason)}")
+
+        new_state = %State{state | status: :idle, last_result: err}
+        {:reply, err, new_state}
     end
   end
 
@@ -188,8 +215,52 @@ defmodule IexCode.Engine.Agents.VerifierAgent do
     {:reply, state, state}
   end
 
+  # Steering / cancellation helpers
+
+  defp subscribe_steering(session_id) do
+    Phoenix.PubSub.subscribe(IexCode.PubSub, "session:#{session_id}:steer")
+  end
+
+  defp set_cancelled?(session_id, value) do
+    :persistent_term.put({__MODULE__, :cancelled?, session_id}, value)
+  end
+
+  defp cancelled_fun(session_id) do
+    fn -> :persistent_term.get({__MODULE__, :cancelled?, session_id}, false) end
+  end
+
+  defp format_reason(reason) when is_binary(reason), do: reason
+  defp format_reason(reason), do: inspect(reason)
+
+  defp verification_error(status, summary) do
+    {:error,
+     {:verification_failed,
+      %{
+        status: status,
+        summary: summary,
+        failures: [],
+        compilation_errors: [],
+        raw_output: summary
+      }}}
+  end
+
   defp evaluate_mix_verdict(compile_res, test_res, progress) do
     case {compile_res, test_res} do
+      # run_command reports non-zero exits as {:ok, "Exit Code N:\n..."} — treat as compile failure
+      {{:ok, <<"Exit Code ", _::binary>> = comp_out}, _test_res} ->
+        progress.(100, "Verification failed: mix compile exited non-zero")
+        summary = "Compilation check failed:\n#{comp_out}"
+
+        {:error,
+         {:verification_failed,
+          %{
+            status: :compilation_error,
+            summary: summary,
+            failures: [],
+            compilation_errors: [%{message: comp_out}],
+            raw_output: comp_out
+          }}}
+
       {{:ok, comp_out}, {:ok, %TestRunner.Result{status: :passed} = res}} ->
         progress.(100, "Verification passed: All tests and compilation clean.")
 
@@ -246,7 +317,8 @@ defmodule IexCode.Engine.Agents.VerifierAgent do
       {_, {:error, test_err}} ->
         err_str = if is_binary(test_err), do: test_err, else: inspect(test_err)
         # If mix test failed with non-zero exit or no tests found
-        if String.contains?(err_str, "0 failures") or String.contains?(err_str, "No tests") do
+        # (word-boundary match so "10 failures" is not mistaken for "0 failures")
+        if Regex.match?(~r/\b0 failures\b/, err_str) or String.contains?(err_str, "No tests") do
           progress.(100, "Verification clean (no test failures)")
 
           {:ok,
@@ -272,9 +344,14 @@ defmodule IexCode.Engine.Agents.VerifierAgent do
     end
   end
 
+  # run_command wraps non-zero exits as {:ok, "Exit Code N:\n<output>"}
   defp validate_standalone_workspace(project_root, progress) do
     elixir_files =
       Path.wildcard(Path.join(project_root, "**/*.{ex,exs}"))
+      |> Enum.reject(fn p ->
+        rel = Path.relative_to(p, project_root)
+        List.first(Path.split(rel)) in @excluded_validate_dirs
+      end)
 
     if elixir_files == [] do
       progress.(100, "Verification clean (no Elixir files present)")
@@ -282,56 +359,17 @@ defmodule IexCode.Engine.Agents.VerifierAgent do
     else
       results =
         Enum.map(elixir_files, fn file_path ->
-          content = File.read!(file_path)
+          case File.read(file_path) do
+            {:ok, content} ->
+              check_file_syntax(content, file_path)
 
-          case Code.string_to_quoted(content, file: file_path) do
-            {:ok, _ast} ->
-              try do
-                modules = Code.compile_string(content, file_path)
-
-                for {mod, _bin} <- modules do
-                  :code.purge(mod)
-                  :code.delete(mod)
-                end
-
-                {:ok, file_path}
-              rescue
-                e ->
-                  line =
-                    if is_map(e) and Map.has_key?(e, :line), do: Map.get(e, :line) || 1, else: 1
-
-                  {:error, %{file: file_path, line: line, message: format_exception_message(e)}}
-              catch
-                kind, term ->
-                  {:error, %{file: file_path, line: 1, message: "#{kind}: #{inspect(term)}"}}
-              end
-
-            {:error, {meta, message, token}} ->
-              line =
-                cond do
-                  is_list(meta) -> Keyword.get(meta, :line, 1)
-                  is_integer(meta) -> meta
-                  true -> 1
-                end
-
-              token_str =
-                cond do
-                  is_binary(token) -> token
-                  is_list(token) -> to_string(token)
-                  true -> inspect(token)
-                end
-
-              msg =
-                case message do
-                  {prefix, suffix} -> "#{prefix}#{suffix}#{token_str}"
-                  m when is_binary(m) -> "#{m}#{token_str}"
-                  other -> "#{inspect(other)}#{token_str}"
-                end
-
-              {:error, %{file: file_path, line: line, message: msg}}
-
-            {:error, other} ->
-              {:error, %{file: file_path, line: 1, message: inspect(other)}}
+            {:error, reason} ->
+              {:error,
+               %{
+                 file: file_path,
+                 line: 1,
+                 message: "Failed to read file: #{inspect(reason)}"
+               }}
           end
         end)
 
@@ -377,7 +415,67 @@ defmodule IexCode.Engine.Agents.VerifierAgent do
     end
   end
 
+  # Syntax-only validation: parse to quoted form without compiling into the app BEAM.
+  defp check_file_syntax(content, file_path) do
+    try do
+      case Code.string_to_quoted(content, file: file_path) do
+        {:ok, _ast} ->
+          {:ok, file_path}
+
+        {:error, {meta, message, token}} ->
+          line =
+            cond do
+              is_list(meta) -> Keyword.get(meta, :line, 1)
+              is_integer(meta) -> meta
+              true -> 1
+            end
+
+          token_str =
+            cond do
+              is_binary(token) -> token
+              is_list(token) -> to_string(token)
+              true -> inspect(token)
+            end
+
+          msg =
+            case message do
+              {prefix, suffix} -> "#{prefix}#{suffix}#{token_str}"
+              m when is_binary(m) -> "#{m}#{token_str}"
+              other -> "#{inspect(other)}#{token_str}"
+            end
+
+          {:error, %{file: file_path, line: line, message: msg}}
+
+        {:error, other} ->
+          {:error, %{file: file_path, line: 1, message: inspect(other)}}
+      end
+    rescue
+      e ->
+        {:error, %{file: file_path, line: 1, message: format_exception_message(e)}}
+    catch
+      kind, term ->
+        {:error, %{file: file_path, line: 1, message: "#{kind}: #{inspect(term)}"}}
+    end
+  end
+
   @impl true
+  def handle_info({:cancel, session_id, _opts}, state) do
+    set_cancelled?(session_id, true)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:pause, session_id}, state) do
+    set_cancelled?(session_id, true)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:resume, session_id}, state) do
+    set_cancelled?(session_id, false)
+    {:noreply, state}
+  end
+
   def handle_info({ref, _result}, state) when is_reference(ref) do
     {:noreply, state}
   end

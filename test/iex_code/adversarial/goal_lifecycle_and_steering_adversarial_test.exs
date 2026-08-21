@@ -50,7 +50,11 @@ defmodule IexCode.Adversarial.GoalLifecycleAndSteeringAdversarialTest do
 
       # Start active swarm
       {:ok, _task_pid} =
-        SwarmCoordinator.run_swarm(session.id, "Coordinate high concurrency steering test", test_root)
+        SwarmCoordinator.run_swarm(
+          session.id,
+          "Coordinate high concurrency steering test",
+          test_root
+        )
 
       assert_receive {:session_status_changed, "running"}, 5000
 
@@ -65,6 +69,7 @@ defmodule IexCode.Adversarial.GoalLifecycleAndSteeringAdversarialTest do
 
       results = Task.await_many(tasks, 15_000)
       assert length(results) == 30
+
       for res <- results do
         assert {:ok, _text} = res
       end
@@ -74,6 +79,7 @@ defmodule IexCode.Adversarial.GoalLifecycleAndSteeringAdversarialTest do
 
       # Verify final message has preserved steering context
       messages = Sessions.list_messages(session.id)
+
       final_msg =
         Enum.find(messages, fn m ->
           m.role == "assistant" and String.contains?(m.content, "Swarm Execution Complete")
@@ -86,17 +92,21 @@ defmodule IexCode.Adversarial.GoalLifecycleAndSteeringAdversarialTest do
   end
 
   describe "2. Steering Under Paused State & Multi-Queue Ingestion" do
-    test "ingests and queues 10 distinct steering directives while paused, applying all on resume", %{
-      session: session,
-      test_root: test_root
-    } do
+    test "ingests and queues 10 distinct steering directives while paused, applying all on resume",
+         %{
+           session: session,
+           test_root: test_root
+         } do
       File.write!(
         Path.join(test_root, "paused_worker.ex"),
         "defmodule PausedWorker do\n  def compute, do: 42\nend"
       )
 
-      {:ok, _pid} =
-        SwarmCoordinator.run_swarm(session.id, "Goal to pause and multi-steer", test_root)
+      {:ok, _goal} =
+        SessionServer.create_goal(session.id, "Goal to pause and multi-steer",
+          project_root: test_root,
+          auto_start: true
+        )
 
       assert_receive {:session_status_changed, "running"}, 5000
 
@@ -123,6 +133,7 @@ defmodule IexCode.Adversarial.GoalLifecycleAndSteeringAdversarialTest do
       assert_receive {:session_status_changed, "idle"}, 30_000
 
       messages = Sessions.list_messages(session.id)
+
       final_msg =
         Enum.find(messages, fn m ->
           m.role == "assistant" and String.contains?(m.content, "Swarm Execution Complete")
@@ -131,6 +142,7 @@ defmodule IexCode.Adversarial.GoalLifecycleAndSteeringAdversarialTest do
       assert final_msg != nil
       # All 10 directives should be registered
       assert final_msg.metadata["steering_count"] == 10
+
       for i <- 1..10 do
         assert String.contains?(final_msg.content, "Queued Directive #{i}")
       end
@@ -248,7 +260,7 @@ defmodule IexCode.Adversarial.GoalLifecycleAndSteeringAdversarialTest do
   end
 
   describe "6. Goal Lifecycle State Transition Corner Cases" do
-    test "creating a new goal when one is already in progress safely overwrites active goal", %{
+    test "rejects creating a new goal while one is already in progress", %{
       session: session,
       test_root: test_root
     } do
@@ -263,17 +275,19 @@ defmodule IexCode.Adversarial.GoalLifecycleAndSteeringAdversarialTest do
 
       assert_receive {:session_status_changed, "running"}, 5000
 
-      # Second goal immediately
-      {:ok, goal2} =
-        SessionServer.create_goal(session.id, "Second Goal Workflow Overwrite",
-          project_root: test_root,
-          auto_start: true
-        )
+      # Second goal immediately is rejected while the first is still running
+      assert {:error, :already_running} =
+               SessionServer.create_goal(session.id, "Second Goal Workflow Rejected",
+                 project_root: test_root,
+                 auto_start: true
+               )
 
-      assert goal2.id != goal1.id
-      assert goal2.title =~ "Second Goal"
+      # Original goal remains active
+      state = SessionServer.get_state(session.id)
+      assert state.active_goal.id == goal1.id
+      assert state.status == :running
 
-      # Await finish
+      # Await finish of original goal
       assert_receive {:session_status_changed, "idle"}, 35_000
     end
 
@@ -296,9 +310,10 @@ defmodule IexCode.Adversarial.GoalLifecycleAndSteeringAdversarialTest do
       end
     end
 
-    test "pausing when already paused and resuming when already running are idempotent", %{
-      session: session
-    } do
+    test "pausing when already paused is idempotent and resuming without a run normalizes to idle",
+         %{
+           session: session
+         } do
       {:ok, _} = SessionServer.ensure_started(session.id)
 
       # Pause twice
@@ -306,10 +321,10 @@ defmodule IexCode.Adversarial.GoalLifecycleAndSteeringAdversarialTest do
       assert {:ok, :paused} = SessionServer.pause_session(session.id)
       assert SessionServer.get_state(session.id).status == :paused
 
-      # Resume twice
-      assert {:ok, :running} = SessionServer.resume_session(session.id)
-      assert {:ok, :running} = SessionServer.resume_session(session.id)
-      assert SessionServer.get_state(session.id).status == :running
+      # Resume twice with no active run returns an error and normalizes to idle
+      assert {:error, :no_active_run} = SessionServer.resume_session(session.id)
+      assert {:error, :no_active_run} = SessionServer.resume_session(session.id)
+      assert SessionServer.get_state(session.id).status == :idle
     end
 
     test "handles non-existent or deleted project root gracefully on cancel/rollback", %{

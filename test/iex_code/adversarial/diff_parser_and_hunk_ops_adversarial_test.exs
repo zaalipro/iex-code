@@ -235,6 +235,7 @@ defmodule IexCode.Adversarial.DiffParserAndHunkOpsAdversarialTest do
     } do
       # Mutate all 5 sections to create 5 distinct hunks
       content = File.read!(file_abs)
+
       mutated =
         content
         |> String.replace("SECTION_1_ORIGINAL", "SECTION_1_MODIFIED")
@@ -278,7 +279,8 @@ defmodule IexCode.Adversarial.DiffParserAndHunkOpsAdversarialTest do
 
       # Step 3: Accept Hunk 5 (the last hunk)
       # Note: with hunk 1 rejected and hunk 3 staged, unstaged hunks are now section 2, section 4, section 5
-      assert {:ok, _} = HunkOps.accept_hunk(tmp_dir, file_rel, "hunk-3") # 3rd unstaged hunk is section 5
+      # 3rd unstaged hunk is section 5
+      assert {:ok, _} = HunkOps.accept_hunk(tmp_dir, file_rel, "hunk-3")
 
       # Step 4: Revert entire file (discard all remaining unstaged & staged)
       assert {:ok, :reverted} = HunkOps.revert_file(tmp_dir, file_rel)
@@ -325,7 +327,9 @@ defmodule IexCode.Adversarial.DiffParserAndHunkOpsAdversarialTest do
       File.write!(deep_untracked, "defmodule UntrackedMod do\nend")
       assert File.exists?(deep_untracked)
 
-      assert {:ok, :reverted} = HunkOps.revert_file(tmp_dir, "lib/nested/deep/structure/untracked_mod.ex")
+      assert {:ok, :reverted} =
+               HunkOps.revert_file(tmp_dir, "lib/nested/deep/structure/untracked_mod.ex")
+
       refute File.exists?(deep_untracked)
     end
 
@@ -350,8 +354,12 @@ defmodule IexCode.Adversarial.DiffParserAndHunkOpsAdversarialTest do
         for i <- 1..20 do
           Task.async(fn ->
             case rem(i, 3) do
-              0 -> Git.diff(tmp_dir, paths: [file_rel])
-              1 -> Git.status(tmp_dir)
+              0 ->
+                Git.diff(tmp_dir, paths: [file_rel])
+
+              1 ->
+                Git.status(tmp_dir)
+
               2 ->
                 {:ok, diff} = Git.diff(tmp_dir)
                 DiffParser.parse(diff)
@@ -361,6 +369,7 @@ defmodule IexCode.Adversarial.DiffParserAndHunkOpsAdversarialTest do
 
       results = Task.await_many(tasks, 10_000)
       assert length(results) == 20
+
       for res <- results do
         assert {:ok, _} = res
       end

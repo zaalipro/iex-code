@@ -20,6 +20,9 @@ defmodule IexCode.Sessions.Session do
     timestamps(type: :utc_datetime)
   end
 
+  @statuses ~w(idle running paused stopped failed completed)
+  @model_providers ~w(openai anthropic)
+
   def changeset(session, attrs) do
     session
     |> cast(attrs, [
@@ -32,5 +35,10 @@ defmodule IexCode.Sessions.Session do
       :status
     ])
     |> validate_required([:project_id, :title])
+    |> validate_inclusion(:status, @statuses)
+    |> validate_inclusion(:model_provider, @model_providers)
+    |> foreign_key_constraint(:project_id)
   end
+
+  def statuses, do: @statuses
 end

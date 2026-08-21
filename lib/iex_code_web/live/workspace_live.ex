@@ -8,48 +8,16 @@ defmodule IexCodeWeb.WorkspaceLive do
   alias Phoenix.PubSub
   import IexCodeWeb.WorkspaceComponents
 
+  # Terminal output is capped to the last N lines (ring buffer)
+  @terminal_output_max_lines 500
+
   @impl true
   def mount(params, _session, socket) do
-    # 1. Resolve session and project consistently
-    {session, project} =
-      case params["id"] do
-        nil ->
-          project =
-            case params["project_id"] do
-              nil ->
-                cwd = File.cwd!()
-                {:ok, p} = Projects.get_or_create_project(cwd, Path.basename(cwd))
-                p
+    # 1. Resolve session and project consistently (never raise on bad client params)
+    {session, project, mount_error} = resolve_mount_context(params)
 
-              p_id ->
-                Projects.get_project!(p_id)
-            end
-
-          session =
-            case Sessions.list_sessions_for_project(project.id) do
-              [first | _] ->
-                first
-
-              [] ->
-                {:ok, s} =
-                  Sessions.create_session(%{
-                    project_id: project.id,
-                    title: "Coding Session 1",
-                    swarm_mode: true,
-                    model_provider: "openai",
-                    model_name: "gemini-3.7-flash-high"
-                  })
-
-                s
-            end
-
-          {session, project}
-
-        s_id ->
-          session = Sessions.get_session!(s_id)
-          project = Projects.get_project!(session.project_id)
-          {session, project}
-      end
+    today = Date.utc_today()
+    today_str = Date.to_iso8601(today)
 
     projects = Projects.list_projects()
 
@@ -84,34 +52,6 @@ defmodule IexCodeWeb.WorkspaceLive do
 
     selected_task = List.first(tasks)
 
-    sample_diff = """
-    --- a/lib/iex_code/engine/swarm_coordinator.ex
-    +++ b/lib/iex_code/engine/swarm_coordinator.ex
-    @@ -45,7 +45,9 @@ defmodule IexCode.Engine.SwarmCoordinator do
-       def run_swarm(session_id, prompt, opts \\\\ []) do
-    -    # Single-pass execution
-    -    {:ok, summary}
-    +    # Self-healing feedback loop with cycle detection
-    +    with {:ok, plan} <- PlannerAgent.plan(session_id, prompt),
-    +         {:ok, patches} <- CoderAgent.formulate_patches(session_id, plan) do
-    +      VerifierAgent.verify_and_heal(session_id, patches, max_retries: 3)
-    +    end
-       end
-     end
-    """
-
-    parsed_sample =
-      case DiffParser.parse(sample_diff) do
-        {:ok, diffs} -> diffs
-        _ -> []
-      end
-
-    initial_sample_hunks =
-      case parsed_sample do
-        [first_diff | _] -> first_diff.hunks
-        _ -> []
-      end
-
     socket =
       socket
       |> assign(:page_title, "#{session.title} · #{project.name}")
@@ -120,6 +60,7 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:session, session)
       |> assign(:sessions, sessions)
       |> assign(:messages, messages)
+      |> assign(:all_messages, messages)
       |> assign(:operations, operations)
       |> assign(:expanded_ops, MapSet.new())
       |> assign(:active_agent, nil)
@@ -147,35 +88,38 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:dirty_content, nil)
       |> assign(:is_dirty?, false)
       |> assign(:file_filter, "")
-      # Interactive Diff assigns
-      |> assign(:diff_text, sample_diff)
+      # Interactive Diff assigns (real git state; populated by refresh_git_state below)
+      |> assign(:diff_text, "")
       |> assign(:diff_mode, "inline")
-      |> assign(:diff_file_path, "lib/iex_code/engine/swarm_coordinator.ex")
-      |> assign(:diff_hunks, initial_sample_hunks)
-      |> assign(:parsed_diffs, parsed_sample)
-      |> assign(:selected_diff_file, "lib/iex_code/engine/swarm_coordinator.ex")
+      |> assign(:diff_file_path, nil)
+      |> assign(:diff_hunks, [])
+      |> assign(:parsed_diffs, [])
+      |> assign(:selected_diff_file, nil)
       |> assign(:git_status, nil)
+      |> assign(:git_error, nil)
       |> assign(:changes_subtab, "changes")
       |> assign(:project_files, files)
       # Terminal assigns
       |> assign(:terminal_output, "Ready. Type a command or click a quick action above.")
       |> assign(:terminal_running?, false)
-      |> assign(:terminal_task_ref, nil)
+      |> assign(:terminal_port, nil)
       |> assign(:terminal_history, ["mix test", "mix precommit", "git status", "git diff"])
       # Goal & Steering assigns
       |> assign(:show_goal_modal, false)
       |> assign(:show_cancel_modal, false)
       |> assign(:cancel_mode, "rollback")
       |> assign(:steer_text, "")
-      # Telemetry assigns
-      |> assign(:session_tokens, 3200)
-      |> assign(:tokens_in, 2400)
-      |> assign(:tokens_out, 800)
-      |> assign(:current_latency_ms, 18)
-      |> assign(:active_worker_pid, "78042")
+      |> assign(:submitting?, false)
+      |> assign(:cancelling?, false)
+      # Telemetry assigns (real values only — tokens/latency are not fabricated)
+      |> assign(:session_tokens, 0)
+      |> assign(:tokens_in, 0)
+      |> assign(:tokens_out, 0)
+      |> assign(:current_latency_ms, 0)
+      |> assign(:active_worker_pid, nil)
       |> assign(:swarm_iteration, 1)
       |> assign(:max_retries, 3)
-      |> assign(:active_tools, MapSet.new(["ast_search", "swarm", "web_search"]))
+      |> assign(:active_tools, MapSet.new())
       # Dropdown & Modal state
       |> assign(:open_dropdown, nil)
       |> assign(:show_settings_modal, false)
@@ -189,17 +133,17 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:show_usage_history_modal, false)
       |> assign(:expanded_message_id, nil)
       |> assign(:selected_scheduled_task, nil)
-      |> assign(:selected_calendar_date, "2026-08-20")
-      |> assign(:selected_calendar_day, 20)
-      |> assign(:calendar_year, 2026)
-      |> assign(:calendar_month, 8)
-      |> assign(:new_task_date, "2026-08-20")
+      |> assign(:selected_calendar_date, today_str)
+      |> assign(:selected_calendar_day, today.day)
+      |> assign(:calendar_year, today.year)
+      |> assign(:calendar_month, today.month)
+      |> assign(:new_task_date, today_str)
       |> assign(:new_task_time, "10:30 AM")
       |> assign(:new_task_schedule_type, "scheduled")
       |> assign(:picker_mode, :datetime)
       |> assign(:show_date_picker_popover, false)
-      |> assign(:picker_year, 2026)
-      |> assign(:picker_month, 8)
+      |> assign(:picker_year, today.year)
+      |> assign(:picker_month, today.month)
       |> assign(:user_availability, "Available")
       |> assign(:user_availability_subtext, "Instant notifications & swarm active")
       |> assign(:new_task_status, "scheduled")
@@ -230,6 +174,13 @@ defmodule IexCodeWeb.WorkspaceLive do
     # Initialize live git state if git is available
     socket = refresh_git_state(socket)
 
+    socket =
+      if mount_error do
+        put_flash(socket, :error, mount_error)
+      else
+        socket
+      end
+
     {:ok, socket}
   end
 
@@ -237,34 +188,53 @@ defmodule IexCodeWeb.WorkspaceLive do
   def handle_params(params, _uri, socket) do
     if params["id"] && params["id"] != socket.assigns.session.id do
       old_id = socket.assigns.session.id
-      new_session = Sessions.get_session!(params["id"])
-      project = Projects.get_project!(new_session.project_id)
+      old_project_id = socket.assigns.project.id
 
-      if connected?(socket) do
-        PubSub.unsubscribe(IexCode.PubSub, "session:#{old_id}")
-        PubSub.subscribe(IexCode.PubSub, "session:#{new_session.id}")
-        SessionServer.ensure_started(new_session.id)
+      case fetch_session(params["id"]) do
+        nil ->
+          {:noreply, put_flash(socket, :error, "Session not found")}
+
+        new_session ->
+          case fetch_project(new_session.project_id) do
+            nil ->
+              {:noreply, put_flash(socket, :error, "Project for this session was not found")}
+
+            project ->
+              if connected?(socket) do
+                PubSub.unsubscribe(IexCode.PubSub, "session:#{old_id}")
+                PubSub.subscribe(IexCode.PubSub, "session:#{new_session.id}")
+
+                if new_session.project_id != old_project_id do
+                  PubSub.unsubscribe(IexCode.PubSub, "kanban:#{old_project_id}")
+                  Kanban.subscribe(new_session.project_id)
+                end
+
+                SessionServer.ensure_started(new_session.id)
+              end
+
+              messages = Sessions.list_messages(new_session.id)
+              operations = Sessions.list_operations(new_session.id)
+              sessions = Sessions.list_sessions_for_project(project.id)
+              files = list_project_files(project.root_path)
+              tasks = Kanban.list_tasks(project.id)
+
+              socket =
+                socket
+                |> assign(:session, new_session)
+                |> assign(:project, project)
+                |> assign(:sessions, sessions)
+                |> assign(:project_files, files)
+                |> assign(:tasks, tasks)
+                |> assign(:page_title, "#{new_session.title} · #{project.name}")
+                |> assign(:messages, messages)
+                |> assign(:all_messages, messages)
+                |> assign(:workspace_search, "")
+                |> assign(:operations, operations)
+                |> refresh_git_state()
+
+              {:noreply, socket}
+          end
       end
-
-      messages = Sessions.list_messages(new_session.id)
-      operations = Sessions.list_operations(new_session.id)
-      sessions = Sessions.list_sessions_for_project(project.id)
-      files = list_project_files(project.root_path)
-      tasks = Kanban.list_tasks(project.id)
-
-      socket =
-        socket
-        |> assign(:session, new_session)
-        |> assign(:project, project)
-        |> assign(:sessions, sessions)
-        |> assign(:project_files, files)
-        |> assign(:tasks, tasks)
-        |> assign(:page_title, "#{new_session.title} · #{project.name}")
-        |> assign(:messages, messages)
-        |> assign(:operations, operations)
-        |> refresh_git_state()
-
-      {:noreply, socket}
     else
       {:noreply, socket}
     end
@@ -278,14 +248,24 @@ defmodule IexCodeWeb.WorkspaceLive do
   def handle_event("switch_tab", %{"tab" => tab}, socket) do
     socket = assign(socket, :active_tab, tab)
     socket = if tab == "changes", do: refresh_git_state(socket), else: socket
-    socket = if tab == "files", do: assign(socket, :project_files, list_project_files(socket.assigns.project.root_path)), else: socket
+
+    socket =
+      if tab == "files",
+        do: assign(socket, :project_files, list_project_files(socket.assigns.project.root_path)),
+        else: socket
+
     {:noreply, socket}
   end
 
   def handle_event("switch_tab", %{"sidebar_tab" => tab}, socket) do
     socket = assign(socket, :active_tab, tab)
     socket = if tab == "changes", do: refresh_git_state(socket), else: socket
-    socket = if tab == "files", do: assign(socket, :project_files, list_project_files(socket.assigns.project.root_path)), else: socket
+
+    socket =
+      if tab == "files",
+        do: assign(socket, :project_files, list_project_files(socket.assigns.project.root_path)),
+        else: socket
+
     {:noreply, socket}
   end
 
@@ -357,27 +337,34 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("change_model", %{"provider" => provider, "model" => model}, socket) do
-    {:ok, updated_session} =
-      Sessions.update_session(socket.assigns.session, %{
-        model_provider: provider,
-        model_name: model
-      })
+    case Sessions.update_session(socket.assigns.session, %{
+           model_provider: provider,
+           model_name: model
+         }) do
+      {:ok, updated_session} ->
+        {:noreply,
+         socket
+         |> assign(:session, updated_session)
+         |> assign(:open_dropdown, nil)
+         |> put_flash(:info, "Model set to #{model} (#{provider})")}
 
-    {:noreply,
-     socket
-     |> assign(:session, updated_session)
-     |> assign(:open_dropdown, nil)
-     |> put_flash(:info, "Model set to #{model} (#{provider})")}
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to set model: #{inspect(reason)}")}
+    end
   end
 
   @impl true
   def handle_event("change_model", %{"model" => model_name}, socket) do
-    {:ok, session} = Sessions.update_session(socket.assigns.session, %{model_name: model_name})
+    case Sessions.update_session(socket.assigns.session, %{model_name: model_name}) do
+      {:ok, session} ->
+        {:noreply,
+         socket
+         |> assign(:session, session)
+         |> assign(:open_dropdown, nil)}
 
-    {:noreply,
-     socket
-     |> assign(:session, session)
-     |> assign(:open_dropdown, nil)}
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to set model: #{inspect(reason)}")}
+    end
   end
 
   @impl true
@@ -387,7 +374,12 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("search_workspace", %{"query" => q}, socket) do
-    {:noreply, assign(socket, :workspace_search, q)}
+    messages = filter_history_messages(socket.assigns.all_messages, q)
+
+    {:noreply,
+     socket
+     |> assign(:workspace_search, q)
+     |> assign(:messages, messages)}
   end
 
   @impl true
@@ -512,15 +504,16 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("picker_today", _params, socket) do
-    today_str = "2026-08-20"
+    today = Date.utc_today()
+    today_str = Date.to_iso8601(today)
 
     {:noreply,
      socket
      |> assign(:new_task_date, today_str)
      |> assign(:selected_calendar_date, today_str)
-     |> assign(:selected_calendar_day, 20)
-     |> assign(:picker_year, 2026)
-     |> assign(:picker_month, 8)
+     |> assign(:selected_calendar_day, today.day)
+     |> assign(:picker_year, today.year)
+     |> assign(:picker_month, today.month)
      |> assign(:show_date_picker_popover, false)}
   end
 
@@ -604,37 +597,47 @@ defmodule IexCodeWeb.WorkspaceLive do
         (socket.assigns.selected_scheduled_task && socket.assigns.selected_scheduled_task.id)
 
     if id do
-      task = Kanban.get_task!(id)
-      sched_date = task_params["scheduled_at_date"]
+      case Kanban.get_task(id) do
+        nil ->
+          {:noreply, put_flash(socket, :error, "Scheduled task not found")}
 
-      sched_at =
-        if sched_date && sched_date != "" do
-          case Date.from_iso8601(to_string(sched_date)) do
-            {:ok, date} -> DateTime.new!(date, ~T[10:30:00], "Etc/UTC")
-            _ -> task.scheduled_at
+        task ->
+          sched_date = task_params["scheduled_at_date"]
+
+          sched_at =
+            if sched_date && sched_date != "" do
+              case Date.from_iso8601(to_string(sched_date)) do
+                {:ok, date} -> DateTime.new!(date, ~T[10:30:00], "Etc/UTC")
+                _ -> task.scheduled_at
+              end
+            else
+              task.scheduled_at
+            end
+
+          attrs = %{
+            title: task_params["title"] || task.title,
+            description: task_params["description"] || task.description,
+            priority: task_params["priority"] || task.priority,
+            assignee: task_params["assignee"] || task.assignee,
+            cron_expression: task_params["cron_expression"] || task.cron_expression,
+            scheduled_at: sched_at
+          }
+
+          case Kanban.update_task(task, attrs) do
+            {:ok, updated} ->
+              tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
+
+              {:noreply,
+               socket
+               |> assign(:tasks, tasks)
+               |> assign(:selected_scheduled_task, updated)
+               |> assign(:show_edit_scheduled_task_modal, false)
+               |> put_flash(:info, "Scheduled task updated")}
+
+            {:error, reason} ->
+              {:noreply, put_flash(socket, :error, "Failed to update task: #{inspect(reason)}")}
           end
-        else
-          task.scheduled_at
-        end
-
-      attrs = %{
-        title: task_params["title"] || task.title,
-        description: task_params["description"] || task.description,
-        priority: task_params["priority"] || task.priority,
-        assignee: task_params["assignee"] || task.assignee,
-        cron_expression: task_params["cron_expression"] || task.cron_expression,
-        scheduled_at: sched_at
-      }
-
-      {:ok, updated} = Kanban.update_task(task, attrs)
-      tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
-
-      {:noreply,
-       socket
-       |> assign(:tasks, tasks)
-       |> assign(:selected_scheduled_task, updated)
-       |> assign(:show_edit_scheduled_task_modal, false)
-       |> put_flash(:info, "Scheduled task updated")}
+      end
     else
       {:noreply, socket}
     end
@@ -644,20 +647,30 @@ defmodule IexCodeWeb.WorkspaceLive do
   def handle_event("run_scheduled_task", %{"id" => task_id}, socket) do
     case Kanban.get_task(task_id) do
       nil ->
-        {:noreply, socket}
+        {:noreply, put_flash(socket, :error, "Scheduled task not found")}
 
       task ->
-        {:ok, updated} =
-          Kanban.update_task(task, %{status: "running", worker_pid: inspect(self())})
+        prompt = """
+        [scheduled-task] #{task.title}
+        #{task.description || "No description provided."}
+        """
 
-        tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
+        SessionServer.send_prompt(socket.assigns.session.id, prompt)
 
-        {:noreply,
-         socket
-         |> assign(:tasks, tasks)
-         |> assign(:selected_task, updated)
-         |> assign(:show_scheduled_task_modal, false)
-         |> put_flash(:info, "Task '#{task.title}' triggered and now running")}
+        case Kanban.update_task(task, %{status: "running"}) do
+          {:ok, updated} ->
+            tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
+
+            {:noreply,
+             socket
+             |> assign(:tasks, tasks)
+             |> assign(:selected_task, updated)
+             |> assign(:show_scheduled_task_modal, false)
+             |> put_flash(:info, "Task '#{task.title}' dispatched to the session")}
+
+          {:error, reason} ->
+            {:noreply, put_flash(socket, :error, "Failed to trigger task: #{inspect(reason)}")}
+        end
     end
   end
 
@@ -672,14 +685,19 @@ defmodule IexCodeWeb.WorkspaceLive do
         {:noreply, socket}
 
       task ->
-        {:ok, _deleted} = Kanban.delete_task(task)
-        tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
+        case Kanban.delete_task(task) do
+          {:ok, _deleted} ->
+            tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
 
-        {:noreply,
-         socket
-         |> assign(:tasks, tasks)
-         |> assign(:show_scheduled_task_modal, false)
-         |> put_flash(:info, "Scheduled task removed")}
+            {:noreply,
+             socket
+             |> assign(:tasks, tasks)
+             |> assign(:show_scheduled_task_modal, false)
+             |> put_flash(:info, "Scheduled task removed")}
+
+          {:error, reason} ->
+            {:noreply, put_flash(socket, :error, "Failed to remove task: #{inspect(reason)}")}
+        end
     end
   end
 
@@ -691,6 +709,11 @@ defmodule IexCodeWeb.WorkspaceLive do
   @impl true
   def handle_event("scroll_to_message", %{"id" => msg_id}, socket) do
     {:noreply, push_event(socket, "scroll_to_msg", %{id: msg_id})}
+  end
+
+  @impl true
+  def handle_event("scroll_to_msg", %{"id" => id}, socket) do
+    {:noreply, push_event(socket, "scroll_to_msg", %{id: id})}
   end
 
   # ============================================================================
@@ -1022,29 +1045,49 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("create_goal", params, socket) do
-    goal_params = params["goal"] || params
-    title = goal_params["title"] || ""
-    desc = goal_params["description"] || ""
-    auto_start = goal_params["auto_start"] != "false"
-
-    if String.trim(to_string(title)) != "" do
-      {:ok, _goal} =
-        SessionServer.create_goal(
-          socket.assigns.session.id,
-          %{title: String.trim(title), description: desc},
-          auto_start: auto_start
-        )
-
-      {:noreply,
-       socket
-       |> assign(:show_goal_modal, false)
-       |> assign(:active_tab, "swarm")
-       |> put_flash(
-         :info,
-         "Goal created#{if auto_start, do: " and autonomous swarm launched", else: ""}"
-       )}
+    if socket.assigns.submitting? do
+      {:noreply, socket}
     else
-      {:noreply, put_flash(socket, :error, "Goal title is required")}
+      goal_params = params["goal"] || params
+      title = goal_params["title"] || ""
+      desc = goal_params["description"] || ""
+      auto_start = goal_params["auto_start"] != "false"
+
+      if String.trim(to_string(title)) != "" do
+        socket = assign(socket, :submitting?, true)
+
+        socket =
+          try do
+            {:ok, _goal} =
+              SessionServer.create_goal(
+                socket.assigns.session.id,
+                %{title: String.trim(title), description: desc},
+                auto_start: auto_start
+              )
+
+            socket
+            |> assign(:show_goal_modal, false)
+            |> assign(:active_tab, "swarm")
+            |> put_flash(
+              :info,
+              "Goal created#{if auto_start, do: " and autonomous swarm launched", else: ""}"
+            )
+          rescue
+            e ->
+              Logger.error("create_goal failed: #{Exception.message(e)}")
+              put_flash(socket, :error, "Failed to create goal: #{Exception.message(e)}")
+          catch
+            :exit, {:timeout, _} ->
+              put_flash(socket, :error, "Creating the goal timed out — try again shortly")
+
+            :exit, reason ->
+              put_flash(socket, :error, "Failed to create goal: #{inspect(reason)}")
+          end
+
+        {:noreply, assign(socket, :submitting?, false)}
+      else
+        {:noreply, put_flash(socket, :error, "Goal title is required")}
+      end
     end
   end
 
@@ -1094,23 +1137,49 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("cancel_session", params, socket) do
-    mode = params["mode"] || socket.assigns.cancel_mode || "rollback"
+    if socket.assigns.cancelling? do
+      {:noreply, socket}
+    else
+      mode = params["mode"] || socket.assigns.cancel_mode || "rollback"
 
-    opts =
-      if mode == "commit" do
-        [commit: true, commit_message: params["commit_message"] || "Cancelled session commit"]
-      else
-        [rollback: true]
-      end
+      opts =
+        if mode == "commit" do
+          [
+            action: :commit,
+            commit_message: params["commit_message"] || "Cancelled session commit"
+          ]
+        else
+          [action: :rollback]
+        end
 
-    SessionServer.cancel_session(socket.assigns.session.id, opts)
-    updated_session = %{socket.assigns.session | status: "stopped"}
+      socket = assign(socket, :cancelling?, true)
 
-    {:noreply,
-     socket
-     |> assign(:show_cancel_modal, false)
-     |> assign(:session, updated_session)
-     |> put_flash(:info, "Session stopped (#{mode} executed)")}
+      socket =
+        try do
+          SessionServer.cancel_session(socket.assigns.session.id, opts)
+
+          socket
+          |> assign(:session, %{socket.assigns.session | status: "stopped"})
+          |> assign(:show_cancel_modal, false)
+          |> put_flash(:info, "Session stopped (#{mode} executed)")
+        rescue
+          e ->
+            Logger.error("cancel_session failed: #{Exception.message(e)}")
+            put_flash(socket, :error, "Failed to stop session: #{Exception.message(e)}")
+        catch
+          :exit, {:timeout, _} ->
+            put_flash(
+              socket,
+              :error,
+              "Stopping the session timed out — it may still be running, try again"
+            )
+
+          :exit, reason ->
+            put_flash(socket, :error, "Failed to stop session: #{inspect(reason)}")
+        end
+
+      {:noreply, assign(socket, :cancelling?, false)}
+    end
   end
 
   @impl true
@@ -1203,6 +1272,12 @@ defmodule IexCodeWeb.WorkspaceLive do
           end
         end
 
+      steps_count =
+        case Integer.parse(to_string(steps_total)) do
+          {n, _} when n > 0 -> n
+          _ -> 4
+        end
+
       attrs = %{
         project_id: socket.assigns.project.id,
         session_id: socket.assigns.session.id,
@@ -1213,20 +1288,31 @@ defmodule IexCodeWeb.WorkspaceLive do
         status: status,
         scheduled_at: scheduled_at,
         cron_expression: cron_expr,
-        steps_total: String.to_integer(to_string(steps_total)),
+        steps_total: steps_count,
         steps_completed: 0,
         tags: if(tag && to_string(tag) != "", do: [to_string(tag)], else: ["Task"])
       }
 
-      {:ok, task} = Kanban.create_task(attrs)
-      tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
+      case Kanban.create_task(attrs) do
+        {:ok, task} ->
+          tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
 
-      {:noreply,
-       socket
-       |> assign(:tasks, tasks)
-       |> assign(:selected_task, task)
-       |> assign(:show_new_task_modal, false)
-       |> put_flash(:info, "Task created")}
+          {:noreply,
+           socket
+           |> assign(:tasks, tasks)
+           |> assign(:selected_task, task)
+           |> assign(:show_new_task_modal, false)
+           |> put_flash(:info, "Task created")}
+
+        {:error, changeset} ->
+          {:noreply,
+           socket
+           |> assign(:show_new_task_modal, false)
+           |> put_flash(
+             :error,
+             "Failed to create task: #{inspect(translated_errors(changeset))}"
+           )}
+      end
     else
       {:noreply, socket}
     end
@@ -1249,46 +1335,76 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("move_task", %{"id" => id, "status" => status}, socket) do
-    task = Kanban.get_task!(id)
-    {:ok, updated} = Kanban.move_task_status(task, status)
-    tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
+    case Kanban.get_task(id) do
+      nil ->
+        {:noreply, put_flash(socket, :error, "Task not found")}
 
-    selected =
-      if socket.assigns.selected_task && socket.assigns.selected_task.id == id,
-        do: updated,
-        else: socket.assigns.selected_task
+      task ->
+        case Kanban.move_task_status(task, status) do
+          {:ok, updated} ->
+            tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
 
-    {:noreply,
-     socket
-     |> assign(:tasks, tasks)
-     |> assign(:selected_task, selected)
-     |> assign(:expanded_column, status)}
+            selected =
+              if socket.assigns.selected_task && socket.assigns.selected_task.id == id,
+                do: updated,
+                else: socket.assigns.selected_task
+
+            {:noreply,
+             socket
+             |> assign(:tasks, tasks)
+             |> assign(:selected_task, selected)
+             |> assign(:expanded_column, status)}
+
+          {:error, reason} ->
+            {:noreply, put_flash(socket, :error, "Failed to move task: #{inspect(reason)}")}
+        end
+    end
   end
 
   @impl true
   def handle_event("update_task_priority", %{"id" => id, "priority" => priority}, socket) do
-    task = Kanban.get_task!(id)
-    {:ok, updated} = Kanban.update_task(task, %{priority: priority})
-    tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
+    case Kanban.get_task(id) do
+      nil ->
+        {:noreply, put_flash(socket, :error, "Task not found")}
 
-    {:noreply,
-     socket
-     |> assign(:tasks, tasks)
-     |> assign(:selected_task, updated)
-     |> put_flash(:info, "Task priority updated to #{priority}")}
+      task ->
+        case Kanban.update_task(task, %{priority: priority}) do
+          {:ok, updated} ->
+            tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
+
+            {:noreply,
+             socket
+             |> assign(:tasks, tasks)
+             |> assign(:selected_task, updated)
+             |> put_flash(:info, "Task priority updated to #{priority}")}
+
+          {:error, reason} ->
+            {:noreply, put_flash(socket, :error, "Failed to update priority: #{inspect(reason)}")}
+        end
+    end
   end
 
   @impl true
   def handle_event("update_task_assignee", %{"id" => id, "assignee" => assignee}, socket) do
-    task = Kanban.get_task!(id)
-    {:ok, updated} = Kanban.update_task(task, %{assignee: assignee})
-    tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
+    case Kanban.get_task(id) do
+      nil ->
+        {:noreply, put_flash(socket, :error, "Task not found")}
 
-    {:noreply,
-     socket
-     |> assign(:tasks, tasks)
-     |> assign(:selected_task, updated)
-     |> put_flash(:info, "Task assignee updated to #{assignee}")}
+      task ->
+        case Kanban.update_task(task, %{assignee: assignee}) do
+          {:ok, updated} ->
+            tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
+
+            {:noreply,
+             socket
+             |> assign(:tasks, tasks)
+             |> assign(:selected_task, updated)
+             |> put_flash(:info, "Task assignee updated to #{assignee}")}
+
+          {:error, reason} ->
+            {:noreply, put_flash(socket, :error, "Failed to update assignee: #{inspect(reason)}")}
+        end
+    end
   end
 
   @impl true
@@ -1297,24 +1413,33 @@ defmodule IexCodeWeb.WorkspaceLive do
     task_params = params["task"] || params
 
     if id do
-      task = Kanban.get_task!(id)
+      case Kanban.get_task(id) do
+        nil ->
+          {:noreply, put_flash(socket, :error, "Task not found")}
 
-      attrs = %{
-        title: task_params["title"] || task.title,
-        description: task_params["description"] || task.description,
-        priority: task_params["priority"] || task.priority,
-        assignee: task_params["assignee"] || task.assignee,
-        status: task_params["status"] || task.status
-      }
+        task ->
+          attrs = %{
+            title: task_params["title"] || task.title,
+            description: task_params["description"] || task.description,
+            priority: task_params["priority"] || task.priority,
+            assignee: task_params["assignee"] || task.assignee,
+            status: task_params["status"] || task.status
+          }
 
-      {:ok, updated} = Kanban.update_task(task, attrs)
-      tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
+          case Kanban.update_task(task, attrs) do
+            {:ok, updated} ->
+              tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
 
-      {:noreply,
-       socket
-       |> assign(:tasks, tasks)
-       |> assign(:selected_task, updated)
-       |> put_flash(:info, "Task updated")}
+              {:noreply,
+               socket
+               |> assign(:tasks, tasks)
+               |> assign(:selected_task, updated)
+               |> put_flash(:info, "Task updated")}
+
+            {:error, reason} ->
+              {:noreply, put_flash(socket, :error, "Failed to update task: #{inspect(reason)}")}
+          end
+      end
     else
       {:noreply, socket}
     end
@@ -1322,42 +1447,72 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("delete_task", %{"id" => id}, socket) do
-    task = Kanban.get_task!(id)
-    {:ok, _deleted} = Kanban.delete_task(task)
-    tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
+    case Kanban.get_task(id) do
+      nil ->
+        {:noreply, put_flash(socket, :error, "Task not found")}
 
-    {:noreply,
-     socket
-     |> assign(:tasks, tasks)
-     |> assign(:selected_task, nil)
-     |> assign(:show_task_drawer, false)
-     |> put_flash(:info, "Task deleted")}
+      task ->
+        case Kanban.delete_task(task) do
+          {:ok, _deleted} ->
+            tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
+
+            {:noreply,
+             socket
+             |> assign(:tasks, tasks)
+             |> assign(:selected_task, nil)
+             |> assign(:show_task_drawer, false)
+             |> put_flash(:info, "Task deleted")}
+
+          {:error, reason} ->
+            {:noreply, put_flash(socket, :error, "Failed to delete task: #{inspect(reason)}")}
+        end
+    end
   end
 
   @impl true
   def handle_event("claim_task", %{"id" => id}, socket) do
-    task = Kanban.get_task!(id)
-    {:ok, claimed} = Kanban.claim_task(task, "coder")
-    tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
+    case Kanban.get_task(id) do
+      nil ->
+        {:noreply, put_flash(socket, :error, "Task not found")}
 
-    {:noreply,
-     socket
-     |> assign(:tasks, tasks)
-     |> assign(:selected_task, claimed)
-     |> put_flash(:info, "Worker #{claimed.worker_pid} claimed task")}
+      task ->
+        case Kanban.claim_task(task, "coder") do
+          {:ok, claimed} ->
+            tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
+
+            {:noreply,
+             socket
+             |> assign(:tasks, tasks)
+             |> assign(:selected_task, claimed)
+             |> put_flash(:info, "Worker #{claimed.worker_pid} claimed task")}
+
+          {:error, reason} ->
+            {:noreply, put_flash(socket, :error, "Failed to claim task: #{inspect(reason)}")}
+        end
+    end
   end
 
   @impl true
   def handle_event("estimate_task", %{"id" => id}, socket) do
-    task = Kanban.get_task!(id)
-    {:ok, estimated} = Kanban.estimate_effort(task)
-    tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
+    case Kanban.get_task(id) do
+      nil ->
+        {:noreply, put_flash(socket, :error, "Task not found")}
 
-    {:noreply,
-     socket
-     |> assign(:tasks, tasks)
-     |> assign(:selected_task, estimated)
-     |> put_flash(:info, "Effort estimated: #{estimated.estimate}")}
+      task ->
+        case Kanban.estimate_effort(task) do
+          {:ok, estimated} ->
+            tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
+
+            {:noreply,
+             socket
+             |> assign(:tasks, tasks)
+             |> assign(:selected_task, estimated)
+             |> put_flash(:info, "Effort estimated: #{estimated.estimate}")}
+
+          {:error, reason} ->
+            {:noreply, put_flash(socket, :error, "Failed to estimate effort: #{inspect(reason)}")}
+        end
+    end
   end
 
   @impl true
@@ -1404,19 +1559,28 @@ defmodule IexCodeWeb.WorkspaceLive do
   @impl true
   def handle_event("toggle_swarm", _params, socket) do
     session_id = socket.assigns.session.id
-    {:ok, new_mode} = SessionServer.toggle_swarm(session_id)
-    updated_session = %{socket.assigns.session | swarm_mode: new_mode}
 
-    {:noreply,
-     socket
-     |> assign(:session, updated_session)
-     |> put_flash(
-       :info,
-       if(new_mode,
-         do: "🐝 Swarm Mode Enabled (Multi-Agent OTP Architecture)",
-         else: "Single Agent Mode Active"
-       )
-     )}
+    case SessionServer.toggle_swarm(session_id) do
+      {:ok, new_mode} ->
+        updated_session = %{socket.assigns.session | swarm_mode: new_mode}
+
+        {:noreply,
+         socket
+         |> assign(:session, updated_session)
+         |> put_flash(
+           :info,
+           if(new_mode,
+             do: "🐝 Swarm Mode Enabled (Multi-Agent OTP Architecture)",
+             else: "Single Agent Mode Active"
+           )
+         )}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to toggle swarm mode: #{inspect(reason)}")}
+
+      :error ->
+        {:noreply, put_flash(socket, :error, "Failed to toggle swarm mode")}
+    end
   end
 
   @impl true
@@ -1444,39 +1608,62 @@ defmodule IexCodeWeb.WorkspaceLive do
     project = socket.assigns.project
     count = length(socket.assigns.sessions) + 1
 
-    {:ok, session} =
-      Sessions.create_session(%{
-        project_id: project.id,
-        title: "Coding Session #{count}",
-        swarm_mode: socket.assigns.session.swarm_mode,
-        model_provider: socket.assigns.session.model_provider,
-        model_name: socket.assigns.session.model_name
-      })
+    case Sessions.create_session(%{
+           project_id: project.id,
+           title: "Coding Session #{count}",
+           swarm_mode: socket.assigns.session.swarm_mode,
+           model_provider: socket.assigns.session.model_provider,
+           model_name: socket.assigns.session.model_name
+         }) do
+      {:ok, session} ->
+        {:noreply,
+         socket
+         |> assign(:sessions, Sessions.list_sessions_for_project(project.id))
+         |> push_patch(to: ~p"/sessions/#{session.id}?project_id=#{project.id}")}
 
-    {:noreply,
-     socket
-     |> assign(:sessions, Sessions.list_sessions_for_project(project.id))
-     |> push_patch(to: ~p"/sessions/#{session.id}?project_id=#{project.id}")}
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to create session: #{inspect(reason)}")}
+    end
   end
 
   @impl true
   def handle_event("delete_session", %{"id" => session_id}, socket) do
-    session = Sessions.get_session!(session_id)
-    Sessions.delete_session(session)
+    case fetch_session(session_id) do
+      nil ->
+        {:noreply, put_flash(socket, :error, "Session not found")}
 
-    remaining = Sessions.list_sessions_for_project(socket.assigns.project.id)
+      session ->
+        # Stop the SessionServer first so it doesn't keep running against a deleted row
+        stop_session_server(session.id)
 
-    if remaining == [] do
-      {:ok, new_s} =
-        Sessions.create_session(%{
-          project_id: socket.assigns.project.id,
-          title: "Coding Session 1"
-        })
+        case Sessions.delete_session(session) do
+          {:ok, _} ->
+            remaining = Sessions.list_sessions_for_project(socket.assigns.project.id)
 
-      {:noreply, push_patch(socket, to: ~p"/sessions/#{new_s.id}")}
-    else
-      [next | _] = remaining
-      {:noreply, push_patch(socket, to: ~p"/sessions/#{next.id}")}
+            if remaining == [] do
+              case Sessions.create_session(%{
+                     project_id: socket.assigns.project.id,
+                     title: "Coding Session 1"
+                   }) do
+                {:ok, new_s} ->
+                  {:noreply, push_patch(socket, to: ~p"/sessions/#{new_s.id}")}
+
+                {:error, reason} ->
+                  {:noreply,
+                   put_flash(
+                     socket,
+                     :error,
+                     "Failed to create replacement session: #{inspect(reason)}"
+                   )}
+              end
+            else
+              [next | _] = remaining
+              {:noreply, push_patch(socket, to: ~p"/sessions/#{next.id}")}
+            end
+
+          {:error, reason} ->
+            {:noreply, put_flash(socket, :error, "Failed to delete session: #{inspect(reason)}")}
+        end
     end
   end
 
@@ -1503,50 +1690,41 @@ defmodule IexCodeWeb.WorkspaceLive do
   def handle_event("run_terminal_command", %{"command" => cmd}, socket) do
     full_cmd = String.trim(cmd)
 
-    if full_cmd == "" do
-      {:noreply, socket}
-    else
-      root = socket.assigns.project.root_path
+    cond do
+      full_cmd == "" ->
+        {:noreply, socket}
 
-      history =
-        [full_cmd | Enum.reject(socket.assigns.terminal_history, &(&1 == full_cmd))]
-        |> Enum.take(20)
+      socket.assigns.terminal_running? ->
+        {:noreply, put_flash(socket, :error, "A command is already running — stop it first")}
 
-      # Synchronous execution fallback for fast commands / tests
-      out =
-        case System.shell("cd \"#{root}\" && #{full_cmd} 2>&1") do
-          {output, 0} -> "$ #{full_cmd}\n#{output}\n[Exit 0: OK]"
-          {output, code} -> "$ #{full_cmd}\n#{output}\n[Exit #{code}: Error]"
-        end
+      true ->
+        root = socket.assigns.project.root_path
 
-      new_output =
-        if socket.assigns.terminal_output in [
-             "",
-             nil,
-             "Ready. Type a command or click a quick action above."
-           ] do
-          out
-        else
-          socket.assigns.terminal_output <> "\n\n" <> out
-        end
+        history =
+          [full_cmd | Enum.reject(socket.assigns.terminal_history, &(&1 == full_cmd))]
+          |> Enum.take(20)
 
-      {:noreply,
-       socket
-       |> assign(:terminal_output, new_output)
-       |> assign(:terminal_history, history)
-       |> assign(:terminal_form, to_form(%{"command" => ""}))}
+        port = start_terminal_port(root, full_cmd)
+
+        {:noreply,
+         socket
+         |> append_terminal_output("$ #{full_cmd}\n")
+         |> assign(:terminal_history, history)
+         |> assign(:terminal_form, to_form(%{"command" => ""}))
+         |> assign(:terminal_running?, true)
+         |> assign(:terminal_port, port)}
     end
   end
 
   @impl true
   def handle_event("stop_terminal_command", _params, socket) do
+    kill_terminal_port(socket.assigns.terminal_port)
+
     {:noreply,
      socket
+     |> append_terminal_output("\n[Command Interrupted]\n")
      |> assign(:terminal_running?, false)
-     |> assign(
-       :terminal_output,
-       (socket.assigns.terminal_output || "") <> "\n[Command Interrupted]\n"
-     )
+     |> assign(:terminal_port, nil)
      |> put_flash(:info, "Terminal command stopped")}
   end
 
@@ -1569,11 +1747,19 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("save_settings", %{"settings" => params}, socket) do
+    # Only overwrite the stored API key when the submitted value is non-empty
+    params =
+      case params["openai_api_key"] do
+        key when is_binary(key) and key != "" -> params
+        _ -> Map.delete(params, "openai_api_key")
+      end
+
     case Settings.update_settings(params) do
       {:ok, updated} ->
         {:noreply,
          socket
          |> assign(:settings, updated)
+         |> assign(:settings_form, Settings.change_settings(updated) |> to_form())
          |> assign(:show_settings_modal, false)
          |> put_flash(:info, "Settings saved successfully")}
 
@@ -1594,41 +1780,61 @@ defmodule IexCodeWeb.WorkspaceLive do
     proj_name =
       if String.trim(name) == "", do: Path.basename(trimmed_path), else: String.trim(name)
 
-    {:ok, project} = Projects.get_or_create_project(trimmed_path, proj_name)
+    case Projects.get_or_create_project(trimmed_path, proj_name) do
+      {:ok, project} ->
+        case Sessions.create_session(%{
+               project_id: project.id,
+               title: "Coding Session 1",
+               swarm_mode: true
+             }) do
+          {:ok, session} ->
+            {:noreply,
+             socket
+             |> assign(:show_project_modal, false)
+             |> assign(:show_workspace_menu, false)
+             |> push_patch(to: ~p"/sessions/#{session.id}?project_id=#{project.id}")}
 
-    {:ok, session} =
-      Sessions.create_session(%{
-        project_id: project.id,
-        title: "Coding Session 1",
-        swarm_mode: true
-      })
+          {:error, reason} ->
+            {:noreply, put_flash(socket, :error, "Failed to create session: #{inspect(reason)}")}
+        end
 
-    {:noreply,
-     socket
-     |> assign(:show_project_modal, false)
-     |> assign(:show_workspace_menu, false)
-     |> push_patch(to: ~p"/sessions/#{session.id}?project_id=#{project.id}")}
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to open project: #{inspect(reason)}")}
+    end
   end
 
   @impl true
   def handle_event("switch_project", %{"id" => project_id}, socket) do
-    project = Projects.get_project!(project_id)
-    sessions = Sessions.list_sessions_for_project(project.id)
+    case fetch_project(project_id) do
+      nil ->
+        {:noreply, put_flash(socket, :error, "Project not found")}
 
-    session =
-      case sessions do
-        [first | _] ->
-          first
+      project ->
+        sessions = Sessions.list_sessions_for_project(project.id)
 
-        [] ->
-          {:ok, s} = Sessions.create_session(%{project_id: project.id, title: "Coding Session 1"})
-          s
-      end
+        session =
+          case sessions do
+            [first | _] ->
+              first
 
-    {:noreply,
-     socket
-     |> assign(:show_workspace_menu, false)
-     |> push_patch(to: ~p"/sessions/#{session.id}?project_id=#{project.id}")}
+            [] ->
+              case Sessions.create_session(%{project_id: project.id, title: "Coding Session 1"}) do
+                {:ok, s} -> s
+                {:error, reason} -> {:error, reason}
+              end
+          end
+
+        case session do
+          %Sessions.Session{} ->
+            {:noreply,
+             socket
+             |> assign(:show_workspace_menu, false)
+             |> push_patch(to: ~p"/sessions/#{session.id}?project_id=#{project.id}")}
+
+          _ ->
+            {:noreply, put_flash(socket, :error, "Failed to open project session")}
+        end
+    end
   end
 
   @impl true
@@ -1652,18 +1858,12 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_info({:message_created, message}, socket) do
-    messages = socket.assigns.messages ++ [message]
-
-    tokens_out = socket.assigns.tokens_out + 120
-    tokens_in = socket.assigns.tokens_in + 45
-    session_tokens = tokens_out + tokens_in
+    all_messages = socket.assigns.all_messages ++ [message]
 
     {:noreply,
      socket
-     |> assign(:messages, messages)
-     |> assign(:tokens_out, tokens_out)
-     |> assign(:tokens_in, tokens_in)
-     |> assign(:session_tokens, session_tokens)}
+     |> assign(:all_messages, all_messages)
+     |> assign(:messages, filter_history_messages(all_messages, socket.assigns.workspace_search))}
   end
 
   @impl true
@@ -1771,16 +1971,43 @@ defmodule IexCodeWeb.WorkspaceLive do
   end
 
   @impl true
+  def handle_info({port, {:data, text}}, %{assigns: %{terminal_port: port}} = socket)
+      when is_port(port) and is_binary(text) do
+    {:noreply, append_terminal_output(socket, text)}
+  end
+
+  @impl true
+  def handle_info({port, {:exit_status, code}}, %{assigns: %{terminal_port: port}} = socket)
+      when is_port(port) do
+    {:noreply,
+     socket
+     |> append_terminal_output("\n[Exit #{code}#{if code == 0, do: ": OK", else: ": Error"}]\n")
+     |> assign(:terminal_running?, false)
+     |> assign(:terminal_port, nil)}
+  end
+
+  # Stale messages from a port we already stopped
+  @impl true
+  def handle_info({port, _msg}, socket) when is_port(port) do
+    case :erlang.port_info(port, :os_pid) do
+      :undefined ->
+        try do
+          Port.close(port)
+        catch
+          _kind, _reason -> :ok
+        end
+
+      _os_pid ->
+        :ok
+    end
+
+    {:noreply, socket}
+  end
+
+  @impl true
   def handle_info({:terminal_output, _session_id, text}, socket)
       when is_binary(text) and text != "" do
-    new_output =
-      if socket.assigns.terminal_output in ["", nil] do
-        text
-      else
-        socket.assigns.terminal_output <> "\n" <> text
-      end
-
-    {:noreply, assign(socket, :terminal_output, new_output)}
+    {:noreply, append_terminal_output(socket, text)}
   end
 
   @impl true
@@ -1806,32 +2033,44 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_info({:task_created, task}, socket) do
-    if Enum.any?(socket.assigns.tasks, &(&1.id == task.id)) do
-      {:noreply, socket}
+    if task.project_id == socket.assigns.project.id do
+      if Enum.any?(socket.assigns.tasks, &(&1.id == task.id)) do
+        {:noreply, socket}
+      else
+        {:noreply, assign(socket, :tasks, [task | socket.assigns.tasks])}
+      end
     else
-      {:noreply, assign(socket, :tasks, [task | socket.assigns.tasks])}
+      {:noreply, socket}
     end
   end
 
   @impl true
   def handle_info({:task_updated, updated_task}, socket) do
-    tasks =
-      Enum.map(socket.assigns.tasks, fn t ->
-        if t.id == updated_task.id, do: updated_task, else: t
-      end)
+    if updated_task.project_id == socket.assigns.project.id do
+      tasks =
+        Enum.map(socket.assigns.tasks, fn t ->
+          if t.id == updated_task.id, do: updated_task, else: t
+        end)
 
-    selected =
-      if socket.assigns.selected_task && socket.assigns.selected_task.id == updated_task.id,
-        do: updated_task,
-        else: socket.assigns.selected_task
+      selected =
+        if socket.assigns.selected_task && socket.assigns.selected_task.id == updated_task.id,
+          do: updated_task,
+          else: socket.assigns.selected_task
 
-    {:noreply, socket |> assign(:tasks, tasks) |> assign(:selected_task, selected)}
+      {:noreply, socket |> assign(:tasks, tasks) |> assign(:selected_task, selected)}
+    else
+      {:noreply, socket}
+    end
   end
 
   @impl true
   def handle_info({:task_deleted, deleted_task}, socket) do
-    tasks = Enum.reject(socket.assigns.tasks, &(&1.id == deleted_task.id))
-    {:noreply, assign(socket, :tasks, tasks)}
+    if deleted_task.project_id == socket.assigns.project.id do
+      tasks = Enum.reject(socket.assigns.tasks, &(&1.id == deleted_task.id))
+      {:noreply, assign(socket, :tasks, tasks)}
+    else
+      {:noreply, socket}
+    end
   end
 
   @impl true
@@ -1843,68 +2082,232 @@ defmodule IexCodeWeb.WorkspaceLive do
   # Helpers & Seeders
   # ============================================================================
 
+  # -- Safe fetches (client params must never raise) ---------------------------
+
+  defp fetch_session(id) when is_binary(id) do
+    Sessions.get_session(id)
+  rescue
+    _ in [Ecto.Query.CastError] -> nil
+  end
+
+  defp fetch_session(_), do: nil
+
+  defp fetch_project(id) when is_binary(id) do
+    Projects.get_project!(id)
+  rescue
+    _ in [Ecto.NoResultsError, Ecto.Query.CastError] -> nil
+  end
+
+  defp fetch_project(_), do: nil
+
+  defp resolve_mount_context(params) do
+    case params["id"] && fetch_session(params["id"]) do
+      %Sessions.Session{} = session ->
+        case fetch_project(session.project_id) do
+          nil ->
+            {session, project} = default_context(nil)
+            {session, project, "Project for this session was not found — opened a new session"}
+
+          project ->
+            {session, project, nil}
+        end
+
+      _ ->
+        {session, project} = default_context(params["project_id"])
+
+        error =
+          if params["id"] in [nil, ""] do
+            nil
+          else
+            "Session not found — opened a new session instead"
+          end
+
+        {session, project, error}
+    end
+  end
+
+  defp default_context(project_id) do
+    project =
+      case project_id && fetch_project(project_id) do
+        nil ->
+          cwd = File.cwd!()
+          {:ok, p} = Projects.get_or_create_project(cwd, Path.basename(cwd))
+          p
+
+        project ->
+          project
+      end
+
+    session =
+      case Sessions.list_sessions_for_project(project.id) do
+        [first | _] ->
+          first
+
+        [] ->
+          {:ok, s} =
+            Sessions.create_session(%{
+              project_id: project.id,
+              title: "Coding Session 1",
+              swarm_mode: true,
+              model_provider: "openai",
+              model_name: "gemini-3.7-flash-high"
+            })
+
+          s
+      end
+
+    {session, project}
+  end
+
+  defp stop_session_server(session_id) do
+    case SessionServer.ensure_started(session_id) do
+      {:ok, pid} when is_pid(pid) ->
+        try do
+          GenServer.stop(pid, :normal, 5_000)
+        catch
+          :exit, _reason -> :ok
+        end
+
+      _ ->
+        :ok
+    end
+  end
+
+  # -- Terminal helpers --------------------------------------------------------
+
+  defp start_terminal_port(root, cmd) do
+    # stderr is folded into stdout via 2>&1; output streams to handle_info as
+    # {port, {:data, text}} messages, exit via {port, {:exit_status, code}}.
+    shell_cmd = "cd " <> shell_quote(Path.expand(root)) <> " && " <> cmd <> " 2>&1"
+
+    Port.open(
+      {:spawn_executable, "/bin/sh"},
+      [{:args, ["-c", shell_cmd]}, :binary, :exit_status, :stream]
+    )
+  end
+
+  defp shell_quote(path), do: "'" <> String.replace(path, "'", "'\\''") <> "'"
+
+  defp kill_terminal_port(nil), do: :ok
+
+  defp kill_terminal_port(port) when is_port(port) do
+    os_pid = :erlang.port_info(port, :os_pid)
+
+    try do
+      Port.close(port)
+    catch
+      _kind, _reason -> :ok
+    end
+
+    case os_pid do
+      :undefined ->
+        :ok
+
+      pid ->
+        try do
+          System.cmd("kill", ["-TERM", to_string(pid)], stderr_to_stdout: true)
+          :ok
+        rescue
+          _ -> :ok
+        end
+    end
+  end
+
+  defp append_terminal_output(socket, text) do
+    assign(socket, :terminal_output, cap_terminal_output(terminal_base(socket) <> text))
+  end
+
+  defp terminal_base(socket) do
+    case socket.assigns.terminal_output do
+      nil -> ""
+      output -> output
+    end
+  end
+
+  defp cap_terminal_output(output) do
+    lines = String.split(output, "\n")
+
+    if length(lines) > @terminal_output_max_lines do
+      lines
+      |> Enum.drop(length(lines) - @terminal_output_max_lines)
+      |> Enum.join("\n")
+    else
+      output
+    end
+  end
+
+  # -- History search ----------------------------------------------------------
+
+  defp filter_history_messages(messages, query) do
+    q = query |> to_string() |> String.trim() |> String.downcase()
+
+    if q == "" do
+      messages
+    else
+      Enum.filter(messages, fn msg ->
+        String.contains?(String.downcase(to_string(msg.content)), q) or
+          String.contains?(String.downcase(to_string(msg.agent_name)), q)
+      end)
+    end
+  end
+
+  defp translated_errors(changeset) do
+    Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
+      Enum.reduce(opts, msg, fn {key, value}, acc ->
+        String.replace(acc, "%{#{key}}", to_string(value))
+      end)
+    end)
+  end
+
   defp refresh_git_state(socket) do
     root = socket.assigns.project.root_path
 
-    case Git.status(root) do
-      {:ok, status} ->
-        {:ok, raw_diff} = Git.diff(root, unified: 3)
-        raw_diff_str = raw_diff || ""
-        parsed_diffs = DiffParser.parse!(raw_diff_str)
+    with {:ok, status} <- Git.status(root),
+         {:ok, raw_diff} <- Git.diff(root, unified: 3) do
+      raw_diff_str = raw_diff || ""
+      parsed_diffs = DiffParser.parse!(raw_diff_str)
 
-        # Fallback to current or sample diffs if working tree is clean
-        {final_parsed, final_raw} =
-          if parsed_diffs == [] and socket.assigns[:diff_text] do
-            sample_parsed =
-              case DiffParser.parse(socket.assigns.diff_text) do
-                {:ok, diffs} -> diffs
-                _ -> []
-              end
+      selected_diff_file =
+        socket.assigns[:selected_diff_file] ||
+          (List.first(parsed_diffs) && List.first(parsed_diffs).path) ||
+          socket.assigns[:diff_file_path]
 
-            {sample_parsed, socket.assigns.diff_text}
-          else
-            {parsed_diffs, raw_diff_str}
-          end
+      selected_file_diff =
+        Enum.find(
+          parsed_diffs,
+          &(&1.path == selected_diff_file or &1.new_path == selected_diff_file)
+        )
 
-        selected_diff_file =
-          socket.assigns[:selected_diff_file] ||
-            (List.first(final_parsed) && List.first(final_parsed).path) ||
-            socket.assigns[:diff_file_path]
+      diff_hunks = if selected_file_diff, do: selected_file_diff.hunks, else: []
 
-        selected_file_diff =
-          Enum.find(
-            final_parsed,
-            &(&1.path == selected_diff_file or &1.new_path == selected_diff_file)
-          )
+      diff_text =
+        cond do
+          selected_file_diff && selected_file_diff.hunks != [] ->
+            Enum.map_join(
+              selected_file_diff.hunks,
+              "\n",
+              &DiffParser.format_hunk_patch(selected_file_diff, &1)
+            )
 
-        diff_hunks = if selected_file_diff, do: selected_file_diff.hunks, else: []
+          true ->
+            raw_diff_str
+        end
 
-        diff_text =
-          cond do
-            selected_file_diff && selected_file_diff.hunks != [] ->
-              Enum.map_join(
-                selected_file_diff.hunks,
-                "\n",
-                &DiffParser.format_hunk_patch(selected_file_diff, &1)
-              )
-
-            final_raw != "" ->
-              final_raw
-
-            true ->
-              socket.assigns[:diff_text] || ""
-          end
-
-        socket
-        |> assign(:git_status, status)
-        |> assign(:parsed_diffs, final_parsed)
-        |> assign(:selected_diff_file, selected_diff_file)
-        |> assign(:diff_file_path, selected_diff_file || socket.assigns[:diff_file_path])
-        |> assign(:diff_hunks, diff_hunks)
-        |> assign(:diff_text, diff_text)
+      socket
+      |> assign(:git_status, status)
+      |> assign(:git_error, nil)
+      |> assign(:parsed_diffs, parsed_diffs)
+      |> assign(:selected_diff_file, selected_diff_file)
+      |> assign(:diff_file_path, selected_diff_file || socket.assigns[:diff_file_path])
+      |> assign(:diff_hunks, diff_hunks)
+      |> assign(:diff_text, diff_text)
+    else
+      {:error, reason} ->
+        # Real git failure: surface it instead of falling back to sample data
+        assign(socket, :git_error, "Git error: #{inspect(reason)}")
 
       _ ->
-        socket
+        assign(socket, :git_error, "Git is not available for this project")
     end
   end
 
@@ -2048,11 +2451,47 @@ defmodule IexCodeWeb.WorkspaceLive do
     end
   end
 
-  defp tasks_for_day(tasks, day) do
+  defp tasks_for_day(tasks, %Date{} = date) do
+    Enum.filter(tasks, &scheduled_on?(&1, date))
+  end
+
+  # Calendar grid cells carry the full year/month/day — prefer passing those
+  defp tasks_for_day(tasks, %{year: year, month: month, day: day}) do
+    case Date.new(year, month, day) do
+      {:ok, date} -> tasks_for_day(tasks, date)
+      _ -> []
+    end
+  end
+
+  defp tasks_for_day(tasks, day) when is_binary(day) do
+    case Date.from_iso8601(day) do
+      {:ok, date} -> tasks_for_day(tasks, date)
+      _ -> []
+    end
+  end
+
+  # Legacy integer day-of-month fallback
+  defp tasks_for_day(tasks, day) when is_integer(day) do
     Enum.filter(tasks, fn task ->
       (task.scheduled_at && task.scheduled_at.day == day) ||
         (task.metadata && task.metadata["day"] == day)
     end)
+  end
+
+  defp scheduled_on?(task, %Date{} = date) do
+    cond do
+      match?(%DateTime{}, task.scheduled_at) ->
+        DateTime.to_date(task.scheduled_at) == date
+
+      match?(%NaiveDateTime{}, task.scheduled_at) ->
+        NaiveDateTime.to_date(task.scheduled_at) == date
+
+      match?(%Date{}, task.scheduled_at) ->
+        task.scheduled_at == date
+
+      true ->
+        (task.metadata && task.metadata["date"]) == Date.to_iso8601(date)
+    end
   end
 
   defp list_project_files(root_path) do
@@ -2168,8 +2607,8 @@ defmodule IexCodeWeb.WorkspaceLive do
   defp month_name(12), do: "December"
   defp month_name(_), do: "August"
 
-  defp format_date_display(nil), do: "08/20/2026"
-  defp format_date_display(""), do: "08/20/2026"
+  defp format_date_display(nil), do: format_date_display(Date.to_iso8601(Date.utc_today()))
+  defp format_date_display(""), do: format_date_display(Date.to_iso8601(Date.utc_today()))
 
   defp format_date_display(date_str) do
     case Date.from_iso8601(date_str) do
@@ -2200,7 +2639,7 @@ defmodule IexCodeWeb.WorkspaceLive do
         _ -> nil
       end
 
-    today = Date.new!(2026, 8, 20)
+    today = Date.utc_today()
 
     prev_cells =
       if sunday_offset > 0 do

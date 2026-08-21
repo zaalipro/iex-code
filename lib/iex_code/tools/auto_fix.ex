@@ -57,6 +57,14 @@ defmodule IexCode.Tools.AutoFix do
   @doc """
   Generates targeted atomic patch proposals from test runner results or compiler errors.
   Returns `{:ok, [patch_spec]}`.
+
+  Options:
+
+    - `:use_llm` - fall back to LLM-generated patches when no heuristic matches
+    - `:session` - LLM session enabling the LLM fallback
+    - `:rewrite_assertions` - opt-in; allows rewriting failing assertions to
+      match actual values (can mask bugs in the code under test, so it is
+      disabled by default)
   """
   @spec generate_patch_proposals(Path.t(), diagnostic(), keyword()) ::
           {:ok, [MultiPatch.patch_spec()]} | {:error, term()}
@@ -83,6 +91,8 @@ defmodule IexCode.Tools.AutoFix do
 
       {:ok, patches}
     end
+  rescue
+    e -> {:error, "Failed to generate patch proposals: #{Exception.message(e)}"}
   end
 
   @doc """
@@ -101,6 +111,8 @@ defmodule IexCode.Tools.AutoFix do
       {:error, reason} ->
         {:error, reason}
     end
+  rescue
+    e -> {:error, "Failed to apply auto fix: #{Exception.message(e)}"}
   end
 
   @doc """
@@ -418,7 +430,7 @@ defmodule IexCode.Tools.AutoFix do
   # Heuristic Patch Formulation
   # ============================================================================
 
-  defp formulate_heuristic_patch(project_root, item, _opts) do
+  defp formulate_heuristic_patch(project_root, item, opts) do
     full_path = resolve_file_path(project_root, item.file)
 
     if not File.exists?(full_path) or File.dir?(full_path) do
@@ -426,7 +438,7 @@ defmodule IexCode.Tools.AutoFix do
     else
       content = File.read!(full_path)
       lines = String.split(content, "\n")
-      target_line_idx = max(0, item.line - 1)
+      target_line_idx = if is_integer(item.line), do: max(0, item.line - 1), else: 0
       current_line = Enum.at(lines, target_line_idx) || ""
 
       case item.error_type do
@@ -437,7 +449,13 @@ defmodule IexCode.Tools.AutoFix do
           fix_missing_alias(project_root, item, content)
 
         :assertion_mismatch ->
-          fix_assertion_mismatch(item, current_line)
+          # Opt-in: rewriting assertions to match actual values can mask real
+          # bugs in the code under test.
+          if opts[:rewrite_assertions] == true do
+            fix_assertion_mismatch(item, current_line)
+          else
+            {:error, :assertion_rewrite_disabled}
+          end
 
         :syntax_error ->
           fix_syntax_error(item, current_line, content)
@@ -451,24 +469,34 @@ defmodule IexCode.Tools.AutoFix do
     end
   end
 
-  # 1. Unused Variable: prefix with underscore
+  # 1. Unused Variable: prefix the binding with an underscore, but only when
+  # that is safe (never produce `_x = x + 1`, which would break the reference).
   defp fix_unused_variable(item, current_line) do
     case Regex.run(~r/variable "([a-zA-Z0-9_]+)" is unused/, item.message) do
       [_, var_name] ->
-        if String.contains?(current_line, var_name) do
-          # Replace whole variable word with _var_name
-          new_line =
-            Regex.replace(~r/\b#{Regex.escape(var_name)}\b/, current_line, "_#{var_name}",
-              global: false
-            )
+        pattern = ~r/\b#{Regex.escape(var_name)}\b/
 
-          if new_line != current_line do
+        cond do
+          assignment = Regex.run(~r/^(\s*)#{Regex.escape(var_name)}(\s*=\s*)(.+)$/, current_line) ->
+            [_, indent, eq, rhs] = assignment
+
+            if Regex.match?(pattern, rhs) do
+              # The variable is referenced on the right-hand side; renaming the
+              # binding would turn it into an undefined variable.
+              {:error, :var_used_in_rhs}
+            else
+              new_line = "#{indent}_#{var_name}#{eq}#{rhs}"
+              {:ok, [%{path: item.file, target: current_line, replacement: new_line}]}
+            end
+
+          # Single occurrence that is not a binding (e.g. a function parameter):
+          # renaming it is always safe.
+          length(Regex.scan(pattern, current_line)) == 1 ->
+            new_line = Regex.replace(pattern, current_line, "_#{var_name}", global: false)
             {:ok, [%{path: item.file, target: current_line, replacement: new_line}]}
-          else
-            {:error, :pattern_not_found}
-          end
-        else
-          {:error, :var_not_on_line}
+
+          true ->
+            {:error, :var_rename_unsafe}
         end
 
       _ ->
@@ -482,19 +510,21 @@ defmodule IexCode.Tools.AutoFix do
       [_, mod_name] ->
         base_name = List.last(String.split(mod_name, "."))
 
-        # Search AST for where this module is defined
-        case ASTSearch.search(project_root, %{type: "module", query: base_name}) do
-          {:ok, [found | _]} when is_map(found) ->
-            full_module_name = found.name
+        # Search AST for where this module is defined. Match on the module
+        # NAME only: a full-text `query` match would also hit the caller's own
+        # module whenever its body references the missing module (e.g. a
+        # `Crypto.hash(user)` call makes `defmodule AppAuth.Session` match a
+        # search for "Crypto"), and then the wrong alias gets inserted.
+        case ASTSearch.search(project_root, %{type: "module", name: base_name}) do
+          {:ok, candidates} when is_list(candidates) and candidates != [] ->
+            candidates
+            |> pick_missing_module(base_name, enclosing_module_name(content, item.line))
+            |> case do
+              %{} = found ->
+                insert_alias_near_error(item, content, found.name)
 
-            # Propose adding alias after defmodule
-            case Regex.run(~r/(defmodule\s+[A-Z][a-zA-Z0-9_.]+\s+do\n)/, content) do
-              [_, defmod_header] ->
-                replacement = "#{defmod_header}  alias #{full_module_name}\n"
-                {:ok, [%{path: item.file, target: defmod_header, replacement: replacement}]}
-
-              _ ->
-                {:error, :defmodule_not_found}
+              nil ->
+                {:error, :module_ast_not_found}
             end
 
           _ ->
@@ -503,6 +533,67 @@ defmodule IexCode.Tools.AutoFix do
 
       _ ->
         {:error, :module_not_extracted}
+    end
+  end
+
+  # Picks the definition matching the missing module from the diagnostic:
+  # prefer candidates whose last name segment equals the missing module's base
+  # name, and never pick the module enclosing the erroring line (the caller
+  # itself cannot be its own missing dependency).
+  defp pick_missing_module(candidates, base_name, enclosing_name) do
+    candidates
+    |> Enum.reject(fn candidate ->
+      is_binary(enclosing_name) and candidate.name == enclosing_name
+    end)
+    |> Enum.sort_by(fn candidate -> last_name_segment(candidate.name) == base_name end, :desc)
+    |> List.first()
+  end
+
+  defp last_name_segment(name) when is_binary(name) do
+    name |> String.split(".") |> List.last()
+  end
+
+  # Name of the innermost defmodule that starts before the erroring line.
+  defp enclosing_module_name(content, line) when is_integer(line) do
+    content
+    |> String.split("\n")
+    |> Enum.take(max(line, 0))
+    |> Enum.reduce(nil, fn text, acc ->
+      case Regex.run(~r/^\s*defmodule\s+([A-Z][\w.]*)\s+do\s*$/, text) do
+        [_, name] -> name
+        _ -> acc
+      end
+    end)
+  end
+
+  defp enclosing_module_name(_content, _line), do: nil
+
+  # Inserts the alias right after the defmodule that encloses the erroring
+  # line (innermost when nested), instead of always the first defmodule.
+  defp insert_alias_near_error(item, content, full_module_name) do
+    lines = String.split(content, "\n")
+
+    candidates =
+      lines
+      |> Enum.with_index(1)
+      |> Enum.filter(fn {line, _} -> line =~ ~r/^\s*defmodule\s+[A-Z][\w.]*\s+do\s*$/ end)
+
+    enclosing =
+      if is_integer(item.line) do
+        candidates
+        |> Enum.filter(fn {_line, lineno} -> lineno <= item.line end)
+        |> List.last()
+      else
+        List.first(candidates)
+      end
+
+    case enclosing do
+      {defmod_line, _lineno} ->
+        replacement = "#{defmod_line}\n  alias #{full_module_name}"
+        {:ok, [%{path: item.file, target: defmod_line, replacement: replacement}]}
+
+      nil ->
+        {:error, :defmodule_not_found}
     end
   end
 
@@ -529,45 +620,31 @@ defmodule IexCode.Tools.AutoFix do
     end
   end
 
-  # 4. Syntax Error: e.g. "do :ok" instead of "do: :ok" or missing commas
+  # 4. Syntax Error
   defp fix_syntax_error(item, current_line, _content) do
-    cond do
-      String.contains?(current_line, "do :") ->
-        new_line = String.replace(current_line, "do :", "do: :")
+    fix_missing_keyword_colon(item, current_line)
+  end
+
+  # Repairs the one mechanically-safe syntax error: a one-line clause using
+  # keyword syntax without the colon (`def f(x), do "..."`). Only applied when
+  # the clause head ends with `)` and the token after `do` is a double-quoted
+  # string; anything else is left untouched rather than risk corrupting code.
+  defp fix_missing_keyword_colon(item, current_line) do
+    case Regex.run(~r/^(\s*.+?\)(?:\s*,)?\s*do)\s+"((?:[^"\\]|\\.)*)"\s*$/, current_line) do
+      [_, head, body] ->
+        new_line = "#{head}: \"#{body}\""
         {:ok, [%{path: item.file, target: current_line, replacement: new_line}]}
 
-      String.contains?(current_line, "do \"") ->
-        new_line = String.replace(current_line, "do \"", "do: \"")
-        {:ok, [%{path: item.file, target: current_line, replacement: new_line}]}
-
-      true ->
-        {:error, :syntax_heuristic_unmatched}
+      _ ->
+        {:error, :not_implemented}
     end
   end
 
   # 5. Undefined function / typo
-  defp fix_undefined_function(item, _current_line, content) do
-    cond do
-      # Function name typo: proccess_data -> process_data
-      String.contains?(item.message, "proccess_data") and
-          String.contains?(content, "proccess_data") ->
-        {:ok,
-         [%{path: item.file, target: "def proccess_data(x)", replacement: "def process_data(x)"}]}
-
-      # Empty module: stub function
-      String.contains?(content, "defmodule Calc do\nend") ->
-        {:ok,
-         [
-           %{
-             path: item.file,
-             target: "defmodule Calc do\nend",
-             replacement: "defmodule Calc do\n  def add(a, b), do: a + b\nend"
-           }
-         ]}
-
-      true ->
-        {:error, :undefined_function_unmatched}
-    end
+  defp fix_undefined_function(_item, _current_line, _content) do
+    # No reliable rename/stub heuristic exists yet; the previous fixture-specific
+    # rewrites were removed to avoid corrupting real code.
+    {:error, :not_implemented}
   end
 
   # ============================================================================
@@ -633,8 +710,10 @@ defmodule IexCode.Tools.AutoFix do
   defp valid_patch_target?(project_root, %{path: path, target: target})
        when is_binary(path) and is_binary(target) and target != "" do
     full_path = resolve_file_path(project_root, path)
+    project_root_abs = Path.expand(project_root)
 
-    if File.exists?(full_path) and not File.dir?(full_path) do
+    if within_project?(full_path, project_root_abs) and File.exists?(full_path) and
+         not File.dir?(full_path) do
       content = File.read!(full_path)
       String.contains?(content, target)
     else
@@ -645,4 +724,10 @@ defmodule IexCode.Tools.AutoFix do
   end
 
   defp valid_patch_target?(_, _), do: false
+
+  defp within_project?(full_path, project_root_abs) when is_binary(project_root_abs) do
+    String.starts_with?(full_path, project_root_abs <> "/")
+  end
+
+  defp within_project?(_, _), do: false
 end

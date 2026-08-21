@@ -18,6 +18,7 @@ defmodule IexCode.Application do
         {Task.Supervisor, name: IexCode.TaskSupervisor},
         IexCode.Engine.SessionSupervisor,
         IexCode.Engine.AgentSupervisor,
+        {IexCode.Tools.MultiPatch.Snapshot.Owner, []},
         IexCodeWeb.Endpoint,
         desktop_child()
       ]
@@ -49,6 +50,9 @@ defmodule IexCode.Application do
   end
 
   defp skip_migrations?() do
-    System.get_env("RELEASE_NAME") == nil
+    # By default, sqlite migrations are skipped when testing.
+    # They run in dev and in releases (including desktop mode),
+    # so the bundled database is always up to date at boot.
+    System.get_env("MIX_ENV") == "test"
   end
 end

@@ -5,22 +5,34 @@ defmodule IexCode.Tools.MultiPatch.Diff do
 
   @doc """
   Generates a unified diff string comparing `orig` to `new` for `path`.
+  CRLF line endings are preserved when present in the inputs.
   """
   @spec unified_diff(String.t(), String.t(), Path.t()) :: String.t()
   def unified_diff(orig, new, path \\ "file") do
-    orig_lines = String.split(orig || "", ~r/\r?\n/)
-    new_lines = String.split(new || "", ~r/\r?\n/)
+    eol = detect_eol(orig, new)
+    orig_lines = split_lines(orig)
+    new_lines = split_lines(new)
 
     if orig_lines == new_lines do
       ""
     else
-      header = "--- a/#{path}\n+++ b/#{path}\n"
-      diff_body = generate_hunks(orig_lines, new_lines)
+      header = "--- a/#{path}" <> eol <> "+++ b/#{path}" <> eol
+      diff_body = generate_hunks(orig_lines, new_lines, eol)
       header <> diff_body
     end
   end
 
-  defp generate_hunks(orig_lines, new_lines) do
+  defp split_lines(text), do: String.split(text || "", ~r/\r?\n/)
+
+  defp detect_eol(orig, new) do
+    cond do
+      String.contains?(orig || "", "\r\n") -> "\r\n"
+      String.contains?(new || "", "\r\n") -> "\r\n"
+      true -> "\n"
+    end
+  end
+
+  defp generate_hunks(orig_lines, new_lines, eol) do
     # Simple line-by-line diff generation
     changes = List.myers_difference(orig_lines, new_lines)
 
@@ -38,7 +50,7 @@ defmodule IexCode.Tools.MultiPatch.Diff do
 
     orig_count = length(orig_lines)
     new_count = length(new_lines)
-    hunk_header = "@@ -1,#{orig_count} +1,#{new_count} @@\n"
-    hunk_header <> Enum.join(lines, "\n") <> "\n"
+    hunk_header = "@@ -1,#{orig_count} +1,#{new_count} @@" <> eol
+    hunk_header <> Enum.join(lines, eol) <> eol
   end
 end

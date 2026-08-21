@@ -239,7 +239,8 @@ defmodule IexCodeWeb.Challenger2M3StressTest do
       |> element("button[phx-value-tab='terminal']")
       |> render_click()
 
-      # Run 5 commands in rapid sequence
+      # Run 5 commands in rapid sequence, awaiting each command's exit marker
+      # before submitting the next one (a submit while running is rejected)
       commands = [
         "echo 'BURST_TEST_LINE_1'",
         "echo 'BURST_TEST_LINE_2'",
@@ -248,14 +249,15 @@ defmodule IexCodeWeb.Challenger2M3StressTest do
         "echo 'BURST_TEST_LINE_5'"
       ]
 
-      for cmd <- commands do
-        html =
-          view
-          |> form("#terminal-form", %{"command" => cmd})
-          |> render_submit()
+      for {cmd, i} <- Enum.with_index(commands, 1) do
+        wait_for_terminal(view, &(count_exit_markers(&1) >= i - 1))
 
-        assert html =~ "[Exit 0: OK]"
+        view
+        |> form("#terminal-form", %{"command" => cmd})
+        |> render_submit()
       end
+
+      wait_for_terminal(view, &(count_exit_markers(&1) >= length(commands)))
 
       html = render(view)
 
@@ -266,9 +268,11 @@ defmodule IexCodeWeb.Challenger2M3StressTest do
       # Rapid quick terminal buttons
       html = render_click(view, "quick_terminal", %{"cmd" => "echo 'quick_1'"})
       assert html =~ "quick_1"
+      wait_for_terminal(view, &(count_exit_markers(&1) >= 6))
 
       html = render_click(view, "run_terminal", %{"command" => "echo 'quick_2'"})
       assert html =~ "quick_2"
+      wait_for_terminal(view, &(count_exit_markers(&1) >= 7))
 
       # Clear terminal
       html = render_click(view, "clear_terminal")
@@ -466,5 +470,27 @@ defmodule IexCodeWeb.Challenger2M3StressTest do
       # Test nil safely
       assert WorkspaceComponents.ansi_to_html(nil) |> Phoenix.HTML.safe_to_string() == ""
     end
+  end
+
+  # Terminal execution is async via Port: poll until the expected output
+  # (e.g. an exit marker) shows up in the rendered buffer.
+  defp wait_for_terminal(view, match?, deadline \\ 2000) do
+    html = render(view)
+
+    cond do
+      match?.(html) ->
+        html
+
+      deadline <= 0 ->
+        flunk("timed out waiting for expected terminal output")
+
+      true ->
+        Process.sleep(50)
+        wait_for_terminal(view, match?, deadline - 50)
+    end
+  end
+
+  defp count_exit_markers(html) do
+    html |> String.split("[Exit ") |> length() |> Kernel.-(1)
   end
 end

@@ -7,6 +7,9 @@ defmodule IexCode.Tools do
 
   alias IexCode.Tools.{ASTSearch, MultiPatch, TestRunner, Git}
 
+  @max_command_output 256_000
+  @excluded_dirs ["_build", "deps", "node_modules", ".git"]
+
   @doc """
   Returns tool specifications formatted for Anthropic and OpenAI tool calls.
   """
@@ -251,96 +254,133 @@ defmodule IexCode.Tools do
 
   @doc """
   Executes a named tool with arguments inside the workspace `root_path`.
+  Implementation crashes are contained and returned as `{:error, reason}`
+  instead of propagating to callers.
   """
-  def execute(tool_name, args, root_path, on_progress \\ fn _p, _msg -> :ok end)
+  def execute(tool_name, args, root_path, on_progress \\ fn _p, _msg -> :ok end) do
+    do_execute(tool_name, args, root_path, on_progress)
+  rescue
+    exception -> {:error, "Tool #{tool_name} crashed: #{Exception.message(exception)}"}
+  end
 
-  def execute("read_file", %{"path" => path} = args, root_path, on_progress) do
+  defp do_execute("read_file", %{"path" => path} = args, root_path, on_progress) do
     on_progress.(10, "Resolving path: #{path}")
-    full_path = resolve_path(root_path, path)
 
-    if File.exists?(full_path) do
-      on_progress.(50, "Reading file bytes...")
+    case resolve_path(root_path, path) do
+      {:ok, full_path} ->
+        if File.exists?(full_path) do
+          on_progress.(50, "Reading file bytes...")
 
-      case File.read(full_path) do
-        {:ok, content} ->
-          lines = String.split(content, ~r/\r?\n/)
-          start_l = Map.get(args, "start_line")
-          end_l = Map.get(args, "end_line")
+          case File.read(full_path) do
+            {:ok, content} ->
+              lines = String.split(content, ~r/\r?\n/)
+              start_l = Map.get(args, "start_line")
+              end_l = Map.get(args, "end_line")
 
-          sliced_lines =
-            cond do
-              is_integer(start_l) and is_integer(end_l) and start_l <= end_l ->
-                Enum.slice(lines, max(0, start_l - 1), max(1, end_l - start_l + 1))
+              sliced_lines =
+                cond do
+                  is_integer(start_l) and is_integer(end_l) and start_l <= end_l ->
+                    Enum.slice(lines, max(0, start_l - 1), max(1, end_l - start_l + 1))
 
-              is_integer(start_l) ->
-                Enum.slice(lines, max(0, start_l - 1)..-1//1)
+                  is_integer(start_l) ->
+                    Enum.slice(lines, max(0, start_l - 1)..-1//1)
 
-              true ->
-                Enum.take(lines, 800)
-            end
+                  true ->
+                    capped = Enum.take(lines, 800)
 
-          numbered =
-            sliced_lines
-            |> Enum.with_index(if is_integer(start_l), do: start_l, else: 1)
-            |> Enum.map(fn {line, idx} -> "#{idx}: #{line}" end)
-            |> Enum.join("\n")
+                    if length(lines) > 800 do
+                      capped ++
+                        [
+                          "... [truncated: showing 800 of #{length(lines)} lines, use start_line/end_line for more]"
+                        ]
+                    else
+                      capped
+                    end
+                end
 
-          on_progress.(100, "Read complete (#{length(sliced_lines)} lines)")
-          {:ok, IexCode.Sessions.sanitize_utf8(numbered)}
+              numbered =
+                sliced_lines
+                |> Enum.with_index(if is_integer(start_l), do: start_l, else: 1)
+                |> Enum.map(fn {line, idx} -> "#{idx}: #{line}" end)
+                |> Enum.join("\n")
 
-        {:error, reason} ->
-          {:error, "Failed to read file #{path}: #{inspect(reason)}"}
-      end
-    else
-      {:error, "File does not exist: #{path}"}
+              on_progress.(100, "Read complete (#{length(sliced_lines)} lines)")
+              {:ok, IexCode.Sessions.sanitize_utf8(numbered)}
+
+            {:error, reason} ->
+              {:error, "Failed to read file #{path}: #{inspect(reason)}"}
+          end
+        else
+          {:error, "File does not exist: #{path}"}
+        end
+
+      {:error, :outside_workspace} ->
+        {:error, "Path escapes the workspace: #{path}"}
     end
   end
 
-  def execute("write_file", %{"path" => path, "content" => content}, root_path, on_progress) do
+  defp do_execute("write_file", %{"path" => path, "content" => content}, root_path, on_progress) do
     on_progress.(20, "Creating parent directories for #{path}...")
-    full_path = resolve_path(root_path, path)
-    File.mkdir_p!(Path.dirname(full_path))
 
-    on_progress.(70, "Writing #{byte_size(content)} bytes to file...")
+    case resolve_path(root_path, path) do
+      {:ok, full_path} ->
+        File.mkdir_p!(Path.dirname(full_path))
 
-    case File.write(full_path, content) do
-      :ok ->
-        on_progress.(100, "File written successfully: #{path}")
-        {:ok, "Successfully wrote #{byte_size(content)} bytes to #{path}"}
+        on_progress.(70, "Writing #{byte_size(content)} bytes to file...")
 
-      {:error, reason} ->
-        {:error, "Failed to write file #{path}: #{inspect(reason)}"}
+        case atomic_write(full_path, content) do
+          :ok ->
+            on_progress.(100, "File written successfully: #{path}")
+            {:ok, "Successfully wrote #{byte_size(content)} bytes to #{path}"}
+
+          {:error, reason} ->
+            {:error, "Failed to write file #{path}: #{inspect(reason)}"}
+        end
+
+      {:error, :outside_workspace} ->
+        {:error, "Path escapes the workspace: #{path}"}
     end
   end
 
-  def execute(
-        "patch_file",
-        %{"path" => path, "target_content" => target, "replacement_content" => replacement},
-        root_path,
-        on_progress
-      ) do
+  defp do_execute(
+         "patch_file",
+         %{"path" => path, "target_content" => target, "replacement_content" => replacement},
+         root_path,
+         on_progress
+       ) do
     on_progress.(20, "Reading target file #{path}...")
-    full_path = resolve_path(root_path, path)
 
-    if File.exists?(full_path) do
-      content = File.read!(full_path)
+    case resolve_path(root_path, path) do
+      {:ok, full_path} ->
+        if File.exists?(full_path) do
+          content = File.read!(full_path)
 
-      case MultiPatch.patch_string(content, target, replacement) do
-        {:ok, %{content: new_content}} ->
-          on_progress.(60, "Replacing target content...")
-          File.write!(full_path, new_content)
-          on_progress.(100, "Patched #{path} successfully")
-          {:ok, "Successfully patched #{path}"}
+          case MultiPatch.patch_string(content, target, replacement) do
+            {:ok, %{content: new_content}} ->
+              on_progress.(60, "Replacing target content...")
 
-        {:error, :not_found} ->
-          {:error, "Target content not found in #{path}"}
-      end
-    else
-      {:error, "File does not exist: #{path}"}
+              case atomic_write(full_path, new_content) do
+                :ok ->
+                  on_progress.(100, "Patched #{path} successfully")
+                  {:ok, "Successfully patched #{path}"}
+
+                {:error, reason} ->
+                  {:error, "Failed to write patched file #{path}: #{inspect(reason)}"}
+              end
+
+            {:error, :not_found} ->
+              {:error, "Target content not found in #{path}"}
+          end
+        else
+          {:error, "File does not exist: #{path}"}
+        end
+
+      {:error, :outside_workspace} ->
+        {:error, "Path escapes the workspace: #{path}"}
     end
   end
 
-  def execute("multi_patch", %{"patches" => patches}, root_path, on_progress) do
+  defp do_execute("multi_patch", %{"patches" => patches}, root_path, on_progress) do
     on_progress.(20, "Applying #{length(patches)} patches atomically...")
 
     case MultiPatch.apply_patches(root_path, patches) do
@@ -357,7 +397,7 @@ defmodule IexCode.Tools do
     end
   end
 
-  def execute("ast_search", args, root_path, on_progress) do
+  defp do_execute("ast_search", args, root_path, on_progress) do
     on_progress.(30, "Scanning AST symbols in #{root_path}...")
 
     case ASTSearch.search(root_path, args) do
@@ -371,7 +411,7 @@ defmodule IexCode.Tools do
     end
   end
 
-  def execute("run_tests", args, root_path, on_progress) do
+  defp do_execute("run_tests", args, root_path, on_progress) do
     opts =
       [project_root: root_path, on_progress: on_progress]
       |> add_opt_from_map(args, "paths", :paths)
@@ -412,43 +452,49 @@ defmodule IexCode.Tools do
     end
   end
 
-  def execute("git_status", args, root_path, on_progress) do
+  defp do_execute("git_status", args, root_path, on_progress) do
     sub_path = Map.get(args, "path", "") || ""
-    repo_dir = resolve_path(root_path, sub_path)
-    on_progress.(30, "Checking git status for #{repo_dir}...")
 
-    case Git.status(repo_dir) do
-      {:ok, status_res} ->
-        on_progress.(100, "Git status retrieved")
+    case resolve_path(root_path, sub_path) do
+      {:ok, repo_dir} ->
+        on_progress.(30, "Checking git status for #{repo_dir}...")
 
-        staged_list =
-          Enum.map_join(status_res.staged, "\n  ", fn s -> "#{s.status}: #{s.path}" end)
+        case Git.status(repo_dir) do
+          {:ok, status_res} ->
+            on_progress.(100, "Git status retrieved")
 
-        unstaged_list =
-          Enum.map_join(status_res.unstaged, "\n  ", fn s -> "#{s.status}: #{s.path}" end)
+            staged_list =
+              Enum.map_join(status_res.staged, "\n  ", fn s -> "#{s.status}: #{s.path}" end)
 
-        untracked_list = Enum.map_join(status_res.untracked, "\n  ", & &1)
+            unstaged_list =
+              Enum.map_join(status_res.unstaged, "\n  ", fn s -> "#{s.status}: #{s.path}" end)
 
-        msg =
-          """
-          Branch: #{status_res.branch} (clean: #{status_res.clean?})
-          Staged (#{length(status_res.staged)}):
-            #{if staged_list == "", do: "(none)", else: staged_list}
-          Unstaged (#{length(status_res.unstaged)}):
-            #{if unstaged_list == "", do: "(none)", else: unstaged_list}
-          Untracked (#{length(status_res.untracked)}):
-            #{if untracked_list == "", do: "(none)", else: untracked_list}
-          """
-          |> String.trim()
+            untracked_list = Enum.map_join(status_res.untracked, "\n  ", & &1)
 
-        {:ok, msg}
+            msg =
+              """
+              Branch: #{status_res.branch} (clean: #{status_res.clean?})
+              Staged (#{length(status_res.staged)}):
+                #{if staged_list == "", do: "(none)", else: staged_list}
+              Unstaged (#{length(status_res.unstaged)}):
+                #{if unstaged_list == "", do: "(none)", else: unstaged_list}
+              Untracked (#{length(status_res.untracked)}):
+                #{if untracked_list == "", do: "(none)", else: untracked_list}
+              """
+              |> String.trim()
 
-      {:error, reason} ->
-        {:error, "Git status failed: #{inspect(reason)}"}
+            {:ok, msg}
+
+          {:error, reason} ->
+            {:error, "Git status failed: #{inspect(reason)}"}
+        end
+
+      {:error, :outside_workspace} ->
+        {:error, "Path escapes the workspace: #{sub_path}"}
     end
   end
 
-  def execute("git_diff", args, root_path, on_progress) do
+  defp do_execute("git_diff", args, root_path, on_progress) do
     staged? = Map.get(args, "staged", false) == true
     paths = Map.get(args, "paths", [])
     on_progress.(30, "Fetching diff (staged: #{staged?})...")
@@ -463,7 +509,7 @@ defmodule IexCode.Tools do
     end
   end
 
-  def execute("git_stage", %{"files" => files}, root_path, on_progress) do
+  defp do_execute("git_stage", %{"files" => files}, root_path, on_progress) do
     on_progress.(30, "Staging files: #{inspect(files)}...")
 
     case Git.stage(files, root_path) do
@@ -476,7 +522,7 @@ defmodule IexCode.Tools do
     end
   end
 
-  def execute("git_commit", %{"message" => message} = args, root_path, on_progress) do
+  defp do_execute("git_commit", %{"message" => message} = args, root_path, on_progress) do
     allow_empty = Map.get(args, "allow_empty", false) == true
     on_progress.(30, "Creating commit with message: #{message}...")
 
@@ -493,7 +539,7 @@ defmodule IexCode.Tools do
     end
   end
 
-  def execute("git_generate_commit", _args, root_path, on_progress) do
+  defp do_execute("git_generate_commit", _args, root_path, on_progress) do
     on_progress.(30, "Analyzing changes to generate semantic commit...")
 
     case Git.generate_commit_message(root_path) do
@@ -506,139 +552,186 @@ defmodule IexCode.Tools do
     end
   end
 
-  def execute("list_dir", args, root_path, on_progress) do
+  defp do_execute("list_dir", args, root_path, on_progress) do
     sub_path = Map.get(args, "path", "") || ""
-    full_path = resolve_path(root_path, sub_path)
-    on_progress.(30, "Listing #{full_path}...")
+    on_progress.(30, "Listing #{sub_path}...")
 
-    if File.dir?(full_path) do
-      recursive? = Map.get(args, "recursive", false) == true
+    case resolve_path(root_path, sub_path) do
+      {:ok, full_path} ->
+        if File.dir?(full_path) do
+          recursive? = Map.get(args, "recursive", false) == true
 
-      entries =
-        if recursive? do
-          Path.wildcard(Path.join(full_path, "**/*"))
-          |> Enum.take(200)
-          |> Enum.map(fn p ->
-            rel = Path.relative_to(p, full_path)
-            type = if File.dir?(p), do: "dir", else: "file"
-            size = if type == "file", do: "#{File.stat!(p).size}B", else: "-"
-            "#{type}\t#{size}\t#{rel}"
-          end)
+          entries =
+            if recursive? do
+              Path.wildcard(Path.join(full_path, "**/*"))
+              |> Enum.reject(fn p ->
+                p
+                |> Path.relative_to(full_path)
+                |> Path.split()
+                |> List.first()
+                |> excluded_dir?()
+              end)
+              |> Enum.take(200)
+              |> Enum.map(fn p ->
+                rel = Path.relative_to(p, full_path)
+                {type, size} = entry_type_and_size(p)
+                "#{type}\t#{size}\t#{rel}"
+              end)
+            else
+              File.ls!(full_path)
+              |> Enum.reject(&excluded_dir?/1)
+              |> Enum.take(150)
+              |> Enum.map(fn item ->
+                p = Path.join(full_path, item)
+                {type, size} = entry_type_and_size(p)
+                "#{type}\t#{size}\t#{item}"
+              end)
+            end
+
+          on_progress.(100, "Listed #{length(entries)} items")
+          {:ok, Enum.join(entries, "\n")}
         else
-          File.ls!(full_path)
-          |> Enum.take(150)
-          |> Enum.map(fn item ->
-            p = Path.join(full_path, item)
-            type = if File.dir?(p), do: "dir", else: "file"
-            size = if type == "file", do: "#{File.stat!(p).size}B", else: "-"
-            "#{type}\t#{size}\t#{item}"
-          end)
+          {:error, "Not a directory: #{sub_path}"}
         end
 
-      on_progress.(100, "Listed #{length(entries)} items")
-      {:ok, Enum.join(entries, "\n")}
-    else
-      {:error, "Not a directory: #{sub_path}"}
+      {:error, :outside_workspace} ->
+        {:error, "Path escapes the workspace: #{sub_path}"}
     end
   end
 
-  def execute("grep_search", %{"query" => query} = args, root_path, on_progress) do
+  defp do_execute("grep_search", %{"query" => query} = args, root_path, on_progress) do
     sub_path = Map.get(args, "path", "") || ""
-    search_dir = resolve_path(root_path, sub_path)
     case_sensitive? = Map.get(args, "case_sensitive", false)
 
-    on_progress.(30, "Scanning files in #{search_dir} for query '#{query}'...")
+    case resolve_path(root_path, sub_path) do
+      {:ok, search_dir} ->
+        on_progress.(30, "Scanning files in #{search_dir} for query '#{query}'...")
 
-    results =
-      Path.wildcard(Path.join(search_dir, "**/*"))
-      |> Enum.reject(fn p ->
-        ext = Path.extname(p) |> String.downcase()
+        matcher = build_matcher(query, case_sensitive?)
 
-        File.dir?(p) or
-          ext in [
-            ".db",
-            ".db-wal",
-            ".db-shm",
-            ".beam",
-            ".png",
-            ".jpg",
-            ".jpeg",
-            ".ico",
-            ".svg",
-            ".lock",
-            ".dump",
-            ".gz",
-            ".zip"
-          ] or
-          String.contains?(p, "/_build/") or
-          String.contains?(p, "/deps/") or
-          String.contains?(p, "/.git/") or
-          String.contains?(p, "/node_modules/")
-      end)
-      |> Enum.take(500)
-      |> Enum.flat_map(fn file_path ->
-        case File.read(file_path) do
-          {:ok, content} ->
-            if String.valid?(content) do
-              rel = Path.relative_to(file_path, root_path)
+        results =
+          Path.wildcard(Path.join(search_dir, "**/*"))
+          |> Enum.reject(fn p ->
+            ext = Path.extname(p) |> String.downcase()
 
-              content
-              |> String.split("\n")
-              |> Enum.with_index(1)
-              |> Enum.filter(fn {line, _idx} ->
-                if case_sensitive? do
-                  String.contains?(line, query)
+            File.dir?(p) or
+              ext in [
+                ".db",
+                ".db-wal",
+                ".db-shm",
+                ".beam",
+                ".png",
+                ".jpg",
+                ".jpeg",
+                ".ico",
+                ".svg",
+                ".lock",
+                ".dump",
+                ".gz",
+                ".zip"
+              ] or
+              String.contains?(p, "/_build/") or
+              String.contains?(p, "/deps/") or
+              String.contains?(p, "/.git/") or
+              String.contains?(p, "/node_modules/")
+          end)
+          |> Enum.take(500)
+          |> Enum.flat_map(fn file_path ->
+            case File.read(file_path) do
+              {:ok, content} ->
+                if String.valid?(content) do
+                  rel = Path.relative_to(file_path, root_path)
+
+                  content
+                  |> String.split("\n")
+                  |> Enum.with_index(1)
+                  |> Enum.filter(fn {line, _idx} ->
+                    line_matches?(line, matcher, case_sensitive?)
+                  end)
+                  |> Enum.take(10)
+                  |> Enum.map(fn {line, idx} -> "#{rel}:#{idx}: #{String.trim(line)}" end)
                 else
-                  String.contains?(String.downcase(line), String.downcase(query))
+                  []
                 end
-              end)
-              |> Enum.take(10)
-              |> Enum.map(fn {line, idx} -> "#{rel}:#{idx}: #{String.trim(line)}" end)
-            else
-              []
+
+              # Explicitly skip unreadable files (permissions, broken symlinks, races).
+              {:error, _reason} ->
+                []
             end
+          end)
+          |> Enum.take(100)
 
-          _ ->
-            []
-        end
-      end)
-      |> Enum.take(100)
+        on_progress.(100, "Found #{length(results)} matches")
 
-    on_progress.(100, "Found #{length(results)} matches")
+        {:ok,
+         if(results == [], do: "No matches found for '#{query}'", else: Enum.join(results, "\n"))}
 
-    {:ok,
-     if(results == [], do: "No matches found for '#{query}'", else: Enum.join(results, "\n"))}
+      {:error, :outside_workspace} ->
+        {:error, "Path escapes the workspace: #{sub_path}"}
+    end
   end
 
-  def execute("run_command", %{"command" => command} = args, root_path, on_progress) do
+  defp do_execute("run_command", %{"command" => command} = args, root_path, on_progress) do
     on_progress.(20, "Starting command: #{command} in #{root_path}")
     timeout = Map.get(args, "timeout_ms", 30000)
 
-    task =
-      Task.async(fn ->
-        System.cmd("sh", ["-c", command], cd: root_path, stderr_to_stdout: true)
-      end)
+    port =
+      Port.open(
+        {:spawn_executable, "/bin/sh"},
+        [
+          :binary,
+          :exit_status,
+          :stderr_to_stdout,
+          args: ["-c", command],
+          cd: root_path
+        ]
+      )
 
-    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
-      {:ok, {output, 0}} ->
-        on_progress.(100, "Command exited successfully (0)")
-        {:ok, IexCode.Sessions.sanitize_utf8(output)}
+    deadline = System.monotonic_time(:millisecond) + timeout
 
-      {:ok, {output, exit_code}} ->
-        on_progress.(100, "Command failed (code #{exit_code})")
-        {:ok, "Exit Code #{exit_code}:\n#{IexCode.Sessions.sanitize_utf8(output)}"}
+    case collect_port_output(port, deadline, {"", false}) do
+      {:done, exit_code, {output, truncated?}} ->
+        suffix =
+          if truncated? do
+            "\n\n[output truncated at #{@max_command_output} bytes]"
+          else
+            ""
+          end
 
-      nil ->
+        output = IexCode.Sessions.sanitize_utf8(output) <> suffix
+
+        if exit_code == 0 do
+          on_progress.(100, "Command exited successfully (0)")
+          {:ok, output}
+        else
+          on_progress.(100, "Command failed (code #{exit_code})")
+          {:ok, "Exit Code #{exit_code}:\n#{output}"}
+        end
+
+      {:timeout, {output, truncated?}} ->
+        # Closing the port terminates the connected /bin/sh. Best-effort only:
+        # orphaned grandchildren spawned by the command may survive since we do
+        # not track the full OS process tree.
+        Port.close(port)
         on_progress.(100, "Command timed out after #{timeout}ms")
-        {:error, "Command timed out after #{timeout}ms"}
+
+        suffix =
+          if truncated? do
+            "\n\n[output truncated at #{@max_command_output} bytes]"
+          else
+            ""
+          end
+
+        {:error,
+         "Command timed out after #{timeout}ms. Partial output:\n#{IexCode.Sessions.sanitize_utf8(output)}#{suffix}"}
     end
   end
 
-  def execute("web_search", %{"query" => query}, _root_path, on_progress) do
+  defp do_execute("web_search", %{"query" => query}, _root_path, on_progress) do
     on_progress.(20, "Connecting to search/fetch: #{query}")
 
     if String.starts_with?(query, "http://") or String.starts_with?(query, "https://") do
-      case Req.get(query, receive_timeout: 10_000) do
+      case Req.get(query, receive_timeout: 10_000, retry: false) do
         {:ok, %{status: 200, body: body}} when is_binary(body) ->
           on_progress.(70, "Parsing HTML body...")
 
@@ -668,41 +761,164 @@ defmodule IexCode.Tools do
       # Simple DuckDuckGo HTML search / fallback
       search_url = "https://html.duckduckgo.com/html/?q=#{URI.encode(query)}"
 
-      case Req.get(search_url, headers: [{"user-agent", "Mozilla/5.0"}], receive_timeout: 10_000) do
+      case Req.get(
+             search_url,
+             headers: [{"user-agent", "Mozilla/5.0"}],
+             receive_timeout: 10_000,
+             retry: false
+           ) do
         {:ok, %{status: 200, body: body}} ->
           on_progress.(80, "Extracting search results...")
 
-          results =
-            case Floki.parse_document(body) do
-              {:ok, doc} ->
+          case Floki.parse_document(body) do
+            {:ok, doc} ->
+              results =
                 doc
                 |> Floki.find(".result__snippet")
                 |> Enum.take(5)
                 |> Enum.map(&Floki.text/1)
                 |> Enum.join("\n- ")
 
-              _ ->
-                "Results retrieved."
-            end
+              if results == "" do
+                {:error, "No search results found for '#{query}'"}
+              else
+                on_progress.(100, "Search completed")
+                {:ok, "Search results for '#{query}':\n- #{results}"}
+              end
 
-          on_progress.(100, "Search completed")
-          {:ok, "Search results for '#{query}':\n- #{results}"}
+            # Parse failed: surface real page text rather than fabricating results.
+            _ ->
+              text =
+                body
+                |> String.replace(~r/<[^>]*>/, " ")
+                |> String.replace(~r/\s+/, " ")
+                |> String.slice(0, 4000)
 
-        _ ->
-          {:ok, "Web search simulated response for: #{query}"}
+              on_progress.(100, "Search completed (unparsed page text)")
+              {:ok, "Search results for '#{query}' (raw page text):\n#{text}"}
+          end
+
+        {:ok, %{status: status}} ->
+          {:error, "Search request returned status #{status}"}
+
+        {:error, reason} ->
+          {:error, "Search request failed: #{inspect(reason)}"}
       end
     end
   end
 
-  def execute(unknown_tool, _args, _root_path, _on_progress) do
+  defp do_execute(unknown_tool, _args, _root_path, _on_progress) do
     {:error, "Unknown tool: #{unknown_tool}"}
   end
 
+  # Resolves `path` against the workspace root and enforces containment:
+  # relative paths may not escape via `..` and absolute paths outside the
+  # root are rejected. Note this is a lexical check — symlinks inside the
+  # workspace pointing outside are not followed/resolved here.
   defp resolve_path(root_path, path) do
-    if Path.type(path) == :absolute do
-      path
+    root = Path.expand(root_path)
+
+    candidate =
+      if Path.type(path) == :absolute, do: path, else: Path.join(root, path)
+
+    expanded = Path.expand(candidate)
+
+    case Path.relative_to(expanded, root) do
+      ^expanded -> {:error, :outside_workspace}
+      _relative -> {:ok, expanded}
+    end
+  end
+
+  defp excluded_dir?(name) when name in @excluded_dirs, do: true
+  defp excluded_dir?(_name), do: false
+
+  defp entry_type_and_size(path) do
+    if File.dir?(path) do
+      {"dir", "-"}
     else
-      Path.expand(Path.join(root_path, path))
+      case File.stat(path) do
+        {:ok, stat} -> {"file", "#{stat.size}B"}
+        # Unreadable file or broken symlink — report without crashing.
+        {:error, _reason} -> {"file", "?"}
+      end
+    end
+  end
+
+  defp build_matcher(query, case_sensitive?) do
+    case Regex.compile(query, if(case_sensitive?, do: "", else: "i")) do
+      {:ok, regex} ->
+        {:regex, regex}
+
+      {:error, _invalid} ->
+        needle = if case_sensitive?, do: query, else: String.downcase(query)
+        {:text, needle}
+    end
+  end
+
+  defp line_matches?(line, {:regex, regex}, _case_sensitive?), do: Regex.match?(regex, line)
+
+  defp line_matches?(line, {:text, needle}, case_sensitive?) do
+    if case_sensitive? do
+      String.contains?(line, needle)
+    else
+      String.contains?(String.downcase(line), needle)
+    end
+  end
+
+  # Writes content to a temp file next to the target, then renames it into
+  # place so readers never observe a partially-written file.
+  defp atomic_write(full_path, content) do
+    tmp_path = "#{full_path}.tmp#{System.unique_integer([:positive])}"
+
+    with :ok <- File.write(tmp_path, content),
+         :ok <- File.rename(tmp_path, full_path) do
+      :ok
+    else
+      {:error, reason} ->
+        File.rm(tmp_path)
+        {:error, reason}
+    end
+  end
+
+  defp collect_port_output(port, deadline, acc) do
+    remaining = deadline - System.monotonic_time(:millisecond)
+
+    if remaining <= 0 do
+      {:timeout, acc}
+    else
+      receive do
+        {^port, {:data, data}} ->
+          collect_port_output(port, deadline, append_capped(acc, data))
+
+        {^port, {:exit_status, status}} ->
+          {:done, status, drain_port(port, acc)}
+      after
+        remaining -> {:timeout, acc}
+      end
+    end
+  end
+
+  # Data can still be buffered after the exit status arrives; drain it
+  # without blocking.
+  defp drain_port(port, acc) do
+    receive do
+      {^port, {:data, data}} -> drain_port(port, append_capped(acc, data))
+    after
+      0 -> acc
+    end
+  end
+
+  defp append_capped({acc, truncated?}, data) do
+    cond do
+      truncated? ->
+        {acc, true}
+
+      byte_size(acc) + byte_size(data) <= @max_command_output ->
+        {acc <> data, false}
+
+      true ->
+        take = max(@max_command_output - byte_size(acc), 0)
+        {acc <> binary_part(data, 0, take), true}
     end
   end
 

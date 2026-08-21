@@ -265,16 +265,39 @@ defmodule IexCodeWeb.WorkspaceLiveTest do
     conn: conn,
     workspace_path: path
   } do
+    # Real git repo with a committed baseline and an uncommitted modification,
+    # so the changes tab renders actual `git diff` content
+    System.cmd("git", ["init"], cd: path)
+    System.cmd("git", ["config", "user.name", "IexCode Test"], cd: path)
+    System.cmd("git", ["config", "user.email", "test@iexcode.local"], cd: path)
+
+    workspace_write_file(
+      path,
+      "lib/demo_app.ex",
+      "defmodule DemoApp do\n  def run, do: :ok\nend\n"
+    )
+
+    System.cmd("git", ["add", "."], cd: path)
+    System.cmd("git", ["commit", "-m", "Initial commit"], cd: path)
+
+    workspace_write_file(
+      path,
+      "lib/demo_app.ex",
+      "defmodule DemoApp do\n  def run, do: :changed\nend\n"
+    )
+
     project = create_project_fixture(%{root_path: path})
     session = create_session_fixture(project)
     {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
 
-    # Switch to changes tab
+    # Switch to changes tab (triggers the LiveView's git state refresh)
     view
     |> element("#tab-btn-changes")
     |> render_click()
 
-    assert render(view) =~ "swarm_coordinator.ex" or render(view) =~ "Patch Preview"
+    html = render(view)
+    assert html =~ "lib/demo_app.ex"
+    assert html =~ "Hunk hunk-1"
 
     # Switch to split mode
     html = render_click(view, "set_diff_mode", %{"mode" => "split"})
@@ -284,6 +307,7 @@ defmodule IexCodeWeb.WorkspaceLiveTest do
     # Switch back to inline mode
     html = render_click(view, "set_diff_mode", %{"mode" => "inline"})
     assert html =~ "bg-emerald-950/40" or html =~ "text-emerald-300"
+    assert html =~ ":changed"
   end
 
   # ============================================================================
@@ -340,6 +364,7 @@ defmodule IexCodeWeb.WorkspaceLiveTest do
       |> render_submit()
 
     assert html =~ "hello from integrated terminal"
+    html = wait_for_terminal(view, &(&1 =~ "[Exit 0: OK]"))
     assert html =~ "[Exit 0: OK]"
 
     # Execute quick terminal button
@@ -538,7 +563,7 @@ defmodule IexCodeWeb.WorkspaceLiveTest do
 
     # 6. Run task from modal
     html = render_click(view, "run_scheduled_task", %{"id" => created_task.id})
-    assert html =~ "triggered and now running"
+    assert html =~ "dispatched to the session"
     refute html =~ "scheduled-task-detail-modal"
   end
 
@@ -578,10 +603,12 @@ defmodule IexCodeWeb.WorkspaceLiveTest do
     assert html =~ "08/15/2026"
 
     # Re-open and click Today
+    today = Calendar.strftime(Date.utc_today(), "%m/%d/%Y")
+
     html = render_click(view, "toggle_date_picker_popover")
     assert html =~ "custom-date-picker-popover"
     html = render_click(view, "picker_today")
-    assert html =~ "08/20/2026"
+    assert html =~ today
 
     # 3. Test Presence & Focus Mode Modal with untruncated status pills
     html = render_click(view, "open_time_picker")
@@ -669,5 +696,23 @@ defmodule IexCodeWeb.WorkspaceLiveTest do
     assert created_task.status == "ready"
     assert created_task.priority == "critical"
     assert created_task.assignee == "coder"
+  end
+
+  # Terminal execution is async via Port: poll until the expected output
+  # (e.g. an exit marker) shows up in the rendered buffer.
+  defp wait_for_terminal(view, match?, deadline \\ 2000) do
+    html = render(view)
+
+    cond do
+      match?.(html) ->
+        html
+
+      deadline <= 0 ->
+        flunk("timed out waiting for expected terminal output")
+
+      true ->
+        Process.sleep(50)
+        wait_for_terminal(view, match?, deadline - 50)
+    end
   end
 end

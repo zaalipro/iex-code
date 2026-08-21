@@ -1,8 +1,9 @@
 defmodule IexCode.Engine.AgentsTest do
   use IexCode.DataCase, async: false
-  alias IexCode.{Projects, Sessions}
+  alias IexCode.{Projects, Sessions, Settings}
   alias IexCode.Engine.{AgentRegistry, AgentSupervisor}
   alias IexCode.Engine.Agents.{PlannerAgent, ExplorerAgent, CoderAgent, VerifierAgent}
+  alias IexCode.E2E.MockLLMServer
 
   setup do
     {:ok, project} = Projects.create_project(%{name: "Agents Test Proj", root_path: File.cwd!()})
@@ -109,6 +110,21 @@ defmodule IexCode.Engine.AgentsTest do
   describe "CoderAgent GenServer" do
     @tag :tmp_dir
     test "generates code and applies atomic patches", %{session: session, tmp_dir: tmp_dir} do
+      # No real LLM credentials in the test environment: point the LLM at a local mock server
+      {:ok, mock_pid, mock_info} = MockLLMServer.start(scenario: :standard_completion)
+
+      on_exit(fn ->
+        MockLLMServer.stop(mock_pid)
+      end)
+
+      {:ok, _} =
+        Settings.update_settings(%{
+          openai_base_url: "#{mock_info.url}/v1",
+          anthropic_base_url: "#{mock_info.url}/v1",
+          openai_api_key: "sk-test-mock-key",
+          anthropic_api_key: "sk-test-mock-key"
+        })
+
       file_path = Path.join(tmp_dir, "lib_test.ex")
       File.write!(file_path, "defmodule TempMod do\n  def old_val, do: 1\nend")
 
@@ -130,9 +146,12 @@ defmodule IexCode.Engine.AgentsTest do
       content = File.read!(file_path)
       assert String.contains?(content, "def new_val, do: 2")
 
-      # Test code synthesis call
+      # Test code synthesis call against the mock LLM server
       assert {:ok, code_result} =
-               CoderAgent.code(session.id, "Update value to 2", project_root: tmp_dir)
+               CoderAgent.code(session.id, "Update value to 2",
+                 project_root: tmp_dir,
+                 session: Map.merge(session, %{model_provider: "openai", model_name: "gpt-4o"})
+               )
 
       assert is_binary(code_result)
 

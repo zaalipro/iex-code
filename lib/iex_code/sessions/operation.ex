@@ -28,6 +28,8 @@ defmodule IexCode.Sessions.Operation do
     timestamps(type: :utc_datetime)
   end
 
+  @statuses ~w(pending running completed failed)
+
   def changeset(operation, attrs) do
     operation
     |> cast(attrs, [
@@ -47,6 +49,10 @@ defmodule IexCode.Sessions.Operation do
       :duration_ms
     ])
     |> validate_required([:session_id, :agent_name, :op_type, :title])
+    |> validate_inclusion(:status, @statuses)
+    |> validate_number(:progress, greater_than_or_equal_to: 0, less_than_or_equal_to: 100)
     |> foreign_key_constraint(:session_id)
   end
+
+  def statuses, do: @statuses
 end

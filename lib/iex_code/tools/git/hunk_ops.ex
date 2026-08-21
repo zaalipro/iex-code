@@ -41,24 +41,39 @@ defmodule IexCode.Tools.Git.HunkOps do
   end
 
   @doc """
-  Rejects / discards changes in a specific hunk from the working tree.
+  Rejects / discards changes in a specific hunk.
+
+  By default the hunk is reverse-applied to the working tree. With `staged: true`
+  the hunk is reverse-applied to the Git index instead (un-staging that hunk's
+  changes), and no working-tree fallback is attempted.
   """
   @spec reject_hunk(Path.t(), Path.t(), String.t() | integer(), keyword()) ::
           {:ok, String.t()} | {:error, term()}
   def reject_hunk(project_root, file_path, hunk_id, opts \\ []) do
     with {:ok, {file_diff, hunk}} <- find_target_hunk(project_root, file_path, hunk_id, opts) do
       patch_str = DiffParser.format_hunk_patch(file_diff, hunk)
+      staged? = Keyword.get(opts, :staged, false)
 
-      # Attempt Git reverse apply
-      case Git.apply_patch(project_root, patch_str, reverse: true) do
+      result =
+        if staged? do
+          Git.apply_patch(project_root, patch_str, reverse: true, cached: true)
+        else
+          Git.apply_patch(project_root, patch_str, reverse: true)
+        end
+
+      case result do
         {:ok, _output} ->
           fetch_updated_diff(project_root, file_path)
 
         {:error, reason} ->
-          # Fallback to in-memory replacement on the file
-          case fallback_revert_hunk_in_file(project_root, file_path, hunk) do
-            :ok -> fetch_updated_diff(project_root, file_path)
-            {:error, _} -> {:error, reason}
+          if staged? do
+            {:error, reason}
+          else
+            # Fallback to in-memory replacement on the file
+            case fallback_revert_hunk_in_file(project_root, file_path, hunk) do
+              :ok -> fetch_updated_diff(project_root, file_path)
+              {:error, _} -> {:error, reason}
+            end
           end
       end
     end
@@ -74,6 +89,8 @@ defmodule IexCode.Tools.Git.HunkOps do
   @doc """
   Reverts all changes to a specific file (staged and unstaged), restoring the HEAD revision.
   If the file is untracked (newly created), it is safely removed from disk.
+  In a non-Git workspace there is no HEAD to restore to, so the file is moved
+  aside to `<path>.bak` instead of being deleted outright.
   """
   @spec revert_file(Path.t(), Path.t()) :: {:ok, :reverted} | {:error, term()}
   def revert_file(project_root, file_path) do
@@ -85,11 +102,7 @@ defmodule IexCode.Tools.Git.HunkOps do
         is_untracked = file_path in status.untracked
 
         if is_untracked do
-          if File.exists?(full_path) do
-            File.rm(full_path)
-          end
-
-          {:ok, :reverted}
+          remove_file(full_path)
         else
           case Git.restore_file(project_root, file_path, staged: true, worktree: true) do
             {:ok, _} ->
@@ -105,15 +118,29 @@ defmodule IexCode.Tools.Git.HunkOps do
         end
 
       {:error, :not_a_git_repo} ->
-        # Non-git workspace fallback
+        # Non-git workspace fallback: never delete user work — move it aside.
         if File.exists?(full_path) do
-          File.rm(full_path)
+          case File.rename(full_path, full_path <> ".bak") do
+            :ok -> {:ok, :reverted}
+            {:error, reason} -> {:error, {:backup_failed, reason}}
+          end
+        else
+          {:ok, :reverted}
         end
-
-        {:ok, :reverted}
 
       err ->
         err
+    end
+  end
+
+  defp remove_file(full_path) do
+    if File.exists?(full_path) do
+      case File.rm(full_path) do
+        :ok -> {:ok, :reverted}
+        {:error, reason} -> {:error, {:remove_failed, reason}}
+      end
+    else
+      {:ok, :reverted}
     end
   end
 
@@ -136,43 +163,47 @@ defmodule IexCode.Tools.Git.HunkOps do
   # --- Internal Helpers ---
 
   defp find_target_hunk(project_root, file_path, hunk_id, opts) do
-    diff_text =
-      case Keyword.get(opts, :diff) do
-        d when is_binary(d) and d != "" ->
-          d
+    with {:ok, diff_text} <- resolve_diff_text(project_root, file_path, opts) do
+      if String.trim(diff_text) == "" do
+        {:error, :no_diff_found}
+      else
+        with {:ok, file_diffs} <- DiffParser.parse(diff_text) do
+          normalized_path = normalize_rel_path(file_path)
 
-        _ ->
-          staged = Keyword.get(opts, :staged, false)
+          # Filter file diff matching file_path — never fall back to another
+          # file's diff, that would apply hunks to the wrong target.
+          target_file_diff =
+            Enum.find(file_diffs, fn fd ->
+              normalize_rel_path(fd.path) == normalized_path or
+                normalize_rel_path(fd.new_path) == normalized_path or
+                normalize_rel_path(fd.old_path) == normalized_path
+            end)
 
-          case Git.diff(project_root, paths: [file_path], staged: staged) do
-            {:ok, output} -> output
-            _ -> ""
-          end
-      end
-
-    if String.trim(diff_text) == "" do
-      {:error, :no_diff_found}
-    else
-      with {:ok, file_diffs} <- DiffParser.parse(diff_text) do
-        normalized_path = normalize_rel_path(file_path)
-
-        # Filter file diff matching file_path
-        target_file_diff =
-          Enum.find(file_diffs, fn fd ->
-            normalize_rel_path(fd.path) == normalized_path or
-              normalize_rel_path(fd.new_path) == normalized_path or
-              normalize_rel_path(fd.old_path) == normalized_path
-          end) || List.first(file_diffs)
-
-        if is_nil(target_file_diff) do
-          {:error, {:file_diff_not_found, file_path}}
-        else
-          case DiffParser.find_hunk(target_file_diff, hunk_id) do
-            {:ok, {fd, hunk}} -> {:ok, {fd, hunk}}
-            {:error, _} -> {:error, {:hunk_not_found, hunk_id}}
+          if is_nil(target_file_diff) do
+            {:error, {:file_diff_not_found, file_path}}
+          else
+            case DiffParser.find_hunk(target_file_diff, hunk_id) do
+              {:ok, {fd, hunk}} -> {:ok, {fd, hunk}}
+              {:error, _} -> {:error, {:hunk_not_found, hunk_id}}
+            end
           end
         end
       end
+    end
+  end
+
+  defp resolve_diff_text(project_root, file_path, opts) do
+    case Keyword.get(opts, :diff) do
+      d when is_binary(d) and d != "" ->
+        {:ok, d}
+
+      _ ->
+        staged = Keyword.get(opts, :staged, false)
+
+        case Git.diff(project_root, paths: [file_path], staged: staged) do
+          {:ok, output} -> {:ok, output}
+          {:error, reason} -> {:error, {:diff_failed, reason}}
+        end
     end
   end
 
@@ -218,30 +249,22 @@ defmodule IexCode.Tools.Git.HunkOps do
     else
       content = File.read!(full_path)
 
-      target =
-        hunk.lines
-        |> Enum.filter(&(&1.type in [:context, :addition]))
-        |> Enum.map(& &1.content)
-        |> Enum.join("\n")
+      target = hunk_lines_text(hunk, [:context, :addition])
+      replacement = hunk_lines_text(hunk, [:context, :deletion])
 
-      replacement =
-        hunk.lines
-        |> Enum.filter(&(&1.type in [:context, :deletion]))
-        |> Enum.map(& &1.content)
-        |> Enum.join("\n")
+      cond do
+        target == "" and replacement == "" ->
+          :ok
 
-      if target == "" or target == content do
-        File.write!(full_path, replacement)
-        :ok
-      else
-        case MultiPatch.patch_string(content, target, replacement, allow_multiple: false) do
-          {:ok, %{content: new_content}} ->
-            File.write!(full_path, new_content)
-            :ok
+        target == "" ->
+          # Hunk contains only deletions: reverting means re-inserting the
+          # deleted lines at their original position — never overwrite the file.
+          insert_lines_at(full_path, content, hunk.old_start, replacement)
 
-          {:error, _} ->
-            {:error, :fallback_revert_failed}
-        end
+        true ->
+          replace_anchored(full_path, content, hunk.old_start, target, replacement,
+            error_tag: :fallback_revert_failed
+          )
       end
     end
   end
@@ -254,27 +277,96 @@ defmodule IexCode.Tools.Git.HunkOps do
     else
       content = File.read!(full_path)
 
-      target =
-        hunk.lines
-        |> Enum.filter(&(&1.type in [:context, :deletion]))
-        |> Enum.map(& &1.content)
-        |> Enum.join("\n")
+      target = hunk_lines_text(hunk, [:context, :deletion])
+      replacement = hunk_lines_text(hunk, [:context, :addition])
 
-      replacement =
-        hunk.lines
-        |> Enum.filter(&(&1.type in [:context, :addition]))
-        |> Enum.map(& &1.content)
-        |> Enum.join("\n")
-
-      case MultiPatch.patch_string(content, target, replacement, allow_multiple: false) do
-        {:ok, %{content: new_content}} ->
-          File.write!(full_path, new_content)
-          :ok
-
-        {:error, _} ->
-          {:error, :fallback_apply_failed}
+      if target == "" do
+        # Hunk contains only additions: insert them at the new-file position.
+        insert_lines_at(full_path, content, max(hunk.new_start, 1), replacement)
+      else
+        replace_anchored(full_path, content, hunk.old_start, target, replacement,
+          error_tag: :fallback_apply_failed
+        )
       end
     end
+  end
+
+  defp hunk_lines_text(hunk, types) do
+    hunk.lines
+    |> Enum.filter(&(&1.type in types))
+    |> Enum.map(& &1.content)
+    |> Enum.join("\n")
+  end
+
+  # Anchors the search region on the hunk's declared old_start line so the
+  # replacement can only occur near where the hunk belongs, never elsewhere
+  # in the file.
+  defp replace_anchored(full_path, content, anchor_line, target, replacement, opts) do
+    error_tag = Keyword.fetch!(opts, :error_tag)
+
+    case split_at_line(content, anchor_line) do
+      {prefix, region} ->
+        case MultiPatch.patch_string(region, target, replacement, allow_multiple: false) do
+          {:ok, %{content: new_region}} ->
+            File.write!(full_path, prefix <> new_region)
+            :ok
+
+          {:error, _} ->
+            {:error, error_tag}
+        end
+
+      :error ->
+        {:error, error_tag}
+    end
+  end
+
+  # Splits content into {text before 1-based line_number, text from that line on}.
+  defp split_at_line(content, line_number) when line_number >= 1 do
+    offset =
+      content
+      |> String.splitter("\n")
+      |> Enum.take(line_number - 1)
+      |> Enum.reduce(0, fn line, acc -> acc + byte_size(line) + 1 end)
+
+    cond do
+      offset > byte_size(content) ->
+        :error
+
+      offset == 0 ->
+        {"", content}
+
+      true ->
+        <<prefix::binary-size(offset), region::binary>> = content
+        {prefix, region}
+    end
+  end
+
+  defp insert_lines_at(full_path, content, line_number, inserted) do
+    new_content =
+      case split_at_line(content, max(line_number, 1)) do
+        {prefix, region} ->
+          cond do
+            region == "" and prefix != "" and not String.ends_with?(prefix, "\n") ->
+              prefix <> "\n" <> inserted
+
+            region == "" ->
+              prefix <> inserted <> "\n"
+
+            true ->
+              prefix <> inserted <> "\n" <> region
+          end
+
+        # Anchor beyond EOF: append at the end of the file instead of crashing.
+        :error ->
+          cond do
+            content == "" -> inserted <> "\n"
+            String.ends_with?(content, "\n") -> content <> inserted <> "\n"
+            true -> content <> "\n" <> inserted <> "\n"
+          end
+      end
+
+    File.write!(full_path, new_content)
+    :ok
   end
 
   defp normalize_rel_path(nil), do: ""

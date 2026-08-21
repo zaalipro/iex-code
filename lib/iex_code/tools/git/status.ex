@@ -21,6 +21,7 @@ defmodule IexCode.Tools.Git.StatusResult do
   @type t :: %__MODULE__{
           branch: String.t(),
           upstream: String.t() | nil,
+          upstream_gone?: boolean(),
           ahead: non_neg_integer(),
           behind: non_neg_integer(),
           initial?: boolean(),
@@ -32,6 +33,7 @@ defmodule IexCode.Tools.Git.StatusResult do
         }
   defstruct branch: "main",
             upstream: nil,
+            upstream_gone?: false,
             ahead: 0,
             behind: 0,
             initial?: false,
@@ -92,6 +94,7 @@ defmodule IexCode.Tools.Git.Status do
     initial_acc = %StatusResult{
       branch: "main",
       upstream: nil,
+      upstream_gone?: false,
       ahead: 0,
       behind: 0,
       initial?: false,
@@ -118,7 +121,7 @@ defmodule IexCode.Tools.Git.Status do
   end
 
   defp process_line("??" <> path, acc) do
-    clean_path = String.trim(path)
+    clean_path = path |> String.trim() |> unquote_c_path()
     %{acc | untracked: acc.untracked ++ [clean_path]}
   end
 
@@ -135,15 +138,19 @@ defmodule IexCode.Tools.Git.Status do
          {"A", "U"},
          {"U", "A"}
        ] do
-      conflict_entry = %{path: path_trim, status: :conflict, code: x <> y}
+      conflict_entry = %{path: unquote_c_path(path_trim), status: :conflict, code: x <> y}
       %{acc | conflicted: acc.conflicted ++ [conflict_entry]}
     else
+      # Split rename/copy pairs ("old -> new") so a worktree modification on a
+      # renamed file reports the new path instead of the raw pair.
+      {old_path, new_path} = rename_pair(path_trim)
+
       # Check staged change (index X)
-      staged_entry = parse_staged_char(x, path_trim)
+      staged_entry = parse_staged_char(x, new_path, old_path)
       acc1 = if staged_entry, do: %{acc | staged: acc.staged ++ [staged_entry]}, else: acc
 
       # Check unstaged change (worktree Y)
-      unstaged_entry = parse_unstaged_char(y, path_trim)
+      unstaged_entry = parse_unstaged_char(y, new_path)
       if unstaged_entry, do: %{acc1 | unstaged: acc1.unstaged ++ [unstaged_entry]}, else: acc1
     end
   end
@@ -167,15 +174,19 @@ defmodule IexCode.Tools.Git.Status do
 
       true ->
         # Example: main...origin/main [ahead 1, behind 2]
-        # or main
-        case Regex.run(~r/^([^ \.]+)(?:\.\.\.([^ \[]+))?(?:\s+\[(.*)\])?/, line) do
+        # or main...origin/main [gone]
+        # or release/1.2.0 (dotted names must not be truncated)
+        case Regex.run(~r/^(\S+?)(?:\.{3}(\S+?))?(?:\s+\[(.+)\])?\s*$/, line) do
           [_, branch, upstream, tracking] ->
             {ahead, behind} = parse_ahead_behind(tracking)
+            gone? = tracking == "gone"
+            upstream = if(gone? or upstream == "", do: nil, else: upstream)
 
             %{
               acc
               | branch: branch,
-                upstream: if(upstream != "", do: upstream, else: nil),
+                upstream: upstream,
+                upstream_gone?: gone?,
                 ahead: ahead,
                 behind: behind
             }
@@ -192,6 +203,7 @@ defmodule IexCode.Tools.Git.Status do
     end
   end
 
+  defp parse_ahead_behind("gone"), do: {0, 0}
   defp parse_ahead_behind(nil), do: {0, 0}
   defp parse_ahead_behind(""), do: {0, 0}
 
@@ -211,21 +223,70 @@ defmodule IexCode.Tools.Git.Status do
     {ahead, behind}
   end
 
-  defp parse_staged_char("M", path), do: %{path: path, status: :modified, old_path: nil}
-  defp parse_staged_char("A", path), do: %{path: path, status: :added, old_path: nil}
-  defp parse_staged_char("D", path), do: %{path: path, status: :deleted, old_path: nil}
-  defp parse_staged_char("C", path), do: %{path: path, status: :copied, old_path: nil}
+  defp parse_staged_char("M", path, _old_path),
+    do: %{path: path, status: :modified, old_path: nil}
 
-  defp parse_staged_char("R", path) do
-    case String.split(path, " -> ") do
-      [old_p, new_p] -> %{path: new_p, status: :renamed, old_path: old_p}
-      _ -> %{path: path, status: :renamed, old_path: nil}
-    end
-  end
+  defp parse_staged_char("A", path, _old_path), do: %{path: path, status: :added, old_path: nil}
+  defp parse_staged_char("D", path, _old_path), do: %{path: path, status: :deleted, old_path: nil}
 
-  defp parse_staged_char(_other, _path), do: nil
+  defp parse_staged_char("C", path, old_path),
+    do: %{path: path, status: :copied, old_path: old_path}
+
+  defp parse_staged_char("R", path, old_path),
+    do: %{path: path, status: :renamed, old_path: old_path}
+
+  defp parse_staged_char(_other, _path, _old_path), do: nil
 
   defp parse_unstaged_char("M", path), do: %{path: path, status: :modified}
   defp parse_unstaged_char("D", path), do: %{path: path, status: :deleted}
   defp parse_unstaged_char(_other, _path), do: nil
+
+  # Splits porcelain rename/copy pairs ("old -> new"); unquotes C-escaped
+  # paths on both sides. Non-pair paths pass through unquoted.
+  defp rename_pair(path) do
+    case String.split(path, " -> ", parts: 2) do
+      [old_p, new_p] -> {unquote_c_path(old_p), unquote_c_path(new_p)}
+      _ -> {nil, unquote_c_path(path)}
+    end
+  end
+
+  # Git C-quotes paths containing special characters in porcelain output,
+  # e.g. `"old\name.ex"` or `"new name.ex"`.
+  defp unquote_c_path("\"" <> rest) do
+    if String.ends_with?(rest, "\"") do
+      body = binary_part(rest, 0, byte_size(rest) - 1)
+      unescaped = unescape_c(body)
+
+      if String.valid?(unescaped) do
+        unescaped
+      else
+        # Keep the quoted form if unescaping produced invalid bytes
+        "\"" <> rest
+      end
+    else
+      "\"" <> rest
+    end
+  end
+
+  defp unquote_c_path(path), do: path
+
+  defp unescape_c(path) do
+    Regex.replace(~r/\\(?:(\d{3})|(.))/s, path, fn
+      _full, octal, "" ->
+        case Integer.parse(octal, 8) do
+          {code, ""} when code <= 255 -> <<code>>
+          _ -> "\\" <> octal
+        end
+
+      _full, "", escaped ->
+        case escaped do
+          "n" -> "\n"
+          "t" -> "\t"
+          "r" -> "\r"
+          "\"" -> "\""
+          "\\" -> "\\"
+          other -> "\\" <> other
+        end
+    end)
+  end
 end

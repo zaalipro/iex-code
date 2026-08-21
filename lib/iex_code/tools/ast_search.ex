@@ -7,11 +7,25 @@ defmodule IexCode.Tools.ASTSearch do
 
   alias IexCode.Tools.ASTSearch.{Extractor, Query, Formatter}
 
+  require Logger
+
   @type symbol_entry :: Extractor.symbol_entry()
   @type query_spec :: String.t() | map() | keyword()
 
+  @default_limit 500
+
   @doc """
   Searches all .ex/.exs files in `project_root` matching `query`.
+
+  Options:
+
+    * `:path` - optional subdirectory (relative to `project_root`) or an
+      absolute directory/file path to scope the search to.
+    * `:limit` - maximum number of results returned (default #{@default_limit}).
+      Prevents formatter output from blowing up the LLM context.
+
+  Files that fail to parse or read are skipped with a logged warning instead
+  of crashing the search.
   """
   @spec search(Path.t(), query_spec(), keyword()) ::
           {:ok, [symbol_entry()]} | {:error, term()}
@@ -24,10 +38,10 @@ defmodule IexCode.Tools.ASTSearch do
       end
 
     search_dir =
-      if sub_path != "" and Path.type(sub_path) != :absolute do
-        Path.join(project_root, sub_path)
-      else
-        project_root
+      cond do
+        sub_path == "" -> project_root
+        Path.type(sub_path) == :absolute -> sub_path
+        true -> Path.join(project_root, sub_path)
       end
 
     if File.exists?(search_dir) do
@@ -35,22 +49,41 @@ defmodule IexCode.Tools.ASTSearch do
 
       all_symbols =
         Enum.flat_map(files, fn file_path ->
-          rel_path = Path.relative_to(file_path, project_root)
+          rel_path = relative_path(file_path, project_root)
 
-          case File.read(file_path) do
-            {:ok, content} ->
-              case Extractor.extract(content, rel_path) do
-                {:ok, symbols} -> symbols
-                _ -> []
-              end
+          try do
+            case File.read(file_path) do
+              {:ok, content} ->
+                case Extractor.extract(content, rel_path) do
+                  {:ok, symbols} ->
+                    symbols
 
-            _ ->
+                  {:error, reason} ->
+                    Logger.warning(
+                      "ASTSearch: skipping #{rel_path}: parse error #{inspect(reason)}"
+                    )
+
+                    []
+                end
+
+              {:error, reason} ->
+                Logger.warning("ASTSearch: skipping #{rel_path}: read error #{inspect(reason)}")
+                []
+            end
+          rescue
+            e ->
+              Logger.warning("ASTSearch: skipping #{rel_path}: #{Exception.message(e)}")
               []
           end
         end)
 
-      filtered = Query.filter(all_symbols, query)
-      {:ok, filtered}
+      case Query.filter(all_symbols, query) do
+        {:error, _reason} = error ->
+          error
+
+        filtered ->
+          {:ok, Enum.take(filtered, Keyword.get(opts, :limit, @default_limit))}
+      end
     else
       {:error, :path_not_found}
     end
@@ -58,16 +91,24 @@ defmodule IexCode.Tools.ASTSearch do
 
   @doc """
   Searches a single source file for AST symbols matching `query`.
+
+  Accepts the same `:limit` option as `search/3`.
   """
   @spec search_file(Path.t(), query_spec(), keyword()) ::
           {:ok, [symbol_entry()]} | {:error, term()}
-  def search_file(file_path, query, _opts \\ []) do
+  def search_file(file_path, query, opts \\ []) do
     if File.exists?(file_path) do
       case File.read(file_path) do
         {:ok, content} ->
           case Extractor.extract(content, file_path) do
             {:ok, symbols} ->
-              {:ok, Query.filter(symbols, query)}
+              case Query.filter(symbols, query) do
+                {:error, _reason} = error ->
+                  error
+
+                filtered ->
+                  {:ok, Enum.take(filtered, Keyword.get(opts, :limit, @default_limit))}
+              end
 
             {:error, reason} ->
               {:error, reason}
@@ -98,18 +139,33 @@ defmodule IexCode.Tools.ASTSearch do
 
   # --- File Discovery Helpers ---
 
+  # Matched against the path relative to the searched directory, so a project
+  # subdirectory named e.g. `tmp` (ExUnit's :tmp_dir fixture root) is searched.
+  @excluded_dirs ["/_build/", "/deps/", "/node_modules/", "/.git/", "/.agents/"]
+
   defp find_elixir_files(dir) do
     if File.regular?(dir) do
       [dir]
     else
+      prefix = String.trim_trailing(to_string(dir), "/") <> "/"
+
       Path.wildcard(Path.join(dir, "**/*.{ex,exs}"))
       |> Enum.reject(fn p ->
-        String.contains?(p, "/_build/") or
-          String.contains?(p, "/deps/") or
-          String.contains?(p, "/.git/") or
-          String.contains?(p, "/.agents/") or
-          String.contains?(p, "/node_modules/")
+        rel = "/" <> String.replace_prefix(p, prefix, "")
+        Enum.any?(@excluded_dirs, &String.contains?(rel, &1))
       end)
+    end
+  end
+
+  # Relative path for display; falls back to the absolute path when the file
+  # lives outside `project_root` (possible with absolute path queries).
+  defp relative_path(file_path, project_root) do
+    root = project_root |> to_string() |> String.trim_trailing("/")
+
+    cond do
+      file_path == root -> Path.basename(file_path)
+      String.starts_with?(file_path, root <> "/") -> Path.relative_to(file_path, root)
+      true -> file_path
     end
   end
 end

@@ -9,6 +9,10 @@ defmodule IexCode.Engine.Agents.CoderAgent do
   alias IexCode.{Sessions, Tools, LLM}
   alias IexCode.Tools.MultiPatch
 
+  @outer_timeout 90_000
+  @inner_timeout 60_000
+  @max_tool_iterations 5
+
   defmodule State do
     defstruct [
       :session_id,
@@ -33,7 +37,7 @@ defmodule IexCode.Engine.Agents.CoderAgent do
   Generates and applies code modifications for a given prompt and context.
   """
   def code(target, prompt, opts \\ []) do
-    timeout = Keyword.get(opts, :timeout, 60_000)
+    timeout = Keyword.get(opts, :timeout, @outer_timeout)
     GenServer.call(resolve_target(target), {:code, prompt, opts}, timeout)
   end
 
@@ -76,6 +80,9 @@ defmodule IexCode.Engine.Agents.CoderAgent do
       status: :idle
     }
 
+    set_cancelled?(session_id, false)
+    subscribe_steering(session_id)
+
     {:ok, state}
   end
 
@@ -86,7 +93,7 @@ defmodule IexCode.Engine.Agents.CoderAgent do
     parent_op_id = opts[:parent_op_id]
 
     session =
-      state.session ||
+      opts[:session] || state.session ||
         try do
           Sessions.get_session!(session_id)
         rescue
@@ -106,7 +113,9 @@ defmodule IexCode.Engine.Agents.CoderAgent do
         "Coder: Generating implementation and code patches",
         %{prompt: prompt},
         fn progress ->
-          progress.(20, "Generating code solution with LLM...")
+          progress.(15, "Generating code solution with LLM...")
+
+          steer_directives = Keyword.get(opts, :steer_directives, [])
 
           system_prompt = """
           You are the Coder Agent in an Elixir coding swarm.
@@ -114,7 +123,7 @@ defmodule IexCode.Engine.Agents.CoderAgent do
           If code edits or new files are needed, describe the files and changes clearly.
           """
 
-          user_content =
+          base_content =
             if diagnostics do
               """
               ### ⚠️ Self-Correction Feedback
@@ -126,41 +135,31 @@ defmodule IexCode.Engine.Agents.CoderAgent do
               "Plan:\n#{plan}\n\nContext:\n#{explorer_context}\n\nTask:\n#{prompt}"
             end
 
-          messages = [%{role: "user", content: user_content}]
+          messages = [
+            %{role: "user", content: append_steer_directives(base_content, steer_directives)}
+          ]
 
-          # If explicit patches provided in options, apply them directly
-          if is_list(opts[:patches]) and opts[:patches] != [] do
-            progress.(60, "Applying #{length(opts[:patches])} atomic patches...")
-            MultiPatch.apply_patches(project_root, opts[:patches])
-          end
-
-          case LLM.chat(messages, system_prompt, session) do
-            {:ok, %{text: code_text, tool_calls: tool_calls}} ->
-              if tool_calls != [] do
-                for tc <- tool_calls do
-                  OperationManager.run_sync_operation(
-                    session_id,
-                    parent_op_id,
-                    "CoderAgent",
-                    tc.name,
-                    "Coder: Executing #{tc.name}",
-                    tc.args,
-                    fn p ->
-                      Tools.execute(tc.name, tc.args, project_root, p)
-                    end
-                  )
-                end
-              end
-
-              progress.(100, "Implementation complete")
-              {:ok, code_text}
-
-            _ ->
-              progress.(100, "Implementation drafted")
-              {:ok, "Implementation verified and drafted according to specifications."}
+          with :ok <- apply_explicit_patches(opts, project_root, progress),
+               {:ok, code_text} <-
+                 run_tool_loop(
+                   session_id,
+                   messages,
+                   system_prompt,
+                   session,
+                   project_root,
+                   parent_op_id,
+                   progress,
+                   0
+                 ) do
+            progress.(100, "Implementation complete")
+            {:ok, code_text}
+          else
+            {:error, reason} = err ->
+              progress.(100, "Implementation failed: #{format_reason(reason)}")
+              err
           end
         end,
-        Keyword.get(opts, :timeout, 60_000)
+        Keyword.get(opts, :inner_timeout, @inner_timeout)
       )
 
     case code_res do
@@ -190,6 +189,154 @@ defmodule IexCode.Engine.Agents.CoderAgent do
   @impl true
   def handle_call(:get_state, _from, %State{} = state) do
     {:reply, state, state}
+  end
+
+  # Tool loop helpers
+
+  defp apply_explicit_patches(opts, project_root, progress) do
+    patches = opts[:patches]
+
+    if is_list(patches) and patches != [] do
+      progress.(30, "Applying #{length(patches)} atomic patches...")
+
+      case MultiPatch.apply_patches(project_root, patches) do
+        {:ok, _summary} -> :ok
+        {:error, reason} -> {:error, {:patch_application_failed, reason}}
+      end
+    else
+      :ok
+    end
+  end
+
+  defp run_tool_loop(
+         session_id,
+         messages,
+         system_prompt,
+         session,
+         project_root,
+         parent_op_id,
+         progress,
+         iteration
+       ) do
+    if iteration >= @max_tool_iterations do
+      {:error, {:tool_iteration_limit_reached, @max_tool_iterations}}
+    else
+      progress.(
+        min(90, 40 + iteration * 10),
+        "LLM iteration #{iteration + 1}/#{@max_tool_iterations}..."
+      )
+
+      case LLM.chat(messages, system_prompt, session, fn _c -> :ok end,
+             cancelled?: cancelled_fun(session_id)
+           ) do
+        {:ok, %{text: text, tool_calls: tool_calls}} when tool_calls != [] ->
+          progress.(60, "Executing #{length(tool_calls)} tool call(s)...")
+
+          tool_messages =
+            Enum.map(tool_calls, &execute_tool_call(&1, session_id, project_root, parent_op_id))
+
+          run_tool_loop(
+            session_id,
+            messages ++ assistant_messages(text) ++ tool_messages,
+            system_prompt,
+            session,
+            project_root,
+            parent_op_id,
+            progress,
+            iteration + 1
+          )
+
+        {:ok, %{text: text}} ->
+          {:ok, text || ""}
+
+        {:ok, other} ->
+          {:error, {:unexpected_llm_response, other}}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  defp execute_tool_call(tc, session_id, project_root, parent_op_id) do
+    res =
+      OperationManager.run_sync_operation(
+        session_id,
+        parent_op_id,
+        "CoderAgent",
+        tc.name,
+        "Coder: Executing #{tc.name}",
+        tc.args,
+        fn p ->
+          Tools.execute(tc.name, tc.args, project_root, p)
+        end
+      )
+
+    content =
+      case res do
+        {:ok, output} -> format_tool_output(output)
+        {:error, reason} -> "ERROR: #{format_reason(reason)}"
+      end
+
+    %{role: "tool", content: content, tool_call_id: tc.id}
+  end
+
+  defp assistant_messages(text) when text in [nil, ""], do: []
+
+  defp assistant_messages(text) when is_binary(text),
+    do: [%{role: "assistant", content: text}]
+
+  defp format_tool_output(output) when is_binary(output) do
+    if byte_size(output) > 4000 do
+      String.slice(output, 0, 4000) <> "\n...(truncated)"
+    else
+      output
+    end
+  end
+
+  defp format_tool_output(other), do: inspect(other)
+
+  defp format_reason(reason) when is_binary(reason), do: reason
+  defp format_reason(reason), do: inspect(reason)
+
+  # Steering / cancellation helpers
+
+  defp subscribe_steering(session_id) do
+    Phoenix.PubSub.subscribe(IexCode.PubSub, "session:#{session_id}:steer")
+  end
+
+  defp set_cancelled?(session_id, value) do
+    :persistent_term.put({__MODULE__, :cancelled?, session_id}, value)
+  end
+
+  defp cancelled_fun(session_id) do
+    fn -> :persistent_term.get({__MODULE__, :cancelled?, session_id}, false) end
+  end
+
+  defp append_steer_directives(content, []), do: content
+
+  defp append_steer_directives(content, directives) when is_list(directives) do
+    content <>
+      "\n\n### Steering Directives (highest priority, apply to this step)\n" <>
+      Enum.map_join(directives, "\n", &"- #{&1}")
+  end
+
+  @impl true
+  def handle_info({:cancel, session_id, _opts}, state) do
+    set_cancelled?(session_id, true)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:pause, session_id}, state) do
+    set_cancelled?(session_id, true)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:resume, session_id}, state) do
+    set_cancelled?(session_id, false)
+    {:noreply, state}
   end
 
   @impl true

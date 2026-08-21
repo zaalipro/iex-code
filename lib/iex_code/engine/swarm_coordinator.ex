@@ -83,8 +83,13 @@ defmodule IexCode.Engine.SwarmCoordinator do
 
   @doc """
   Pauses the swarm coordinator.
+
+  Persists "paused" before broadcasting: if the coordinator task has not
+  subscribed yet, the broadcast is lost, so the persisted status is the
+  reliable signal (the coordinator re-checks it right after subscribing).
   """
   def pause(session_id) do
+    update_db_session_status(session_id, "paused")
     PubSub.broadcast(IexCode.PubSub, "session:#{session_id}:steer", {:pause, session_id})
   end
 
@@ -103,47 +108,58 @@ defmodule IexCode.Engine.SwarmCoordinator do
   end
 
   @doc """
-  Reverts working tree modifications via MultiPatch snapshots and Git.
+  Reverts working tree modifications recorded in this session's MultiPatch snapshots.
+  When no session is scoped (default `%State{}`), falls back to all snapshots.
+  Never touches unrelated files or git state.
   """
-  def perform_rollback(project_root, _state \\ %State{}) do
-    try do
-      snapshots = MultiPatch.Snapshot.list_snapshots()
+  def perform_rollback(_project_root, state \\ %State{}) do
+    session_id = Map.get(state, :session_id)
+    snapshots = MultiPatch.Snapshot.list_snapshots(session_id)
 
-      for s <- snapshots do
-        MultiPatch.rollback(s.transaction_id)
-      end
-    rescue
-      _ -> :ok
+    results = Enum.map(snapshots, &MultiPatch.rollback(&1.transaction_id))
+
+    case Enum.filter(results, &match?({:error, _}, &1)) do
+      [] -> {:ok, :rolled_back}
+      errors -> {:error, errors}
     end
-
-    cwd = File.cwd!()
-
-    if project_root != cwd and File.dir?(Path.join(project_root, ".git")) do
-      _ = Git.unstage(project_root, :all)
-      _ = System.cmd("git", ["checkout", "--", "."], cd: project_root, stderr_to_stdout: true)
-      _ = System.cmd("git", ["clean", "-fd"], cd: project_root, stderr_to_stdout: true)
-    end
-
-    {:ok, :rolled_back}
   rescue
-    _ -> {:ok, :rolled_back}
+    e -> {:error, Exception.message(e)}
   end
 
   @doc """
-  Stages and commits working changes.
+  Stages and commits working changes in the target project repository.
   """
   def perform_commit(project_root, opts \\ []) do
-    cwd = File.cwd!()
-
-    if project_root != cwd and File.dir?(Path.join(project_root, ".git")) do
-      _ = Git.stage(project_root, :all)
+    if project_root != File.cwd!() and git_repo?(project_root) do
       commit_msg = Keyword.get(opts, :message, "chore: session cancelled checkpoint commit")
-      _ = Git.commit(commit_msg, project_root, allow_empty: true)
-    end
 
-    {:ok, :committed}
+      with :ok <- Git.stage(project_root, :all),
+           {:ok, _} <- Git.commit(commit_msg, project_root, allow_empty: true) do
+        {:ok, :committed}
+      else
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      {:ok, :committed}
+    end
   rescue
-    _ -> {:ok, :committed}
+    e -> {:error, Exception.message(e)}
+  end
+
+  # True when `path` is a git repository. `.git` may be a directory (normal clone)
+  # or a file (linked worktree); bare checkouts have no `.git` entry at all,
+  # so fall back to `git rev-parse`.
+  defp git_repo?(path) do
+    if File.exists?(Path.join(path, ".git")) do
+      true
+    else
+      match?(
+        {_, 0},
+        System.cmd("git", ["rev-parse", "--git-dir"], cd: path, stderr_to_stdout: true)
+      )
+    end
+  rescue
+    _ -> false
   end
 
   @doc """
@@ -167,8 +183,21 @@ defmodule IexCode.Engine.SwarmCoordinator do
     # Subscribe to steering topic for mid-flight steering/control
     PubSub.subscribe(IexCode.PubSub, "session:#{session_id}:steer")
 
-    broadcast(session_id, {:session_status_changed, "running"})
-    update_db_session_status(session_id, "running")
+    # Honor a pause requested between task spawn and this subscribe — the early
+    # {:pause, _} broadcast had no subscriber yet, so the persisted status is
+    # the only reliable signal.
+    pre_paused? =
+      case Sessions.get_session(session_id) do
+        %{status: "paused"} -> true
+        _ -> false
+      end
+
+    if pre_paused? do
+      broadcast(session_id, {:session_status_changed, "paused"})
+    else
+      broadcast(session_id, {:session_status_changed, "running"})
+      update_db_session_status(session_id, "running")
+    end
 
     start_time_ms = System.monotonic_time(:millisecond)
 
@@ -183,6 +212,11 @@ defmodule IexCode.Engine.SwarmCoordinator do
       stage: :init,
       status: :running
     }
+
+    # 1. Root Swarm Operation — created before the guarded region below so the
+    # crash handler can still mark it failed (try-body bindings don't leak to catch).
+    {:ok, root_op} = create_root_operation(session_id, user_prompt)
+    state = %State{state | root_op_id: root_op.id}
 
     try do
       # Start or ensure all subagent GenServers are running under AgentSupervisor
@@ -210,12 +244,15 @@ defmodule IexCode.Engine.SwarmCoordinator do
           project_root: project_root
         )
 
-      # 1. Root Swarm Operation
-      {:ok, root_op} = create_root_operation(session_id, user_prompt)
-      state = %State{state | root_op_id: root_op.id}
-
       broadcast_stage(state, :init, 5, "Swarm initialized with 4 specialized OTP subagents.")
-      state = check_steering_and_control(state)
+      # A pause that landed before subscribe: block until resumed (or cancelled;
+      # cancellation throws {:swarm_cancelled, _, _} from inside the wait).
+      state =
+        if pre_paused? do
+          wait_for_resume_or_cancel(state)
+        else
+          check_steering_and_control(state)
+        end
 
       # 2. Planning Phase
       state = run_planning_phase(state)
@@ -233,7 +270,44 @@ defmodule IexCode.Engine.SwarmCoordinator do
     catch
       {:swarm_cancelled, action, final_state} ->
         {:ok, %{status: :stopped, action: action, cancelled: true, state: final_state}}
+
+      # Any other throw, error or exit: clean up loudly instead of dying silently.
+      kind, payload ->
+        stacktrace = __STACKTRACE__
+        handle_swarm_crash(session_id, state, kind, payload, stacktrace)
+
+        case kind do
+          :exit -> exit(payload)
+          :throw -> throw(payload)
+          _ -> reraise(payload, stacktrace)
+        end
     end
+  end
+
+  defp handle_swarm_crash(session_id, state, kind, reason, stacktrace) do
+    reason_str = Exception.format(kind, reason, stacktrace)
+
+    Logger.error("[SwarmCoordinator] Swarm run crashed for session #{session_id}: #{reason_str}")
+
+    AgentSupervisor.stop_all_agents(session_id)
+    update_db_session_status(session_id, "failed")
+
+    if state.root_op_id do
+      Sessions.update_operation(state.root_op_id, %{
+        status: "failed",
+        progress: 100,
+        result: "Swarm execution crashed: #{String.slice(reason_str, 0, 500)}",
+        completed_at: DateTime.utc_now() |> DateTime.truncate(:second)
+      })
+    end
+
+    broadcast_stage(%State{state | stage: :failed}, :failed, 100, "Swarm execution crashed.")
+    broadcast(session_id, {:session_status_changed, "failed"})
+  rescue
+    e ->
+      Logger.error(
+        "[SwarmCoordinator] Crash cleanup itself failed for session #{session_id}: #{Exception.message(e)}"
+      )
   end
 
   # ============================================================================
@@ -292,8 +366,8 @@ defmodule IexCode.Engine.SwarmCoordinator do
 
       {:pause, ^session_id} ->
         Logger.info("[SwarmCoordinator] Session #{session_id} paused.")
-        broadcast(session_id, {:session_status_changed, "paused"})
         update_db_session_status(session_id, "paused")
+        broadcast(session_id, {:session_status_changed, "paused"})
         state = %State{state | status: :paused}
         wait_for_resume_or_cancel(state)
 
@@ -310,9 +384,18 @@ defmodule IexCode.Engine.SwarmCoordinator do
     receive do
       {:resume, ^session_id} ->
         Logger.info("[SwarmCoordinator] Session #{session_id} resumed.")
-        broadcast(session_id, {:session_status_changed, "running"})
         update_db_session_status(session_id, "running")
+        broadcast(session_id, {:session_status_changed, "running"})
         %State{state | status: :running}
+
+      # Swallow duplicate pause messages buffered while already paused, so a
+      # stale pause cannot re-pause the swarm after a single resume.
+      {:pause, ^session_id} ->
+        Logger.info(
+          "[SwarmCoordinator] Ignoring duplicate pause while already paused for session #{session_id}."
+        )
+
+        wait_for_resume_or_cancel(state)
 
       {:cancel, ^session_id, opts} ->
         Logger.info("[SwarmCoordinator] Session #{session_id} cancelled while paused.")
@@ -370,10 +453,26 @@ defmodule IexCode.Engine.SwarmCoordinator do
 
     case action do
       :rollback ->
-        perform_rollback(project_root, state)
+        case perform_rollback(project_root, state) do
+          {:ok, :rolled_back} ->
+            :ok
+
+          {:error, reason} ->
+            Logger.error(
+              "[SwarmCoordinator] Rollback failed during cancel for session #{session_id}: #{inspect(reason)}"
+            )
+        end
 
       :commit ->
-        perform_commit(project_root, opts)
+        case perform_commit(project_root, opts) do
+          {:ok, :committed} ->
+            :ok
+
+          {:error, reason} ->
+            Logger.error(
+              "[SwarmCoordinator] Commit failed during cancel for session #{session_id}: #{inspect(reason)}"
+            )
+        end
 
       _ ->
         :ok
@@ -421,7 +520,8 @@ defmodule IexCode.Engine.SwarmCoordinator do
         session_id,
         prompt,
         parent_op_id: root_op_id,
-        project_root: state.project_root
+        project_root: state.project_root,
+        steer_directives: state.steer_directives
       )
 
     plan_text =
@@ -538,7 +638,9 @@ defmodule IexCode.Engine.SwarmCoordinator do
 
       {:error, {:verification_failed, diagnostics}} ->
         # Verification failed! Check retry condition & cycle detection
-        err_signature = :erlang.phash2(diagnostics.summary || diagnostics)
+        # Hash the full diagnostics (not just the summary) so recurring errors
+        # with changed content are treated as new, and identical errors as cycles.
+        err_signature = :erlang.phash2(diagnostics)
 
         if MapSet.member?(state.error_signatures, err_signature) or iteration >= state.max_retries do
           # Terminate loop (cycle detected or exceeded max retries)
@@ -628,19 +730,30 @@ defmodule IexCode.Engine.SwarmCoordinator do
       #{verifier_summary}#{steer_summary}
       """
 
-    {:ok, final_msg} =
-      Sessions.create_message(%{
-        session_id: session_id,
-        role: "assistant",
-        agent_name: "Swarm Coordinator",
-        content: final_content,
-        metadata: %{
-          swarm_mode: true,
-          status: state.status,
-          iterations: state.iteration,
-          steering_count: length(state.steer_directives)
-        }
-      })
+    final_msg =
+      case Sessions.create_message(%{
+             session_id: session_id,
+             role: "assistant",
+             agent_name: "Swarm Coordinator",
+             content: final_content,
+             metadata: %{
+               swarm_mode: true,
+               status: state.status,
+               iterations: state.iteration,
+               steering_count: length(state.steer_directives)
+             }
+           }) do
+        {:ok, msg} ->
+          broadcast(session_id, {:message_created, msg})
+          msg
+
+        {:error, reason} ->
+          Logger.error(
+            "[SwarmCoordinator] Failed to persist final swarm message for session #{session_id}: #{inspect(reason)}"
+          )
+
+          %{id: nil, role: "assistant", content: final_content}
+      end
 
     # Complete root operation
     if state.root_op_id do
@@ -670,7 +783,6 @@ defmodule IexCode.Engine.SwarmCoordinator do
       if(state.status == :completed, do: "completed", else: "idle")
     )
 
-    broadcast(session_id, {:message_created, final_msg})
     broadcast(session_id, {:session_status_changed, "idle"})
 
     broadcast(

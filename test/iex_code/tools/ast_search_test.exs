@@ -87,7 +87,8 @@ defmodule IexCode.Tools.ASTSearchTest do
       filtered = ASTSearch.Query.filter(symbols, "Math utility")
 
       assert length(filtered) >= 1
-      assert hd(filtered).type == :moduledoc
+      assert Enum.any?(filtered, &(&1.type == :moduledoc))
+      assert Enum.any?(filtered, &(&1.type == :defmodule))
     end
   end
 

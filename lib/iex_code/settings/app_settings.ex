@@ -17,6 +17,8 @@ defmodule IexCode.Settings.AppSettings do
     timestamps(type: :utc_datetime)
   end
 
+  @model_providers ~w(openai anthropic)
+
   def changeset(settings, attrs) do
     settings
     |> cast(attrs, [
@@ -29,5 +31,10 @@ defmodule IexCode.Settings.AppSettings do
       :swarm_agent_count,
       :auto_save
     ])
+    |> validate_inclusion(:default_model_provider, @model_providers)
+    |> validate_number(:swarm_agent_count,
+      greater_than_or_equal_to: 1,
+      less_than_or_equal_to: 32
+    )
   end
 end

@@ -8,8 +8,24 @@ defmodule IexCode.Kanban do
   alias IexCode.Kanban.Task
   alias IexCode.Sessions
 
+  # A running task whose claim is older than this can be re-claimed by another worker.
+  @stale_claim_minutes 30
+
   def list_tasks(project_id, filters \\ %{}) do
-    query = from(t in Task, where: t.project_id == ^project_id, order_by: [asc: t.inserted_at])
+    query =
+      from(t in Task,
+        where: t.project_id == ^project_id,
+        order_by: [
+          asc:
+            fragment(
+              "CASE WHEN ? = 'critical' THEN 0 WHEN ? = 'high' THEN 1 WHEN ? = 'medium' THEN 2 ELSE 3 END",
+              t.priority,
+              t.priority,
+              t.priority
+            ),
+          asc: t.inserted_at
+        ]
+      )
 
     query =
       Enum.reduce(filters, query, fn
@@ -23,8 +39,19 @@ defmodule IexCode.Kanban do
           from(t in q, where: t.assignee == ^assignee)
 
         {"search", term}, q when term not in ["", nil] ->
-          search = "%#{term}%"
-          from(t in q, where: like(t.title, ^search) or like(t.description, ^search))
+          escaped =
+            term
+            |> String.replace("\\", "\\\\")
+            |> String.replace("%", "\\%")
+            |> String.replace("_", "\\_")
+
+          pattern = "%#{escaped}%"
+
+          from(t in q,
+            where:
+              fragment("? LIKE ? ESCAPE '\\'", t.title, ^pattern) or
+                fragment("? LIKE ? ESCAPE '\\'", t.description, ^pattern)
+          )
 
         _, q ->
           q
@@ -96,19 +123,44 @@ defmodule IexCode.Kanban do
     Task.changeset(task, sanitize_attrs(attrs))
   end
 
+  @doc """
+  Atomically claims a task for the given assignee.
+
+  The claim is a single conditional UPDATE: it only succeeds when the task is
+  not already running, or when an existing claim is older than
+  #{@stale_claim_minutes} minutes (stale-claim reclamation). Returns
+  `{:ok, task}` on success or `{:error, :already_claimed}` when another worker
+  holds a fresh claim.
+  """
   def claim_task(%Task{} = task, assignee \\ "default") do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    stale_before = DateTime.add(now, -@stale_claim_minutes * 60, :second)
     worker_pid = inspect(self())
 
-    update_task(task, %{
-      status: "running",
-      assignee: assignee,
-      worker_pid: worker_pid,
-      metadata:
-        Map.merge(task.metadata || %{}, %{
-          "claimed_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
-          "claimed_by" => assignee
-        })
-    })
+    {count, _} =
+      from(t in Task,
+        where: t.id == ^task.id,
+        where: t.status != "running" or is_nil(t.claimed_at) or t.claimed_at < ^stale_before
+      )
+      |> Repo.update_all(
+        set: [
+          status: "running",
+          assignee: assignee,
+          worker_pid: worker_pid,
+          claimed_at: now,
+          updated_at: now
+        ]
+      )
+
+    case count do
+      1 ->
+        claimed = get_task!(task.id)
+        broadcast(claimed.project_id, {:task_updated, claimed})
+        {:ok, claimed}
+
+      0 ->
+        {:error, :already_claimed}
+    end
   end
 
   def estimate_effort(%Task{} = task) do

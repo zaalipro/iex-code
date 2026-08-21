@@ -12,6 +12,15 @@ defmodule IexCodeWeb.WorkspaceLiveM3M4Test do
     File.mkdir_p!(Path.dirname(test_file_path))
     File.write!(test_file_path, "defmodule DemoWorker do\n  def work, do: :ok\nend\n")
 
+    # Commit a git baseline BEFORE mounting so the Changes tab can render real
+    # `git diff` hunks, then modify the file to produce uncommitted changes
+    System.cmd("git", ["init"], cd: path)
+    System.cmd("git", ["config", "user.name", "IexCode Test"], cd: path)
+    System.cmd("git", ["config", "user.email", "test@iexcode.local"], cd: path)
+    System.cmd("git", ["add", "."], cd: path)
+    System.cmd("git", ["commit", "-m", "Initial commit"], cd: path)
+    File.write!(test_file_path, "defmodule DemoWorker do\n  def work, do: :modified\nend\n")
+
     {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}")
 
     {:ok,
@@ -84,7 +93,7 @@ defmodule IexCodeWeb.WorkspaceLiveM3M4Test do
       view |> element("#tab-btn-changes") |> render_click()
 
       html = render(view)
-      assert html =~ "Multi-File Patch Preview" or html =~ "swarm_coordinator.ex"
+      assert html =~ "lib/demo_worker.ex"
       assert html =~ "Hunk hunk-1"
       assert has_element?(view, "button[phx-click='accept_hunk']")
       assert has_element?(view, "button[phx-click='reject_hunk']")
@@ -109,7 +118,7 @@ defmodule IexCodeWeb.WorkspaceLiveM3M4Test do
 
       # 4. Trigger accept hunk
       render_click(view, "accept_hunk", %{
-        "file" => "lib/iex_code/engine/swarm_coordinator.ex",
+        "file" => "lib/demo_worker.ex",
         "hunk_id" => "hunk-1"
       })
 
@@ -118,14 +127,14 @@ defmodule IexCodeWeb.WorkspaceLiveM3M4Test do
 
       # 5. Trigger reject hunk
       render_click(view, "reject_hunk", %{
-        "file" => "lib/iex_code/engine/swarm_coordinator.ex",
+        "file" => "lib/demo_worker.ex",
         "hunk_id" => "hunk-1"
       })
 
       assert Process.alive?(view.pid)
 
       # 6. Trigger revert file
-      render_click(view, "revert_file", %{"file" => "lib/iex_code/engine/swarm_coordinator.ex"})
+      render_click(view, "revert_file", %{"file" => "lib/demo_worker.ex"})
       assert Process.alive?(view.pid)
     end
   end
@@ -163,9 +172,10 @@ defmodule IexCodeWeb.WorkspaceLiveM3M4Test do
       render_click(view, "pause_session")
       assert render(view) =~ "PAUSED"
 
-      # 3. Resume session
+      # 3. Resume session — with no active run it never phantom-resumes into
+      # running; the session settles back to IDLE
       render_click(view, "resume_session")
-      assert render(view) =~ "ACTIVE (RUNNING)" or render(view) =~ "RUNNING"
+      assert render(view) =~ "IDLE"
 
       # 4. Open cancel modal
       render_click(view, "open_cancel_modal")
@@ -258,6 +268,7 @@ defmodule IexCodeWeb.WorkspaceLiveM3M4Test do
       |> render_submit()
 
       assert render(view) =~ "hello terminal runner"
+      wait_for_terminal(view, &(&1 =~ "[Exit 0: OK]"))
 
       # Replay command
       render_click(view, "replay_terminal_command")
@@ -306,6 +317,24 @@ defmodule IexCodeWeb.WorkspaceLiveM3M4Test do
       # Close expanded modal
       render_click(view, "close_expand_message")
       refute render(view) =~ "copy-expanded-msg-btn"
+    end
+  end
+
+  # Terminal execution is async via Port: poll until the expected output
+  # (e.g. an exit marker) shows up in the rendered buffer.
+  defp wait_for_terminal(view, match?, deadline \\ 2000) do
+    html = render(view)
+
+    cond do
+      match?.(html) ->
+        html
+
+      deadline <= 0 ->
+        flunk("timed out waiting for expected terminal output")
+
+      true ->
+        Process.sleep(50)
+        wait_for_terminal(view, match?, deadline - 50)
     end
   end
 end

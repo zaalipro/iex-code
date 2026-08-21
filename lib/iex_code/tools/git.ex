@@ -133,16 +133,32 @@ defmodule IexCode.Tools.Git do
         :ok
 
       {:error, _} ->
-        # Fallback for older git or empty initial repository
+        # Fallback for older git
         case run_git(repo_dir, ["reset", "HEAD"]) do
-          {:ok, _} -> :ok
-          err -> err
+          {:ok, _} ->
+            :ok
+
+          {:error, reset_err} ->
+            # On an unborn branch there is no HEAD to reset against;
+            # clear the staged entries from the index instead.
+            if unborn?(repo_dir) do
+              case run_git(repo_dir, ["rm", "--force", "--cached", "-r", "--quiet", "."]) do
+                {:ok, _} -> :ok
+                err -> err
+              end
+            else
+              {:error, reset_err}
+            end
         end
     end
   end
 
   defp do_unstage(repo_dir, ".") do
     do_unstage(repo_dir, :all)
+  end
+
+  defp do_unstage(repo_dir, file) when is_binary(file) do
+    do_unstage(repo_dir, [file])
   end
 
   defp do_unstage(repo_dir, files) when is_list(files) do
@@ -152,14 +168,25 @@ defmodule IexCode.Tools.Git do
 
       {:error, _} ->
         case run_git(repo_dir, ["reset", "HEAD", "--"] ++ files) do
-          {:ok, _} -> :ok
-          err -> err
+          {:ok, _} ->
+            :ok
+
+          {:error, reset_err} ->
+            if unborn?(repo_dir) do
+              case run_git(repo_dir, ["rm", "--force", "--cached", "--quiet", "--"] ++ files) do
+                {:ok, _} -> :ok
+                err -> err
+              end
+            else
+              {:error, reset_err}
+            end
         end
     end
   end
 
-  defp do_unstage(repo_dir, file) when is_binary(file) do
-    do_unstage(repo_dir, [file])
+  # An unborn branch has no HEAD revision yet (fresh `git init`).
+  defp unborn?(repo_dir) do
+    match?({:error, _}, run_git(repo_dir, ["rev-parse", "--verify", "--quiet", "HEAD"]))
   end
 
   @doc """
@@ -181,42 +208,63 @@ defmodule IexCode.Tools.Git do
   defp do_commit(repo_dir, message, opts) do
     allow_empty = Keyword.get(opts, :allow_empty, false)
 
-    with {:ok, status_res} <- status(repo_dir) do
-      if not allow_empty and status_res.staged == [] do
-        {:error, :nothing_staged}
-      else
-        author_args = [
-          "-c",
-          "user.name=IexCode Agent",
-          "-c",
-          "user.email=agent@iexcode.local"
-        ]
+    with {:ok, status_res} <- status(repo_dir),
+         :ok <- verify_staged_changes(repo_dir, status_res, allow_empty) do
+      author_args = [
+        "-c",
+        "user.name=IexCode Agent",
+        "-c",
+        "user.email=agent@iexcode.local"
+      ]
 
-        commit_args =
-          if allow_empty do
-            author_args ++ ["commit", "--allow-empty", "-m", message]
-          else
-            author_args ++ ["commit", "-m", message]
-          end
-
-        case run_git(repo_dir, commit_args) do
-          {:ok, _commit_output} ->
-            {:ok, full_hash} = run_git(repo_dir, ["rev-parse", "HEAD"])
-            {:ok, short_hash} = run_git(repo_dir, ["rev-parse", "--short", "HEAD"])
-
-            result = %CommitResult{
-              commit_hash: String.trim(full_hash),
-              short_hash: String.trim(short_hash),
-              message: message,
-              author: "IexCode Agent <agent@iexcode.local>",
-              timestamp: DateTime.utc_now()
-            }
-
-            {:ok, result}
-
-          {:error, reason} ->
-            {:error, reason}
+      commit_args =
+        if allow_empty do
+          author_args ++ ["commit", "--allow-empty", "-m", message]
+        else
+          author_args ++ ["commit", "-m", message]
         end
+
+      case run_git(repo_dir, commit_args) do
+        {:ok, _commit_output} ->
+          {:ok, full_hash} = run_git(repo_dir, ["rev-parse", "HEAD"])
+          {:ok, short_hash} = run_git(repo_dir, ["rev-parse", "--short", "HEAD"])
+
+          result = %CommitResult{
+            commit_hash: String.trim(full_hash),
+            short_hash: String.trim(short_hash),
+            message: message,
+            author: "IexCode Agent <agent@iexcode.local>",
+            timestamp: DateTime.utc_now()
+          }
+
+          {:ok, result}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  # Closes the TOCTOU gap between the initial status check and the commit by
+  # re-verifying staged content right before committing.
+  defp verify_staged_changes(_repo_dir, _status_res, true), do: :ok
+
+  defp verify_staged_changes(repo_dir, status_res, false) do
+    if status_res.staged == [] do
+      {:error, :nothing_staged}
+    else
+      case run_git(repo_dir, ["diff", "--cached", "--quiet"]) do
+        # Exit code 1 means the index differs from HEAD (there is content)
+        {:error, {:git_error, 1, _}} ->
+          :ok
+
+        # Exit code 0 means the index matches HEAD (nothing to commit)
+        {:ok, _} ->
+          {:error, :nothing_staged}
+
+        # Could not determine (e.g. unborn HEAD); defer to the earlier check
+        {:error, _} ->
+          :ok
       end
     end
   end
@@ -283,14 +331,16 @@ defmodule IexCode.Tools.Git do
           {:ok, String.t()} | {:error, term()}
   def generate_commit_message(diff_or_repo \\ ".", opts \\ [])
 
-  def generate_commit_message(diff_str, _opts)
+  def generate_commit_message(diff_str, opts)
       when is_binary(diff_str) and
              (binary_part(diff_str, 0, min(10, byte_size(diff_str))) == "diff --git" or
                 binary_part(diff_str, 0, min(6, byte_size(diff_str))) == "--- a/") do
-    CommitGenerator.generate(diff_str, [])
+    CommitGenerator.generate(diff_str, [], Keyword.put_new(opts, :include_body, true))
   end
 
-  def generate_commit_message(repo_dir, _opts) when is_binary(repo_dir) do
+  def generate_commit_message(repo_dir, opts) when is_binary(repo_dir) do
+    opts = Keyword.put_new(opts, :include_body, true)
+
     with {:ok, status_res} <- status(repo_dir),
          {:ok, staged_diff} <- diff(repo_dir, staged: true) do
       staged_paths = Enum.map(status_res.staged, & &1.path)
@@ -305,7 +355,7 @@ defmodule IexCode.Tools.Git do
           end
         end
 
-      CommitGenerator.generate(diff_text, staged_paths ++ status_res.untracked)
+      CommitGenerator.generate(diff_text, staged_paths ++ status_res.untracked, opts)
     end
   end
 
@@ -361,49 +411,117 @@ defmodule IexCode.Tools.Git do
           {:ok, String.t()} | {:error, term()}
   def restore_file(repo_dir, files, opts \\ []) do
     file_list = List.wrap(files)
-    staged = Keyword.get(opts, :staged, true)
-    worktree = Keyword.get(opts, :worktree, true)
+    staged? = Keyword.get(opts, :staged, true)
+    worktree? = Keyword.get(opts, :worktree, true)
 
-    # First unstage if staged
-    if staged do
-      unstage(repo_dir, file_list)
-    end
+    with :ok <- if(staged?, do: unstage(repo_dir, file_list), else: :ok) do
+      if worktree? do
+        case run_git(repo_dir, ["restore", "--"] ++ file_list) do
+          {:ok, _} = res ->
+            res
 
-    # Then restore worktree
-    if worktree do
-      case run_git(repo_dir, ["restore", "--"] ++ file_list) do
-        {:ok, _} = res ->
-          res
-
-        {:error, _} ->
-          # Fallback for older git
-          run_git(repo_dir, ["checkout", "HEAD", "--"] ++ file_list)
+          {:error, _} ->
+            # Fallback for older git
+            run_git(repo_dir, ["checkout", "HEAD", "--"] ++ file_list)
+        end
+      else
+        {:ok, "unstaged"}
       end
-    else
-      {:ok, "unstaged"}
     end
   end
 
   # --- Internal Git Invocation ---
 
+  @git_timeout_ms 30_000
+  @lock_retries 4
+  @lock_retry_ms 150
+
+  @doc """
+  Runs a git command in `repo_dir`, returning `{:ok, stdout}` on success.
+
+  Errors are structured: `{:error, :timeout}` after #{@git_timeout_ms}ms,
+  `{:error, :not_a_git_repo}`, or `{:error, {:git_error, exit_code, message}}`
+  where `message` comes from stderr (falling back to stdout). Transient
+  `.git/index.lock` contention is retried a few times with small delays.
+  """
   def run_git(repo_dir, args) do
-    full_path = Path.expand(repo_dir)
+    run_git_with_retries(Path.expand(repo_dir), args, @lock_retries)
+  end
+
+  defp run_git_with_retries(full_path, args, retries) do
+    task = Task.async(fn -> exec_git(full_path, args) end)
+
+    result =
+      case Task.yield(task, @git_timeout_ms) || Task.shutdown(task, :brutal_kill) do
+        {:ok, result} -> result
+        nil -> {:error, :timeout}
+      end
+
+    case result do
+      {:error, {:git_error, _exit_code, message}} = err ->
+        if index_locked?(message) and retries > 0 do
+          Process.sleep(@lock_retry_ms)
+          run_git_with_retries(full_path, args, retries - 1)
+        else
+          err
+        end
+
+      other ->
+        other
+    end
+  end
+
+  defp index_locked?(message) do
+    String.contains?(message, "index.lock")
+  end
+
+  defp exec_git(full_path, args) do
+    stderr_file =
+      Path.join(
+        System.tmp_dir!(),
+        "iex_code_git_stderr_#{System.system_time(:microsecond)}_#{:erlang.unique_integer([:positive])}"
+      )
+
+    # Capture stderr separately via the shell so stdout stays parseable.
+    cmd = "git #{Enum.map_join(args, " ", &shell_quote/1)} 2> #{shell_quote(stderr_file)}"
 
     try do
-      case System.cmd("git", args, cd: full_path, stderr_to_stdout: true) do
+      case System.shell(cmd, cd: full_path) do
         {output, 0} ->
           {:ok, output}
 
         {output, exit_code} ->
-          if String.contains?(output, "not a git repository") do
+          stderr =
+            case File.read(stderr_file) do
+              {:ok, contents} -> contents
+              {:error, _} -> ""
+            end
+
+          error_message = git_error_message(stderr, output, exit_code)
+
+          if String.contains?(error_message, "not a git repository") do
             {:error, :not_a_git_repo}
           else
-            {:error, {:git_error, exit_code, String.trim(output)}}
+            {:error, {:git_error, exit_code, error_message}}
           end
       end
     rescue
       ex ->
         {:error, ex}
+    after
+      File.rm(stderr_file)
     end
+  end
+
+  defp git_error_message(stderr, output, exit_code) do
+    cond do
+      String.trim(stderr) != "" -> String.trim(stderr)
+      String.trim(output) != "" -> String.trim(output)
+      true -> "git exited with code #{exit_code}"
+    end
+  end
+
+  defp shell_quote(arg) when is_binary(arg) do
+    "'" <> String.replace(arg, "'", "'\\''") <> "'"
   end
 end

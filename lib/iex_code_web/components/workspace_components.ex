@@ -41,7 +41,8 @@ defmodule IexCodeWeb.WorkspaceComponents do
         bg_color: "bg-purple-500",
         text_color: "text-purple-400",
         border_color: "border-purple-500/50",
-        shadow: "shadow-[0_0_10px_rgba(168,85,247,0.5)]"
+        shadow: "shadow-[0_0_10px_rgba(168,85,247,0.5)]",
+        shadow_tint: "shadow-purple-500/10"
       },
       %{
         name: "ExplorerAgent",
@@ -53,7 +54,8 @@ defmodule IexCodeWeb.WorkspaceComponents do
         bg_color: "bg-cyan-500",
         text_color: "text-cyan-400",
         border_color: "border-cyan-500/50",
-        shadow: "shadow-[0_0_10px_rgba(6,182,212,0.5)]"
+        shadow: "shadow-[0_0_10px_rgba(6,182,212,0.5)]",
+        shadow_tint: "shadow-cyan-500/10"
       },
       %{
         name: "CoderAgent",
@@ -65,7 +67,8 @@ defmodule IexCodeWeb.WorkspaceComponents do
         bg_color: "bg-amber-500",
         text_color: "text-amber-400",
         border_color: "border-amber-500/50",
-        shadow: "shadow-[0_0_10px_rgba(245,158,11,0.5)]"
+        shadow: "shadow-[0_0_10px_rgba(245,158,11,0.5)]",
+        shadow_tint: "shadow-amber-500/10"
       },
       %{
         name: "VerifierAgent",
@@ -77,7 +80,8 @@ defmodule IexCodeWeb.WorkspaceComponents do
         bg_color: "bg-emerald-500",
         text_color: "text-emerald-400",
         border_color: "border-emerald-500/50",
-        shadow: "shadow-[0_0_10px_rgba(34,197,94,0.5)]"
+        shadow: "shadow-[0_0_10px_rgba(34,197,94,0.5)]",
+        shadow_tint: "shadow-emerald-500/10"
       }
     ]
 
@@ -109,14 +113,21 @@ defmodule IexCodeWeb.WorkspaceComponents do
         progress = if op && is_number(op.progress), do: op.progress, else: 0
         pid_str = if op && op.pid_str, do: op.pid_str, else: nil
         duration = if op && op.duration_ms, do: "#{op.duration_ms}ms", else: "--"
-        current_msg = if op, do: op.result || op.title || agent.desc, else: agent.desc %>
+        current_msg = if op, do: op.result || op.title || agent.desc, else: agent.desc
+
+        is_active =
+          is_binary(@active_agent) and
+            String.contains?(@active_agent, String.replace(agent.name, "Agent", ""))
+
+        stage_label = @active_stage |> to_string() |> String.upcase()
+        stage_failed = stage_label in ["FAILED", "ERROR"] %>
         <div
           id={"subagent-card-#{agent.key}"}
           class={[
             "bg-[#11151c] border rounded-2xl p-4 flex flex-col justify-between transition-smooth relative overflow-hidden",
-            normalized_status == "running" &&
-              "#{agent.border_color} shadow-lg shadow-#{agent.color}-500/10",
-            normalized_status != "running" && "border-[#21262d] hover:border-[#30363d]"
+            normalized_status == "running" && "#{agent.border_color} shadow-lg #{agent.shadow_tint}",
+            normalized_status != "running" && "border-[#21262d] hover:border-[#30363d]",
+            is_active && "ring-1 ring-cyan-500/40"
           ]}
         >
           <!-- Active neon top line -->
@@ -171,6 +182,20 @@ defmodule IexCodeWeb.WorkspaceComponents do
             <p class="text-[11px] text-gray-400 font-mono mb-2 line-clamp-2">
               {current_msg}
             </p>
+
+            <!-- Active Stage / Agent indicator -->
+            <%= if is_active do %>
+              <div class="flex items-center gap-1.5 mb-2">
+                <span class={[
+                  "text-[10px] font-mono px-1.5 py-0.5 rounded border font-semibold uppercase tracking-wider",
+                  stage_failed && "text-rose-400 bg-rose-500/10 border-rose-500/30",
+                  not stage_failed && "text-cyan-300 bg-cyan-500/10 border-cyan-500/30"
+                ]}>
+                  Stage: {stage_label}
+                </span>
+                <span class="text-[10px] font-mono text-gray-500">Active Agent</span>
+              </div>
+            <% end %>
           </div>
 
           <!-- Progress & Latency Footer -->
@@ -1099,34 +1124,39 @@ defmodule IexCodeWeb.WorkspaceComponents do
           <button
             phx-click="run_terminal"
             phx-value-command="mix test"
-            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] border border-[#30363d] rounded-lg text-gray-300 transition-smooth"
+            disabled={@running}
+            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] border border-[#30363d] rounded-lg text-gray-300 transition-smooth disabled:opacity-50 disabled:pointer-events-none"
           >
             mix test
           </button>
           <button
             phx-click="run_terminal"
             phx-value-command="mix precommit"
-            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] border border-[#30363d] rounded-lg text-gray-300 transition-smooth"
+            disabled={@running}
+            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] border border-[#30363d] rounded-lg text-gray-300 transition-smooth disabled:opacity-50 disabled:pointer-events-none"
           >
             mix precommit
           </button>
           <button
             phx-click="run_terminal"
             phx-value-command="git status"
-            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] border border-[#30363d] rounded-lg text-gray-300 transition-smooth"
+            disabled={@running}
+            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] border border-[#30363d] rounded-lg text-gray-300 transition-smooth disabled:opacity-50 disabled:pointer-events-none"
           >
             git status
           </button>
           <button
             phx-click="run_terminal"
             phx-value-command="git diff"
-            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] border border-[#30363d] rounded-lg text-gray-300 transition-smooth"
+            disabled={@running}
+            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] border border-[#30363d] rounded-lg text-gray-300 transition-smooth disabled:opacity-50 disabled:pointer-events-none"
           >
             git diff
           </button>
           <button
             phx-click="replay_terminal_command"
-            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] border border-[#30363d] rounded-lg text-cyan-300 transition-smooth flex items-center gap-1"
+            disabled={@running}
+            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] border border-[#30363d] rounded-lg text-cyan-300 transition-smooth flex items-center gap-1 disabled:opacity-50 disabled:pointer-events-none"
             title="Replay last shell command"
           >
             <.icon name="hero-arrow-path" class="w-3.5 h-3.5" />
@@ -1179,12 +1209,14 @@ defmodule IexCodeWeb.WorkspaceComponents do
             type="text"
             name="command"
             placeholder="Enter shell command..."
-            class="w-full bg-[#11151c] border border-[#21262d] rounded-xl pl-7 pr-4 py-2 text-xs font-mono text-white focus:outline-none focus:border-emerald-500"
+            disabled={@running}
+            class="w-full bg-[#11151c] border border-[#21262d] rounded-xl pl-7 pr-4 py-2 text-xs font-mono text-white focus:outline-none focus:border-emerald-500 disabled:opacity-50"
           />
         </div>
         <button
           type="submit"
-          class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-mono font-medium transition-smooth"
+          disabled={@running}
+          class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-mono font-medium transition-smooth disabled:opacity-50 disabled:pointer-events-none"
         >
           Run
         </button>

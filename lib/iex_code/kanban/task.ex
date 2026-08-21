@@ -20,6 +20,7 @@ defmodule IexCode.Kanban.Task do
     field :tags, {:array, :string}, default: []
     field :steps_completed, :integer, default: 0
     field :steps_total, :integer, default: 0
+    field :claimed_at, :utc_datetime
     field :scheduled_at, :utc_datetime
     field :cron_expression, :string
     field :metadata, :map, default: %{}
@@ -53,6 +54,8 @@ defmodule IexCode.Kanban.Task do
     |> validate_required([:title, :project_id])
     |> validate_inclusion(:status, @statuses)
     |> validate_inclusion(:priority, @priorities)
+    |> validate_number(:steps_completed, greater_than_or_equal_to: 0)
+    |> validate_number(:steps_total, greater_than_or_equal_to: 0)
   end
 
   def statuses, do: @statuses

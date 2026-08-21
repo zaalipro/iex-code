@@ -8,6 +8,9 @@ defmodule IexCode.Engine.Agents.PlannerAgent do
   alias IexCode.Engine.{AgentRegistry, OperationManager}
   alias IexCode.{Sessions, Tools, LLM}
 
+  @outer_timeout 90_000
+  @inner_timeout 60_000
+
   defmodule State do
     defstruct [
       :session_id,
@@ -32,7 +35,7 @@ defmodule IexCode.Engine.Agents.PlannerAgent do
   Accepts a session_id string or direct PID.
   """
   def plan(target, prompt, opts \\ []) do
-    timeout = Keyword.get(opts, :timeout, 60_000)
+    timeout = Keyword.get(opts, :timeout, @outer_timeout)
     GenServer.call(resolve_target(target), {:plan, prompt, opts}, timeout)
   end
 
@@ -67,6 +70,9 @@ defmodule IexCode.Engine.Agents.PlannerAgent do
       status: :idle
     }
 
+    set_cancelled?(session_id, false)
+    subscribe_steering(session_id)
+
     {:ok, state}
   end
 
@@ -95,20 +101,32 @@ defmodule IexCode.Engine.Agents.PlannerAgent do
         fn progress ->
           progress.(15, "Analyzing user request and workspace architecture...")
 
-          # Inspect top-level workspace structure
-          OperationManager.run_sync_operation(
-            session_id,
-            parent_op_id,
-            "PlannerAgent",
-            "list_dir",
-            "Planner: Inspecting workspace directory",
-            %{path: ""},
-            fn p ->
-              Tools.execute("list_dir", %{"path" => "", "recursive" => false}, project_root, p)
+          # Inspect top-level workspace structure and feed it into the prompt
+          dir_summary =
+            case OperationManager.run_sync_operation(
+                   session_id,
+                   parent_op_id,
+                   "PlannerAgent",
+                   "list_dir",
+                   "Planner: Inspecting workspace directory",
+                   %{path: ""},
+                   fn p ->
+                     Tools.execute(
+                       "list_dir",
+                       %{"path" => "", "recursive" => false},
+                       project_root,
+                       p
+                     )
+                   end
+                 ) do
+              {:ok, listing} when is_binary(listing) -> listing
+              {:ok, other} -> inspect(other)
+              {:error, reason} -> "(workspace listing unavailable: #{format_reason(reason)})"
             end
-          )
 
           progress.(60, "Formulating task decomposition...")
+
+          steer_directives = Keyword.get(opts, :steer_directives, [])
 
           system_prompt = """
           You are the Master Planner in an Elixir coding swarm.
@@ -116,9 +134,16 @@ defmodule IexCode.Engine.Agents.PlannerAgent do
           Keep the response clear, structured, and action-oriented.
           """
 
-          messages = [%{role: "user", content: "Goal: #{prompt}\nProject root: #{project_root}"}]
+          base_content =
+            "Goal: #{prompt}\nProject root: #{project_root}\n\nWorkspace structure:\n#{dir_summary}"
 
-          case LLM.chat(messages, system_prompt, session) do
+          messages = [
+            %{role: "user", content: append_steer_directives(base_content, steer_directives)}
+          ]
+
+          case LLM.chat(messages, system_prompt, session, fn _c -> :ok end,
+                 cancelled?: cancelled_fun(session_id)
+               ) do
             {:ok, %{text: plan_text}} when is_binary(plan_text) and byte_size(plan_text) > 0 ->
               progress.(100, "Plan ready")
               {:ok, plan_text}
@@ -136,7 +161,7 @@ defmodule IexCode.Engine.Agents.PlannerAgent do
               {:ok, fallback_plan}
           end
         end,
-        Keyword.get(opts, :timeout, 60_000)
+        Keyword.get(opts, :inner_timeout, @inner_timeout)
       )
 
     case plan_res do
@@ -159,6 +184,49 @@ defmodule IexCode.Engine.Agents.PlannerAgent do
   @impl true
   def handle_call(:get_state, _from, %State{} = state) do
     {:reply, state, state}
+  end
+
+  defp format_reason(reason) when is_binary(reason), do: reason
+  defp format_reason(reason), do: inspect(reason)
+
+  # Steering / cancellation helpers
+
+  defp subscribe_steering(session_id) do
+    Phoenix.PubSub.subscribe(IexCode.PubSub, "session:#{session_id}:steer")
+  end
+
+  defp set_cancelled?(session_id, value) do
+    :persistent_term.put({__MODULE__, :cancelled?, session_id}, value)
+  end
+
+  defp cancelled_fun(session_id) do
+    fn -> :persistent_term.get({__MODULE__, :cancelled?, session_id}, false) end
+  end
+
+  defp append_steer_directives(content, []), do: content
+
+  defp append_steer_directives(content, directives) when is_list(directives) do
+    content <>
+      "\n\n### Steering Directives (highest priority, apply to this step)\n" <>
+      Enum.map_join(directives, "\n", &"- #{&1}")
+  end
+
+  @impl true
+  def handle_info({:cancel, session_id, _opts}, state) do
+    set_cancelled?(session_id, true)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:pause, session_id}, state) do
+    set_cancelled?(session_id, true)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:resume, session_id}, state) do
+    set_cancelled?(session_id, false)
+    {:noreply, state}
   end
 
   @impl true

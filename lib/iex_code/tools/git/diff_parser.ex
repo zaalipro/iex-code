@@ -46,6 +46,8 @@ defmodule IexCode.Tools.Git.DiffParser do
             new_lines: integer(),
             old_count: integer(),
             new_count: integer(),
+            counts_valid?: boolean(),
+            crlf?: boolean(),
             status: status()
           }
     defstruct [
@@ -58,6 +60,10 @@ defmodule IexCode.Tools.Git.DiffParser do
       :new_lines,
       old_count: 0,
       new_count: 0,
+      # false when the declared @@ header counts do not match the parsed body
+      counts_valid?: true,
+      # true when the source diff used CRLF line endings (round-trips on regenerate)
+      crlf?: false,
       lines: [],
       status: :pending
     ]
@@ -98,28 +104,69 @@ defmodule IexCode.Tools.Git.DiffParser do
 
   @doc """
   Parses a raw unified diff string into a list of `%FileDiff{}` structs.
-  Returns `{:ok, [FileDiff.t()]}`.
+
+  Returns `{:ok, [FileDiff.t()]}`, or `{:error, :not_a_unified_diff}` when the
+  input is non-blank text that contains no diff-like structure at all (multi-line
+  garbage with no `diff`/`@@`/`--- `/`+++ ` marker lines). Truncated or corrupted
+  diffs that still contain recognizable markers are parsed leniently; invalid
+  hunks are flagged via `Hunk.counts_valid?` rather than crashing the parse.
   """
-  @spec parse(String.t() | nil) :: {:ok, [FileDiff.t()]}
+  @spec parse(String.t() | nil) :: {:ok, [FileDiff.t()]} | {:error, :not_a_unified_diff}
   def parse(nil), do: {:ok, []}
 
   def parse(raw_diff) when is_binary(raw_diff) do
-    if String.trim(raw_diff) == "" do
-      {:ok, []}
+    cond do
+      String.trim(raw_diff) == "" ->
+        {:ok, []}
+
+      garbage_input?(raw_diff) ->
+        {:error, :not_a_unified_diff}
+
+      true ->
+        file_chunks = split_into_file_chunks(raw_diff)
+        parsed_files = Enum.map(file_chunks, &parse_file_chunk/1)
+        {:ok, tag_crlf(parsed_files, raw_diff)}
+    end
+  end
+
+  # Multi-line text with no diff marker lines at all is treated as garbage.
+  # Short fragments (e.g. truncated diffs) are still parsed leniently.
+  defp garbage_input?(raw_diff) do
+    lines =
+      raw_diff
+      |> String.split("\n")
+      |> Enum.reject(&(String.trim(&1) == ""))
+
+    length(lines) >= 3 and not Enum.any?(lines, &diff_marker_line?/1)
+  end
+
+  defp diff_marker_line?(line) do
+    String.starts_with?(line, "diff --git") or String.starts_with?(line, "diff -") or
+      String.starts_with?(line, "@@") or String.starts_with?(line, "--- ") or
+      String.starts_with?(line, "+++ ") or String.starts_with?(line, "Index: ")
+  end
+
+  defp tag_crlf(file_diffs, raw_diff) do
+    if String.contains?(raw_diff, "\r\n") do
+      Enum.map(file_diffs, fn file_diff ->
+        %{file_diff | hunks: Enum.map(file_diff.hunks, &%{&1 | crlf?: true})}
+      end)
     else
-      file_chunks = split_into_file_chunks(raw_diff)
-      parsed_files = Enum.map(file_chunks, &parse_file_chunk/1)
-      {:ok, parsed_files}
+      file_diffs
     end
   end
 
   @doc """
   Parses a raw unified diff string, returning the list of `%FileDiff{}` directly.
+
+  Raises `ArgumentError` when `parse/1` returns an error.
   """
   @spec parse!(String.t() | nil) :: [FileDiff.t()]
   def parse!(raw_diff) do
-    {:ok, files} = parse(raw_diff)
-    files
+    case parse(raw_diff) do
+      {:ok, files} -> files
+      {:error, reason} -> raise ArgumentError, "DiffParser.parse!/1 failed: #{inspect(reason)}"
+    end
   end
 
   @doc """
@@ -146,7 +193,13 @@ defmodule IexCode.Tools.Git.DiffParser do
           end) ||
             if is_integer(hunk_id) or Regex.match?(~r/^\d+$/, id_str) do
               idx = if is_integer(hunk_id), do: hunk_id, else: String.to_integer(id_str)
-              Enum.at(file_diff.hunks, idx - 1) || Enum.at(file_diff.hunks, idx)
+
+              # Ids are 1-based; guard against idx 0 wrapping to the last hunk
+              # via Enum.at(-1). Index 0 is tolerated as the first hunk.
+              cond do
+                idx >= 1 -> Enum.at(file_diff.hunks, idx - 1) || Enum.at(file_diff.hunks, idx)
+                true -> Enum.at(file_diff.hunks, 0)
+              end
             end
 
         if matching_hunk, do: {file_diff, matching_hunk}
@@ -180,6 +233,7 @@ defmodule IexCode.Tools.Git.DiffParser do
   def format_hunk_patch(%FileDiff{} = file_diff, %Hunk{} = hunk) do
     old_path = file_diff.old_path || file_diff.path || hunk.file_path || "a"
     new_path = file_diff.new_path || file_diff.path || hunk.file_path || "b"
+    eol = if hunk.crlf?, do: "\r\n", else: "\n"
 
     header_lines =
       cond do
@@ -231,8 +285,8 @@ defmodule IexCode.Tools.Git.DiffParser do
       end)
 
     (header_lines ++ [hunk_header | body_lines])
-    |> Enum.join("\n")
-    |> Kernel.<>("\n")
+    |> Enum.join(eol)
+    |> Kernel.<>(eol)
   end
 
   @doc """
@@ -298,9 +352,12 @@ defmodule IexCode.Tools.Git.DiffParser do
       String.starts_with?(line, "diff --git ") ->
         true
 
+      # A "--- " line only starts a new file before any hunk header was seen;
+      # inside a hunk body it is a deletion of content like "-- foo".
       String.starts_with?(line, "--- ") and
         not Enum.any?(current_lines, &String.starts_with?(&1, "diff --git ")) and
-          Enum.any?(current_lines, &String.starts_with?(&1, "+++ ")) ->
+        Enum.any?(current_lines, &String.starts_with?(&1, "+++ ")) and
+          not Enum.any?(current_lines, &String.starts_with?(&1, "@@")) ->
         true
 
       true ->
@@ -395,11 +452,11 @@ defmodule IexCode.Tools.Git.DiffParser do
           %{acc | status: :renamed}
 
         String.starts_with?(line, "rename from ") ->
-          old_p = clean_path(String.replace_prefix(line, "rename from ", ""))
+          old_p = clean_rename_path(String.replace_prefix(line, "rename from ", ""))
           %{acc | old_path: old_p, status: :renamed}
 
         String.starts_with?(line, "rename to ") ->
-          new_p = clean_path(String.replace_prefix(line, "rename to ", ""))
+          new_p = clean_rename_path(String.replace_prefix(line, "rename to ", ""))
           %{acc | new_path: new_p, path: new_p, status: :renamed}
 
         String.starts_with?(line, "Binary files ") or String.contains?(line, "GIT binary patch") ->
@@ -418,7 +475,10 @@ defmodule IexCode.Tools.Git.DiffParser do
       [_, q1, u1, q2, u2] ->
         old_p = if q1 != "", do: q1, else: u1
         new_p = if q2 != "", do: q2, else: u2
-        {clean_path(old_p), clean_path(new_p)}
+
+        # The regex already consumed the a/ b/ prefix — only trim the capture,
+        # otherwise a real top-level dir (e.g. `a/b/build/out`) gets mangled.
+        {clean_rename_path(old_p), clean_rename_path(new_p)}
 
       _ ->
         case String.split(rest, " ") do
@@ -438,19 +498,24 @@ defmodule IexCode.Tools.Git.DiffParser do
   defp clean_path(""), do: nil
   defp clean_path("/dev/null"), do: "/dev/null"
 
+  # Strips exactly one git diff prefix (`a/` or `b/`) so real top-level
+  # directories named `a` or `b` deeper in the path are preserved.
   defp clean_path(path) do
     path
     |> String.trim("\"")
-    |> clean_prefix("a/")
-    |> clean_prefix("b/")
+    |> strip_diff_prefix()
   end
 
-  defp clean_prefix(path, prefix) do
-    if String.starts_with?(path, prefix) do
-      String.replace_prefix(path, prefix, "")
-    else
-      path
-    end
+  defp strip_diff_prefix("a/" <> rest), do: rest
+  defp strip_diff_prefix("b/" <> rest), do: rest
+  defp strip_diff_prefix(path), do: path
+
+  # `rename from`/`rename to` paths carry no a/ b/ prefix — only unquote them,
+  # so genuine top-level directories named `a` or `b` are not mangled.
+  defp clean_rename_path(path) do
+    path
+    |> String.trim("\"")
+    |> String.trim()
   end
 
   defp parse_hunks(lines, file_path) do
@@ -485,17 +550,17 @@ defmodule IexCode.Tools.Git.DiffParser do
     case Regex.run(@hunk_header_regex, header_line) do
       [_, os_str, ol_str, ns_str, nl_str | _] ->
         old_start = String.to_integer(os_str)
-        old_lines = if ol_str != "", do: String.to_integer(ol_str), else: 1
+        old_lines = parse_count(ol_str)
         new_start = String.to_integer(ns_str)
-        new_lines = if nl_str != "", do: String.to_integer(nl_str), else: 1
+        new_lines = parse_count(nl_str)
 
         hunk_id = "hunk-#{index}"
 
-        trimmed_body = reject_trailing_empty(body_lines)
-
-        {lines, _final_old, _final_new} =
-          Enum.reduce(trimmed_body, {[], old_start, new_start}, fn line,
-                                                                   {acc_lines, cur_old, cur_new} ->
+        {lines, actual_old, actual_new} =
+          body_lines
+          |> reject_trailing_empty()
+          |> take_hunk_body()
+          |> Enum.reduce({[], old_start, new_start}, fn line, {acc_lines, cur_old, cur_new} ->
             case line do
               "+" <> content ->
                 line_struct = %Line{
@@ -536,28 +601,12 @@ defmodule IexCode.Tools.Git.DiffParser do
                 }
 
                 {[line_struct | acc_lines], cur_old, cur_new}
-
-              "" ->
-                line_struct = %Line{
-                  type: :context,
-                  content: "",
-                  old_num: cur_old,
-                  new_num: cur_new
-                }
-
-                {[line_struct | acc_lines], cur_old + 1, cur_new + 1}
-
-              other ->
-                line_struct = %Line{
-                  type: :context,
-                  content: other,
-                  old_num: cur_old,
-                  new_num: cur_new
-                }
-
-                {[line_struct | acc_lines], cur_old + 1, cur_new + 1}
             end
           end)
+
+        # Validate declared header counts against the parsed body so corrupted
+        # hunks are flagged instead of silently accepted.
+        counts_valid? = actual_old == old_lines and actual_new == new_lines
 
         %Hunk{
           id: hunk_id,
@@ -569,12 +618,38 @@ defmodule IexCode.Tools.Git.DiffParser do
           new_lines: new_lines,
           old_count: old_lines,
           new_count: new_lines,
+          counts_valid?: counts_valid?,
           lines: Enum.reverse(lines),
           status: :pending
         }
 
       _ ->
         nil
+    end
+  end
+
+  defp parse_count(""), do: 1
+  defp parse_count(count_str), do: String.to_integer(count_str)
+
+  # Only well-formed hunk body lines are consumed. Blank/garbage lines and the
+  # email-signature delimiter ("-- ") terminate the body so trailing garbage
+  # (e.g. `git format-patch` signatures) never becomes :context content.
+  defp take_hunk_body(lines) do
+    Enum.take_while(lines, fn line ->
+      not signature_delimiter?(line) and valid_body_line?(line)
+    end)
+  end
+
+  defp signature_delimiter?(line), do: String.trim(line) == "--"
+
+  defp valid_body_line?(line) do
+    case line do
+      "" -> false
+      "+" <> _ -> true
+      "-" <> _ -> true
+      " " <> _ -> true
+      "\\ No newline" <> _ -> true
+      _ -> false
     end
   end
 

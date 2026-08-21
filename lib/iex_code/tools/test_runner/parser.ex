@@ -22,8 +22,8 @@ defmodule IexCode.Tools.TestRunner.Failure do
           index: pos_integer(),
           test_name: String.t(),
           module: String.t(),
-          file: String.t(),
-          line: pos_integer(),
+          file: String.t() | nil,
+          line: pos_integer() | nil,
           message: String.t(),
           code_snippet: String.t() | nil,
           left: String.t() | nil,
@@ -74,6 +74,7 @@ defmodule IexCode.Tools.TestRunner.Result do
           failures_count: non_neg_integer(),
           excluded: non_neg_integer(),
           skipped: non_neg_integer(),
+          invalid: non_neg_integer(),
           duration_s: float(),
           seed: integer() | nil,
           failures: [Failure.t()],
@@ -87,6 +88,7 @@ defmodule IexCode.Tools.TestRunner.Result do
             failures_count: 0,
             excluded: 0,
             skipped: 0,
+            invalid: 0,
             duration_s: 0.0,
             seed: nil,
             failures: [],
@@ -119,7 +121,8 @@ defmodule IexCode.Tools.TestRunner.Parser do
     total = Map.get(summary, :total, 0)
     excluded = Map.get(summary, :excluded, 0)
     skipped = Map.get(summary, :skipped, 0)
-    passed = max(0, total - failures_count - excluded - skipped)
+    invalid = Map.get(summary, :invalid, 0)
+    passed = max(0, total - failures_count - excluded - skipped - invalid)
 
     status =
       cond do
@@ -140,6 +143,7 @@ defmodule IexCode.Tools.TestRunner.Parser do
       failures_count: failures_count,
       excluded: excluded,
       skipped: skipped,
+      invalid: invalid,
       duration_s: duration,
       seed: seed,
       failures: failures,
@@ -160,33 +164,39 @@ defmodule IexCode.Tools.TestRunner.Parser do
   end
 
   @doc """
-  Parses summary test metrics (total, failures, excluded, skipped).
+  Parses summary test metrics (total, failures, excluded, skipped, invalid).
+
+  The real summary is the *last* "N tests, M failures" occurrence in the
+  output; failure body text can contain similar phrasing, so earlier matches
+  are ignored.
   """
   @spec parse_summary(binary()) :: map()
   def parse_summary(text) do
-    # Regex variations for summary lines:
-    # "16 tests, 0 failures"
-    # "4 tests, 2 failures, 1 excluded, 1 skipped"
-    # "1 test, 1 failure"
-    case Regex.run(
-           ~r/(\d+)\s+tests?,\s+(\d+)\s+failures?(?:,\s+(\d+)\s+excluded)?(?:,\s+(\d+)\s+skipped)?/,
-           text
-         ) do
-      [_, total_str, failures_str | rest] ->
-        total = String.to_integer(total_str)
-        failures = String.to_integer(failures_str)
-        excluded = parse_opt_int(Enum.at(rest, 0))
-        skipped = parse_opt_int(Enum.at(rest, 1))
+    summary_line =
+      text
+      |> String.split("\n")
+      |> Enum.reverse()
+      |> Enum.find("", &(&1 =~ ~r/\d+\s+tests?,\s+\d+\s+failures?/))
 
+    case Regex.run(~r/(\d+)\s+tests?,\s+(\d+)\s+failures?/, summary_line) do
+      [_, total_str, failures_str] ->
         %{
-          total: total,
-          failures_count: failures,
-          excluded: excluded,
-          skipped: skipped
+          total: String.to_integer(total_str),
+          failures_count: String.to_integer(failures_str),
+          excluded: count_in_summary(summary_line, "excluded"),
+          skipped: count_in_summary(summary_line, "skipped"),
+          invalid: count_in_summary(summary_line, "invalid")
         }
 
       _ ->
-        %{total: 0, failures_count: 0, excluded: 0, skipped: 0}
+        %{total: 0, failures_count: 0, excluded: 0, skipped: 0, invalid: 0}
+    end
+  end
+
+  defp count_in_summary(line, keyword) do
+    case Regex.run(~r/(\d+)\s+#{keyword}/, line) do
+      [_, n] -> String.to_integer(n)
+      _ -> 0
     end
   end
 
@@ -196,7 +206,9 @@ defmodule IexCode.Tools.TestRunner.Parser do
   @spec parse_failures(binary()) :: [Failure.t()]
   def parse_failures(text) do
     # Split text by failure headers: "  1) test name (Module)"
-    failure_pattern = ~r/^\s*(\d+)\)\s+(.+?)\s+\((.+?)\)\s*$/m
+    # The module part must look like an actual module name to avoid matching
+    # body lines that merely resemble failure headers.
+    failure_pattern = ~r/^\s*(\d+)\)\s+(.+?)\s+\(([A-Z][A-Za-z0-9_.]*)\)\s*$/m
 
     case Regex.scan(failure_pattern, text, return: :index) do
       [] ->
@@ -204,7 +216,10 @@ defmodule IexCode.Tools.TestRunner.Parser do
 
       matches ->
         # Extract slices between each match
-        slices = extract_failure_slices(text, matches)
+        slices =
+          matches
+          |> reject_phantom_matches(text)
+          |> extract_failure_slices(text)
 
         Enum.map(slices, fn {idx, test_name, module, block_text} ->
           parse_single_failure(idx, test_name, module, block_text)
@@ -275,11 +290,7 @@ defmodule IexCode.Tools.TestRunner.Parser do
     end
   end
 
-  defp parse_opt_int(nil), do: 0
-  defp parse_opt_int(""), do: 0
-  defp parse_opt_int(str) when is_binary(str), do: String.to_integer(str)
-
-  defp extract_failure_slices(text, matches) do
+  defp extract_failure_slices(matches, text) do
     matches
     |> Enum.with_index()
     |> Enum.map(fn {match_list, idx} ->
@@ -305,6 +316,25 @@ defmodule IexCode.Tools.TestRunner.Parser do
       block = binary_part(text, start_pos, block_len)
       {String.to_integer(num_str), test_name, module, block}
     end)
+  end
+
+  # ExUnit numbers failures sequentially starting at 1. Body lines that merely
+  # resemble failure headers (phantom matches) don't continue the sequence and
+  # are dropped here.
+  defp reject_phantom_matches(matches, text) do
+    {kept, _next} =
+      Enum.reduce(matches, {[], 1}, fn match, {acc, expected} ->
+        [{_start, _}, {num_pos, num_len} | _] = match
+        num = String.to_integer(binary_part(text, num_pos, num_len))
+
+        if num == expected do
+          {[match | acc], expected + 1}
+        else
+          {acc, expected}
+        end
+      end)
+
+    Enum.reverse(kept)
   end
 
   defp parse_single_failure(idx, test_name, module, block) do
@@ -348,8 +378,8 @@ defmodule IexCode.Tools.TestRunner.Parser do
       index: idx,
       test_name: test_name,
       module: module,
-      file: file || "",
-      line: line || 1,
+      file: file,
+      line: line,
       message: message,
       code_snippet: code_snippet,
       left: left,

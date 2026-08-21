@@ -63,7 +63,14 @@ defmodule IexCodeWeb.CoreComponents do
       id={@id}
       phx-click={JS.push("lv:clear-flash", value: %{key: @kind}) |> hide("##{@id}")}
       role="alert"
-      class="fixed bottom-5 right-5 z-50 animate-in fade-in slide-in-from-bottom-3 duration-300 max-w-sm w-full cursor-pointer"
+      class={
+        [
+          "fixed right-5 z-50 animate-in fade-in slide-in-from-bottom-3 duration-300 max-w-sm w-full cursor-pointer",
+          # Stack info and error flashes instead of overlapping at the same spot
+          @kind == :info && "bottom-5",
+          @kind == :error && "bottom-24"
+        ]
+      }
       {@rest}
     >
       <div class="bg-[#11151c]/95 border border-[#21262d] rounded-2xl p-4 shadow-2xl backdrop-blur-xl relative group hover:border-[#38404a] transition-smooth">
@@ -105,18 +112,6 @@ defmodule IexCodeWeb.CoreComponents do
         <p class="text-xs text-gray-300 leading-relaxed font-sans mb-3">
           {msg}
         </p>
-
-        <!-- Divider & Metadata (Matching Reference Image) -->
-        <div class="border-t border-dashed border-[#21262d] pt-2.5 space-y-1 font-mono text-[11px]">
-          <div class="flex items-center justify-between text-gray-400">
-            <span>Source</span>
-            <span class="text-gray-200">IexCode Swarm Engine</span>
-          </div>
-          <div class="flex items-center justify-between text-gray-400">
-            <span>Status</span>
-            <span class="text-emerald-400 font-semibold">Verified</span>
-          </div>
-        </div>
       </div>
     </div>
     """
@@ -318,12 +313,14 @@ defmodule IexCodeWeb.CoreComponents do
             name={@name}
             value="true"
             checked={@checked}
+            aria-invalid={@errors != [] && "true"}
+            aria-describedby={describe_errors(@errors, @id)}
             class={@class || "checkbox checkbox-sm"}
             {@rest}
           />{@label}
         </span>
       </label>
-      <.error :for={msg <- @errors}>{msg}</.error>
+      <.error :for={{msg, idx} <- Enum.with_index(@errors)} id={"#{@id}-error-#{idx}"}>{msg}</.error>
     </div>
     """
   end
@@ -336,6 +333,8 @@ defmodule IexCodeWeb.CoreComponents do
         <select
           id={@id}
           name={@name}
+          aria-invalid={@errors != [] && "true"}
+          aria-describedby={describe_errors(@errors, @id)}
           class={[
             @class ||
               "w-full bg-[#0d1117] border border-[#30363d] focus:border-[#ff5e3a] text-white rounded-xl px-3 py-2 text-xs font-sans focus:outline-hidden",
@@ -348,7 +347,7 @@ defmodule IexCodeWeb.CoreComponents do
           {Phoenix.HTML.Form.options_for_select(@options, @value)}
         </select>
       </label>
-      <.error :for={msg <- @errors}>{msg}</.error>
+      <.error :for={{msg, idx} <- Enum.with_index(@errors)} id={"#{@id}-error-#{idx}"}>{msg}</.error>
     </div>
     """
   end
@@ -361,6 +360,8 @@ defmodule IexCodeWeb.CoreComponents do
         <textarea
           id={@id}
           name={@name}
+          aria-invalid={@errors != [] && "true"}
+          aria-describedby={describe_errors(@errors, @id)}
           class={[
             @class || "w-full textarea",
             @errors != [] && (@error_class || "textarea-error")
@@ -368,7 +369,7 @@ defmodule IexCodeWeb.CoreComponents do
           {@rest}
         >{Phoenix.HTML.Form.normalize_value("textarea", @value)}</textarea>
       </label>
-      <.error :for={msg <- @errors}>{msg}</.error>
+      <.error :for={{msg, idx} <- Enum.with_index(@errors)} id={"#{@id}-error-#{idx}"}>{msg}</.error>
     </div>
     """
   end
@@ -384,6 +385,8 @@ defmodule IexCodeWeb.CoreComponents do
           name={@name}
           id={@id}
           value={Phoenix.HTML.Form.normalize_value(@type, @value)}
+          aria-invalid={@errors != [] && "true"}
+          aria-describedby={describe_errors(@errors, @id)}
           class={[
             @class || "w-full input",
             @errors != [] && (@error_class || "input-error")
@@ -391,20 +394,31 @@ defmodule IexCodeWeb.CoreComponents do
           {@rest}
         />
       </label>
-      <.error :for={msg <- @errors}>{msg}</.error>
+      <.error :for={{msg, idx} <- Enum.with_index(@errors)} id={"#{@id}-error-#{idx}"}>{msg}</.error>
     </div>
     """
   end
 
   # Helper used by inputs to generate form errors
+  attr :id, :string, default: nil
+  slot :inner_block, required: true
+
   defp error(assigns) do
     ~H"""
-    <p class="mt-1.5 flex gap-2 items-center text-sm text-error">
+    <p id={@id} class="mt-1.5 flex gap-2 items-center text-sm text-error">
       <.icon name="hero-exclamation-circle" class="size-5" />
       {render_slot(@inner_block)}
     </p>
     """
   end
+
+  defp describe_errors([], _id), do: nil
+
+  defp describe_errors(errors, id) when is_binary(id) do
+    Enum.map_join(0..(length(errors) - 1), " ", &"#{id}-error-#{&1}")
+  end
+
+  defp describe_errors(_errors, _id), do: nil
 
   @doc """
   Renders a header with title.

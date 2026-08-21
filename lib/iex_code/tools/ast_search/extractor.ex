@@ -15,6 +15,8 @@ defmodule IexCode.Tools.ASTSearch.Extractor do
           | :attribute
           | :type
           | :callback
+          | :defguard
+          | :defdelegate
 
   @type visibility :: :public | :private
 
@@ -67,9 +69,9 @@ defmodule IexCode.Tools.ASTSearch.Extractor do
           end
         end,
         fn node, {acc, mod_stack} ->
-          # On post-walk of defmodule, pop module stack
+          # On post-walk of module-like definitions, pop module stack
           case node do
-            {:defmodule, _, _} ->
+            {def_kind, _, _} when def_kind in [:defmodule, :defprotocol, :defimpl] ->
               new_mod_stack = if mod_stack == [], do: [], else: tl(mod_stack)
               {node, {acc, new_mod_stack}}
 
@@ -85,7 +87,9 @@ defmodule IexCode.Tools.ASTSearch.Extractor do
   defp current_module_name([]), do: nil
   defp current_module_name([mod | _]), do: mod
 
-  defp parse_node_pre({:defmodule, meta, [mod_ast, _body]}, file_path, mod_stack, _lines) do
+  # defmodule / defprotocol / defimpl — module-like entries
+  defp parse_node_pre({def_kind, meta, [mod_ast | _]}, file_path, mod_stack, lines)
+       when def_kind in [:defmodule, :defprotocol, :defimpl] do
     mod_name = extract_module_name(mod_ast)
 
     full_mod_name =
@@ -97,6 +101,11 @@ defmodule IexCode.Tools.ASTSearch.Extractor do
     line = meta[:line] || 1
     col = meta[:column] || 1
     end_line = meta[:end_of_expression][:line] || line
+    code_snippet = extract_snippet(lines, line, end_line)
+
+    # Unquote fragments cannot be resolved statically — flag them instead of
+    # presenting the raw fragment as a real module name.
+    metadata = module_metadata(def_kind, mod_ast, full_mod_name)
 
     entry = %{
       file: file_path,
@@ -108,8 +117,8 @@ defmodule IexCode.Tools.ASTSearch.Extractor do
       arity: nil,
       visibility: :public,
       module: current_module_name(mod_stack),
-      code: "defmodule #{full_mod_name} do\nend",
-      metadata: %{raw: Macro.to_string(mod_ast)}
+      code: code_snippet || "#{def_kind} #{full_mod_name}",
+      metadata: metadata
     }
 
     {:module, entry, full_mod_name}
@@ -163,6 +172,58 @@ defmodule IexCode.Tools.ASTSearch.Extractor do
       visibility: visibility,
       module: current_module_name(mod_stack),
       code: code_snippet || "#{macro_type} #{name}",
+      metadata: %{head: Macro.to_string(head)}
+    }
+
+    {:symbol, entry}
+  end
+
+  # defguard / defguardp
+  defp parse_node_pre({guard_kind, meta, [head | _]}, file_path, mod_stack, lines)
+       when guard_kind in [:defguard, :defguardp] do
+    {name, arity} = extract_fn_name_arity(head)
+    line = meta[:line] || 1
+    col = meta[:column] || 1
+    end_line = meta[:end_of_expression][:line] || line
+    code_snippet = extract_snippet(lines, line, end_line)
+    visibility = if guard_kind == :defguard, do: :public, else: :private
+
+    entry = %{
+      file: file_path,
+      line: line,
+      column: col,
+      end_line: end_line,
+      type: :defguard,
+      name: to_string(name),
+      arity: arity,
+      visibility: visibility,
+      module: current_module_name(mod_stack),
+      code: code_snippet || "#{guard_kind} #{name}",
+      metadata: %{head: Macro.to_string(head)}
+    }
+
+    {:symbol, entry}
+  end
+
+  # defdelegate
+  defp parse_node_pre({:defdelegate, meta, [head | _]}, file_path, mod_stack, lines) do
+    {name, arity} = extract_fn_name_arity(head)
+    line = meta[:line] || 1
+    col = meta[:column] || 1
+    end_line = meta[:end_of_expression][:line] || line
+    code_snippet = extract_snippet(lines, line, end_line)
+
+    entry = %{
+      file: file_path,
+      line: line,
+      column: col,
+      end_line: end_line,
+      type: :defdelegate,
+      name: to_string(name),
+      arity: arity,
+      visibility: :public,
+      module: current_module_name(mod_stack),
+      code: code_snippet || "defdelegate #{name}",
       metadata: %{head: Macro.to_string(head)}
     }
 
@@ -324,6 +385,16 @@ defmodule IexCode.Tools.ASTSearch.Extractor do
 
   defp extract_module_name(other), do: Macro.to_string(other)
 
+  defp module_metadata(def_kind, mod_ast, full_mod_name) do
+    metadata = %{kind: def_kind, raw: Macro.to_string(mod_ast)}
+
+    if String.contains?(full_mod_name, "unquote") do
+      Map.put(metadata, :name_unresolved, true)
+    else
+      metadata
+    end
+  end
+
   defp extract_fn_name_arity({:when, _, [head | _]}), do: extract_fn_name_arity(head)
 
   defp extract_fn_name_arity({name, _, args}) when is_atom(name) do
@@ -351,13 +422,23 @@ defmodule IexCode.Tools.ASTSearch.Extractor do
   defp extract_doc_string(false), do: "false"
   defp extract_doc_string(other), do: Macro.to_string(other)
 
+  @snippet_max_lines 10
+
   defp extract_snippet(lines, start_l, end_l) do
     if is_list(lines) and lines != [] and is_integer(start_l) and start_l > 0 do
       max_end =
-        if is_integer(end_l) and end_l >= start_l, do: min(end_l, start_l + 10), else: start_l
+        if is_integer(end_l) and end_l >= start_l,
+          do: min(end_l, start_l + @snippet_max_lines),
+          else: start_l
 
       slice = Enum.slice(lines, (start_l - 1)..(max_end - 1))
-      Enum.join(slice, "\n")
+      snippet = Enum.join(slice, "\n")
+
+      if is_integer(end_l) and end_l > max_end do
+        snippet <> "\n# ... (truncated)"
+      else
+        snippet
+      end
     else
       nil
     end

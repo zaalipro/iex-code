@@ -2,6 +2,9 @@ defmodule IexCode.LLM do
   @moduledoc """
   Unified LLM gateway coordinating OpenAI, Anthropic, custom endpoints,
   and fallback provider routing with exponential backoff resilience.
+
+  There is no mock/local mode: a missing API key returns `{:error, :no_api_key}`
+  and a provider failure returns an error — content is never fabricated.
   """
   alias IexCode.Settings
   alias IexCode.LLM.{Anthropic, OpenAI, Resilience}
@@ -9,76 +12,129 @@ defmodule IexCode.LLM do
   @doc """
   Dispatches chat requests across OpenAI / Anthropic models with retry resilience
   and provider fallback routing.
+
+  ## Options
+  - `:cancelled?` - zero-arg fun polled by the stream client between chunks; when
+    truthy the stream aborts cleanly (forwarded to providers / `StreamClient`)
+  - `:max_tokens` - overrides the provider default max token count
+  - `:temperature` - overrides the session/settings temperature
+  - `:on_retry` - fn (attempt, reason, sleep_ms) invoked by the resilience engine
+    on every retry
+  - `:receive_timeout` - HTTP receive timeout in ms forwarded to providers
   """
-  def chat(messages, system_prompt, session, on_chunk \\ fn _c -> :ok end) do
+  def chat(messages, system_prompt, session, on_chunk \\ fn _c -> :ok end, opts \\ []) do
     settings = Settings.get_settings()
 
     raw_provider =
       (session && session.model_provider) || settings.default_model_provider || "openai"
 
     raw_model =
-      (session && session.model_name) || settings.default_model || "gemini-3.7-flash-high"
+      (session && session.model_name) || settings.default_model || "claude-3-7-sonnet"
 
-    temperature = (session && session.temperature) || 0.2
+    do_chat(messages, system_prompt, session, on_chunk, opts, settings, raw_provider, raw_model)
+  end
+
+  defp do_chat(
+         messages,
+         system_prompt,
+         session,
+         on_chunk,
+         opts,
+         settings,
+         raw_provider,
+         raw_model
+       ) do
+    temperature = Keyword.get(opts, :temperature) || (session && session.temperature) || 0.2
     tools = IexCode.Tools.tool_definitions()
 
-    # Smart auto-detection if anthropic key is missing but openai/proxy key is configured
+    # Route GPT/o1/o3 model families to OpenAI even when the provider is set to
+    # anthropic. Model names are otherwise passed through to the provider as-is.
     primary_provider =
       cond do
-        String.starts_with?(raw_model, "gemini") or String.starts_with?(raw_model, "gpt") or
-          String.starts_with?(raw_model, "o1") or String.starts_with?(raw_model, "o3") ->
+        String.starts_with?(raw_model, "gpt") or String.starts_with?(raw_model, "o1") or
+            String.starts_with?(raw_model, "o3") ->
           "openai"
 
-        raw_provider == "anthropic" and
-          (settings.anthropic_api_key == nil or settings.anthropic_api_key == "") and
-            (settings.openai_api_key != nil and settings.openai_api_key != "") ->
+        raw_provider == "anthropic" and blank?(settings.anthropic_api_key) and
+            present?(settings.openai_api_key) ->
           "openai"
 
         true ->
           raw_provider
       end
 
-    openai_opts = [
-      api_key: settings.openai_api_key || "sk-zaali-secret",
-      base_url: settings.openai_base_url || "https://cli.llmotions.com/v1",
-      model:
-        if(String.starts_with?(raw_model, "claude"), do: "gemini-3.7-flash-high", else: raw_model),
-      temperature: temperature,
-      tools: tools
-    ]
+    passthrough_opts =
+      opts
+      |> Keyword.take([:cancelled?, :max_tokens, :receive_timeout])
+      |> Enum.reject(fn {_k, v} -> is_nil(v) end)
 
-    anthropic_opts = [
-      api_key: settings.anthropic_api_key,
-      base_url: settings.anthropic_base_url || "https://api.anthropic.com",
-      model:
-        if(String.starts_with?(raw_model, "claude"), do: raw_model, else: "claude-3-7-sonnet"),
-      temperature: temperature,
-      tools: tools
-    ]
+    openai_fn = fn ->
+      OpenAI.chat(
+        messages,
+        system_prompt,
+        [
+          api_key: settings.openai_api_key,
+          base_url: settings.openai_base_url || "https://cli.llmotions.com/v1",
+          model: raw_model,
+          temperature: temperature,
+          tools: tools
+        ] ++ passthrough_opts,
+        on_chunk
+      )
+    end
 
-    openai_fn = fn -> OpenAI.chat(messages, system_prompt, openai_opts, on_chunk) end
-    anthropic_fn = fn -> Anthropic.chat(messages, system_prompt, anthropic_opts, on_chunk) end
+    anthropic_fn = fn ->
+      Anthropic.chat(
+        messages,
+        system_prompt,
+        [
+          api_key: settings.anthropic_api_key,
+          base_url: settings.anthropic_base_url || "https://api.anthropic.com",
+          model: raw_model,
+          temperature: temperature,
+          tools: tools
+        ] ++ passthrough_opts,
+        on_chunk
+      )
+    end
 
     providers =
-      if primary_provider == "openai" do
-        [{"openai", openai_fn}, {"anthropic", anthropic_fn}]
-      else
-        [{"anthropic", anthropic_fn}, {"openai", openai_fn}]
-      end
+      [
+        {"openai", openai_fn, settings.openai_api_key},
+        {"anthropic", anthropic_fn, settings.anthropic_api_key}
+      ]
+      |> Enum.filter(fn {_name, _fn, key} -> present?(key) end)
+      |> Enum.sort_by(fn
+        {^primary_provider, _fn, _key} -> 0
+        {_other, _fn, _key} -> 1
+      end)
+      |> Enum.map(fn {name, fn_, _key} -> {name, fn_} end)
 
-    case Resilience.with_fallback(providers) do
-      {:ok, result, _meta} ->
-        {:ok, result}
+    cond do
+      providers == [] ->
+        {:error, :no_api_key}
 
-      {:ok, result} ->
-        {:ok, result}
+      true ->
+        case Resilience.with_fallback(providers,
+               on_chunk: on_chunk,
+               on_retry: Keyword.get(opts, :on_retry, fn _a, _r, _s -> :ok end)
+             ) do
+          {:ok, result, _meta} ->
+            {:ok, result}
 
-      {:error, {:all_providers_failed, errors}} ->
-        first_err = List.first(errors) |> elem(1)
-        {:error, first_err}
+          {:ok, result} ->
+            {:ok, result}
 
-      {:error, reason} ->
-        {:error, reason}
+          {:error, {:all_providers_failed, errors}} ->
+            first_err = List.first(errors) |> elem(1)
+            {:error, first_err}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
     end
   end
+
+  defp blank?(key), do: is_nil(key) or key == ""
+  defp present?(key), do: not blank?(key)
 end

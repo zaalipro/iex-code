@@ -5,9 +5,10 @@ defmodule IexCode.Engine.AdversarialStressTest do
   """
   use IexCode.DataCase, async: false
   @moduletag timeout: 120_000
-  alias IexCode.{Projects, Sessions, Repo}
+  alias IexCode.{Projects, Sessions, Repo, Settings}
   alias IexCode.Engine.{AgentRegistry, AgentSupervisor, OperationManager}
   alias IexCode.Engine.Agents.{PlannerAgent, ExplorerAgent, CoderAgent, VerifierAgent}
+  alias IexCode.E2E.MockLLMServer
   alias IexCode.Sessions.Operation
   import Ecto.Query
 
@@ -331,12 +332,29 @@ defmodule IexCode.Engine.AdversarialStressTest do
     test "concurrently executes operations across all 4 subagent types simultaneously", %{
       project: project
     } do
+      # No real LLM credentials in the test environment: point the LLM at a local mock server
+      {:ok, mock_pid, mock_info} = MockLLMServer.start(scenario: :standard_completion)
+
+      on_exit(fn ->
+        MockLLMServer.stop(mock_pid)
+      end)
+
+      {:ok, _} =
+        Settings.update_settings(%{
+          openai_base_url: "#{mock_info.url}/v1",
+          anthropic_base_url: "#{mock_info.url}/v1",
+          openai_api_key: "sk-test-mock-key",
+          anthropic_api_key: "sk-test-mock-key"
+        })
+
       sessions =
         for i <- 1..5 do
           {:ok, s} =
             Sessions.create_session(%{
               project_id: project.id,
-              title: "Subagent Session #{i}"
+              title: "Subagent Session #{i}",
+              model_provider: "openai",
+              model_name: "gpt-4o"
             })
 
           {:ok, p_pid} =

@@ -33,7 +33,9 @@ if config_env() == :prod do
 
   config :iex_code, IexCode.Repo,
     database: database_path,
-    pool_size: String.to_integer(System.get_env("POOL_SIZE") || "5")
+    pool_size: String.to_integer(System.get_env("POOL_SIZE") || "5"),
+    busy_timeout: 5000,
+    journal_mode: :wal
 
   # The secret key base is used to sign/encrypt cookies and other secrets.
   # A default value is used in config/dev.exs and config/test.exs but you
@@ -49,16 +51,39 @@ if config_env() == :prod do
 
   host = System.get_env("PHX_HOST") || "example.com"
 
+  # Bind to loopback by default. Set IEX_CODE_BIND (e.g. "0.0.0.0" or
+  # "::") to explicitly override.
+  bind_ip =
+    case System.get_env("IEX_CODE_BIND") do
+      nil ->
+        {127, 0, 0, 1}
+
+      "" ->
+        {127, 0, 0, 1}
+
+      ip ->
+        case :inet.parse_address(String.to_charlist(ip)) do
+          {:ok, addr} ->
+            addr
+
+          {:error, _} ->
+            raise """
+            environment variable IEX_CODE_BIND is not a valid IP address: #{inspect(ip)}
+            For example: 0.0.0.0 or ::
+            """
+        end
+    end
+
   config :iex_code, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
 
   config :iex_code, IexCodeWeb.Endpoint,
     url: [host: host, port: 443, scheme: "https"],
     http: [
-      # Enable IPv6 and bind on all interfaces.
-      # Set it to  {0, 0, 0, 0, 0, 0, 0, 1} for local network only access.
+      # Bind on loopback by default; override with the IEX_CODE_BIND
+      # environment variable (see above).
       # See the documentation on https://bandit.hexdocs.pm/Bandit.html#t:options/0
       # for details about using IPv6 vs IPv4 and loopback vs public addresses.
-      ip: {0, 0, 0, 0, 0, 0, 0, 0}
+      ip: bind_ip
     ],
     secret_key_base: secret_key_base
 

@@ -56,7 +56,8 @@ defmodule IexCode.E2E.Tier2BoundaryTest do
         })
 
       settings = Settings.get_settings()
-      assert is_binary(settings.openai_api_key)
+      # Blank keys normalize to nil — no key is ever injected as a default.
+      assert settings.openai_api_key in [nil, ""]
       assert is_binary(settings.openai_base_url)
     end
 
@@ -621,8 +622,10 @@ defmodule IexCode.E2E.Tier2BoundaryTest do
     end
 
     test "T2_F09_03_command_timeout", %{workspace_path: path} do
-      result = Tools.execute("run_command", %{"command" => "sleep 2", "timeout_ms" => 50}, path)
-      assert result == {:error, "Command timed out after 50ms"}
+      assert {:error, msg} =
+               Tools.execute("run_command", %{"command" => "sleep 2", "timeout_ms" => 50}, path)
+
+      assert msg =~ "Command timed out after 50ms"
     end
 
     test "T2_F09_04_command_large_stdout", %{workspace_path: path} do

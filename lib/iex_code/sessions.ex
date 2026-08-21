@@ -3,6 +3,7 @@ defmodule IexCode.Sessions do
   Context for managing sessions, conversation messages, and real-time swarm operations.
   """
   import Ecto.Query, warn: false
+  require Logger
   alias IexCode.Repo
   alias IexCode.Sessions.{Session, Message, Operation}
 
@@ -26,18 +27,10 @@ defmodule IexCode.Sessions do
     end
   end
 
-  def create_session(attrs \\ %{}, retries \\ 20) do
+  def create_session(attrs \\ %{}) do
     %Session{}
     |> Session.changeset(attrs)
     |> Repo.insert()
-  rescue
-    e in [Exqlite.Error, DBConnection.ConnectionError] ->
-      if retries > 0 do
-        :timer.sleep(35)
-        create_session(attrs, retries - 1)
-      else
-        reraise e, __STACKTRACE__
-      end
   end
 
   def update_session(%Session{} = session, attrs) do
@@ -53,22 +46,14 @@ defmodule IexCode.Sessions do
   def list_messages(session_id) do
     Message
     |> where([m], m.session_id == ^session_id)
-    |> order_by([m], asc: m.inserted_at)
+    |> order_by([m], asc: m.inserted_at, asc: m.id)
     |> Repo.all()
   end
 
-  def create_message(attrs \\ %{}, retries \\ 20) do
+  def create_message(attrs \\ %{}) do
     %Message{}
     |> Message.changeset(sanitize_attrs(attrs))
     |> Repo.insert()
-  rescue
-    e in [Exqlite.Error, DBConnection.ConnectionError] ->
-      if retries > 0 do
-        :timer.sleep(35)
-        create_message(attrs, retries - 1)
-      else
-        reraise e, __STACKTRACE__
-      end
   end
 
   def list_operations(session_id) do
@@ -82,29 +67,17 @@ defmodule IexCode.Sessions do
 
   def get_operation(id), do: Repo.get(Operation, id)
 
-  def create_operation(attrs \\ %{}, retries \\ 5) do
-    try do
-      %Operation{}
-      |> Operation.changeset(sanitize_attrs(attrs))
-      |> Repo.insert()
-    rescue
-      _ in [Exqlite.Error, DBConnection.ConnectionError] ->
-        if retries > 0 do
-          :timer.sleep(20)
-          create_operation(attrs, retries - 1)
-        else
-          {:error, :db_unavailable}
-        end
-
-      _ ->
-        {:error, :db_unavailable}
-    catch
-      _, _ ->
-        {:error, :db_unavailable}
-    end
+  def create_operation(attrs \\ %{}) do
+    %Operation{}
+    |> Operation.changeset(sanitize_attrs(attrs))
+    |> Repo.insert()
+  rescue
+    e in [Exqlite.Error, DBConnection.ConnectionError] ->
+      Logger.error("Sessions.create_operation failed: #{Exception.message(e)}")
+      {:error, {:db_error, Exception.message(e)}}
   end
 
-  def update_operation(op_or_id, attrs, retries \\ 5) do
+  def update_operation(op_or_id, attrs) do
     op_id =
       case op_or_id do
         %Operation{id: id} -> id
@@ -112,39 +85,19 @@ defmodule IexCode.Sessions do
         _ -> nil
       end
 
-    try do
-      case op_id && Repo.get(Operation, op_id) do
-        nil ->
-          {:error, :not_found}
+    case op_id && Repo.get(Operation, op_id) do
+      nil ->
+        {:error, :not_found}
 
-        %Operation{} = op ->
-          op
-          |> Operation.changeset(sanitize_attrs(attrs))
-          |> Repo.update()
-      end
-    rescue
-      _ in [Exqlite.Error, DBConnection.ConnectionError] ->
-        if retries > 0 do
-          :timer.sleep(20)
-          update_operation(op_or_id, attrs, retries - 1)
-        else
-          {:error, :db_unavailable}
-        end
-
-      _ ->
-        {:error, :db_unavailable}
-    catch
-      :exit, _ ->
-        if retries > 0 do
-          :timer.sleep(20)
-          update_operation(op_or_id, attrs, retries - 1)
-        else
-          {:error, :db_exited}
-        end
-
-      _, _ ->
-        {:error, :db_unavailable}
+      %Operation{} = op ->
+        op
+        |> Operation.changeset(sanitize_attrs(attrs))
+        |> Repo.update()
     end
+  rescue
+    e in [Exqlite.Error, DBConnection.ConnectionError] ->
+      Logger.error("Sessions.update_operation failed: #{Exception.message(e)}")
+      {:error, {:db_error, Exception.message(e)}}
   end
 
   def sanitize_utf8(nil), do: nil

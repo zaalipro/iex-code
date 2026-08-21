@@ -9,6 +9,7 @@ import Config
 
 config :iex_code,
   ecto_repos: [IexCode.Repo],
+  start_desktop_window: false,
   generators: [timestamp_type: :utc_datetime]
 
 # Configure the endpoint

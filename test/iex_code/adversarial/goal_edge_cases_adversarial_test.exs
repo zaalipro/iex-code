@@ -10,7 +10,7 @@ defmodule IexCode.Adversarial.GoalEdgeCasesAdversarialTest do
   @moduletag timeout: 120_000
 
   alias IexCode.{Projects, Sessions}
-  alias IexCode.Engine.{SessionServer, SwarmCoordinator, AgentSupervisor, AgentRegistry}
+  alias IexCode.Engine.{SessionServer, AgentSupervisor}
 
   setup do
     test_root = Path.join(System.tmp_dir!(), "edge_goal_#{Ecto.UUID.generate()}")
@@ -39,10 +39,11 @@ defmodule IexCode.Adversarial.GoalEdgeCasesAdversarialTest do
   end
 
   describe "Vulnerability 1: Duplicate Pause Mailbox Accumulation" do
-    test "repeated pause_session calls queue duplicate :pause messages in SwarmCoordinator mailbox", %{
-      session: session,
-      test_root: test_root
-    } do
+    test "repeated pause_session calls queue duplicate :pause messages in SwarmCoordinator mailbox",
+         %{
+           session: session,
+           test_root: test_root
+         } do
       File.write!(
         Path.join(test_root, "pause_dup.ex"),
         "defmodule PauseDup do\n  def run, do: :ok\nend"
@@ -74,10 +75,11 @@ defmodule IexCode.Adversarial.GoalEdgeCasesAdversarialTest do
   end
 
   describe "Vulnerability 2: Send Prompt during Paused State Split-Brain" do
-    test "send_prompt while paused triggers new swarm task instead of steering existing paused swarm", %{
-      session: session,
-      test_root: test_root
-    } do
+    test "send_prompt while paused triggers new swarm task instead of steering existing paused swarm",
+         %{
+           session: session,
+           test_root: test_root
+         } do
       File.write!(
         Path.join(test_root, "split_brain.ex"),
         "defmodule SplitBrain do\n  def v, do: 1\nend"
@@ -106,6 +108,7 @@ defmodule IexCode.Adversarial.GoalEdgeCasesAdversarialTest do
       # If task2_pid != task1_pid, it spawned a split-brain duplicate task while task1 was still alive!
       # We record whether task1 and task2 are distinct concurrent processes
       assert is_pid(task2_pid)
+
       if task2_pid != task1_pid do
         # Empirical proof of split-brain: both task1 and task2 are simultaneously alive
         assert Process.alive?(task1_pid)
@@ -118,10 +121,11 @@ defmodule IexCode.Adversarial.GoalEdgeCasesAdversarialTest do
   end
 
   describe "Vulnerability 3: Goal Re-entrance Subagent Collision" do
-    test "creating goal while previous goal is running causes subagent collision", %{
-      session: session,
-      test_root: test_root
-    } do
+    test "creating goal while previous goal is running is rejected, preventing subagent collision",
+         %{
+           session: session,
+           test_root: test_root
+         } do
       File.write!(
         Path.join(test_root, "collision.ex"),
         "defmodule Collision do\n  def test, do: true\nend"
@@ -135,19 +139,17 @@ defmodule IexCode.Adversarial.GoalEdgeCasesAdversarialTest do
 
       assert_receive {:session_status_changed, "running"}, 5000
 
-      # Immediately launch Goal 2 without cancelling Goal 1
-      {:ok, goal2} =
-        SessionServer.create_goal(session.id, "Goal 2 - Override",
-          project_root: test_root,
-          auto_start: true
-        )
+      # Immediately launching Goal 2 while Goal 1 runs is rejected, preventing the collision
+      assert {:error, :already_running} =
+               SessionServer.create_goal(session.id, "Goal 2 - Override",
+                 project_root: test_root,
+                 auto_start: true
+               )
 
-      assert goal1.id != goal2.id
-      assert goal1.task_pid != goal2.task_pid
-
-      # Both tasks compete for the same registered agent GenServers in AgentRegistry
-      agents = AgentRegistry.list_agents(session.id)
-      assert length(agents) > 0
+      # Original goal remains active and running
+      state = SessionServer.get_state(session.id)
+      assert state.active_goal.id == goal1.id
+      assert state.status == :running
 
       # Cleanup
       SessionServer.cancel_session(session.id, action: :rollback)

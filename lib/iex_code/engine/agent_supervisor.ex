@@ -21,6 +21,13 @@ defmodule IexCode.Engine.AgentSupervisor do
   Returns `{:ok, pid}` or `{:error, reason}`.
   """
   def start_agent(session_id, agent_type, opts \\ []) do
+    do_start_agent(session_id, agent_type, opts, 3)
+  end
+
+  defp do_start_agent(_session_id, _agent_type, _opts, 0),
+    do: {:error, :agent_start_retries_exhausted}
+
+  defp do_start_agent(session_id, agent_type, opts, attempts) do
     module = resolve_agent_module(agent_type)
     child_spec = {module, Keyword.merge(opts, session_id: session_id)}
 
@@ -30,8 +37,18 @@ defmodule IexCode.Engine.AgentSupervisor do
         {:ok, pid}
 
       {:error, {:already_started, pid}} ->
-        allow_sandbox(pid)
-        {:ok, pid}
+        # Race: the registered process may have already died; verify before reusing it.
+        if is_pid(pid) and Process.alive?(pid) do
+          allow_sandbox(pid)
+          {:ok, pid}
+        else
+          Logger.warning(
+            "AgentSupervisor: stale already_started pid #{inspect(pid)} for " <>
+              "#{inspect(agent_type)} in session #{inspect(session_id)}; retrying start"
+          )
+
+          do_start_agent(session_id, agent_type, opts, attempts - 1)
+        end
 
       {:error, reason} ->
         {:error, reason}
@@ -75,21 +92,44 @@ defmodule IexCode.Engine.AgentSupervisor do
     end
   end
 
+  @stop_all_deadline_ms 5_000
+
   @doc """
   Terminates all running subagents for a session.
+
+  Agents are shut down in parallel with an overall deadline of #{@stop_all_deadline_ms}ms;
+  any stragglers still alive past the deadline are killed outright.
   """
   def stop_all_agents(session_id) do
     _ = :sys.get_state(AgentRegistry)
 
-    for {_type, pid} <- AgentRegistry.list_agents(session_id) do
-      ref = Process.monitor(pid)
-      DynamicSupervisor.terminate_child(__MODULE__, pid)
+    agents = AgentRegistry.list_agents(session_id)
+    deadline = System.monotonic_time(:millisecond) + @stop_all_deadline_ms
 
-      receive do
-        {:DOWN, ^ref, :process, ^pid, _} -> :ok
-      after
-        1_000 -> :ok
+    tasks =
+      for {_type, pid} <- agents do
+        Task.async(fn -> DynamicSupervisor.terminate_child(__MODULE__, pid) end)
       end
+
+    Enum.each(tasks, fn task ->
+      remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+
+      case Task.yield(task, remaining) do
+        {:ok, _result} ->
+          :ok
+
+        {:exit, _reason} ->
+          :ok
+
+        nil ->
+          _ = Task.shutdown(task, :brutal_kill)
+          :ok
+      end
+    end)
+
+    # Guarantee no stragglers survive past the overall deadline.
+    for {_type, pid} <- agents do
+      if Process.alive?(pid), do: Process.exit(pid, :kill)
     end
 
     _ = :sys.get_state(AgentRegistry)
@@ -105,14 +145,33 @@ defmodule IexCode.Engine.AgentSupervisor do
 
   @doc """
   Resolves the GenServer module corresponding to an agent type.
+
+  Raises `ArgumentError` for unknown/junk types instead of returning a module
+  that would crash later during `start_child`.
   """
   def resolve_agent_module(type) do
     case AgentRegistry.normalize_type(type) do
-      :planner -> IexCode.Engine.Agents.PlannerAgent
-      :explorer -> IexCode.Engine.Agents.ExplorerAgent
-      :coder -> IexCode.Engine.Agents.CoderAgent
-      :verifier -> IexCode.Engine.Agents.VerifierAgent
-      mod when is_atom(mod) -> mod
+      :planner ->
+        IexCode.Engine.Agents.PlannerAgent
+
+      :explorer ->
+        IexCode.Engine.Agents.ExplorerAgent
+
+      :coder ->
+        IexCode.Engine.Agents.CoderAgent
+
+      :verifier ->
+        IexCode.Engine.Agents.VerifierAgent
+
+      mod when is_atom(mod) ->
+        if Code.ensure_loaded?(mod) and function_exported?(mod, :start_link, 1) do
+          mod
+        else
+          raise ArgumentError, "unknown agent type: #{inspect(type)}"
+        end
+
+      other ->
+        raise ArgumentError, "unknown agent type: #{inspect(other)}"
     end
   end
 end

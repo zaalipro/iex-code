@@ -9,6 +9,13 @@ defmodule IexCode.Engine.Agents.ExplorerAgent do
   alias IexCode.Tools
   alias IexCode.Tools.ASTSearch
 
+  @outer_timeout 90_000
+  @inner_timeout 60_000
+
+  @stopwords ~w(the and for with this that from into your you are have has will would should could
+                implement create make code file files please using used when then them they what
+                which there here about after before between during through under over need wants)
+
   defmodule State do
     defstruct [
       :session_id,
@@ -32,7 +39,7 @@ defmodule IexCode.Engine.Agents.ExplorerAgent do
   Explores the codebase based on the user prompt and optional plan.
   """
   def explore(target, prompt, opts \\ []) do
-    timeout = Keyword.get(opts, :timeout, 60_000)
+    timeout = Keyword.get(opts, :timeout, @outer_timeout)
     GenServer.call(resolve_target(target), {:explore, prompt, opts}, timeout)
   end
 
@@ -83,6 +90,9 @@ defmodule IexCode.Engine.Agents.ExplorerAgent do
       status: :idle
     }
 
+    set_cancelled?(session_id, false)
+    subscribe_steering(session_id)
+
     {:ok, state}
   end
 
@@ -101,57 +111,72 @@ defmodule IexCode.Engine.Agents.ExplorerAgent do
         "Explorer: Scanning codebase for relevant files & symbols",
         %{prompt: prompt},
         fn progress ->
-          progress.(20, "Searching project files...")
+          if cancelled_fun(session_id).() do
+            {:error, :cancelled}
+          else
+            progress.(20, "Searching project files...")
 
-          # Run grep operation for module definitions
-          grep_res =
-            OperationManager.run_sync_operation(
-              session_id,
-              parent_op_id,
-              "ExplorerAgent",
-              "grep_search",
-              "Explorer: Grepping for modules and definitions",
-              %{query: "defmodule"},
-              fn p ->
-                Tools.execute("grep_search", %{"query" => "defmodule"}, project_root, p)
-              end
-            )
+            # Derive the grep query from the prompt (plus any steering directives)
+            search_text =
+              Enum.join([prompt | Keyword.get(opts, :steer_directives, [])], "\n")
 
-          progress.(60, "Scanning AST symbols...")
+            query = derive_search_query(search_text)
 
-          # Run AST search for key symbols if specified
-          ast_symbols =
-            case ASTSearch.search(project_root, %{type: "module"}) do
-              {:ok, syms} -> syms
-              _ -> []
+            # Run grep operation for the derived query
+            grep_res =
+              OperationManager.run_sync_operation(
+                session_id,
+                parent_op_id,
+                "ExplorerAgent",
+                "grep_search",
+                "Explorer: Grepping for modules and definitions",
+                %{query: query},
+                fn p ->
+                  Tools.execute("grep_search", %{"query" => query}, project_root, p)
+                end,
+                Keyword.get(opts, :inner_timeout, @inner_timeout)
+              )
+
+            if cancelled_fun(session_id).() do
+              {:error, :cancelled}
+            else
+              progress.(60, "Scanning AST symbols...")
+
+              # Run AST search for key symbols if specified
+              ast_symbols =
+                case ASTSearch.search(project_root, %{type: "module"}) do
+                  {:ok, syms} -> syms
+                  _ -> []
+                end
+
+              progress.(80, "Synthesizing codebase context...")
+
+              context_summary =
+                cond do
+                  match?({:ok, output} when is_binary(output) and byte_size(output) > 0, grep_res) ->
+                    {:ok, output} = grep_res
+                    "Found key modules in workspace:\n#{String.slice(output, 0, 1500)}"
+
+                  ast_symbols != [] ->
+                    sym_list =
+                      Enum.map_join(
+                        Enum.take(ast_symbols, 10),
+                        "\n",
+                        &"- #{&1.name} (#{Path.relative_to(&1.file, project_root)}:#{&1.line})"
+                      )
+
+                    "Discovered AST modules:\n#{sym_list}"
+
+                  true ->
+                    "Workspace exploration complete. Ready for implementation."
+                end
+
+              progress.(100, "Exploration complete")
+              {:ok, context_summary}
             end
-
-          progress.(80, "Synthesizing codebase context...")
-
-          context_summary =
-            cond do
-              match?({:ok, output} when is_binary(output) and byte_size(output) > 0, grep_res) ->
-                {:ok, output} = grep_res
-                "Found key modules in workspace:\n#{String.slice(output, 0, 1500)}"
-
-              ast_symbols != [] ->
-                sym_list =
-                  Enum.map_join(
-                    Enum.take(ast_symbols, 10),
-                    "\n",
-                    &"- #{&1.name} (#{Path.relative_to(&1.file, project_root)}:#{&1.line})"
-                  )
-
-                "Discovered AST modules:\n#{sym_list}"
-
-              true ->
-                "Workspace exploration complete. Ready for implementation."
-            end
-
-          progress.(100, "Exploration complete")
-          {:ok, context_summary}
+          end
         end,
-        Keyword.get(opts, :timeout, 60_000)
+        Keyword.get(opts, :inner_timeout, @inner_timeout)
       )
 
     case explore_res do
@@ -188,6 +213,56 @@ defmodule IexCode.Engine.Agents.ExplorerAgent do
   @impl true
   def handle_call(:get_state, _from, %State{} = state) do
     {:reply, state, state}
+  end
+
+  # Search derivation
+
+  defp derive_search_query(text) do
+    words =
+      text
+      |> String.downcase()
+      |> String.replace(~r/[^a-z0-9_\-]+/, " ")
+      |> String.split(" ", trim: true)
+      |> Enum.reject(&(String.length(&1) < 4 or &1 in @stopwords))
+      |> Enum.uniq()
+      |> Enum.take(3)
+
+    case words do
+      [] -> "defmodule"
+      words -> Enum.map_join(words, "|", &Regex.escape/1)
+    end
+  end
+
+  # Steering / cancellation helpers
+
+  defp subscribe_steering(session_id) do
+    Phoenix.PubSub.subscribe(IexCode.PubSub, "session:#{session_id}:steer")
+  end
+
+  defp set_cancelled?(session_id, value) do
+    :persistent_term.put({__MODULE__, :cancelled?, session_id}, value)
+  end
+
+  defp cancelled_fun(session_id) do
+    fn -> :persistent_term.get({__MODULE__, :cancelled?, session_id}, false) end
+  end
+
+  @impl true
+  def handle_info({:cancel, session_id, _opts}, state) do
+    set_cancelled?(session_id, true)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:pause, session_id}, state) do
+    set_cancelled?(session_id, true)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:resume, session_id}, state) do
+    set_cancelled?(session_id, false)
+    {:noreply, state}
   end
 
   @impl true

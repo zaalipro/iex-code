@@ -543,12 +543,11 @@ defmodule IexCode.E2E.Tier5AdversarialStreamLiveviewTest do
 
       # Verify database tables remain intact
       assert Kanban.list_tasks(project.id) != nil
-      assert Settings.get_settings() != nil
+      assert %IexCode.Settings.AppSettings{} = Settings.get_settings()
     end
 
     test "T5_22_sensitive_environment_isolation" do
-      settings = Settings.get_settings()
-      assert settings != nil
+      assert %IexCode.Settings.AppSettings{} = settings = Settings.get_settings()
 
       # Ensure default settings do not expose arbitrary host environment secrets
       assert is_binary(settings.openai_base_url)

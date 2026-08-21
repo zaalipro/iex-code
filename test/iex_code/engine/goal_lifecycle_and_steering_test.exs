@@ -111,17 +111,16 @@ defmodule IexCode.Engine.GoalLifecycleAndSteeringTest do
       db_session = Sessions.get_session!(session.id)
       assert db_session.status == "paused"
 
-      # Resume session
-      assert {:ok, :running} = SessionServer.resume_session(session.id)
+      # Resume session with no active run returns an error and normalizes to idle
+      assert {:error, :no_active_run} = SessionServer.resume_session(session.id)
 
-      assert_receive {:session_status_changed, "running"}, 5000
-      assert_receive {:resume, _}, 5000
+      assert_receive {:session_status_changed, "idle"}, 5000
 
       state = SessionServer.get_state(session.id)
-      assert state.status == :running
+      assert state.status == :idle
 
       db_session = Sessions.get_session!(session.id)
-      assert db_session.status == "running"
+      assert db_session.status == "idle"
     end
 
     @tag :tmp_dir
@@ -356,25 +355,32 @@ defmodule IexCode.Engine.GoalLifecycleAndSteeringTest do
         "defmodule LibPauseSteer do\n  def x, do: 1\nend"
       )
 
-      {:ok, _pid} = SwarmCoordinator.run_swarm(session.id, "Goal with pause and steer", tmp_dir)
+      {:ok, _goal} =
+        SessionServer.create_goal(session.id, "Goal with pause and steer",
+          project_root: tmp_dir,
+          auto_start: true
+        )
+
       assert_receive {:session_status_changed, "running"}, 5000
 
-      # Pause swarm
+      # Pause swarm. The coordinator only observes the pause broadcast at the
+      # next stage checkpoint, and the verifier phase (a standalone syntax
+      # validation run_command) can take a while, so use generous timeouts.
       SwarmCoordinator.pause(session.id)
-      assert_receive {:session_status_changed, "paused"}, 5000
+      assert_receive {:session_status_changed, "paused"}, 30_000
 
       # Steer while paused
       SessionServer.send_steering(session.id, "Added requirement during pause: add test suite")
 
       assert_receive {:swarm_steered,
                       %{steering: "Added requirement during pause: add test suite"}},
-                     5000
+                     30_000
 
       # Resume
       SwarmCoordinator.resume(session.id)
-      assert_receive {:session_status_changed, "running"}, 5000
+      assert_receive {:session_status_changed, "running"}, 30_000
 
-      assert_receive {:session_status_changed, "idle"}, 25_000
+      assert_receive {:session_status_changed, "idle"}, 30_000
 
       messages = Sessions.list_messages(session.id)
 

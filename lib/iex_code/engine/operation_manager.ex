@@ -9,9 +9,12 @@ defmodule IexCode.Engine.OperationManager do
   alias IexCode.Sessions.Operation
   alias Phoenix.PubSub
 
+  @update_max_attempts 10
+  @update_retry_base_ms 100
+
   @doc """
   Runs an operation in a dedicated asynchronous Elixir task process with crash monitoring.
-  Returns `{:ok, task_pid, op_record}`.
+  Returns `{:ok, task_pid, op_record}` or `{:error, reason}` if the task could not be started.
   """
   def run_async_operation(session_id, parent_op_id, agent_name, op_type, title, params, fun) do
     op =
@@ -23,148 +26,161 @@ defmodule IexCode.Engine.OperationManager do
 
     emit_telemetry(:start, session_id, op_id, 0, nil, nil, op)
 
-    {:ok, task_pid} =
-      Task.Supervisor.start_child(IexCode.TaskSupervisor, fn ->
-        pid_str = inspect(self())
+    case Task.Supervisor.start_child(IexCode.TaskSupervisor, fn ->
+           pid_str = inspect(self())
 
-        started_op =
-          safe_update_operation(op_id, %{pid_str: pid_str}, %{op | pid_str: pid_str})
+           started_op =
+             safe_update_operation(op_id, %{pid_str: pid_str}, %{op | pid_str: pid_str})
 
-        broadcast(session_id, {:operation_started, started_op})
+           broadcast(session_id, {:operation_started, started_op})
 
-        progress_fn = fn percent, message ->
-          safe_update_operation(op_id, %{progress: percent, result: message}, op)
-          broadcast(session_id, {:operation_progress, op_id, percent, message})
-          emit_telemetry(:progress, session_id, op_id, percent, nil, message, op)
+           progress_fn = fn percent, message ->
+             safe_update_operation(op_id, %{progress: percent, result: message}, op)
+             broadcast(session_id, {:operation_progress, op_id, percent, message})
+             emit_telemetry(:progress, session_id, op_id, percent, nil, message, op)
+           end
+
+           result =
+             try do
+               case fun.(progress_fn) do
+                 {:ok, res} ->
+                   duration = System.monotonic_time(:millisecond) - start_time
+                   res_str = if is_binary(res), do: res, else: inspect(res)
+
+                   final_op =
+                     persist_terminal_operation(
+                       op_id,
+                       %{
+                         status: "completed",
+                         progress: 100,
+                         result: res_str,
+                         completed_at: DateTime.utc_now() |> DateTime.truncate(:second),
+                         duration_ms: duration
+                       },
+                       %{
+                         op
+                         | status: "completed",
+                           progress: 100,
+                           result: res_str,
+                           duration_ms: duration
+                       }
+                     )
+
+                   broadcast(session_id, {:operation_completed, final_op})
+                   emit_telemetry(:stop, session_id, op_id, duration, nil, nil, final_op)
+                   {:ok, res}
+
+                 {:error, reason} ->
+                   duration = System.monotonic_time(:millisecond) - start_time
+                   err_str = format_crash_reason(reason)
+
+                   final_op =
+                     persist_terminal_operation(
+                       op_id,
+                       %{
+                         status: "failed",
+                         error_message: err_str,
+                         completed_at: DateTime.utc_now() |> DateTime.truncate(:second),
+                         duration_ms: duration
+                       },
+                       %{op | status: "failed", error_message: err_str, duration_ms: duration}
+                     )
+
+                   broadcast(session_id, {:operation_failed, final_op})
+                   emit_telemetry(:crash, session_id, op_id, duration, reason, err_str, final_op)
+                   {:error, reason}
+               end
+             catch
+               kind, err ->
+                 duration = System.monotonic_time(:millisecond) - start_time
+                 err_str = "#{kind}: #{format_crash_reason(err)}"
+
+                 final_op =
+                   persist_terminal_operation(
+                     op_id,
+                     %{
+                       status: "failed",
+                       error_message: err_str,
+                       completed_at: DateTime.utc_now() |> DateTime.truncate(:second),
+                       duration_ms: duration
+                     },
+                     %{op | status: "failed", error_message: err_str, duration_ms: duration}
+                   )
+
+                 broadcast(session_id, {:operation_failed, final_op})
+
+                 emit_telemetry(
+                   :crash,
+                   session_id,
+                   op_id,
+                   duration,
+                   {kind, err},
+                   err_str,
+                   final_op
+                 )
+
+                 {:error, err_str}
+             end
+
+           send(parent_caller, {:operation_task_done, op_id, result})
+           result
+         end) do
+      {:ok, task_pid} ->
+        # Spawn crash watcher process under TaskSupervisor to guarantee zero dangling operations on abnormal exits
+        watcher_fun = fn ->
+          ref = Process.monitor(task_pid)
+
+          receive do
+            {:DOWN, ^ref, :process, ^task_pid, :normal} ->
+              # Normal exit: the task always attempts its terminal persist
+              # before exiting, and hands a failed persist to a detached
+              # retrier, so nothing to do here.
+              :ok
+
+            {:DOWN, ^ref, :process, ^task_pid, reason} ->
+              ensure_finalized(session_id, op_id, op, start_time, parent_caller, reason)
+          end
         end
 
-        result =
-          try do
-            case fun.(progress_fn) do
-              {:ok, res} ->
-                duration = System.monotonic_time(:millisecond) - start_time
-                res_str = if is_binary(res), do: res, else: inspect(res)
+        case Task.Supervisor.start_child(IexCode.TaskSupervisor, watcher_fun) do
+          {:ok, _watcher_pid} ->
+            :ok
 
-                final_op =
-                  safe_update_operation(
-                    op_id,
-                    %{
-                      status: "completed",
-                      progress: 100,
-                      result: res_str,
-                      completed_at: DateTime.utc_now() |> DateTime.truncate(:second),
-                      duration_ms: duration
-                    },
-                    %{
-                      op
-                      | status: "completed",
-                        progress: 100,
-                        result: res_str,
-                        duration_ms: duration
-                    }
-                  )
+          {:error, watcher_reason} ->
+            Logger.warning(
+              "OperationManager: failed to start crash watcher for #{inspect(op_id)}: " <>
+                "#{inspect(watcher_reason)}; falling back to unlinked watcher"
+            )
 
-                broadcast(session_id, {:operation_completed, final_op})
-                emit_telemetry(:stop, session_id, op_id, duration, nil, nil, final_op)
-                {:ok, res}
+            spawn(watcher_fun)
+        end
 
-              {:error, reason} ->
-                duration = System.monotonic_time(:millisecond) - start_time
-                err_str = format_crash_reason(reason)
+        {:ok, task_pid, op}
 
-                final_op =
-                  safe_update_operation(
-                    op_id,
-                    %{
-                      status: "failed",
-                      error_message: err_str,
-                      completed_at: DateTime.utc_now() |> DateTime.truncate(:second),
-                      duration_ms: duration
-                    },
-                    %{op | status: "failed", error_message: err_str, duration_ms: duration}
-                  )
+      {:error, reason} ->
+        Logger.warning(
+          "OperationManager: failed to start operation task for #{inspect(op_id)}: #{inspect(reason)}"
+        )
 
-                broadcast(session_id, {:operation_failed, final_op})
-                emit_telemetry(:crash, session_id, op_id, duration, reason, err_str, final_op)
-                {:error, reason}
-            end
-          catch
-            kind, err ->
-              duration = System.monotonic_time(:millisecond) - start_time
-              err_str = "#{kind}: #{format_crash_reason(err)}"
+        err_str = format_crash_reason(reason)
+        duration = System.monotonic_time(:millisecond) - start_time
 
-              final_op =
-                safe_update_operation(
-                  op_id,
-                  %{
-                    status: "failed",
-                    error_message: err_str,
-                    completed_at: DateTime.utc_now() |> DateTime.truncate(:second),
-                    duration_ms: duration
-                  },
-                  %{op | status: "failed", error_message: err_str, duration_ms: duration}
-                )
+        final_op =
+          safe_update_operation(
+            op_id,
+            %{
+              status: "failed",
+              error_message: err_str,
+              completed_at: DateTime.utc_now() |> DateTime.truncate(:second),
+              duration_ms: duration
+            },
+            %{op | status: "failed", error_message: err_str, duration_ms: duration}
+          )
 
-              broadcast(session_id, {:operation_failed, final_op})
-              emit_telemetry(:crash, session_id, op_id, duration, {kind, err}, err_str, final_op)
-              {:error, err_str}
-          end
-
-        send(parent_caller, {:operation_task_done, op_id, result})
-        result
-      end)
-
-    # Spawn crash watcher process under TaskSupervisor to guarantee zero dangling operations on abnormal exits
-    Task.Supervisor.start_child(IexCode.TaskSupervisor, fn ->
-      ref = Process.monitor(task_pid)
-
-      receive do
-        {:DOWN, ^ref, :process, ^task_pid, :normal} ->
-          :ok
-
-        {:DOWN, ^ref, :process, ^task_pid, :noproc} ->
-          :ok
-
-        {:DOWN, ^ref, :process, ^task_pid, reason} ->
-          should_handle =
-            try do
-              case Sessions.get_operation(op_id) do
-                %Sessions.Operation{status: status} when status in ["completed", "failed"] ->
-                  false
-
-                _ ->
-                  true
-              end
-            rescue
-              _ -> false
-            catch
-              _, _ -> false
-            end
-
-          if should_handle do
-            duration = System.monotonic_time(:millisecond) - start_time
-            err_str = format_crash_reason(reason)
-
-            final_op =
-              safe_update_operation(
-                op_id,
-                %{
-                  status: "failed",
-                  error_message: err_str,
-                  completed_at: DateTime.utc_now() |> DateTime.truncate(:second),
-                  duration_ms: duration
-                },
-                %{op | status: "failed", error_message: err_str, duration_ms: duration}
-              )
-
-            broadcast(session_id, {:operation_failed, final_op})
-            emit_telemetry(:crash, session_id, op_id, duration, reason, err_str, final_op)
-            send(parent_caller, {:operation_task_done, op_id, {:error, err_str}})
-          end
-      end
-    end)
-
-    {:ok, task_pid, op}
+        broadcast(session_id, {:operation_failed, final_op})
+        emit_telemetry(:crash, session_id, op_id, duration, reason, err_str, final_op)
+        {:error, err_str}
+    end
   end
 
   @doc """
@@ -181,37 +197,113 @@ defmodule IexCode.Engine.OperationManager do
         fun,
         timeout \\ 60_000
       ) do
-    {:ok, task_pid, op} =
-      run_async_operation(session_id, parent_op_id, agent_name, op_type, title, params, fun)
+    case run_async_operation(session_id, parent_op_id, agent_name, op_type, title, params, fun) do
+      {:ok, task_pid, op} ->
+        await_operation_task(task_pid, op.id, timeout)
 
-    op_id = op.id
-    ref = Process.monitor(task_pid)
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
 
-    receive do
-      {:operation_task_done, ^op_id, result} ->
-        Process.demonitor(ref, [:flush])
-        result
+  # Final safety net for abnormal task exits: make sure the operation record
+  # does not stay stuck in "running".
+  defp ensure_finalized(session_id, op_id, op, start_time, parent_caller, crash_reason) do
+    should_finalize =
+      try do
+        case Sessions.get_operation(op_id) do
+          %Sessions.Operation{status: status} when status in ["completed", "failed"] ->
+            false
 
-      {:DOWN, ^ref, :process, ^task_pid, :normal} ->
-        # Process completed normally; flush and wait briefly for task_done message
-        receive do
-          {:operation_task_done, ^op_id, result} ->
-            Process.demonitor(ref, [:flush])
-            result
-        after
-          100 ->
-            Process.demonitor(ref, [:flush])
-            {:ok, :completed}
+          _ ->
+            true
+        end
+      rescue
+        # If the status read itself fails, attempt the finalize write anyway —
+        # finalize_operation/3 retries transient DB errors on its own.
+        _ -> true
+      catch
+        _, _ -> true
+      end
+
+    if should_finalize do
+      duration = System.monotonic_time(:millisecond) - start_time
+
+      err_str = format_crash_reason(crash_reason)
+
+      attrs = %{
+        status: "failed",
+        error_message: err_str,
+        completed_at: DateTime.utc_now() |> DateTime.truncate(:second),
+        duration_ms: duration
+      }
+
+      final_op =
+        case finalize_operation(op_id, attrs, @update_max_attempts) do
+          {:ok, updated} -> updated
+          :error -> %{op | status: "failed", error_message: err_str, duration_ms: duration}
         end
 
-      {:DOWN, ^ref, :process, ^task_pid, reason} ->
-        Process.demonitor(ref, [:flush])
-        err_msg = format_crash_reason(reason)
-        {:error, err_msg}
+      broadcast(session_id, {:operation_failed, final_op})
+      emit_telemetry(:crash, session_id, op_id, duration, crash_reason, err_str, final_op)
+      send(parent_caller, {:operation_task_done, op_id, {:error, err_str}})
+    else
+      Logger.warning(
+        "OperationManager: operation #{inspect(op_id)} crashed with " <>
+          "#{format_crash_reason(crash_reason)} but was already finalized; not overwriting status"
+      )
+    end
+  end
+
+  defp await_operation_task(task_pid, op_id, timeout) do
+    ref = Process.monitor(task_pid)
+
+    result =
+      receive do
+        {:operation_task_done, ^op_id, result} ->
+          Process.demonitor(ref, [:flush])
+          normalize_task_result(result)
+
+        {:DOWN, ^ref, :process, ^task_pid, :normal} ->
+          # Process completed normally; flush and wait briefly for task_done message
+          receive do
+            {:operation_task_done, ^op_id, result} ->
+              Process.demonitor(ref, [:flush])
+              normalize_task_result(result)
+          after
+            100 ->
+              Process.demonitor(ref, [:flush])
+              drain_task_done_messages(op_id)
+              {:ok, :completed}
+          end
+
+        {:DOWN, ^ref, :process, ^task_pid, reason} ->
+          Process.demonitor(ref, [:flush])
+          drain_task_done_messages(op_id)
+          err_msg = format_crash_reason(reason)
+          {:error, err_msg}
+      after
+        timeout ->
+          # The task already overran its deadline; kill it instead of leaking it.
+          _ = Process.exit(task_pid, :kill)
+          Process.demonitor(ref, [:flush])
+          drain_task_done_messages(op_id)
+          {:error, "Operation timed out after #{timeout}ms"}
+      end
+
+    # Drain any straggler task_done messages left in our mailbox.
+    drain_task_done_messages(op_id)
+    result
+  end
+
+  defp normalize_task_result({:exit, reason}), do: {:error, format_crash_reason(reason)}
+  defp normalize_task_result(result), do: result
+
+  defp drain_task_done_messages(op_id) do
+    receive do
+      {:operation_task_done, ^op_id, _result} -> drain_task_done_messages(op_id)
     after
-      timeout ->
-        Process.demonitor(ref, [:flush])
-        {:error, "Operation timed out after #{timeout}ms"}
+      0 -> :ok
     end
   end
 
@@ -348,11 +440,25 @@ defmodule IexCode.Engine.OperationManager do
              params: params,
              started_at: DateTime.utc_now() |> DateTime.truncate(:second)
            }) do
-        {:ok, created} -> created
-        _ -> fallback_op(session_id, parent_op_id, agent_name, op_type, title, params)
+        {:ok, created} ->
+          created
+
+        other ->
+          Logger.warning(
+            "OperationManager: create_operation failed (#{inspect(other)}); " <>
+              "degrading to in-memory operation for session #{inspect(session_id)}"
+          )
+
+          fallback_op(session_id, parent_op_id, agent_name, op_type, title, params)
       end
     rescue
-      _ -> fallback_op(session_id, parent_op_id, agent_name, op_type, title, params)
+      e ->
+        Logger.warning(
+          "OperationManager: create_operation raised #{Exception.format(:error, e)}; " <>
+            "degrading to in-memory operation for session #{inspect(session_id)}"
+        )
+
+        fallback_op(session_id, parent_op_id, agent_name, op_type, title, params)
     end
   end
 
@@ -374,7 +480,13 @@ defmodule IexCode.Engine.OperationManager do
   defp broadcast(session_id, event) do
     PubSub.broadcast(IexCode.PubSub, "session:#{session_id}", event)
   rescue
-    _ -> :ok
+    e ->
+      Logger.warning(
+        "OperationManager: broadcast of #{inspect(event)} failed for session " <>
+          "#{inspect(session_id)}: #{Exception.message(e)}"
+      )
+
+      :ok
   end
 
   defp emit_telemetry(event, session_id, op_id, value, reason, message, op) do
@@ -398,19 +510,102 @@ defmodule IexCode.Engine.OperationManager do
 
     :telemetry.execute([:iex_code, :operation, event], measurements, metadata)
   rescue
-    _ -> :ok
+    e ->
+      Logger.warning(
+        "OperationManager: telemetry event #{inspect(event)} failed: #{Exception.message(e)}"
+      )
+
+      :ok
   end
 
+  # Persists a terminal (completed/failed) status from the operation task's own
+  # path. The single inline attempt keeps the sync caller's unblock latency
+  # minimal; if the write is dropped (e.g. DB checkout queue overflow under
+  # load), a detached retrier finishes the terminal write so the record never
+  # stays stuck in "running".
+  defp persist_terminal_operation(op_id, attrs, fallback_struct) do
+    case update_operation_once(op_id, attrs) do
+      {:ok, updated} ->
+        updated
+
+      _ ->
+        spawn(fn -> finalize_operation(op_id, attrs, @update_max_attempts) end)
+        fallback_struct
+    end
+  end
+
+  # Best-effort persist used on the operation task's own path (progress,
+  # completion, crash). Single attempt: the sync caller must unblock quickly,
+  # so retries never block the task — the crash watcher guarantees the final
+  # write with retries instead.
   defp safe_update_operation(op_id, attrs, fallback_struct) do
+    case update_operation_once(op_id, attrs) do
+      {:ok, updated} ->
+        updated
+
+      _ ->
+        fallback_struct
+    end
+  end
+
+  # Retrying persist used by the crash watcher: transient DB failures
+  # (connection checkout drops when many concurrent operations flood the
+  # queue) are retried with backoff so an operation never silently stays in a
+  # non-terminal status.
+  defp finalize_operation(_op_id, _attrs, 0), do: :error
+
+  defp finalize_operation(op_id, attrs, attempts_left) do
+    case update_operation_once(op_id, attrs) do
+      {:ok, updated} ->
+        {:ok, updated}
+
+      :give_up ->
+        :error
+
+      :retry ->
+        Process.sleep(
+          @update_retry_base_ms * (@update_max_attempts - attempts_left + 1) +
+            :rand.uniform(100)
+        )
+
+        finalize_operation(op_id, attrs, attempts_left - 1)
+    end
+  end
+
+  defp update_operation_once(op_id, attrs) do
     try do
       case Sessions.update_operation(op_id, attrs) do
-        {:ok, updated} -> updated
-        _ -> fallback_struct
+        {:ok, updated} ->
+          {:ok, updated}
+
+        {:error, :not_found} ->
+          Logger.warning(
+            "OperationManager: update_operation(#{inspect(op_id)}, #{inspect(attrs)}) failed: :not_found"
+          )
+
+          :give_up
+
+        other ->
+          Logger.warning(
+            "OperationManager: update_operation(#{inspect(op_id)}, #{inspect(attrs)}) failed: #{inspect(other)}"
+          )
+
+          :retry
       end
     rescue
-      _ -> fallback_struct
+      e ->
+        Logger.warning(
+          "OperationManager: update_operation(#{inspect(op_id)}, #{inspect(attrs)}) raised: #{Exception.message(e)}"
+        )
+
+        :retry
     catch
-      _, _ -> fallback_struct
+      kind, err ->
+        Logger.warning(
+          "OperationManager: update_operation(#{inspect(op_id)}, #{inspect(attrs)}) threw #{kind}: #{inspect(err)}"
+        )
+
+        :retry
     end
   end
 end

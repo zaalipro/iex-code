@@ -123,14 +123,43 @@ defmodule IexCode.Engine.SessionServer do
 
     status = normalize_status(session.status)
 
-    {:ok,
-     %{
-       session_id: session_id,
-       session: session,
-       status: status,
-       current_task: nil,
-       active_goal: nil
-     }}
+    state = %{
+      session_id: session_id,
+      session: session,
+      status: status,
+      current_task: nil,
+      task_ref: nil,
+      run_mode: nil,
+      active_goal: nil
+    }
+
+    # Rehydrate: a DB row left in "running" is phantom-running after a restart
+    # (no live task exists in this fresh process), so normalize it.
+    state =
+      if status == :running do
+        Logger.warning(
+          "Session #{session_id} restarted while marked running; marking interrupted"
+        )
+
+        update_db_session_status(session_id, "idle")
+        broadcast(session_id, {:session_status_changed, "idle"})
+        broadcast(session_id, {:session_interrupted, %{session_id: session_id}})
+
+        %{state | status: :idle, session: %{session | status: "idle"}}
+      else
+        state
+      end
+
+    {:ok, state}
+  end
+
+  @impl true
+  def handle_call(
+        {:create_goal, _goal_prompt_or_params, _opts},
+        _from,
+        %{status: :running} = state
+      ) do
+    {:reply, {:error, :already_running}, state}
   end
 
   @impl true
@@ -159,12 +188,7 @@ defmodule IexCode.Engine.SessionServer do
           {"Autonomous Goal", "Analyze workspace and coordinate goal"}
       end
 
-    current_session =
-      try do
-        Sessions.get_session(session_id) || session
-      rescue
-        _ -> session
-      end
+    current_session = fetch_current_session(session_id, session)
 
     project_root = resolve_project_root(current_session, opts)
     auto_start = Keyword.get(opts, :auto_start, true)
@@ -179,13 +203,31 @@ defmodule IexCode.Engine.SessionServer do
     }
 
     # Save Goal User message in DB
-    {:ok, user_msg} =
-      Sessions.create_message(%{
-        session_id: session_id,
-        role: "user",
-        agent_name: "User (Goal)",
-        content: "🎯 **Goal**: #{title}\n\n#{prompt}"
-      })
+    {user_msg, _msg_error} =
+      case Sessions.create_message(%{
+             session_id: session_id,
+             role: "user",
+             agent_name: "User (Goal)",
+             content: "🎯 **Goal**: #{title}\n\n#{prompt}"
+           }) do
+        {:ok, msg} ->
+          {msg, nil}
+
+        error ->
+          Logger.error(
+            "Failed to persist goal message for session #{session_id}: #{inspect(error)}"
+          )
+
+          broadcast(session_id, {:run_failed, %{session_id: session_id, reason: inspect(error)}})
+
+          {%{
+             id: Ecto.UUID.generate(),
+             session_id: session_id,
+             role: "user",
+             agent_name: "User (Goal)",
+             content: "🎯 **Goal**: #{title}\n\n#{prompt}"
+           }, error}
+      end
 
     broadcast(session_id, {:message_created, user_msg})
     broadcast(session_id, {:goal_created, goal_record})
@@ -194,17 +236,22 @@ defmodule IexCode.Engine.SessionServer do
       update_db_session_status(session_id, "running")
       broadcast(session_id, {:session_status_changed, "running"})
 
-      {:ok, task_pid} = SwarmCoordinator.run_swarm(session_id, prompt, project_root, opts)
+      case SwarmCoordinator.run_swarm(session_id, prompt, project_root, opts) do
+        {:ok, task_pid} ->
+          task_ref = Process.monitor(task_pid)
 
-      new_state = %{
-        state
-        | session: %{current_session | status: "running"},
-          status: :running,
-          current_task: task_pid,
-          active_goal: goal_record
-      }
+          new_state = %{
+            state
+            | session: %{current_session | status: "running"},
+              status: :running,
+              current_task: task_pid,
+              task_ref: task_ref,
+              run_mode: :swarm,
+              active_goal: goal_record
+          }
 
-      {:reply, {:ok, Map.put(goal_record, :task_pid, task_pid)}, new_state}
+          {:reply, {:ok, Map.put(goal_record, :task_pid, task_pid)}, new_state}
+      end
     else
       update_db_session_status(session_id, "idle")
       broadcast(session_id, {:session_status_changed, "idle"})
@@ -247,12 +294,7 @@ defmodule IexCode.Engine.SessionServer do
 
   @impl true
   def handle_call(:pause_session, _from, %{session_id: session_id, session: session} = state) do
-    current_session =
-      try do
-        Sessions.get_session(session_id) || session
-      rescue
-        _ -> session
-      end
+    current_session = fetch_current_session(session_id, session)
 
     update_db_session_status(session_id, "paused")
 
@@ -265,20 +307,35 @@ defmodule IexCode.Engine.SessionServer do
 
   @impl true
   def handle_call(:resume_session, _from, %{session_id: session_id, session: session} = state) do
-    current_session =
-      try do
-        Sessions.get_session(session_id) || session
-      rescue
-        _ -> session
+    task_alive? =
+      case task_pid(state.current_task) do
+        nil -> false
+        pid -> Process.alive?(pid)
       end
 
-    update_db_session_status(session_id, "running")
+    if state.status == :paused and task_alive? do
+      current_session = fetch_current_session(session_id, session)
 
-    PubSub.broadcast(IexCode.PubSub, "session:#{session_id}:steer", {:resume, session_id})
-    broadcast(session_id, {:session_status_changed, "running"})
+      update_db_session_status(session_id, "running")
 
-    new_state = %{state | status: :running, session: %{current_session | status: "running"}}
-    {:reply, {:ok, :running}, new_state}
+      PubSub.broadcast(IexCode.PubSub, "session:#{session_id}:steer", {:resume, session_id})
+      broadcast(session_id, {:session_status_changed, "running"})
+
+      new_state = %{state | status: :running, session: %{current_session | status: "running"}}
+      {:reply, {:ok, :running}, new_state}
+    else
+      # No live task to resume - never phantom-resume into :running.
+      new_state =
+        if task_alive? do
+          state
+        else
+          update_db_session_status(session_id, "idle")
+          broadcast(session_id, {:session_status_changed, "idle"})
+          %{state | status: :idle, current_task: nil, task_ref: nil}
+        end
+
+      {:reply, {:error, :no_active_run}, new_state}
+    end
   end
 
   @impl true
@@ -287,38 +344,55 @@ defmodule IexCode.Engine.SessionServer do
         _from,
         %{session_id: session_id, session: session} = state
       ) do
-    action = Keyword.get(opts, :action, :rollback)
+    # Honor legacy `commit: true` while letting an explicit `:action` win.
+    default_action = if Keyword.get(opts, :commit, false), do: :commit, else: :rollback
+    action = Keyword.get(opts, :action, default_action)
 
-    current_session =
-      try do
-        Sessions.get_session(session_id) || session
-      rescue
-        _ -> session
-      end
+    current_session = fetch_current_session(session_id, session)
 
     project_root = resolve_project_root(current_session, opts)
 
-    # 1. Signal coordinator via PubSub
+    # 1. Signal all workers via PubSub. A live swarm coordinator subscribes to
+    #    this topic and performs its own rollback/commit + termination, so the
+    #    server must NOT roll back again for that path (avoid double-delivery).
     PubSub.broadcast(IexCode.PubSub, "session:#{session_id}:steer", {:cancel, session_id, opts})
 
-    # 2. Terminate running task if any
-    if state.current_task && is_pid(state.current_task) && Process.alive?(state.current_task) do
-      Process.exit(state.current_task, :shutdown)
-    end
+    # 2. Wait briefly for the running task to die on its own (it also observes
+    #    the {:cancel, ...} message), then escalate shutdown -> kill.
+    swarm_handled_cancel? =
+      case task_pid(state.current_task) do
+        nil ->
+          false
+
+        pid ->
+          if Process.alive?(pid) do
+            await_task_exit(pid)
+
+            # The swarm coordinator cleans up on its own; the single-agent task
+            # does not, so the server performs the rollback/commit for it.
+            state.run_mode == :swarm
+          else
+            false
+          end
+      end
+
+    if state.task_ref, do: Process.demonitor(state.task_ref, [:flush])
 
     # 3. Cleanly terminate all subagent OTP workers
     AgentSupervisor.stop_all_agents(session_id)
 
-    # 4. Perform rollback or commit
-    case action do
-      :rollback ->
-        SwarmCoordinator.perform_rollback(project_root)
+    # 4. Perform rollback or commit (only if the swarm coordinator didn't already)
+    unless swarm_handled_cancel? do
+      case action do
+        :rollback ->
+          SwarmCoordinator.perform_rollback(project_root)
 
-      :commit ->
-        SwarmCoordinator.perform_commit(project_root, opts)
+        :commit ->
+          SwarmCoordinator.perform_commit(project_root, opts)
 
-      _ ->
-        :ok
+        _ ->
+          :ok
+      end
     end
 
     # 5. Update DB status
@@ -342,6 +416,8 @@ defmodule IexCode.Engine.SessionServer do
       state
       | status: :stopped,
         current_task: nil,
+        task_ref: nil,
+        run_mode: nil,
         session: %{current_session | status: "stopped"}
     }
 
@@ -350,12 +426,7 @@ defmodule IexCode.Engine.SessionServer do
 
   @impl true
   def handle_call(:toggle_swarm, _from, %{session: session, session_id: session_id} = state) do
-    current_session =
-      try do
-        Sessions.get_session(session_id) || session
-      rescue
-        _ -> session
-      end
+    current_session = fetch_current_session(session_id, session)
 
     new_mode = !current_session.swarm_mode
 
@@ -384,20 +455,18 @@ defmodule IexCode.Engine.SessionServer do
   end
 
   @impl true
-  def handle_call(:get_state, _from, state) do
-    current_session =
-      try do
-        Sessions.get_session(state.session_id) || state.session
-      rescue
-        _ -> state.session
-      end
+  def handle_call(:get_state, _from, %{status: status} = state)
+      when status in [:running, :paused, :stopped] do
+    # While a run is actively managed by this process, the cached state is
+    # authoritative - skip the blocking DB read.
+    {:reply, state, state}
+  end
 
-    status =
-      if state.status in [:running, :paused, :stopped] do
-        state.status
-      else
-        normalize_status(current_session.status)
-      end
+  @impl true
+  def handle_call(:get_state, _from, state) do
+    current_session = fetch_current_session(state.session_id, state.session)
+
+    status = normalize_status(current_session.status)
 
     result_state = %{
       state
@@ -430,22 +499,38 @@ defmodule IexCode.Engine.SessionServer do
         if cleaned_prompt == "", do: "Analyze workspace and coordinate task", else: cleaned_prompt
 
       # Save User message
-      {:ok, user_msg} =
-        Sessions.create_message(%{
-          session_id: session_id,
-          role: "user",
-          agent_name: "User",
-          content: prompt
-        })
+      {user_msg, _} =
+        case Sessions.create_message(%{
+               session_id: session_id,
+               role: "user",
+               agent_name: "User",
+               content: prompt
+             }) do
+          {:ok, msg} ->
+            {msg, nil}
+
+          error ->
+            Logger.error(
+              "Failed to persist user message for session #{session_id}: #{inspect(error)}"
+            )
+
+            broadcast(
+              session_id,
+              {:run_failed, %{session_id: session_id, reason: inspect(error)}}
+            )
+
+            {%{
+               id: Ecto.UUID.generate(),
+               session_id: session_id,
+               role: "user",
+               agent_name: "User",
+               content: prompt
+             }, error}
+        end
 
       broadcast(session_id, {:message_created, user_msg})
 
-      current_session =
-        try do
-          Sessions.get_session(session_id) || session
-        rescue
-          _ -> session
-        end
+      current_session = fetch_current_session(session_id, session)
 
       update_db_session_status(session_id, "running")
       broadcast(session_id, {:session_status_changed, "running"})
@@ -455,50 +540,92 @@ defmodule IexCode.Engine.SessionServer do
 
       if use_swarm? do
         # Run Swarm Coordinator
-        {:ok, task_pid} = SwarmCoordinator.run_swarm(session_id, actual_prompt, project_root)
+        case SwarmCoordinator.run_swarm(session_id, actual_prompt, project_root) do
+          {:ok, task_pid} ->
+            task_ref = Process.monitor(task_pid)
 
-        {:noreply,
-         %{
-           state
-           | status: :running,
-             current_task: task_pid,
-             session: %{current_session | status: "running"}
-         }}
+            {:noreply,
+             %{
+               state
+               | status: :running,
+                 current_task: task_pid,
+                 task_ref: task_ref,
+                 run_mode: :swarm,
+                 session: %{current_session | status: "running"}
+             }}
+        end
       else
         # Run Single Agent Async Task
         parent = self()
 
-        {:ok, task} =
-          Task.Supervisor.start_child(IexCode.TaskSupervisor, fn ->
-            allow_sandbox(parent, self())
-            run_single_agent(session_id, current_session, actual_prompt, project_root)
-          end)
+        case Task.Supervisor.start_child(IexCode.TaskSupervisor, fn ->
+               allow_sandbox(parent, self())
+               run_single_agent(session_id, current_session, actual_prompt, project_root)
+             end) do
+          {:ok, task_pid} ->
+            task_ref = Process.monitor(task_pid)
 
-        {:noreply,
-         %{
-           state
-           | status: :running,
-             current_task: task,
-             session: %{current_session | status: "running"}
-         }}
+            {:noreply,
+             %{
+               state
+               | status: :running,
+                 current_task: task_pid,
+                 task_ref: task_ref,
+                 run_mode: :single_agent,
+                 session: %{current_session | status: "running"}
+             }}
+
+          {:error, reason} ->
+            Logger.error(
+              "Failed to start single-agent task for session #{session_id}: #{inspect(reason)}"
+            )
+
+            update_db_session_status(session_id, "idle")
+            broadcast(session_id, {:session_status_changed, "idle"})
+
+            broadcast(
+              session_id,
+              {:run_failed, %{session_id: session_id, reason: inspect(reason)}}
+            )
+
+            {:noreply, %{state | status: :idle}}
+        end
       end
     end
   end
 
   @impl true
-  def handle_info({:DOWN, _ref, :process, pid, reason}, %{current_task: task_pid} = state)
-      when pid == task_pid do
+  def handle_info({:DOWN, ref, :process, _pid, reason}, %{task_ref: task_ref} = state)
+      when ref == task_ref do
     status =
       case reason do
         :normal -> :idle
         :noproc -> :idle
         :shutdown -> :stopped
+        :killed -> :stopped
         _ -> :failed
       end
 
-    update_db_session_status(state.session_id, to_string(status))
-    broadcast(state.session_id, {:session_status_changed, to_string(status)})
-    {:noreply, %{state | status: status, current_task: nil}}
+    session_id = state.session_id
+    update_db_session_status(session_id, to_string(status))
+    broadcast(session_id, {:session_status_changed, to_string(status)})
+
+    if status == :failed do
+      Logger.error("Session #{session_id} run crashed: #{inspect(reason)}")
+      broadcast(session_id, {:run_failed, %{session_id: session_id, reason: inspect(reason)}})
+
+      case Sessions.create_message(%{
+             session_id: session_id,
+             role: "assistant",
+             agent_name: "Swarm Coordinator",
+             content: "❌ **Run Failed**: The session run crashed with `#{inspect(reason)}`."
+           }) do
+        {:ok, err_msg} -> broadcast(session_id, {:message_created, err_msg})
+        _ -> :ok
+      end
+    end
+
+    {:noreply, %{state | status: status, current_task: nil, task_ref: nil, run_mode: nil}}
   end
 
   @impl true
@@ -512,99 +639,260 @@ defmodule IexCode.Engine.SessionServer do
   end
 
   defp run_single_agent(session_id, session, user_prompt, project_root) do
+    subscribe_steering(session_id)
     broadcast(session_id, {:session_status_changed, "running"})
 
-    # Fetch previous messages
-    prev_messages =
-      try do
-        Sessions.list_messages(session_id)
-        |> Enum.map(fn m -> %{role: m.role, content: m.content} end)
-      rescue
-        _ -> []
-      end
-
-    system_prompt = """
-    You are an intelligent, proactive coding assistant in IexCode desktop environment.
-    You have tools to read, search, modify, and run code in the user's project workspace (#{project_root}).
-    When using tools, you can execute them directly.
-    """
-
-    # Spawn root LLM operation
-    op_result =
-      OperationManager.run_sync_operation(
-        session_id,
-        nil,
-        "AssistantAgent",
-        "llm_stream",
-        "Agent: Planning response & tool execution",
-        %{prompt: user_prompt},
-        fn progress ->
-          progress.(20, "Querying model (#{session.model_provider}: #{session.model_name})...")
-          LLM.chat(prev_messages, system_prompt, session)
-        end
-      )
+    # Zero-arg fun polled by the LLM stream between chunks (contract: `:cancelled?`)
+    cancelled? = fn -> steering_cancelled?() end
 
     try do
-      case op_result do
-        {:ok, %{text: response_text, tool_calls: tool_calls}} ->
-          # If there are tool calls, execute each in a dedicated process!
-          tool_results =
-            for tc <- tool_calls do
-              case OperationManager.run_sync_operation(
-                     session_id,
-                     nil,
-                     "AssistantAgent",
-                     tc.name,
-                     "Tool: #{tc.name} (#{Map.get(tc.args, "path", Map.get(tc.args, "command", ""))})",
-                     tc.args,
-                     fn progress ->
-                       Tools.execute(tc.name, tc.args, project_root, progress)
-                     end
-                   ) do
-                {:ok, out} -> %{name: tc.name, result: out}
-                {:error, err} -> %{name: tc.name, error: err}
+      case control_checkpoint() do
+        :cancel ->
+          finish_cancelled(session_id)
+
+        :go ->
+          # Fetch previous messages
+          prev_messages =
+            try do
+              Sessions.list_messages(session_id)
+              |> Enum.map(fn m -> %{role: m.role, content: m.content} end)
+            rescue
+              _ -> []
+            end
+
+          system_prompt = """
+          You are an intelligent, proactive coding assistant in IexCode desktop environment.
+          You have tools to read, search, modify, and run code in the user's project workspace (#{project_root}).
+          When using tools, you can execute them directly.
+          """
+
+          # Spawn root LLM operation
+          op_result =
+            OperationManager.run_sync_operation(
+              session_id,
+              nil,
+              "AssistantAgent",
+              "llm_stream",
+              "Agent: Planning response & tool execution",
+              %{prompt: user_prompt},
+              fn progress ->
+                progress.(
+                  20,
+                  "Querying model (#{session.model_provider}: #{session.model_name})..."
+                )
+
+                LLM.chat(prev_messages, system_prompt, session, fn _c -> :ok end,
+                  cancelled?: cancelled?
+                )
               end
-            end
+            )
 
-          final_content =
-            if tool_results != [] and response_text == "" do
-              summarized =
-                Enum.map(tool_results, fn tr ->
-                  "**Tool `#{tr.name}` completed:**\n```\n#{String.slice(to_string(tr[:result] || tr[:error]), 0, 1000)}\n```"
+          # The stream may have been aborted by a cancel that the `cancelled?`
+          # fun observed - honor it before processing the result.
+          case control_checkpoint() do
+            :cancel -> throw({:session_cancelled, session_id})
+            :go -> :ok
+          end
+
+          case op_result do
+            {:ok, %{text: response_text, tool_calls: tool_calls}} ->
+              # If there are tool calls, execute each in a dedicated process!
+              tool_results =
+                Enum.map(tool_calls, fn tc ->
+                  case control_checkpoint() do
+                    :cancel ->
+                      throw({:session_cancelled, session_id})
+
+                    :go ->
+                      case OperationManager.run_sync_operation(
+                             session_id,
+                             nil,
+                             "AssistantAgent",
+                             tc.name,
+                             "Tool: #{tc.name} (#{Map.get(tc.args, "path", Map.get(tc.args, "command", ""))})",
+                             tc.args,
+                             fn progress ->
+                               Tools.execute(tc.name, tc.args, project_root, progress)
+                             end
+                           ) do
+                        {:ok, out} -> %{name: tc.name, result: out}
+                        {:error, err} -> %{name: tc.name, error: err}
+                      end
+                  end
                 end)
-                |> Enum.join("\n\n")
 
-              "Executed #{length(tool_results)} operations:\n\n" <> summarized
-            else
-              response_text
-            end
+              final_content =
+                if tool_results != [] and response_text == "" do
+                  summarized =
+                    Enum.map(tool_results, fn tr ->
+                      "**Tool `#{tr.name}` completed:**\n```\n#{String.slice(to_string(tr[:result] || tr[:error]), 0, 1000)}\n```"
+                    end)
+                    |> Enum.join("\n\n")
 
-          case Sessions.create_message(%{
-                 session_id: session_id,
-                 role: "assistant",
-                 agent_name: "Assistant",
-                 content: final_content
-               }) do
-            {:ok, asst_msg} -> broadcast(session_id, {:message_created, asst_msg})
-            _ -> :ok
+                  "Executed #{length(tool_results)} operations:\n\n" <> summarized
+                else
+                  response_text
+                end
+
+              case Sessions.create_message(%{
+                     session_id: session_id,
+                     role: "assistant",
+                     agent_name: "Assistant",
+                     content: final_content
+                   }) do
+                {:ok, asst_msg} -> broadcast(session_id, {:message_created, asst_msg})
+                _ -> :ok
+              end
+
+            {:error, reason} ->
+              case Sessions.create_message(%{
+                     session_id: session_id,
+                     role: "assistant",
+                     agent_name: "Assistant",
+                     content: "⚠️ Error during execution: #{inspect(reason)}"
+                   }) do
+                {:ok, err_msg} -> broadcast(session_id, {:message_created, err_msg})
+                _ -> :ok
+              end
           end
 
-        {:error, reason} ->
-          case Sessions.create_message(%{
-                 session_id: session_id,
-                 role: "assistant",
-                 agent_name: "Assistant",
-                 content: "⚠️ Error during execution: #{inspect(reason)}"
-               }) do
-            {:ok, err_msg} -> broadcast(session_id, {:message_created, err_msg})
-            _ -> :ok
-          end
+          update_db_session_status(session_id, "idle")
+          broadcast(session_id, {:session_status_changed, "idle"})
       end
-
-      update_db_session_status(session_id, "idle")
-      broadcast(session_id, {:session_status_changed, "idle"})
     rescue
-      _ -> :ok
+      error ->
+        Logger.error(
+          "Single-agent run failed for session #{session_id}: #{Exception.format(:error, error)}"
+        )
+
+        update_db_session_status(session_id, "failed")
+        broadcast(session_id, {:session_status_changed, "failed"})
+
+        broadcast(
+          session_id,
+          {:run_failed, %{session_id: session_id, reason: Exception.message(error)}}
+        )
+
+        case Sessions.create_message(%{
+               session_id: session_id,
+               role: "assistant",
+               agent_name: "Assistant",
+               content: "❌ **Run Failed**: #{Exception.message(error)}"
+             }) do
+          {:ok, err_msg} -> broadcast(session_id, {:message_created, err_msg})
+          _ -> :ok
+        end
+    catch
+      :throw, {:session_cancelled, ^session_id} ->
+        finish_cancelled(session_id)
+    after
+      unsubscribe_steering(session_id)
+    end
+  end
+
+  # Blocks while paused and drains control messages. Returns :go or :cancel.
+  defp control_checkpoint do
+    receive do
+      {:pause, _session_id} ->
+        wait_while_paused()
+
+      {:resume, _session_id} ->
+        control_checkpoint()
+
+      {:cancel, _session_id, _opts} ->
+        :cancel
+
+      _msg ->
+        control_checkpoint()
+    after
+      0 -> :go
+    end
+  end
+
+  defp wait_while_paused do
+    receive do
+      {:resume, _session_id} ->
+        control_checkpoint()
+
+      {:cancel, _session_id, _opts} ->
+        :cancel
+
+      _msg ->
+        wait_while_paused()
+    end
+  end
+
+  # Non-blocking cancel check for the LLM stream; re-queues any other message
+  # so pause/resume/steer deliveries are not lost.
+  defp steering_cancelled? do
+    receive do
+      {:cancel, _session_id, _opts} ->
+        true
+
+      msg ->
+        send(self(), msg)
+        false
+    after
+      0 -> false
+    end
+  end
+
+  defp finish_cancelled(session_id) do
+    update_db_session_status(session_id, "stopped")
+    broadcast(session_id, {:session_status_changed, "stopped"})
+  end
+
+  defp subscribe_steering(session_id) do
+    PubSub.subscribe(IexCode.PubSub, "session:#{session_id}:steer")
+  rescue
+    _ -> :ok
+  end
+
+  defp unsubscribe_steering(session_id) do
+    PubSub.unsubscribe(IexCode.PubSub, "session:#{session_id}:steer")
+  rescue
+    _ -> :ok
+  end
+
+  defp fetch_current_session(session_id, fallback) do
+    try do
+      Sessions.get_session(session_id) || fallback
+    rescue
+      _ -> fallback
+    end
+  end
+
+  # Accepts a raw pid or a %Task{} struct (Task.Supervisor.async_nolink returns
+  # a %Task{}; start_child returns a pid).
+  defp task_pid(pid) when is_pid(pid), do: pid
+  defp task_pid(%Task{pid: pid}) when is_pid(pid), do: pid
+  defp task_pid(_), do: nil
+
+  # Waits for a task to exit on its own (it may be handling a cancel message),
+  # then escalates shutdown -> kill. Always returns once the process is down.
+  defp await_task_exit(pid, grace_ms \\ 3_000) do
+    ref = Process.monitor(pid)
+
+    receive do
+      {:DOWN, ^ref, :process, ^pid, _reason} ->
+        :ok
+    after
+      grace_ms ->
+        Process.exit(pid, :shutdown)
+
+        receive do
+          {:DOWN, ^ref, :process, ^pid, _reason} ->
+            :ok
+        after
+          1_000 ->
+            Process.exit(pid, :kill)
+
+            receive do
+              {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
+            after
+              500 -> Process.demonitor(ref, [:flush])
+            end
+        end
     end
   end
 

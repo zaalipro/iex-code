@@ -54,7 +54,7 @@ defmodule IexCode.E2E.Tier1FeatureTest do
 
     test "T1_F01_03_multiple_records_safe_fetch" do
       IexCode.Repo.delete_all(AppSettings)
-      # Create 2 records to simulate seed duplication or concurrent insert
+      # The singleton index (app_settings_singleton_index) now forbids a second row.
       {:ok, s1} =
         %AppSettings{}
         |> AppSettings.changeset(%{
@@ -67,7 +67,7 @@ defmodule IexCode.E2E.Tier1FeatureTest do
         })
         |> IexCode.Repo.insert()
 
-      {:ok, _s2} =
+      assert_raise Ecto.ConstraintError, fn ->
         %AppSettings{}
         |> AppSettings.changeset(%{
           openai_api_key: "sk-second-key",
@@ -78,15 +78,14 @@ defmodule IexCode.E2E.Tier1FeatureTest do
           auto_save: true
         })
         |> IexCode.Repo.insert()
+      end
 
-      assert IexCode.Repo.aggregate(AppSettings, :count) >= 2
+      assert IexCode.Repo.aggregate(AppSettings, :count) == 1
 
-      # Fetch settings - must safely return a record without crashing on multiple results
-      # Note: if Repo.one crashes on multiple records in legacy implementation, we verify safe query behavior
-      records = IexCode.Repo.all(AppSettings)
-      assert length(records) >= 2
-      first_record = List.first(records)
-      assert first_record.id == s1.id
+      # Fetch settings - must safely return the single record without crashing
+      settings = Settings.get_settings()
+      assert %AppSettings{} = settings
+      assert settings.id == s1.id
     end
 
     test "T1_F01_04_update_settings_fields" do
@@ -648,6 +647,9 @@ defmodule IexCode.E2E.Tier1FeatureTest do
       {:ok, view, html} = mount_workspace(conn, session.id)
       # Switch to swarm/workspace tabs
       assert html =~ "Workspace" or html =~ "Swarm" or html =~ "IexCode"
+      # The diff/subagent grid only renders on the swarm tab; the default tab is kanban.
+      element(view, "button[phx-value-tab='swarm']") |> render_click()
+      assert has_element?(view, "#subagent-cards-grid")
       assert render(view) =~ "grid"
     end
 
