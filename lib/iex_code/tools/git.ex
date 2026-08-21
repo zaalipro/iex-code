@@ -309,9 +309,84 @@ defmodule IexCode.Tools.Git do
     end
   end
 
+  @doc """
+  Applies a patch string to the repository using `git apply`.
+
+  ## Options
+  - `:cached` - Boolean, applies patch to index (staged) only
+  - `:reverse` - Boolean, applies the patch in reverse (discards changes)
+  - `:index` - Boolean, applies patch to both index and working tree
+  - `:3way` - Boolean, attempts 3-way merge if patch does not apply cleanly
+  - `:whitespace` - Option for git apply whitespace handling (e.g. "nowarn", "fix")
+  - `:check` - Boolean, checks if patch can be applied without touching index/worktree
+  """
+  @spec apply_patch(Path.t(), String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  def apply_patch(repo_dir, patch_content, opts \\ []) when is_binary(patch_content) do
+    args = ["apply"]
+
+    args = if Keyword.get(opts, :cached, false), do: args ++ ["--cached"], else: args
+    args = if Keyword.get(opts, :reverse, false), do: args ++ ["--reverse"], else: args
+    args = if Keyword.get(opts, :index, false), do: args ++ ["--index"], else: args
+    args = if Keyword.get(opts, :check, false), do: args ++ ["--check"], else: args
+
+    args =
+      if Keyword.get(opts, :three_way, false) or Keyword.get(opts, :"3way", false),
+        do: args ++ ["--3way"],
+        else: args
+
+    args =
+      case Keyword.get(opts, :whitespace) do
+        ws when is_binary(ws) -> args ++ ["--whitespace=#{ws}"]
+        _ -> args
+      end
+
+    temp_file =
+      Path.join(
+        System.tmp_dir!(),
+        "git_patch_#{System.system_time(:microsecond)}_#{:erlang.unique_integer([:positive])}.patch"
+      )
+
+    try do
+      File.write!(temp_file, patch_content)
+      run_git(repo_dir, args ++ [temp_file])
+    after
+      File.rm(temp_file)
+    end
+  end
+
+  @doc """
+  Restores/discards changes to specified files in working tree or staged index.
+  """
+  @spec restore_file(Path.t(), Path.t() | [Path.t()], keyword()) ::
+          {:ok, String.t()} | {:error, term()}
+  def restore_file(repo_dir, files, opts \\ []) do
+    file_list = List.wrap(files)
+    staged = Keyword.get(opts, :staged, true)
+    worktree = Keyword.get(opts, :worktree, true)
+
+    # First unstage if staged
+    if staged do
+      unstage(repo_dir, file_list)
+    end
+
+    # Then restore worktree
+    if worktree do
+      case run_git(repo_dir, ["restore", "--"] ++ file_list) do
+        {:ok, _} = res ->
+          res
+
+        {:error, _} ->
+          # Fallback for older git
+          run_git(repo_dir, ["checkout", "HEAD", "--"] ++ file_list)
+      end
+    else
+      {:ok, "unstaged"}
+    end
+  end
+
   # --- Internal Git Invocation ---
 
-  defp run_git(repo_dir, args) do
+  def run_git(repo_dir, args) do
     full_path = Path.expand(repo_dir)
 
     try do

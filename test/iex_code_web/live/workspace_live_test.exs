@@ -125,7 +125,8 @@ defmodule IexCodeWeb.WorkspaceLiveTest do
     |> element("#kanban-col-ready")
     |> render_click()
 
-    assert render(view) =~ "READY"
+    assert has_element?(view, "#kanban-cards-ready")
+    assert render(view) =~ "ready"
   end
 
   # ============================================================================

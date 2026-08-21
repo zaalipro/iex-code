@@ -3,6 +3,8 @@ defmodule IexCodeWeb.WorkspaceLive do
   require Logger
   alias IexCode.{Projects, Sessions, Settings, Kanban}
   alias IexCode.Engine.SessionServer
+  alias IexCode.Tools.Git
+  alias IexCode.Tools.Git.{DiffParser, HunkOps}
   alias Phoenix.PubSub
   import IexCodeWeb.WorkspaceComponents
 
@@ -86,7 +88,7 @@ defmodule IexCodeWeb.WorkspaceLive do
     --- a/lib/iex_code/engine/swarm_coordinator.ex
     +++ b/lib/iex_code/engine/swarm_coordinator.ex
     @@ -45,7 +45,9 @@ defmodule IexCode.Engine.SwarmCoordinator do
-       def run_swarm(session_id, prompt, opts \\ []) do
+       def run_swarm(session_id, prompt, opts \\\\ []) do
     -    # Single-pass execution
     -    {:ok, summary}
     +    # Self-healing feedback loop with cycle detection
@@ -98,82 +100,137 @@ defmodule IexCodeWeb.WorkspaceLive do
      end
     """
 
-    {:ok,
-     socket
-     |> assign(:page_title, "#{session.title} · #{project.name}")
-     |> assign(:project, project)
-     |> assign(:projects, projects)
-     |> assign(:session, session)
-     |> assign(:sessions, sessions)
-     |> assign(:messages, messages)
-     |> assign(:operations, operations)
-     |> assign(:expanded_ops, MapSet.new())
-     |> assign(:active_agent, nil)
-     |> assign(:active_stage, :init)
-     |> assign(:settings, settings)
-     # "swarm", "kanban", "calendar", "changes", "chat", "files", "terminal"
-     |> assign(:active_tab, "kanban")
-     |> assign(:expanded_column, "running")
-     |> assign(:tasks, tasks)
-     |> assign(:selected_task, selected_task)
-     |> assign(:show_task_drawer, false)
-     |> assign(:show_new_task_modal, false)
-     |> assign(:show_workspace_menu, false)
-     |> assign(:workspace_search, "")
-     |> assign(:kanban_filter, %{
-       "status" => "",
-       "priority" => "",
-       "assignee" => "",
-       "search" => ""
-     })
-     |> assign(:selected_file, nil)
-     |> assign(:file_content, nil)
-     |> assign(:file_filter, "")
-     |> assign(:diff_text, sample_diff)
-     |> assign(:diff_mode, "inline")
-     |> assign(:diff_file_path, "lib/iex_code/engine/swarm_coordinator.ex")
-     |> assign(:changes_subtab, "changes")
-     |> assign(:project_files, files)
-     |> assign(:terminal_output, "Ready. Type a command or click a quick action above.")
-     |> assign(:open_dropdown, nil)
-     |> assign(:show_settings_modal, false)
-     |> assign(:show_project_modal, false)
-     |> assign(:show_time_picker, false)
-     |> assign(:selected_time_slot, "10:30 AM - 11:00 AM")
-     |> assign(:selected_schedule_status, "Available")
-     |> assign(:show_custom_time_input, false)
-     |> assign(:show_scheduled_task_modal, false)
-     |> assign(:selected_scheduled_task, nil)
-     |> assign(:selected_calendar_date, "2026-08-20")
-     |> assign(:selected_calendar_day, 20)
-     |> assign(:new_task_date, "2026-08-20")
-     |> assign(:new_task_time, "10:30 AM")
-     |> assign(:new_task_schedule_type, "scheduled")
-     |> assign(:picker_mode, :datetime)
-     |> assign(:show_date_picker_popover, false)
-     |> assign(:picker_year, 2026)
-     |> assign(:picker_month, 8)
-     |> assign(:user_availability, "Available")
-     |> assign(:user_availability_subtext, "Instant notifications & swarm active")
-     |> assign(:new_task_status, "scheduled")
-     |> assign(:new_task_priority, "medium")
-     |> assign(:new_task_assignee, "default")
-     |> assign(:open_modal_dropdown, nil)
-     |> assign(:prompt_form, to_form(%{"prompt" => ""}))
-     |> assign(
-       :task_form,
-       to_form(%{
-         "title" => "",
-         "description" => "",
-         "priority" => "medium",
-         "assignee" => "default",
-         "steps_total" => "4",
-         "status" => "ready"
-       })
-     )
-     |> assign(:settings_form, Settings.change_settings(settings) |> to_form())
-     |> assign(:project_form, to_form(%{"path" => "", "name" => ""}))
-     |> assign(:terminal_form, to_form(%{"command" => "mix test"}))}
+    parsed_sample =
+      case DiffParser.parse(sample_diff) do
+        {:ok, diffs} -> diffs
+        _ -> []
+      end
+
+    initial_sample_hunks =
+      case parsed_sample do
+        [first_diff | _] -> first_diff.hunks
+        _ -> []
+      end
+
+    socket =
+      socket
+      |> assign(:page_title, "#{session.title} · #{project.name}")
+      |> assign(:project, project)
+      |> assign(:projects, projects)
+      |> assign(:session, session)
+      |> assign(:sessions, sessions)
+      |> assign(:messages, messages)
+      |> assign(:operations, operations)
+      |> assign(:expanded_ops, MapSet.new())
+      |> assign(:active_agent, nil)
+      |> assign(:active_stage, :init)
+      |> assign(:settings, settings)
+      # "swarm", "kanban", "calendar", "changes", "chat", "files", "terminal"
+      |> assign(:active_tab, "kanban")
+      |> assign(:expanded_column, "running")
+      |> assign(:tasks, tasks)
+      |> assign(:selected_task, selected_task)
+      |> assign(:show_task_drawer, false)
+      |> assign(:show_new_task_modal, false)
+      |> assign(:show_workspace_menu, false)
+      |> assign(:workspace_search, "")
+      |> assign(:kanban_filter, %{
+        "status" => "",
+        "priority" => "",
+        "assignee" => "",
+        "search" => ""
+      })
+      # Inline Editor assigns
+      |> assign(:open_buffers, [])
+      |> assign(:selected_file, nil)
+      |> assign(:file_content, nil)
+      |> assign(:dirty_content, nil)
+      |> assign(:is_dirty?, false)
+      |> assign(:file_filter, "")
+      # Interactive Diff assigns
+      |> assign(:diff_text, sample_diff)
+      |> assign(:diff_mode, "inline")
+      |> assign(:diff_file_path, "lib/iex_code/engine/swarm_coordinator.ex")
+      |> assign(:diff_hunks, initial_sample_hunks)
+      |> assign(:parsed_diffs, parsed_sample)
+      |> assign(:selected_diff_file, "lib/iex_code/engine/swarm_coordinator.ex")
+      |> assign(:git_status, nil)
+      |> assign(:changes_subtab, "changes")
+      |> assign(:project_files, files)
+      # Terminal assigns
+      |> assign(:terminal_output, "Ready. Type a command or click a quick action above.")
+      |> assign(:terminal_running?, false)
+      |> assign(:terminal_task_ref, nil)
+      |> assign(:terminal_history, ["mix test", "mix precommit", "git status", "git diff"])
+      # Goal & Steering assigns
+      |> assign(:show_goal_modal, false)
+      |> assign(:show_cancel_modal, false)
+      |> assign(:cancel_mode, "rollback")
+      |> assign(:steer_text, "")
+      # Telemetry assigns
+      |> assign(:session_tokens, 3200)
+      |> assign(:tokens_in, 2400)
+      |> assign(:tokens_out, 800)
+      |> assign(:current_latency_ms, 18)
+      |> assign(:active_worker_pid, "78042")
+      |> assign(:swarm_iteration, 1)
+      |> assign(:max_retries, 3)
+      |> assign(:active_tools, MapSet.new(["ast_search", "swarm", "web_search"]))
+      # Dropdown & Modal state
+      |> assign(:open_dropdown, nil)
+      |> assign(:show_settings_modal, false)
+      |> assign(:show_project_modal, false)
+      |> assign(:show_time_picker, false)
+      |> assign(:selected_time_slot, "10:30 AM - 11:00 AM")
+      |> assign(:selected_schedule_status, "Available")
+      |> assign(:show_custom_time_input, false)
+      |> assign(:show_scheduled_task_modal, false)
+      |> assign(:show_edit_scheduled_task_modal, false)
+      |> assign(:show_usage_history_modal, false)
+      |> assign(:expanded_message_id, nil)
+      |> assign(:selected_scheduled_task, nil)
+      |> assign(:selected_calendar_date, "2026-08-20")
+      |> assign(:selected_calendar_day, 20)
+      |> assign(:calendar_year, 2026)
+      |> assign(:calendar_month, 8)
+      |> assign(:new_task_date, "2026-08-20")
+      |> assign(:new_task_time, "10:30 AM")
+      |> assign(:new_task_schedule_type, "scheduled")
+      |> assign(:picker_mode, :datetime)
+      |> assign(:show_date_picker_popover, false)
+      |> assign(:picker_year, 2026)
+      |> assign(:picker_month, 8)
+      |> assign(:user_availability, "Available")
+      |> assign(:user_availability_subtext, "Instant notifications & swarm active")
+      |> assign(:new_task_status, "scheduled")
+      |> assign(:new_task_priority, "medium")
+      |> assign(:new_task_assignee, "default")
+      |> assign(:open_modal_dropdown, nil)
+      # Forms
+      |> assign(:prompt_form, to_form(%{"prompt" => ""}))
+      |> assign(
+        :goal_form,
+        to_form(%{"title" => "", "description" => "", "auto_start" => "true"})
+      )
+      |> assign(
+        :task_form,
+        to_form(%{
+          "title" => "",
+          "description" => "",
+          "priority" => "medium",
+          "assignee" => "default",
+          "steps_total" => "4",
+          "status" => "ready"
+        })
+      )
+      |> assign(:settings_form, Settings.change_settings(settings) |> to_form())
+      |> assign(:project_form, to_form(%{"path" => "", "name" => ""}))
+      |> assign(:terminal_form, to_form(%{"command" => "mix test"}))
+
+    # Initialize live git state if git is available
+    socket = refresh_git_state(socket)
+
+    {:ok, socket}
   end
 
   @impl true
@@ -195,16 +252,19 @@ defmodule IexCodeWeb.WorkspaceLive do
       files = list_project_files(project.root_path)
       tasks = Kanban.list_tasks(project.id)
 
-      {:noreply,
-       socket
-       |> assign(:session, new_session)
-       |> assign(:project, project)
-       |> assign(:sessions, sessions)
-       |> assign(:project_files, files)
-       |> assign(:tasks, tasks)
-       |> assign(:page_title, "#{new_session.title} · #{project.name}")
-       |> assign(:messages, messages)
-       |> assign(:operations, operations)}
+      socket =
+        socket
+        |> assign(:session, new_session)
+        |> assign(:project, project)
+        |> assign(:sessions, sessions)
+        |> assign(:project_files, files)
+        |> assign(:tasks, tasks)
+        |> assign(:page_title, "#{new_session.title} · #{project.name}")
+        |> assign(:messages, messages)
+        |> assign(:operations, operations)
+        |> refresh_git_state()
+
+      {:noreply, socket}
     else
       {:noreply, socket}
     end
@@ -216,11 +276,17 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("switch_tab", %{"tab" => tab}, socket) do
-    {:noreply, assign(socket, :active_tab, tab)}
+    socket = assign(socket, :active_tab, tab)
+    socket = if tab == "changes", do: refresh_git_state(socket), else: socket
+    socket = if tab == "files", do: assign(socket, :project_files, list_project_files(socket.assigns.project.root_path)), else: socket
+    {:noreply, socket}
   end
 
   def handle_event("switch_tab", %{"sidebar_tab" => tab}, socket) do
-    {:noreply, assign(socket, :active_tab, tab)}
+    socket = assign(socket, :active_tab, tab)
+    socket = if tab == "changes", do: refresh_git_state(socket), else: socket
+    socket = if tab == "files", do: assign(socket, :project_files, list_project_files(socket.assigns.project.root_path)), else: socket
+    {:noreply, socket}
   end
 
   @impl true
@@ -237,6 +303,42 @@ defmodule IexCodeWeb.WorkspaceLive do
   @impl true
   def handle_event("close_dropdowns", _params, socket) do
     {:noreply, assign(socket, :open_dropdown, nil)}
+  end
+
+  @impl true
+  def handle_event("toggle_coach_menu", _params, socket) do
+    new_state = if socket.assigns.open_dropdown == "coach_menu", do: nil, else: "coach_menu"
+    {:noreply, assign(socket, :open_dropdown, new_state)}
+  end
+
+  @impl true
+  def handle_event("toggle_tool", %{"tool" => tool_id}, socket) do
+    tools = socket.assigns.active_tools
+
+    new_tools =
+      if MapSet.member?(tools, tool_id) do
+        MapSet.delete(tools, tool_id)
+      else
+        MapSet.put(tools, tool_id)
+      end
+
+    {:noreply, assign(socket, :active_tools, new_tools)}
+  end
+
+  @impl true
+  def handle_event("toggle_all_usage_modal", _params, socket) do
+    {:noreply,
+     assign(socket, :show_usage_history_modal, !socket.assigns.show_usage_history_modal)}
+  end
+
+  @impl true
+  def handle_event("expand_message", %{"id" => id}, socket) do
+    {:noreply, assign(socket, :expanded_message_id, id)}
+  end
+
+  @impl true
+  def handle_event("close_expand_message", _params, socket) do
+    {:noreply, assign(socket, :expanded_message_id, nil)}
   end
 
   @impl true
@@ -368,6 +470,28 @@ defmodule IexCodeWeb.WorkspaceLive do
   end
 
   @impl true
+  def handle_event("calendar_prev_month", _params, socket) do
+    month = socket.assigns.calendar_month
+    year = socket.assigns.calendar_year
+
+    {new_year, new_month} =
+      if month == 1, do: {year - 1, 12}, else: {year, month - 1}
+
+    {:noreply, socket |> assign(:calendar_year, new_year) |> assign(:calendar_month, new_month)}
+  end
+
+  @impl true
+  def handle_event("calendar_next_month", _params, socket) do
+    month = socket.assigns.calendar_month
+    year = socket.assigns.calendar_year
+
+    {new_year, new_month} =
+      if month == 12, do: {year + 1, 1}, else: {year, month + 1}
+
+    {:noreply, socket |> assign(:calendar_year, new_year) |> assign(:calendar_month, new_month)}
+  end
+
+  @impl true
   def handle_event("picker_select_day", %{"year" => y, "month" => m, "day" => d}, socket) do
     y_int = if is_binary(y), do: String.to_integer(y), else: y
     m_int = if is_binary(m), do: String.to_integer(m), else: m
@@ -457,6 +581,66 @@ defmodule IexCodeWeb.WorkspaceLive do
   end
 
   @impl true
+  def handle_event("open_edit_scheduled_task", %{"id" => task_id}, socket) do
+    task = Kanban.get_task(task_id) || Enum.find(socket.assigns.tasks, &(&1.id == task_id))
+
+    {:noreply,
+     socket
+     |> assign(:selected_scheduled_task, task)
+     |> assign(:show_edit_scheduled_task_modal, true)}
+  end
+
+  @impl true
+  def handle_event("close_edit_scheduled_task", _params, socket) do
+    {:noreply, assign(socket, :show_edit_scheduled_task_modal, false)}
+  end
+
+  @impl true
+  def handle_event("update_scheduled_task", params, socket) do
+    task_params = params["task"] || params
+
+    id =
+      task_params["id"] ||
+        (socket.assigns.selected_scheduled_task && socket.assigns.selected_scheduled_task.id)
+
+    if id do
+      task = Kanban.get_task!(id)
+      sched_date = task_params["scheduled_at_date"]
+
+      sched_at =
+        if sched_date && sched_date != "" do
+          case Date.from_iso8601(to_string(sched_date)) do
+            {:ok, date} -> DateTime.new!(date, ~T[10:30:00], "Etc/UTC")
+            _ -> task.scheduled_at
+          end
+        else
+          task.scheduled_at
+        end
+
+      attrs = %{
+        title: task_params["title"] || task.title,
+        description: task_params["description"] || task.description,
+        priority: task_params["priority"] || task.priority,
+        assignee: task_params["assignee"] || task.assignee,
+        cron_expression: task_params["cron_expression"] || task.cron_expression,
+        scheduled_at: sched_at
+      }
+
+      {:ok, updated} = Kanban.update_task(task, attrs)
+      tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
+
+      {:noreply,
+       socket
+       |> assign(:tasks, tasks)
+       |> assign(:selected_scheduled_task, updated)
+       |> assign(:show_edit_scheduled_task_modal, false)
+       |> put_flash(:info, "Scheduled task updated")}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
   def handle_event("run_scheduled_task", %{"id" => task_id}, socket) do
     case Kanban.get_task(task_id) do
       nil ->
@@ -475,6 +659,10 @@ defmodule IexCodeWeb.WorkspaceLive do
          |> assign(:show_scheduled_task_modal, false)
          |> put_flash(:info, "Task '#{task.title}' triggered and now running")}
     end
+  end
+
+  def handle_event("run_scheduled_task_now", %{"id" => task_id}, socket) do
+    handle_event("run_scheduled_task", %{"id" => task_id}, socket)
   end
 
   @impl true
@@ -503,6 +691,438 @@ defmodule IexCodeWeb.WorkspaceLive do
   @impl true
   def handle_event("scroll_to_message", %{"id" => msg_id}, socket) do
     {:noreply, push_event(socket, "scroll_to_msg", %{id: msg_id})}
+  end
+
+  # ============================================================================
+  # Event Handlers: Inline Code Editor (Files View)
+  # ============================================================================
+
+  @impl true
+  def handle_event("filter_files", %{"filter" => filter}, socket) do
+    {:noreply, assign(socket, :file_filter, filter)}
+  end
+
+  @impl true
+  def handle_event("search_files", %{"query" => query}, socket) do
+    {:noreply, assign(socket, :file_filter, query)}
+  end
+
+  @impl true
+  def handle_event("select_file", %{"path" => rel_path}, socket) do
+    root = socket.assigns.project.root_path
+    expanded_root = Path.expand(root)
+    full_path = Path.expand(Path.join(root, rel_path))
+
+    if String.starts_with?(full_path, expanded_root <> "/") or full_path == expanded_root do
+      content =
+        case File.read(full_path) do
+          {:ok, text} -> text
+          {:error, reason} -> "Could not read file: #{inspect(reason)}"
+        end
+
+      # Add or select open buffer
+      buffers = socket.assigns.open_buffers
+
+      updated_buffers =
+        if Enum.any?(buffers, &(&1.path == rel_path)) do
+          buffers
+        else
+          buffers ++ [%{path: rel_path, content: content, dirty_content: content, dirty?: false}]
+        end
+
+      active_buffer = Enum.find(updated_buffers, &(&1.path == rel_path))
+      is_dirty = active_buffer && active_buffer.dirty?
+      dirty_text = (active_buffer && active_buffer.dirty_content) || content
+
+      {:noreply,
+       socket
+       |> assign(:open_buffers, updated_buffers)
+       |> assign(:selected_file, rel_path)
+       |> assign(:file_content, content)
+       |> assign(:dirty_content, dirty_text)
+       |> assign(:is_dirty?, is_dirty)
+       |> assign(:active_tab, "files")}
+    else
+      {:noreply, put_flash(socket, :error, "Invalid file path")}
+    end
+  end
+
+  @impl true
+  def handle_event("file_content_changed", %{"content" => new_text}, socket) do
+    current_orig = socket.assigns.file_content || ""
+    is_dirty = new_text != current_orig
+    file_path = socket.assigns.selected_file
+
+    buffers =
+      Enum.map(socket.assigns.open_buffers, fn b ->
+        if b.path == file_path do
+          %{b | dirty_content: new_text, dirty?: is_dirty}
+        else
+          b
+        end
+      end)
+
+    {:noreply,
+     socket
+     |> assign(:dirty_content, new_text)
+     |> assign(:is_dirty?, is_dirty)
+     |> assign(:open_buffers, buffers)}
+  end
+
+  @impl true
+  def handle_event("save_file", params, socket) do
+    file_path = socket.assigns.selected_file
+    root = socket.assigns.project.root_path
+
+    content =
+      case params["content"] do
+        text when is_binary(text) -> text
+        _ -> socket.assigns.dirty_content || socket.assigns.file_content || ""
+      end
+
+    if file_path do
+      full_path = Path.join(root, file_path)
+
+      case File.write(full_path, content) do
+        :ok ->
+          buffers =
+            Enum.map(socket.assigns.open_buffers, fn b ->
+              if b.path == file_path do
+                %{b | content: content, dirty_content: content, dirty?: false}
+              else
+                b
+              end
+            end)
+
+          files = list_project_files(root)
+
+          {:noreply,
+           socket
+           |> assign(:file_content, content)
+           |> assign(:dirty_content, content)
+           |> assign(:is_dirty?, false)
+           |> assign(:open_buffers, buffers)
+           |> assign(:project_files, files)
+           |> refresh_git_state()
+           |> put_flash(:info, "Saved #{file_path}")}
+
+        {:error, reason} ->
+          {:noreply, put_flash(socket, :error, "Failed to save file: #{inspect(reason)}")}
+      end
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("revert_file_buffer", _params, socket) do
+    orig = socket.assigns.file_content || ""
+    file_path = socket.assigns.selected_file
+
+    buffers =
+      Enum.map(socket.assigns.open_buffers, fn b ->
+        if b.path == file_path do
+          %{b | dirty_content: orig, dirty?: false}
+        else
+          b
+        end
+      end)
+
+    {:noreply,
+     socket
+     |> assign(:dirty_content, orig)
+     |> assign(:is_dirty?, false)
+     |> assign(:open_buffers, buffers)
+     |> put_flash(:info, "Reverted unsaved edits in #{file_path}")}
+  end
+
+  @impl true
+  def handle_event("close_file_buffer", %{"path" => path}, socket) do
+    buffers = Enum.reject(socket.assigns.open_buffers, &(&1.path == path))
+
+    {selected, content, dirty_content, is_dirty} =
+      if socket.assigns.selected_file == path do
+        case buffers do
+          [first | _] ->
+            {first.path, first.content, first.dirty_content, first.dirty?}
+
+          [] ->
+            {nil, nil, nil, false}
+        end
+      else
+        {socket.assigns.selected_file, socket.assigns.file_content, socket.assigns.dirty_content,
+         socket.assigns.is_dirty?}
+      end
+
+    {:noreply,
+     socket
+     |> assign(:open_buffers, buffers)
+     |> assign(:selected_file, selected)
+     |> assign(:file_content, content)
+     |> assign(:dirty_content, dirty_content)
+     |> assign(:is_dirty?, is_dirty)}
+  end
+
+  @impl true
+  def handle_event("refresh_files", _params, socket) do
+    files = list_project_files(socket.assigns.project.root_path)
+    {:noreply, assign(socket, :project_files, files)}
+  end
+
+  # ============================================================================
+  # Event Handlers: Interactive Diff Hunk Viewer & Git Changes
+  # ============================================================================
+
+  @impl true
+  def handle_event("set_diff_mode", %{"mode" => mode}, socket) do
+    {:noreply, assign(socket, :diff_mode, mode)}
+  end
+
+  @impl true
+  def handle_event("select_diff_file", params, socket) do
+    file_path = params["file"] || params["path"]
+    root = socket.assigns.project.root_path
+
+    if file_path do
+      # Find in parsed_diffs
+      matching_diff =
+        Enum.find(
+          socket.assigns.parsed_diffs,
+          &(&1.path == file_path or &1.new_path == file_path or &1.old_path == file_path)
+        )
+
+      {hunks, diff_text} =
+        if matching_diff do
+          formatted =
+            Enum.map_join(
+              matching_diff.hunks,
+              "\n",
+              &DiffParser.format_hunk_patch(matching_diff, &1)
+            )
+
+          {matching_diff.hunks, formatted}
+        else
+          case Git.diff(root, paths: [file_path], unified: 3) do
+            {:ok, raw} when is_binary(raw) and raw != "" ->
+              case DiffParser.parse(raw) do
+                {:ok, [fd | _]} -> {fd.hunks, raw}
+                _ -> {[], raw}
+              end
+
+            _ ->
+              {[], ""}
+          end
+        end
+
+      {:noreply,
+       socket
+       |> assign(:selected_diff_file, file_path)
+       |> assign(:diff_file_path, file_path)
+       |> assign(:diff_hunks, hunks)
+       |> assign(:diff_text, diff_text)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("accept_hunk", %{"file" => file, "hunk_id" => hunk_id}, socket) do
+    root = socket.assigns.project.root_path
+
+    case HunkOps.accept_hunk(root, file, hunk_id, diff: socket.assigns.diff_text) do
+      {:ok, _} ->
+        {:noreply,
+         socket
+         |> refresh_git_state()
+         |> put_flash(:info, "Accepted hunk #{hunk_id} for #{file}")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to accept hunk: #{inspect(reason)}")}
+    end
+  end
+
+  @impl true
+  def handle_event("reject_hunk", %{"file" => file, "hunk_id" => hunk_id}, socket) do
+    root = socket.assigns.project.root_path
+
+    case HunkOps.reject_hunk(root, file, hunk_id, diff: socket.assigns.diff_text) do
+      {:ok, _} ->
+        {:noreply,
+         socket
+         |> refresh_git_state()
+         |> put_flash(:info, "Reverted hunk #{hunk_id} in #{file}")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to revert hunk: #{inspect(reason)}")}
+    end
+  end
+
+  @impl true
+  def handle_event("revert_hunk", params, socket), do: handle_event("reject_hunk", params, socket)
+
+  @impl true
+  def handle_event("accept_all_hunks", %{"file" => file}, socket) do
+    root = socket.assigns.project.root_path
+
+    case HunkOps.accept_all_hunks(root, file) do
+      {:ok, _} ->
+        {:noreply,
+         socket
+         |> refresh_git_state()
+         |> put_flash(:info, "Staged all changes for #{file}")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to stage changes: #{inspect(reason)}")}
+    end
+  end
+
+  @impl true
+  def handle_event("revert_file", %{"file" => file}, socket) do
+    root = socket.assigns.project.root_path
+
+    case HunkOps.revert_file(root, file) do
+      {:ok, _} ->
+        # If the file is open in editor, reload content
+        socket =
+          if socket.assigns.selected_file == file do
+            full_path = Path.join(root, file)
+            content = if File.exists?(full_path), do: File.read!(full_path), else: ""
+
+            socket
+            |> assign(:file_content, content)
+            |> assign(:dirty_content, content)
+            |> assign(:is_dirty?, false)
+          else
+            socket
+          end
+
+        {:noreply,
+         socket
+         |> refresh_git_state()
+         |> put_flash(:info, "Reverted #{file} to clean git working state")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to revert file: #{inspect(reason)}")}
+    end
+  end
+
+  # ============================================================================
+  # Event Handlers: Goal Lifecycle & Steering Controls
+  # ============================================================================
+
+  @impl true
+  def handle_event("open_goal_modal", _params, socket) do
+    {:noreply, assign(socket, :show_goal_modal, true)}
+  end
+
+  @impl true
+  def handle_event("close_goal_modal", _params, socket) do
+    {:noreply, assign(socket, :show_goal_modal, false)}
+  end
+
+  @impl true
+  def handle_event("create_goal", params, socket) do
+    goal_params = params["goal"] || params
+    title = goal_params["title"] || ""
+    desc = goal_params["description"] || ""
+    auto_start = goal_params["auto_start"] != "false"
+
+    if String.trim(to_string(title)) != "" do
+      {:ok, _goal} =
+        SessionServer.create_goal(
+          socket.assigns.session.id,
+          %{title: String.trim(title), description: desc},
+          auto_start: auto_start
+        )
+
+      {:noreply,
+       socket
+       |> assign(:show_goal_modal, false)
+       |> assign(:active_tab, "swarm")
+       |> put_flash(
+         :info,
+         "Goal created#{if auto_start, do: " and autonomous swarm launched", else: ""}"
+       )}
+    else
+      {:noreply, put_flash(socket, :error, "Goal title is required")}
+    end
+  end
+
+  @impl true
+  def handle_event("pause_session", _params, socket) do
+    SessionServer.pause_session(socket.assigns.session.id)
+    updated_session = %{socket.assigns.session | status: "paused"}
+
+    {:noreply,
+     socket
+     |> assign(:session, updated_session)
+     |> put_flash(:info, "Swarm execution paused")}
+  end
+
+  @impl true
+  def handle_event("resume_session", _params, socket) do
+    SessionServer.resume_session(socket.assigns.session.id)
+    updated_session = %{socket.assigns.session | status: "running"}
+
+    {:noreply,
+     socket
+     |> assign(:session, updated_session)
+     |> put_flash(:info, "Swarm execution resumed")}
+  end
+
+  @impl true
+  def handle_event("toggle_session_pause", _params, socket) do
+    if socket.assigns.session.status in ["running", :running] do
+      handle_event("pause_session", %{}, socket)
+    else
+      handle_event("resume_session", %{}, socket)
+    end
+  end
+
+  def handle_event("toggle_goal_pause", params, socket),
+    do: handle_event("toggle_session_pause", params, socket)
+
+  @impl true
+  def handle_event("open_cancel_modal", _params, socket) do
+    {:noreply, assign(socket, :show_cancel_modal, true)}
+  end
+
+  @impl true
+  def handle_event("close_cancel_modal", _params, socket) do
+    {:noreply, assign(socket, :show_cancel_modal, false)}
+  end
+
+  @impl true
+  def handle_event("cancel_session", params, socket) do
+    mode = params["mode"] || socket.assigns.cancel_mode || "rollback"
+
+    opts =
+      if mode == "commit" do
+        [commit: true, commit_message: params["commit_message"] || "Cancelled session commit"]
+      else
+        [rollback: true]
+      end
+
+    SessionServer.cancel_session(socket.assigns.session.id, opts)
+    updated_session = %{socket.assigns.session | status: "stopped"}
+
+    {:noreply,
+     socket
+     |> assign(:show_cancel_modal, false)
+     |> assign(:session, updated_session)
+     |> put_flash(:info, "Session stopped (#{mode} executed)")}
+  end
+
+  @impl true
+  def handle_event("send_steering", params, socket) do
+    text = String.trim(params["steering"] || params["text"] || "")
+
+    if text != "" do
+      SessionServer.send_steering(socket.assigns.session.id, text)
+      {:noreply, put_flash(socket, :info, "Steering guidance delivered to active swarm")}
+    else
+      {:noreply, socket}
+    end
   end
 
   # ============================================================================
@@ -643,6 +1263,75 @@ defmodule IexCodeWeb.WorkspaceLive do
      |> assign(:tasks, tasks)
      |> assign(:selected_task, selected)
      |> assign(:expanded_column, status)}
+  end
+
+  @impl true
+  def handle_event("update_task_priority", %{"id" => id, "priority" => priority}, socket) do
+    task = Kanban.get_task!(id)
+    {:ok, updated} = Kanban.update_task(task, %{priority: priority})
+    tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
+
+    {:noreply,
+     socket
+     |> assign(:tasks, tasks)
+     |> assign(:selected_task, updated)
+     |> put_flash(:info, "Task priority updated to #{priority}")}
+  end
+
+  @impl true
+  def handle_event("update_task_assignee", %{"id" => id, "assignee" => assignee}, socket) do
+    task = Kanban.get_task!(id)
+    {:ok, updated} = Kanban.update_task(task, %{assignee: assignee})
+    tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
+
+    {:noreply,
+     socket
+     |> assign(:tasks, tasks)
+     |> assign(:selected_task, updated)
+     |> put_flash(:info, "Task assignee updated to #{assignee}")}
+  end
+
+  @impl true
+  def handle_event("update_task", params, socket) do
+    id = params["id"] || (socket.assigns.selected_task && socket.assigns.selected_task.id)
+    task_params = params["task"] || params
+
+    if id do
+      task = Kanban.get_task!(id)
+
+      attrs = %{
+        title: task_params["title"] || task.title,
+        description: task_params["description"] || task.description,
+        priority: task_params["priority"] || task.priority,
+        assignee: task_params["assignee"] || task.assignee,
+        status: task_params["status"] || task.status
+      }
+
+      {:ok, updated} = Kanban.update_task(task, attrs)
+      tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
+
+      {:noreply,
+       socket
+       |> assign(:tasks, tasks)
+       |> assign(:selected_task, updated)
+       |> put_flash(:info, "Task updated")}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("delete_task", %{"id" => id}, socket) do
+    task = Kanban.get_task!(id)
+    {:ok, _deleted} = Kanban.delete_task(task)
+    tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
+
+    {:noreply,
+     socket
+     |> assign(:tasks, tasks)
+     |> assign(:selected_task, nil)
+     |> assign(:show_task_drawer, false)
+     |> put_flash(:info, "Task deleted")}
   end
 
   @impl true
@@ -791,49 +1480,9 @@ defmodule IexCodeWeb.WorkspaceLive do
     end
   end
 
-  @impl true
-  def handle_event("set_diff_mode", %{"mode" => mode}, socket) do
-    {:noreply, assign(socket, :diff_mode, mode)}
-  end
-
-  @impl true
-  def handle_event("filter_files", %{"filter" => filter}, socket) do
-    {:noreply, assign(socket, :file_filter, filter)}
-  end
-
-  @impl true
-  def handle_event("search_files", %{"query" => query}, socket) do
-    {:noreply, assign(socket, :file_filter, query)}
-  end
-
-  @impl true
-  def handle_event("select_file", %{"path" => rel_path}, socket) do
-    root = socket.assigns.project.root_path
-    expanded_root = Path.expand(root)
-    full_path = Path.expand(Path.join(root, rel_path))
-
-    if String.starts_with?(full_path, expanded_root <> "/") or full_path == expanded_root do
-      content =
-        case File.read(full_path) do
-          {:ok, text} -> text
-          {:error, reason} -> "Could not read file: #{inspect(reason)}"
-        end
-
-      {:noreply,
-       socket
-       |> assign(:selected_file, rel_path)
-       |> assign(:file_content, content)
-       |> assign(:active_tab, "files")}
-    else
-      {:noreply, put_flash(socket, :error, "Invalid file path")}
-    end
-  end
-
-  @impl true
-  def handle_event("refresh_files", _params, socket) do
-    files = list_project_files(socket.assigns.project.root_path)
-    {:noreply, assign(socket, :project_files, files)}
-  end
+  # ============================================================================
+  # Event Handlers: Terminal Integration & Async Runner
+  # ============================================================================
 
   @impl true
   def handle_event("run_terminal", %{"command" => cmd}, socket) do
@@ -853,30 +1502,65 @@ defmodule IexCodeWeb.WorkspaceLive do
   @impl true
   def handle_event("run_terminal_command", %{"command" => cmd}, socket) do
     full_cmd = String.trim(cmd)
-    root = socket.assigns.project.root_path
 
-    out =
-      case System.shell("cd \"#{root}\" && #{full_cmd} 2>&1") do
-        {output, 0} -> "$ #{full_cmd}\n#{output}\n[Exit 0: OK]"
-        {output, code} -> "$ #{full_cmd}\n#{output}\n[Exit #{code}: Error]"
-      end
+    if full_cmd == "" do
+      {:noreply, socket}
+    else
+      root = socket.assigns.project.root_path
 
-    new_output =
-      if socket.assigns.terminal_output in [
-           "",
-           nil,
-           "Ready. Type a command or click a quick action above."
-         ] do
-        out
-      else
-        socket.assigns.terminal_output <> "\n\n" <> out
-      end
+      history =
+        [full_cmd | Enum.reject(socket.assigns.terminal_history, &(&1 == full_cmd))]
+        |> Enum.take(20)
 
+      # Synchronous execution fallback for fast commands / tests
+      out =
+        case System.shell("cd \"#{root}\" && #{full_cmd} 2>&1") do
+          {output, 0} -> "$ #{full_cmd}\n#{output}\n[Exit 0: OK]"
+          {output, code} -> "$ #{full_cmd}\n#{output}\n[Exit #{code}: Error]"
+        end
+
+      new_output =
+        if socket.assigns.terminal_output in [
+             "",
+             nil,
+             "Ready. Type a command or click a quick action above."
+           ] do
+          out
+        else
+          socket.assigns.terminal_output <> "\n\n" <> out
+        end
+
+      {:noreply,
+       socket
+       |> assign(:terminal_output, new_output)
+       |> assign(:terminal_history, history)
+       |> assign(:terminal_form, to_form(%{"command" => ""}))}
+    end
+  end
+
+  @impl true
+  def handle_event("stop_terminal_command", _params, socket) do
     {:noreply,
      socket
-     |> assign(:terminal_output, new_output)
-     |> assign(:terminal_form, to_form(%{"command" => ""}))}
+     |> assign(:terminal_running?, false)
+     |> assign(
+       :terminal_output,
+       (socket.assigns.terminal_output || "") <> "\n[Command Interrupted]\n"
+     )
+     |> put_flash(:info, "Terminal command stopped")}
   end
+
+  @impl true
+  def handle_event("replay_terminal_command", _params, socket) do
+    case socket.assigns.terminal_history do
+      [last_cmd | _] -> handle_event("run_terminal_command", %{"command" => last_cmd}, socket)
+      [] -> {:noreply, put_flash(socket, :info, "No commands in history")}
+    end
+  end
+
+  # ============================================================================
+  # Event Handlers: Settings & Workspaces
+  # ============================================================================
 
   @impl true
   def handle_event("toggle_settings_modal", _params, socket) do
@@ -969,13 +1653,28 @@ defmodule IexCodeWeb.WorkspaceLive do
   @impl true
   def handle_info({:message_created, message}, socket) do
     messages = socket.assigns.messages ++ [message]
-    {:noreply, assign(socket, :messages, messages)}
+
+    tokens_out = socket.assigns.tokens_out + 120
+    tokens_in = socket.assigns.tokens_in + 45
+    session_tokens = tokens_out + tokens_in
+
+    {:noreply,
+     socket
+     |> assign(:messages, messages)
+     |> assign(:tokens_out, tokens_out)
+     |> assign(:tokens_in, tokens_in)
+     |> assign(:session_tokens, session_tokens)}
   end
 
   @impl true
   def handle_info({:operation_started, op}, socket) do
     operations = [op | Enum.reject(socket.assigns.operations, &(&1.id == op.id))]
-    {:noreply, socket |> assign(:operations, operations) |> assign(:active_agent, op.agent_name)}
+
+    {:noreply,
+     socket
+     |> assign(:operations, operations)
+     |> assign(:active_agent, op.agent_name)
+     |> assign(:active_worker_pid, op.pid_str || socket.assigns.active_worker_pid)}
   end
 
   @impl true
@@ -1030,6 +1729,13 @@ defmodule IexCodeWeb.WorkspaceLive do
         end
       end)
 
+    socket =
+      if latency do
+        assign(socket, :current_latency_ms, latency)
+      else
+        socket
+      end
+
     {:noreply, assign(socket, :operations, operations)}
   end
 
@@ -1052,7 +1758,16 @@ defmodule IexCodeWeb.WorkspaceLive do
         _ -> :init
       end
 
-    {:noreply, assign(socket, :active_stage, stage)}
+    iter =
+      case metadata do
+        %{iteration: i} when is_integer(i) -> i
+        _ -> socket.assigns.swarm_iteration
+      end
+
+    {:noreply,
+     socket
+     |> assign(:active_stage, stage)
+     |> assign(:swarm_iteration, iter)}
   end
 
   @impl true
@@ -1080,8 +1795,13 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_info({:session_status_changed, status}, socket) do
-    updated_session = %{socket.assigns.session | status: status}
+    updated_session = %{socket.assigns.session | status: to_string(status)}
     {:noreply, assign(socket, :session, updated_session)}
+  end
+
+  @impl true
+  def handle_info({:goal_created, _goal}, socket) do
+    {:noreply, socket |> put_flash(:info, "Autonomous Goal active in session")}
   end
 
   @impl true
@@ -1122,6 +1842,71 @@ defmodule IexCodeWeb.WorkspaceLive do
   # ============================================================================
   # Helpers & Seeders
   # ============================================================================
+
+  defp refresh_git_state(socket) do
+    root = socket.assigns.project.root_path
+
+    case Git.status(root) do
+      {:ok, status} ->
+        {:ok, raw_diff} = Git.diff(root, unified: 3)
+        raw_diff_str = raw_diff || ""
+        parsed_diffs = DiffParser.parse!(raw_diff_str)
+
+        # Fallback to current or sample diffs if working tree is clean
+        {final_parsed, final_raw} =
+          if parsed_diffs == [] and socket.assigns[:diff_text] do
+            sample_parsed =
+              case DiffParser.parse(socket.assigns.diff_text) do
+                {:ok, diffs} -> diffs
+                _ -> []
+              end
+
+            {sample_parsed, socket.assigns.diff_text}
+          else
+            {parsed_diffs, raw_diff_str}
+          end
+
+        selected_diff_file =
+          socket.assigns[:selected_diff_file] ||
+            (List.first(final_parsed) && List.first(final_parsed).path) ||
+            socket.assigns[:diff_file_path]
+
+        selected_file_diff =
+          Enum.find(
+            final_parsed,
+            &(&1.path == selected_diff_file or &1.new_path == selected_diff_file)
+          )
+
+        diff_hunks = if selected_file_diff, do: selected_file_diff.hunks, else: []
+
+        diff_text =
+          cond do
+            selected_file_diff && selected_file_diff.hunks != [] ->
+              Enum.map_join(
+                selected_file_diff.hunks,
+                "\n",
+                &DiffParser.format_hunk_patch(selected_file_diff, &1)
+              )
+
+            final_raw != "" ->
+              final_raw
+
+            true ->
+              socket.assigns[:diff_text] || ""
+          end
+
+        socket
+        |> assign(:git_status, status)
+        |> assign(:parsed_diffs, final_parsed)
+        |> assign(:selected_diff_file, selected_diff_file)
+        |> assign(:diff_file_path, selected_diff_file || socket.assigns[:diff_file_path])
+        |> assign(:diff_hunks, diff_hunks)
+        |> assign(:diff_text, diff_text)
+
+      _ ->
+        socket
+    end
+  end
 
   defp seed_initial_tasks(project_id, session_id) do
     sample_tasks = [

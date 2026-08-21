@@ -69,14 +69,13 @@ Every feature identified during the Survey phase is enumerated and mapped to its
 | F19 | Final Quality & Precommit Pass | 100% E2E test pass, 0 test failures, 0 compiler warnings in `mix precommit` | M4 | DONE | Survey / AC |
 
 ## Milestones
-
 | # | Name | Scope | Dependencies | Status |
 |---|------|-------|-------------|--------|
-| M0 | E2E Testing Track | Requirement-driven opaque-box test suite (Tiers 1-4) & test runner | none | DONE |
-| M1 | Multi-Provider Streaming & Developer Tooling Engine | F1, F10, F11, F12, F14, F15, F16, F17 | none | DONE |
-| M2 | Autonomous Swarm & OTP Process Architecture | F2, F3, F4, F13 | M1 | DONE |
-| M3 | World-Class Desktop UI/UX & Live Telemetry | F5, F6, F7, F8, F9 | M1, M2 | DONE |
-| M4 | Final E2E Pass, Adversarial Hardening & Precommit | F18, F19: Tier 1-4 pass + Tier 5 adversarial tests + `mix precommit` | M0, M1, M2, M3 | DONE |
+| 1 | Goal Lifecycle & Real-Time Steering | Autonomous Goal state machine (Create, Pause, Resume, Stop with rollback/commit) & PubSub Steering | none | DONE |
+| 2 | Inline Editor & Diff Hunk Management | DiffParser, HunkOps, .CodeEditor hook, dirty state tracking, interactive hunk Accept/Reject/Revert | none | DONE |
+| 3 | UI Control Audit & Dead Button Elimination | Wire all dead buttons, Task drawer Kanban CRUD, Scheduled tasks edit, Terminal async stop/replay | M1, M2 | IN_PROGRESS |
+| 4 | Rich Reasoning Telemetry & Feedback UI | Collapsible thinking traces, Markdown parser, real-time token/latency/PID telemetry & Swarm progress | M1 | IN_PROGRESS |
+| 5 | Comprehensive E2E Verification & Hardening | Full unit & LiveView integration test suite, Tier 1-5 verification, and `mix precommit` clean pass | M1, M2, M3, M4 | PLANNED |
 
 ## Interface Contracts
 

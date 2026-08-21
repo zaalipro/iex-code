@@ -1,9 +1,9 @@
 <Layouts.app flash={@flash}>
   <div class="flex h-screen w-full bg-[#0a0d12] text-[#f0f6fc] font-sans antialiased overflow-hidden select-none">
-    <!-- Sidebar: Sessions & Projects Navigation (Matching Reference Image) -->
+    <!-- Sidebar: Sessions & Projects Navigation -->
     <aside class="w-64 bg-[#11151c] border-r border-[#21262d] flex flex-col justify-between shrink-0">
       <div class="flex flex-col h-full overflow-hidden">
-        <!-- Brand / Workspace Header (Matching Reference Image) -->
+        <!-- Brand / Workspace Header -->
         <div class="p-3.5 border-b border-[#21262d] relative">
           <button
             phx-click="toggle_workspace_menu"
@@ -28,7 +28,7 @@
             />
           </button>
 
-          <!-- Workspace Switcher Popover (Image 3) -->
+          <!-- Workspace Switcher Popover -->
           <%= if @show_workspace_menu do %>
             <div
               class="absolute left-3 right-3 top-14 z-50 bg-[#161b22]/95 backdrop-blur-xl border border-[#30363d] rounded-2xl shadow-2xl p-2.5 transition-smooth animate-in fade-in"
@@ -81,7 +81,7 @@
           <% end %>
         </div>
 
-        <!-- Search Bar (Matching Reference Image) -->
+        <!-- Search Bar -->
         <div class="px-3 pt-3 pb-1">
           <div class="relative">
             <.icon
@@ -99,7 +99,7 @@
           </div>
         </div>
 
-        <!-- Primary Navigation Links (Matching Reference Image) -->
+        <!-- Primary Navigation Links (Including Chat) -->
         <div class="px-3 py-2 space-y-0.5">
           <button
             id="sidebar-tab-kanban"
@@ -158,6 +158,20 @@
           </button>
 
           <button
+            id="sidebar-tab-chat"
+            phx-click="switch_tab"
+            phx-value-sidebar_tab="chat"
+            class={[
+              "w-full flex items-center gap-2.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-smooth text-left",
+              @active_tab == "chat" && "bg-[#21262d] text-white shadow-sm font-semibold",
+              @active_tab != "chat" && "text-gray-400 hover:text-gray-200 hover:bg-[#161b22]"
+            ]}
+          >
+            <.icon name="hero-chat-bubble-left-right" class="w-3.5 h-3.5 text-blue-400" />
+            <span>Chat</span>
+          </button>
+
+          <button
             id="sidebar-tab-files"
             phx-click="switch_tab"
             phx-value-sidebar_tab="files"
@@ -186,7 +200,7 @@
           </button>
         </div>
 
-        <!-- Sessions Subtree (Matching Reference Image) -->
+        <!-- Sessions Subtree -->
         <div class="flex-1 overflow-y-auto px-3 py-2">
           <div class="flex items-center justify-between px-2 py-1 mb-1">
             <span class="text-[11px] font-semibold text-gray-400 uppercase tracking-wider flex items-center gap-1.5">
@@ -216,7 +230,8 @@
                   <span class={[
                     "w-1.5 h-1.5 rounded-full shrink-0",
                     s.status == "running" && "bg-emerald-400 animate-pulse",
-                    s.status != "running" && "bg-gray-500"
+                    s.status == "paused" && "bg-amber-400",
+                    s.status not in ["running", "paused"] && "bg-gray-500"
                   ]}></span>
                   <span class="truncate">{s.title}</span>
                 </.link>
@@ -234,7 +249,7 @@
           </div>
         </div>
 
-        <!-- Sidebar Footer: Settings & User Profile Card (Matching Reference Image) -->
+        <!-- Sidebar Footer: Settings & User Profile Card -->
         <div class="p-3 border-t border-[#21262d] bg-[#0d1117] space-y-1.5">
           <div class="px-2 pt-1 text-[10px] font-mono text-gray-500 uppercase tracking-wider font-semibold">
             Settings
@@ -254,7 +269,7 @@
             <span>General Settings</span>
           </button>
 
-          <!-- User Profile / OTP Engine Card (Matching Reference Image) -->
+          <!-- User Profile / OTP Engine Card -->
           <div
             phx-click="toggle_settings_modal"
             class="mt-2 p-2.5 rounded-2xl bg-[#161b22] border border-[#21262d] hover:border-[#38404a] flex items-center justify-between cursor-pointer transition-smooth group"
@@ -282,7 +297,7 @@
 
     <!-- Main Workspace Area -->
     <main class="flex-1 flex flex-col h-full min-w-0 bg-[#0a0d12] relative overflow-hidden">
-      <!-- Top Navigation Bar & Tab Switchers (Image 1, 3, 4, 5) -->
+      <!-- Top Navigation Bar & Tab Switchers -->
       <header class="h-14 border-b border-[#21262d] bg-[#11151c] flex items-center justify-between px-5 shrink-0">
         <div class="flex items-center gap-2">
           <!-- Modern Tab Navigation -->
@@ -349,7 +364,7 @@
                 @active_tab != "chat" && "text-gray-400 hover:text-gray-200"
               ]}
             >
-              <.icon name="hero-chat-bubble-left-right" class="w-3.5 h-3.5" /> Chat
+              <.icon name="hero-chat-bubble-left-right" class="w-3.5 h-3.5 text-blue-400" /> Chat
             </button>
 
             <button
@@ -375,7 +390,7 @@
                 @active_tab != "terminal" && "text-gray-400 hover:text-gray-200"
               ]}
             >
-              <.icon name="hero-command-line" class="w-3.5 h-3.5" /> Terminal
+              <.icon name="hero-command-line" class="w-3.5 h-3.5 text-gray-400" /> Terminal
             </button>
           </div>
         </div>
@@ -412,7 +427,7 @@
             </div>
           </div>
 
-          <!-- Live Presence & Focus Status Trigger (Image 2) -->
+          <!-- Live Presence & Focus Status Trigger -->
           <div class="tooltip-trigger">
             <button
               id="header-focus-time-btn"
@@ -470,10 +485,10 @@
 
       <!-- View Containers -->
       <div class="flex-1 flex overflow-hidden">
-        <!-- TAB 1: KANBAN BOARD (Image 1 & 5) -->
+        <!-- TAB 1: KANBAN BOARD -->
         <%= if @active_tab == "kanban" do %>
           <div class="flex-1 flex flex-col h-full overflow-hidden p-5">
-            <!-- Header & Filter Bar (Image 1 & 5) -->
+            <!-- Header & Filter Bar -->
             <div class="flex items-center justify-between mb-4 shrink-0">
               <div class="flex items-center gap-3">
                 <h2 class="text-lg font-semibold text-white tracking-tight flex items-center gap-2">
@@ -484,7 +499,7 @@
                 </h2>
               </div>
 
-              <!-- Filter Bar (Image 5 & Reference Image Styled Dropdowns) -->
+              <!-- Filter Bar -->
               <div class="flex items-center gap-2.5 text-xs font-mono text-gray-400">
                 <.form
                   for={to_form(@kanban_filter)}
@@ -507,7 +522,7 @@
                   <input type="hidden" name="assignee" value={@kanban_filter["assignee"]} />
                 </.form>
 
-                <!-- PRIORITY Custom Dropdown (Matching Reference Image) -->
+                <!-- PRIORITY Custom Dropdown -->
                 <div class="relative">
                   <button
                     type="button"
@@ -577,7 +592,7 @@
                   <% end %>
                 </div>
 
-                <!-- STATUS Custom Dropdown (Matching Reference Image) -->
+                <!-- STATUS Custom Dropdown -->
                 <div class="relative">
                   <button
                     type="button"
@@ -712,300 +727,212 @@
               </div>
             </div>
 
-            <!-- Agent Rule Explanatory Banner (Image 1) -->
-            <div class="mb-4 p-3 bg-[#11151c] border border-[#21262d] rounded-xl text-xs text-gray-400 flex items-center justify-between shrink-0">
-              <div class="flex items-center gap-2">
-                <span class="text-amber-400">✦</span>
-                <span>You don't run the cards — agents do. Put a card in
-                <strong class="text-white">Ready</strong>
-                with an assignee and an agent picks it up with worker into a proper task first.</span>
-              </div>
-              <span class="text-gray-500 font-mono text-[11px]">8 Status Columns</span>
-            </div>
-
-            <!-- 8 Column Accordion Kanban Grid (Matching Reference Image) -->
-            <div
-              id="kanban-accordion-container"
-              class="flex-1 flex kanban-grid gap-3 h-full overflow-x-auto overflow-y-hidden pb-2 select-none"
-            >
-              <%= for status <- Kanban.Task.statuses() do %>
-                <% column_tasks = Enum.filter(@tasks, &(&1.status == status))
-                is_expanded = status == @expanded_column
-
-                dot_color =
-                  case status do
-                    "triage" -> "bg-gray-400"
-                    "todo" -> "bg-purple-400"
-                    "scheduled" -> "bg-indigo-400"
-                    "ready" -> "bg-blue-400"
-                    "running" -> "bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.8)]"
-                    "blocked" -> "bg-red-400"
-                    "review" -> "bg-amber-400"
-                    "done" -> "bg-gray-500"
-                  end %>
+            <!-- Kanban 8-Column Accordion Board -->
+            <div class="flex-1 flex gap-3 overflow-x-auto pb-2 select-none">
+              <%= for col_status <- Kanban.Task.statuses() do %>
+                <% col_tasks = Enum.filter(@tasks, &(&1.status == col_status))
+                is_expanded = @expanded_column == col_status %>
 
                 <%= if is_expanded do %>
-                  <!-- EXPANDED COLUMN (Matching Reference Image) -->
+                  <!-- Expanded Column -->
                   <div
-                    id={"kanban-col-#{status}"}
-                    phx-hook=".KanbanDrag"
-                    data-col-status={status}
-                    class="kanban-col kanban-col-expanded bg-[#11151c] border border-[#21262d] rounded-2xl flex flex-col h-full overflow-hidden shadow-lg animate-in fade-in"
+                    id={"kanban-col-#{col_status}"}
+                    class="w-80 flex-shrink-0 bg-[#11151c] border border-[#21262d] rounded-2xl flex flex-col h-full overflow-hidden transition-all duration-200"
                   >
-                    <!-- Expanded Header -->
-                    <div class="p-3 border-b border-[#21262d] flex items-center justify-between shrink-0 bg-[#161b22]/50">
-                      <div class="flex items-center gap-2 font-mono text-xs font-semibold text-gray-200">
-                        <span class={["w-2 h-2 rounded-full", dot_color]}></span>
-                        <span class="uppercase tracking-wider">{String.upcase(status)}</span>
-                        <span class="text-gray-500 font-normal text-[11px]">{length(column_tasks)}</span>
+                    <!-- Column Header -->
+                    <div class="p-3.5 border-b border-[#21262d] flex items-center justify-between shrink-0">
+                      <div class="flex items-center gap-2 font-mono text-xs font-bold uppercase tracking-wider text-gray-300">
+                        <span class={[
+                          "w-2 h-2 rounded-full",
+                          col_status == "running" &&
+                            "bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.8)]",
+                          col_status == "ready" && "bg-blue-400",
+                          col_status == "scheduled" && "bg-indigo-400",
+                          col_status == "todo" && "bg-purple-400",
+                          col_status == "triage" && "bg-gray-400",
+                          col_status == "blocked" && "bg-red-400",
+                          col_status == "review" && "bg-amber-400",
+                          col_status == "done" && "bg-gray-500"
+                        ]}></span>
+                        <span class="uppercase">{String.upcase(col_status)}</span>
+                        <span class="text-gray-500 text-[11px]">({length(col_tasks)})</span>
                       </div>
                       <button
                         phx-click="toggle_column"
-                        phx-value-status={status}
-                        class="text-gray-500 hover:text-white p-1 rounded-lg transition-smooth"
-                        title="Collapse section"
+                        phx-value-status={col_status}
+                        class="text-gray-500 hover:text-white p-1 rounded-lg hover:bg-[#161b22] transition-smooth"
+                        title="Collapse Column"
                       >
                         <.icon name="hero-chevron-left" class="w-3.5 h-3.5" />
                       </button>
                     </div>
 
-                    <!-- Cards List -->
-                    <div class="flex-1 overflow-y-auto p-3 space-y-3">
-                      <%= if column_tasks == [] do %>
-                        <div class="h-32 border border-dashed border-[#21262d] rounded-xl flex items-center justify-center text-gray-500 font-mono text-[11px]">
-                          Drop task here to move to {status}
-                        </div>
-                      <% end %>
-
-                      <%= for task <- column_tasks do %>
+                    <!-- Column Cards List -->
+                    <div
+                      id={"kanban-cards-#{col_status}"}
+                      phx-hook=".KanbanDrag"
+                      data-status={col_status}
+                      class="flex-1 overflow-y-auto p-3 space-y-2.5"
+                    >
+                      <%= for task <- col_tasks do %>
                         <div
                           id={"task-card-#{task.id}"}
                           phx-click="open_task_drawer"
                           phx-value-id={task.id}
                           phx-hook=".KanbanCard"
                           data-task-id={task.id}
-                          draggable="true"
                           class={[
-                            "bg-[#11151c] hover:bg-[#161b22] border border-[#21262d] hover:border-[#38404a] p-4 rounded-2xl cursor-grab active:cursor-grabbing transition-smooth group relative shadow-md",
-                            task.status == "running" && "card-running-glow"
+                            "p-3.5 bg-[#161b22] border rounded-2xl transition-smooth cursor-pointer hover:border-gray-500 space-y-2.5 group shadow-sm",
+                            @selected_task && @selected_task.id == task.id &&
+                              "border-emerald-500/60 ring-1 ring-emerald-500/20",
+                            !(@selected_task && @selected_task.id == task.id) &&
+                              "border-[#21262d]"
                           ]}
                         >
-                          <!-- Card Header (Matching Reference Image): Signal Bars / Pie Status / ID & Stats -->
-                          <div class="flex items-center justify-between mb-2.5">
-                            <div class="flex items-center gap-2">
-                              <!-- Priority Signal Bars -->
-                              <div
-                                class="flex items-end gap-0.5 px-1.5 py-1 rounded-md bg-[#1c2128]"
-                                title={"Priority: #{task.priority}"}
-                              >
-                                <span class={[
-                                  "w-1 h-1.5 rounded-xs",
-                                  task.priority in ["low", "medium", "high", "critical"] &&
-                                    "bg-amber-400",
-                                  task.priority not in ["low", "medium", "high", "critical"] &&
-                                    "bg-gray-600"
-                                ]}></span>
-                                <span class={[
-                                  "w-1 h-2.5 rounded-xs",
-                                  task.priority in ["medium", "high", "critical"] &&
-                                    "bg-amber-400",
-                                  task.priority not in ["medium", "high", "critical"] &&
-                                    "bg-gray-600"
-                                ]}></span>
-                                <span class={[
-                                  "w-1 h-3.5 rounded-xs",
-                                  task.priority in ["high", "critical"] && "bg-amber-400",
-                                  task.priority not in ["high", "critical"] && "bg-gray-600"
-                                ]}></span>
-                              </div>
-
-                              <!-- Pie / Status Icon -->
-                              <span class="text-gray-400 text-xs">◐</span>
-
-                              <!-- Task ID Hash -->
-                              <span class="font-mono text-xs text-gray-300 font-semibold tracking-tight">
-                                #{String.slice(task.id, 0..5)}
-                              </span>
-                            </div>
-
-                            <!-- Right Side: Comments / Attachments / Worker PID -->
-                            <div class="flex items-center gap-2 text-gray-400 text-[11px] font-mono">
-                              <%= if task.worker_pid do %>
-                                <span class="text-[10px] text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
-                                  pid {task.worker_pid}
-                                </span>
-                              <% end %>
-                              <span class="flex items-center gap-1 hover:text-gray-200">
-                                <.icon name="hero-chat-bubble-left" class="w-3.5 h-3.5" /> 12
-                              </span>
-                              <span class="flex items-center gap-1 hover:text-gray-200">
-                                <.icon name="hero-paper-clip" class="w-3.5 h-3.5" /> 6
-                              </span>
-                            </div>
+                          <div class="flex items-center justify-between text-[10px] font-mono text-gray-500">
+                            <span class="uppercase tracking-wider">#{String.slice(task.id, 0..4)}</span>
+                            <span class={[
+                              "px-1.5 py-0.5 rounded font-semibold",
+                              task.priority == "critical" &&
+                                "bg-red-500/10 text-red-400 border border-red-500/20",
+                              task.priority == "high" &&
+                                "bg-orange-500/10 text-orange-400 border border-orange-500/20",
+                              task.priority == "medium" &&
+                                "bg-blue-500/10 text-blue-400 border border-blue-500/20",
+                              task.priority == "low" &&
+                                "bg-gray-500/10 text-gray-400 border border-gray-500/20"
+                            ]}>
+                              {String.upcase(task.priority || "MEDIUM")}
+                            </span>
                           </div>
 
-                          <!-- Title (Matching Reference Image) -->
-                          <h4 class="text-sm font-semibold text-white group-hover:text-amber-200 transition-smooth mb-3 leading-snug">
+                          <h4 class="text-xs font-semibold text-white font-sans leading-snug group-hover:text-cyan-300 transition-colors">
                             {task.title}
                           </h4>
 
-                          <!-- Segmented Progress Bar (Matching Reference Image) -->
-                          <div class="flex items-center gap-2.5 mb-3.5">
-                            <span class="px-2 py-0.5 rounded-md bg-[#1c2128] text-[11px] font-mono text-gray-300 font-medium shrink-0">
-                              {task.steps_completed}/{max(task.steps_total, 1)}
-                            </span>
-                            <div class="flex-1 flex gap-1.5 h-1.5">
-                              <%= for step <- 1..max(task.steps_total, 1) do %>
-                                <div class={[
-                                  "flex-1 rounded-full transition-all duration-300",
-                                  step <= task.steps_completed &&
-                                    "bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.7)]",
-                                  step > task.steps_completed && "bg-[#21262d]"
-                                ]}>
-                                </div>
-                              <% end %>
-                            </div>
-                          </div>
+                          <%= if task.description do %>
+                            <p class="text-[11px] text-gray-400 line-clamp-2 leading-relaxed">
+                              {task.description}
+                            </p>
+                          <% end %>
 
-                          <!-- Footer Tags (Matching Reference Image) -->
-                          <div class="flex items-center gap-2 pt-2 border-t border-[#21262d]/60 text-xs">
-                            <span class="px-2.5 py-1 rounded-xl bg-[#1c2128] text-gray-300 font-medium text-[11px]">
-                              FinPay
-                            </span>
-                            <span class="px-2.5 py-1 rounded-xl bg-[#2b1810] text-[#ff5e3a] font-medium text-[11px] flex items-center gap-1.5 border border-[#ff5e3a]/20">
-                              <span class="w-1.5 h-1.5 rounded-full bg-[#ff5e3a]"></span> Bug
-                            </span>
+                          <div class="flex items-center justify-between pt-2 border-t border-white/5 text-[10px] font-mono text-gray-400">
+                            <div class="flex items-center gap-1.5">
+                              <span class="w-4 h-4 rounded-full bg-[#21262d] text-center font-bold text-[8px] flex items-center justify-center text-white">
+                                <%= if is_binary(task.assignee) and task.assignee != "" do %>
+                                  {String.first(task.assignee) |> String.upcase()}
+                                <% else %>
+                                  D
+                                <% end %>
+                              </span>
+                              <span>{task.assignee}</span>
+                            </div>
+
+                            <%= if task.worker_pid do %>
+                              <span class="text-emerald-400">{task.worker_pid}</span>
+                            <% end %>
                           </div>
                         </div>
                       <% end %>
                     </div>
                   </div>
                 <% else %>
-                  <!-- COLLAPSED VERTICAL RIBBON (Matching Reference Image) -->
+                  <!-- Collapsed Vertical Ribbon -->
                   <div
-                    id={"kanban-col-#{status}"}
+                    id={"kanban-col-#{col_status}"}
                     phx-click="toggle_column"
-                    phx-value-status={status}
+                    phx-value-status={col_status}
                     phx-hook=".KanbanDrag"
-                    data-col-status={status}
-                    class="kanban-col kanban-col-collapsed bg-[#11151c] hover:bg-[#161b22] border border-[#21262d] hover:border-[#38404a] rounded-2xl flex flex-col items-center justify-between py-5 group shadow-sm transition-smooth"
-                    title={"Click or drag over to open #{status}"}
+                    data-status={col_status}
+                    class="w-12 flex-shrink-0 bg-[#11151c] border border-[#21262d] hover:border-gray-500 rounded-2xl flex flex-col items-center py-4 justify-between transition-smooth cursor-pointer group"
+                    title={"Click to expand #{col_status} column"}
                   >
-                    <!-- Status Dot -->
-                    <span class={[
-                      "w-2 h-2 rounded-full shrink-0 group-hover:scale-125 transition-smooth",
-                      dot_color
-                    ]}></span>
-
-                    <!-- Rotated Vertical Text (Matching Reference Image) -->
-                    <div class="vertical-text font-mono text-xs font-semibold text-gray-400 group-hover:text-gray-200 uppercase tracking-widest my-auto py-4">
-                      {status}
+                    <div class="flex flex-col items-center gap-3">
+                      <span class={[
+                        "w-2.5 h-2.5 rounded-full shrink-0",
+                        col_status == "running" &&
+                          "bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.8)] animate-pulse",
+                        col_status == "ready" && "bg-blue-400",
+                        col_status == "scheduled" && "bg-indigo-400",
+                        col_status == "todo" && "bg-purple-400",
+                        col_status == "triage" && "bg-gray-400",
+                        col_status == "blocked" && "bg-red-400",
+                        col_status == "review" && "bg-amber-400",
+                        col_status == "done" && "bg-gray-500"
+                      ]}></span>
+                      <span class="writing-vertical text-xs font-mono font-bold uppercase tracking-wider text-gray-400 group-hover:text-white transition-colors">
+                        {String.upcase(col_status)}
+                      </span>
                     </div>
 
-                    <!-- Count Badge -->
-                    <span class="text-[10px] font-mono text-gray-500 group-hover:text-gray-300 font-bold shrink-0">
-                      {length(column_tasks)}
+                    <span class="px-2 py-0.5 rounded-full bg-[#1c2128] text-[10px] font-mono text-gray-400 border border-white/5">
+                      {length(col_tasks)}
                     </span>
                   </div>
                 <% end %>
               <% end %>
             </div>
-
-            <!-- Colocated Hook for Smooth Drag & Drop Auto-Expansion & Decreased Drag Ghost Size -->
-            <script :type={Phoenix.LiveView.ColocatedHook} name=".KanbanDrag">
-              export default {
-                mounted() {
-                  this.el.addEventListener("dragover", e => {
-                    e.preventDefault();
-                    e.dataTransfer.dropEffect = "move";
-                    const colStatus = this.el.dataset.colStatus;
-                    if (colStatus && this.el.classList.contains("kanban-col-collapsed")) {
-                      this.pushEvent("set_expanded_column", { status: colStatus });
-                    }
-                  });
-
-                  this.el.addEventListener("drop", e => {
-                    e.preventDefault();
-                    const taskId = e.dataTransfer.getData("text/plain");
-                    const targetStatus = this.el.dataset.colStatus;
-                    if (taskId && targetStatus) {
-                      this.pushEvent("move_task", { id: taskId, status: targetStatus });
-                    }
-                  });
-                }
-              }
-            </script>
-
-            <script :type={Phoenix.LiveView.ColocatedHook} name=".KanbanCard">
-              export default {
-                mounted() {
-                  this.el.addEventListener("dragstart", e => {
-                    const taskId = this.el.dataset.taskId;
-                    e.dataTransfer.setData("text/plain", taskId);
-                    e.dataTransfer.effectAllowed = "move";
-
-                    // Create compact decreased-size drag preview ghost
-                    const ghost = this.el.cloneNode(true);
-                    ghost.id = "kanban-drag-ghost";
-                    ghost.style.position = "fixed";
-                    ghost.style.top = "-9999px";
-                    ghost.style.left = "-9999px";
-                    ghost.style.width = "200px";
-                    ghost.style.maxWidth = "200px";
-                    ghost.style.transform = "scale(0.72)";
-                    ghost.style.transformOrigin = "top left";
-                    ghost.style.opacity = "0.95";
-                    ghost.style.borderRadius = "0.75rem";
-                    ghost.style.boxShadow = "0 20px 25px -5px rgba(0, 0, 0, 0.8), 0 0 15px rgba(59, 130, 246, 0.4)";
-                    ghost.style.pointerEvents = "none";
-                    ghost.style.zIndex = "99999";
-                    document.body.appendChild(ghost);
-
-                    e.dataTransfer.setDragImage(ghost, 100, 25);
-
-                    setTimeout(() => {
-                      if (ghost.parentNode) ghost.parentNode.removeChild(ghost);
-                      this.el.classList.add("card-dragging");
-                    }, 0);
-                  });
-
-                  this.el.addEventListener("dragend", () => {
-                    this.el.classList.remove("card-dragging");
-                  });
-                }
-              }
-            </script>
           </div>
+
+          <script :type={Phoenix.LiveView.ColocatedHook} name=".KanbanDrag">
+            export default {
+              mounted() {
+                this.el.addEventListener('dragover', (e) => {
+                  e.preventDefault();
+                  this.el.classList.add('bg-[#1c2128]/50');
+                });
+                this.el.addEventListener('dragleave', () => {
+                  this.el.classList.remove('bg-[#1c2128]/50');
+                });
+                this.el.addEventListener('drop', (e) => {
+                  e.preventDefault();
+                  this.el.classList.remove('bg-[#1c2128]/50');
+                  const taskId = e.dataTransfer.getData('text/plain');
+                  const targetStatus = this.el.getAttribute('data-status');
+                  if (taskId && targetStatus) {
+                    this.pushEvent('move_task', { id: taskId, status: targetStatus });
+                  }
+                });
+              }
+            }
+          </script>
+
+          <script :type={Phoenix.LiveView.ColocatedHook} name=".KanbanCard">
+            export default {
+              mounted() {
+                this.el.setAttribute('draggable', 'true');
+                this.el.addEventListener('dragstart', (e) => {
+                  e.dataTransfer.setData('text/plain', this.el.getAttribute('data-task-id'));
+                });
+              }
+            }
+          </script>
         <% end %>
 
-        <!-- TAB 2: SWARM 4-COLUMN CARDS, AGENT OVERVIEW & OPERATION TREE (Matching Reference Image & F5/F6) -->
+        <!-- TAB 2: COACH & SWARM VIEW -->
         <%= if @active_tab == "swarm" do %>
-          <div class="flex-1 flex flex-col h-full overflow-y-auto p-5 space-y-6">
-            <!-- Agent Overview Card (Matching Reference Image media_1787240812268.png) -->
-            <div class="bg-[#11151c] border border-[#21262d] rounded-3xl p-6 shadow-2xl relative">
-              <!-- Top Header Row -->
-              <div class="flex items-center justify-between mb-5">
-                <div class="flex items-center gap-2">
-                  <h3 class="text-sm font-semibold text-white tracking-tight">Agent overview</h3>
-                </div>
-                <div class="flex items-center gap-2 bg-[#161b22] px-3 py-1 rounded-full border border-[#21262d] text-xs text-gray-300 font-mono">
-                  <span class="w-4 h-4 rounded-full bg-indigo-500/20 text-indigo-400 font-bold text-[9px] flex items-center justify-center">
-                    Z
-                  </span>
-                  <span>Owner: zaali</span>
-                </div>
-              </div>
-
-              <!-- Main Agent Info Box -->
+          <div class="flex-1 flex flex-col h-full overflow-y-auto p-5 space-y-5">
+            <!-- Swarm Coach Hero Card -->
+            <div class="bg-[#11151c] border border-[#21262d] rounded-3xl p-6 shadow-2xl relative overflow-hidden">
               <div class="bg-[#161b22]/70 border border-[#21262d] rounded-2xl p-5 mb-4 relative">
                 <!-- Status Badge Top Right -->
-                <div class="absolute top-5 right-5 flex items-center gap-1.5 text-emerald-400 text-xs font-mono font-semibold">
-                  <span class="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.8)] animate-pulse"></span>
-                  <span>ACTIVE</span>
+                <div class="absolute top-5 right-5 flex items-center gap-1.5 text-xs font-mono font-semibold">
+                  <%= if @session.status in ["running", :running] do %>
+                    <span class="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.8)] animate-pulse"></span>
+                    <span class="text-emerald-400">ACTIVE (RUNNING)</span>
+                  <% else %>
+                    <%= if @session.status in ["paused", :paused] do %>
+                      <span class="w-2 h-2 rounded-full bg-amber-400 shadow-[0_0_8px_rgba(245,158,11,0.8)]"></span>
+                      <span class="text-amber-400">PAUSED</span>
+                    <% else %>
+                      <span class="w-2 h-2 rounded-full bg-gray-500"></span>
+                      <span class="text-gray-400">IDLE</span>
+                    <% end %>
+                  <% end %>
                 </div>
 
                 <div class="flex items-start gap-4">
-                  <!-- Pixel Avatar Graphic (Matching Reference Image) -->
+                  <!-- Pixel Avatar Graphic -->
                   <div class="w-16 h-16 rounded-2xl bg-gradient-to-b from-[#1c2128] to-[#11151c] border border-[#30363d] flex items-center justify-center text-3xl shadow-inner shrink-0 relative overflow-hidden">
                     <span class="animate-bounce">🧙‍♂️</span>
                     <div class="absolute bottom-1 left-2 right-2 h-1 bg-indigo-500/40 rounded-full blur-[1px]">
@@ -1014,9 +941,18 @@
 
                   <!-- Name, Role & Connected Integrations -->
                   <div class="flex-1 min-w-0">
-                    <h2 class="text-2xl font-bold text-white tracking-tight">
-                      Milo
-                    </h2>
+                    <div class="flex items-center gap-3">
+                      <h2 class="text-2xl font-bold text-white tracking-tight">
+                        Milo
+                      </h2>
+                      <button
+                        phx-click="open_goal_modal"
+                        class="px-3 py-1 bg-[#ff5e3a] hover:bg-[#ff4e24] text-white rounded-full text-xs font-mono font-bold transition-smooth flex items-center gap-1 shadow-sm"
+                      >
+                        <.icon name="hero-plus" class="w-3.5 h-3.5" />
+                        <span>New Goal</span>
+                      </button>
+                    </div>
                     <div class="text-xs font-mono text-gray-400 uppercase tracking-wider mb-3">
                       EXECUTIVE CODING HARNESS ASSISTANT
                     </div>
@@ -1039,10 +975,10 @@
                   </div>
                 </div>
 
-                <!-- Current Task & Tally Tick Progress Bar (Matching Reference Image) -->
+                <!-- Current Task & Tally Tick Progress Bar -->
                 <div class="mt-6 pt-5 border-t border-dashed border-[#21262d]">
                   <div class="text-[10px] font-mono text-gray-400 uppercase tracking-wider mb-2.5">
-                    CURRENT TASK
+                    CURRENT TASK · ITERATION {@swarm_iteration}/{@max_retries}
                   </div>
 
                   <!-- Tally Hash Vertical Tick Bar -->
@@ -1059,10 +995,10 @@
 
                   <div class="flex items-center justify-between font-mono text-xs">
                     <span class="font-semibold text-white tracking-wide">
-                      GENERATE FOLLOW-UP EMAILS & CODE PATCHES
+                      MULTI-AGENT SWARM HARNESS ACTIVE
                     </span>
                     <span class="text-gray-400">
-                      3.2K TOKENS · 18ms
+                      {@session_tokens} TOKENS · {@current_latency_ms}ms · PID: {@active_worker_pid}
                     </span>
                   </div>
                 </div>
@@ -1070,15 +1006,87 @@
 
               <!-- Footer Actions Row -->
               <div class="flex items-center justify-between pt-2 text-xs font-mono text-gray-400">
-                <div class="flex items-center gap-3">
-                  <button class="p-1.5 rounded-lg hover:bg-[#161b22] text-gray-400 hover:text-white transition-smooth">
-                    <.icon name="hero-ellipsis-vertical" class="w-4 h-4" />
-                  </button>
-                  <button class="p-1.5 rounded-lg hover:bg-[#161b22] text-gray-400 hover:text-white transition-smooth">
+                <div class="flex items-center gap-3 relative">
+                  <!-- Coach Menu Trigger -->
+                  <div class="relative">
+                    <button
+                      phx-click="toggle_coach_menu"
+                      class="p-1.5 rounded-lg hover:bg-[#161b22] text-gray-400 hover:text-white transition-smooth"
+                      title="Agent Configuration Menu"
+                    >
+                      <.icon name="hero-ellipsis-vertical" class="w-4 h-4" />
+                    </button>
+
+                    <%= if @open_dropdown == "coach_menu" do %>
+                      <div class="absolute left-0 bottom-full mb-2 w-48 bg-[#11151c]/95 border border-[#21262d] rounded-2xl p-1.5 shadow-2xl backdrop-blur-xl z-50 animate-in fade-in zoom-in-95 space-y-0.5">
+                        <button
+                          type="button"
+                          phx-click="open_goal_modal"
+                          class="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs hover:bg-[#1c2128] text-gray-300 transition-smooth text-left"
+                        >
+                          <.icon name="hero-flag" class="w-3.5 h-3.5 text-amber-400" />
+                          <span>Create Goal</span>
+                        </button>
+                        <button
+                          type="button"
+                          phx-click="switch_tab"
+                          phx-value-tab="terminal"
+                          class="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs hover:bg-[#1c2128] text-gray-300 transition-smooth text-left"
+                        >
+                          <.icon name="hero-command-line" class="w-3.5 h-3.5 text-cyan-400" />
+                          <span>Open Terminal</span>
+                        </button>
+                        <button
+                          type="button"
+                          phx-click="clear_operations"
+                          class="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs hover:bg-[#1c2128] text-rose-300 transition-smooth text-left"
+                        >
+                          <.icon name="hero-trash" class="w-3.5 h-3.5 text-rose-400" />
+                          <span>Clear Ops</span>
+                        </button>
+                      </div>
+                    <% end %>
+                  </div>
+
+                  <!-- Jump to Terminal -->
+                  <button
+                    phx-click="switch_tab"
+                    phx-value-tab="terminal"
+                    class="p-1.5 rounded-lg hover:bg-[#161b22] text-gray-400 hover:text-white transition-smooth"
+                    title="Switch to Terminal Tab"
+                  >
                     <.icon name="hero-command-line" class="w-4 h-4" />
                   </button>
-                  <button class="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#161b22] hover:bg-[#21262d] text-gray-300 transition-smooth">
-                    <span>⏸</span> <span>PAUSE</span>
+
+                  <!-- Pause / Resume Control Button -->
+                  <%= if @session.status in ["running", :running] do %>
+                    <button
+                      phx-click="pause_session"
+                      class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 transition-smooth font-semibold"
+                      title="Pause active execution without losing state"
+                    >
+                      <.icon name="hero-pause" class="w-3.5 h-3.5" />
+                      <span>PAUSE</span>
+                    </button>
+                  <% else %>
+                    <button
+                      phx-click="resume_session"
+                      class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 transition-smooth font-semibold"
+                      title="Resume paused execution"
+                    >
+                      <.icon name="hero-play" class="w-3.5 h-3.5" />
+                      <span>RESUME</span>
+                    </button>
+                  <% end %>
+
+                  <!-- Stop / Cancel Trigger -->
+                  <button
+                    phx-click="open_cancel_modal"
+                    class="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 transition-smooth"
+                    title="Stop session with rollback or commit"
+                  >
+                    <.icon name="hero-stop" class="w-3.5 h-3.5" />
+                    <span>STOP</span>
                   </button>
                 </div>
 
@@ -1108,25 +1116,36 @@
           </div>
         <% end %>
 
-        <!-- TAB 3: SCHEDULED TASKS & CALENDAR VIEW (Matching Reference Image media_1787240886279.jpg) -->
+        <!-- TAB 3: SCHEDULED TASKS & CALENDAR VIEW -->
         <%= if @active_tab == "calendar" do %>
           <div class="flex-1 flex flex-col h-full overflow-y-auto p-5 space-y-5">
-            <!-- Centered Luxury Dark Calendar Container (Matching Reference Image) -->
+            <!-- Centered Dark Calendar Container -->
             <div class="bg-[#11151c] border border-[#21262d] rounded-3xl p-6 shadow-2xl max-w-4xl w-full mx-auto">
               <!-- Calendar Header Row -->
               <div class="flex items-center justify-between mb-6">
                 <div class="flex items-center gap-3">
                   <h2 class="text-xl font-bold text-white tracking-tight font-sans">
-                    August, 2026
+                    {month_name(@calendar_month)}, {@calendar_year}
                   </h2>
-                  <button class="px-3 py-1 rounded-full bg-[#1c2128] border border-[#30363d] text-xs font-mono text-gray-300 hover:text-white transition-smooth">
+                  <button
+                    phx-click="select_calendar_day"
+                    phx-value-day="20"
+                    phx-value-date="2026-08-20"
+                    class="px-3 py-1 rounded-full bg-[#1c2128] border border-[#30363d] text-xs font-mono text-gray-300 hover:text-white transition-smooth"
+                  >
                     Today
                   </button>
                   <div class="flex items-center gap-1 text-gray-400">
-                    <button class="p-1 rounded-lg hover:bg-[#1c2128] text-gray-400 hover:text-white transition-smooth">
+                    <button
+                      phx-click="calendar_prev_month"
+                      class="p-1 rounded-lg hover:bg-[#1c2128] text-gray-400 hover:text-white transition-smooth"
+                    >
                       <.icon name="hero-chevron-left" class="w-4 h-4" />
                     </button>
-                    <button class="p-1 rounded-lg hover:bg-[#1c2128] text-gray-400 hover:text-white transition-smooth">
+                    <button
+                      phx-click="calendar_next_month"
+                      class="p-1 rounded-lg hover:bg-[#1c2128] text-gray-400 hover:text-white transition-smooth"
+                    >
                       <.icon name="hero-chevron-right" class="w-4 h-4" />
                     </button>
                   </div>
@@ -1164,50 +1183,49 @@
                 <% end %>
               </div>
 
-              <!-- 5-Week Monthly Calendar Grid (Matching Reference Image) -->
+              <!-- Monthly Calendar Grid -->
               <div class="grid grid-cols-7 gap-2">
-                <!-- Prev Month Dimmed (July 29, 30, 31) -->
-                <div class="min-h-[76px] rounded-2xl bg-[#11151c]/40 border border-[#21262d]/50 p-2 text-gray-600 font-mono text-xs">
-                  29
-                </div>
-                <div class="min-h-[76px] rounded-2xl bg-[#11151c]/40 border border-[#21262d]/50 p-2 text-gray-600 font-mono text-xs">
-                  30
-                </div>
-                <div class="min-h-[76px] rounded-2xl bg-[#11151c]/40 border border-[#21262d]/50 p-2 text-gray-600 font-mono text-xs">
-                  31
-                </div>
+                <%= for cell <- calendar_grid_cells(@calendar_year, @calendar_month, @selected_calendar_date) do %>
+                  <% day_tasks =
+                    if cell.is_current_month, do: tasks_for_day(@tasks, cell.day), else: []
 
-                <!-- Active August Days 1..31 -->
-                <%= for day <- 1..31 do %>
-                  <% day_tasks = tasks_for_day(@tasks, day)
-                  is_today = day == 20
-                  is_selected = day == @selected_calendar_day
-                  date_str = "2026-08-" <> String.pad_leading("#{day}", 2, "0") %>
+                  date_str =
+                    "#{@calendar_year}-#{String.pad_leading("#{@calendar_month}", 2, "0")}-#{String.pad_leading("#{cell.day}", 2, "0")}"
+
+                  cell_id =
+                    if cell.is_current_month,
+                      do: "calendar-day-#{cell.day}",
+                      else: "calendar-day-pad-#{cell.year}-#{cell.month}-#{cell.day}" %>
                   <div
-                    id={"calendar-day-#{day}"}
+                    id={cell_id}
                     phx-click="select_calendar_day"
-                    phx-value-day={day}
+                    phx-value-day={cell.day}
                     phx-value-date={date_str}
                     class={[
                       "min-h-[76px] rounded-2xl p-2 transition-smooth cursor-pointer flex flex-col justify-between group",
-                      is_today &&
+                      cell.is_today &&
                         "bg-[#1c2128] border-2 border-[#ff5e3a] shadow-lg shadow-orange-500/10",
-                      is_selected && !is_today && "bg-[#1c2128] border border-[#ff5e3a]/60",
-                      !is_today && !is_selected &&
-                        "bg-[#161b22] border border-[#21262d] hover:border-[#38404a] hover:bg-[#1a2029]"
+                      cell.is_selected && !cell.is_today &&
+                        "bg-[#1c2128] border border-[#ff5e3a]/60",
+                      !cell.is_today && !cell.is_selected && cell.is_current_month &&
+                        "bg-[#161b22] border border-[#21262d] hover:border-[#38404a] hover:bg-[#1a2029]",
+                      !cell.is_current_month &&
+                        "bg-[#11151c]/40 border border-[#21262d]/50 text-gray-600"
                     ]}
-                    title={"Click to schedule task on August #{day}, 2026"}
+                    title={"Click to schedule task on #{date_str}"}
                   >
                     <!-- Day Header Row -->
                     <div class="flex items-center justify-between pointer-events-none">
                       <span class={[
                         "font-mono text-xs",
-                        is_today && "font-bold text-[#ff5e3a]",
-                        !is_today && "text-gray-400 group-hover:text-white"
+                        cell.is_today && "font-bold text-[#ff5e3a]",
+                        cell.is_current_month && !cell.is_today &&
+                          "text-gray-400 group-hover:text-white",
+                        !cell.is_current_month && "text-gray-600"
                       ]}>
-                        {day}
+                        {cell.day}
                       </span>
-                      <%= if is_today do %>
+                      <%= if cell.is_today do %>
                         <span class="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(34,197,94,0.8)]"></span>
                       <% else %>
                         <%= if day_tasks != [] do %>
@@ -1221,7 +1239,7 @@
                       <%= for task <- day_tasks do %>
                         <button
                           type="button"
-                          id={"calendar-task-#{day}-#{task.id}"}
+                          id={"calendar-task-#{cell.day}-#{task.id}"}
                           phx-click="show_scheduled_task"
                           phx-value-id={task.id}
                           class="w-full text-left py-0.5 px-1.5 rounded-lg bg-[#21262d] hover:bg-[#2c333d] border border-white/10 text-[10px] font-mono text-gray-200 transition-smooth flex items-center justify-between shadow-xs truncate"
@@ -1235,24 +1253,19 @@
 
                     <!-- Day Subtitle / Status -->
                     <div class="text-[9px] font-mono text-gray-500 pointer-events-none">
-                      <%= if is_today do %>
+                      <%= if cell.is_today do %>
                         <span class="text-emerald-400 font-semibold">Live</span>
                       <% else %>
-                        <%= if day_tasks == [] do %>
+                        <%= if day_tasks == [] && cell.is_current_month do %>
                           <span class="opacity-0 group-hover:opacity-100 text-gray-400 transition-smooth">+ Add</span>
                         <% end %>
                       <% end %>
                     </div>
                   </div>
                 <% end %>
-
-                <!-- Next Month Dimmed (Sept 1) -->
-                <div class="min-h-[76px] rounded-2xl bg-[#11151c]/40 border border-[#21262d]/50 p-2 text-gray-600 font-mono text-xs">
-                  1
-                </div>
               </div>
 
-              <!-- Calendar Footer Bar (Matching Reference Image) -->
+              <!-- Calendar Footer Bar -->
               <div class="mt-6 pt-4 border-t border-[#21262d] flex items-center justify-between text-xs font-mono text-gray-400">
                 <div class="flex items-center gap-4">
                   <div class="flex items-center gap-1.5">
@@ -1274,11 +1287,11 @@
           </div>
         <% end %>
 
-        <!-- TAB 4: CHANGES & CANVAS SPLIT TREE (Image 4 & F7) -->
+        <!-- TAB 4: CHANGES & INTERACTIVE DIFF VIEWER -->
         <%= if @active_tab == "changes" do %>
           <div class="flex-1 flex h-full overflow-hidden">
-            <!-- Left Changes Tree (Image 4) -->
-            <div class="w-1/3 border-r border-[#21262d] bg-[#11151c] flex flex-col h-full overflow-hidden shrink-0">
+            <!-- Left Changes Tree -->
+            <div class="w-80 border-r border-[#21262d] bg-[#11151c] flex flex-col h-full overflow-hidden shrink-0 font-mono text-xs">
               <!-- Subtabs: Changes | All files | Desktop -->
               <div class="p-3 border-b border-[#21262d] flex items-center justify-between">
                 <div class="flex items-center bg-[#161b22] p-1 rounded-lg border border-[#21262d] text-xs font-mono">
@@ -1316,46 +1329,47 @@
                     Desktop
                   </button>
                 </div>
-
-                <div class="flex items-center gap-1.5 font-mono text-xs">
-                  <span class="text-emerald-400 font-bold">+17</span>
-                  <span class="text-red-400 font-bold">-8</span>
-                </div>
               </div>
 
-              <!-- Changes File Hierarchy (Image 4) -->
-              <div class="flex-1 overflow-y-auto p-4 space-y-1 font-mono text-xs">
+              <!-- Changes File Hierarchy (Dynamic Git Status) -->
+              <div class="flex-1 overflow-y-auto p-3 space-y-1">
                 <div class="text-gray-400 font-semibold mb-2 flex items-center justify-between">
                   <span>All Changes</span>
-                  <span class="text-[11px] text-gray-500">6 files</span>
+                  <span class="text-[11px] text-gray-500">{length(@parsed_diffs)} files</span>
                 </div>
 
-                <div class="space-y-1 pl-2">
-                  <div class="flex items-center justify-between py-1 px-2 rounded hover:bg-[#161b22] cursor-pointer">
-                    <span class="text-gray-300">⌄ lib/iex_code/engine/</span>
-                    <span class="text-gray-500">0</span>
-                  </div>
-                  <div class="flex items-center justify-between py-1 pl-6 pr-2 rounded hover:bg-[#161b22] cursor-pointer">
-                    <span class="text-emerald-300">ex swarm_coordinator.ex</span>
-                    <span class="text-emerald-400 font-bold">+12</span>
-                  </div>
-                  <div class="flex items-center justify-between py-1 pl-6 pr-2 rounded hover:bg-[#161b22] cursor-pointer">
-                    <span class="text-red-300">ex verifier_agent.ex</span>
-                    <span class="text-red-400 font-bold">-4</span>
-                  </div>
-                  <div class="flex items-center justify-between py-1 pl-6 pr-2 rounded hover:bg-[#161b22] cursor-pointer">
-                    <span class="text-emerald-300">ex auto_fix.ex</span>
-                    <span class="text-emerald-400 font-bold">+8</span>
-                  </div>
-
-                  <div class="flex items-center justify-between py-1 px-2 rounded hover:bg-[#161b22] cursor-pointer">
-                    <span class="text-gray-300">⌄ lib/iex_code/kanban/</span>
-                    <span class="text-gray-500">0</span>
-                  </div>
-                  <div class="flex items-center justify-between py-1 pl-6 pr-2 rounded hover:bg-[#161b22] cursor-pointer">
-                    <span class="text-emerald-300">ex task.ex</span>
-                    <span class="text-emerald-400 font-bold">+52</span>
-                  </div>
+                <div class="space-y-1">
+                  <%= for file_diff <- @parsed_diffs do %>
+                    <% path = file_diff.path || file_diff.new_path
+                    is_selected = @selected_diff_file == path %>
+                    <button
+                      type="button"
+                      phx-click="select_diff_file"
+                      phx-value-file={path}
+                      class={[
+                        "w-full flex items-center justify-between py-1.5 px-2 rounded-lg text-left transition-smooth group",
+                        is_selected &&
+                          "bg-[#21262d] text-white font-medium border border-[#30363d]",
+                        !is_selected && "hover:bg-[#161b22] text-gray-300"
+                      ]}
+                    >
+                      <div class="flex items-center gap-2 truncate">
+                        <.icon
+                          name="hero-document-text"
+                          class="w-3.5 h-3.5 text-cyan-400 shrink-0"
+                        />
+                        <span class="truncate">{path}</span>
+                      </div>
+                      <div class="flex items-center gap-1.5 shrink-0 text-[10px] font-bold">
+                        <%= if file_diff.additions > 0 do %>
+                          <span class="text-emerald-400">+{file_diff.additions}</span>
+                        <% end %>
+                        <%= if file_diff.deletions > 0 do %>
+                          <span class="text-rose-400">-{file_diff.deletions}</span>
+                        <% end %>
+                      </div>
+                    </button>
+                  <% end %>
                 </div>
 
                 <div class="mt-4 pt-3 border-t border-[#21262d]">
@@ -1376,18 +1390,19 @@
               </div>
             </div>
 
-            <!-- Right Interactive Diff Viewer (F7) -->
+            <!-- Right Interactive Diff Viewer -->
             <div class="flex-1 flex flex-col h-full overflow-hidden p-3 bg-[#0a0d12]">
-              <.diff_viewer
+              <.interactive_diff_viewer
                 diff_text={@diff_text}
                 diff_mode={@diff_mode}
                 file_path={@diff_file_path}
+                hunks={@diff_hunks}
               />
             </div>
           </div>
         <% end %>
 
-        <!-- TAB 5: CHAT WITH SCROLL ASSISTANT MINIMAP (Matching Reference Images media_1787243221945.png, media_1787243229747.png, media_1787243238460.png) -->
+        <!-- TAB 5: CHAT WITH SCROLL ASSISTANT MINIMAP -->
         <%= if @active_tab == "chat" do %>
           <div class="flex-1 flex h-full overflow-hidden relative">
             <!-- Left Rail: Chat Scroll Assistant Minimap & Hover Preview Cards -->
@@ -1415,14 +1430,14 @@
                       onclick={"const el = document.getElementById('chat-msg-#{msg_id}'); if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }"}
                       title={"Jump to message ##{idx + 1}"}
                     >
-                      <!-- Timeline Tick / Notch (Matching Reference Image) -->
+                      <!-- Timeline Tick / Notch -->
                       <div class={[
                         "scroll-notch",
                         is_user && "scroll-notch-landmark"
                       ]}>
                       </div>
 
-                      <!-- Hover Floating Preview Card (Matching Reference Image media_1787243229747.png) -->
+                      <!-- Hover Floating Preview Card -->
                       <div class="scroll-preview-card">
                         <div class="flex items-center justify-between mb-1.5 pb-1 border-b border-white/10">
                           <span class="text-[10px] font-mono font-bold text-gray-400 uppercase tracking-wider flex items-center gap-1.5">
@@ -1448,7 +1463,7 @@
               </div>
             </div>
 
-            <!-- Main Chat Messages Viewport (Matching Reference Image Layout) -->
+            <!-- Main Chat Messages Viewport -->
             <div
               id="chat-viewport"
               phx-hook=".ChatScrollAssistant"
@@ -1466,7 +1481,7 @@
                     !is_user && "mr-auto"
                   ]}
                 >
-                  <!-- Message Bubble (Matching Reference Images) -->
+                  <!-- Message Bubble -->
                   <div class={[
                     "p-5 rounded-2xl border text-xs shadow-md transition-smooth",
                     is_user && "bg-[#161b22] border-[#30363d] text-white",
@@ -1486,28 +1501,36 @@
                       <span class="text-gray-500 text-[10px]">#{idx + 1}</span>
                     </div>
 
-                    <!-- Message Body -->
-                    <div class="whitespace-pre-wrap font-sans text-sm leading-relaxed text-gray-200">
-                      {msg.content}
-                    </div>
-
-                    <!-- Bubble Footer Action Bar (Image 1 bottom left) -->
-                    <%= if !is_user do %>
-                      <div class="flex items-center gap-3 pt-3 mt-3 border-t border-white/5 text-gray-500">
-                        <button
-                          class="hover:text-gray-300 p-1 rounded transition-smooth"
-                          title="Copy to clipboard"
-                        >
-                          <.icon name="hero-clipboard" class="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          class="hover:text-gray-300 p-1 rounded transition-smooth"
-                          title="Expand message"
-                        >
-                          <.icon name="hero-arrows-pointing-out" class="w-3.5 h-3.5" />
-                        </button>
-                      </div>
+                    <!-- Message Body with Reasoning & Markdown -->
+                    <%= if !is_user and msg.metadata && msg.metadata["reasoning"] do %>
+                      <.thinking_trace
+                        reasoning={msg.metadata["reasoning"]}
+                        duration_ms={msg.metadata["duration_ms"]}
+                      />
                     <% end %>
+
+                    <.markdown_content content={msg.content} />
+
+                    <!-- Bubble Footer Action Bar -->
+                    <div class="flex items-center gap-3 pt-3 mt-3 border-t border-white/5 text-gray-500">
+                      <button
+                        id={"copy-msg-btn-#{msg_id}"}
+                        phx-hook="CodeCopy"
+                        data-code={msg.content}
+                        class="hover:text-gray-300 p-1 rounded transition-smooth"
+                        title="Copy to clipboard"
+                      >
+                        <.icon name="hero-clipboard" class="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        phx-click="expand_message"
+                        phx-value-id={msg_id}
+                        class="hover:text-gray-300 p-1 rounded transition-smooth"
+                        title="Expand message"
+                      >
+                        <.icon name="hero-arrows-pointing-out" class="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
                 </div>
               <% end %>
@@ -1555,17 +1578,20 @@
           </script>
         <% end %>
 
-        <!-- TAB 6: FILES TREE EXPLORER & PREVIEW (F8) -->
+        <!-- TAB 6: FILES TREE EXPLORER & INLINE CODE EDITOR -->
         <%= if @active_tab == "files" do %>
           <.file_explorer
             files={@project_files}
             filter={@file_filter}
             selected_file={@selected_file}
             file_content={@file_content}
+            dirty_content={@dirty_content}
+            is_dirty={@is_dirty?}
+            open_buffers={@open_buffers}
           />
         <% end %>
 
-        <!-- TAB 7: TERMINAL SESSION RUNNER (F9) -->
+        <!-- TAB 7: TERMINAL SESSION RUNNER -->
         <div class={[
           "flex-1 flex flex-col h-full bg-[#0a0d12] overflow-hidden",
           @active_tab != "terminal" && "hidden"
@@ -1573,10 +1599,11 @@
           <.terminal_session
             output={@terminal_output}
             form={@terminal_form}
+            running={@terminal_running?}
           />
         </div>
 
-        <!-- RIGHT TASK DETAIL DRAWER / INSPECTOR (Image 1) -->
+        <!-- RIGHT TASK DETAIL DRAWER / INSPECTOR -->
         <%= if @show_task_drawer and @selected_task do %>
           <div class="w-96 border-l border-[#21262d] bg-[#11151c] flex flex-col h-full overflow-y-auto shrink-0 transition-smooth animate-in slide-in-from-right">
             <!-- Drawer Header -->
@@ -1606,44 +1633,99 @@
             </div>
 
             <!-- Drawer Body -->
-            <div class="p-5 space-y-5 flex-1">
+            <div class="p-5 space-y-5 flex-1 font-mono text-xs">
               <!-- Task Title -->
               <div>
-                <h3 class="text-base font-bold text-white tracking-tight leading-snug">
+                <h3 class="text-base font-bold text-white tracking-tight leading-snug font-sans">
                   {@selected_task.title}
                 </h3>
               </div>
 
-              <!-- Metadata Grid (Image 1) -->
-              <div class="space-y-2.5 font-mono text-xs pt-3 border-t border-[#21262d]">
-                <div class="flex justify-between">
+              <!-- Metadata Grid -->
+              <div class="space-y-2.5 pt-3 border-t border-[#21262d]">
+                <div class="flex justify-between items-center">
                   <span class="text-gray-400">Assignee</span>
-                  <span class="text-white font-medium flex items-center gap-1">
-                    <span class="w-3.5 h-3.5 rounded-full bg-[#21262d] text-center font-bold text-[8px]">
-                      <%= if is_binary(@selected_task.assignee) and @selected_task.assignee != "" do %>
-                        {String.first(@selected_task.assignee) |> String.upcase()}
-                      <% else %>
-                        U
-                      <% end %>
-                    </span>
-                    {@selected_task.assignee}
-                  </span>
+                  <div class="flex items-center gap-1">
+                    <%= for a <- ["default", "planner", "coder", "verifier"] do %>
+                      <button
+                        type="button"
+                        phx-click="update_task_assignee"
+                        phx-value-id={@selected_task.id}
+                        phx-value-assignee={a}
+                        class={[
+                          "px-2 py-0.5 rounded text-[10px] font-mono transition-smooth capitalize",
+                          @selected_task.assignee == a && "bg-purple-600 text-white font-bold",
+                          @selected_task.assignee != a &&
+                            "bg-[#161b22] text-gray-400 hover:text-white"
+                        ]}
+                      >
+                        {a}
+                      </button>
+                    <% end %>
+                  </div>
                 </div>
-                <div class="flex justify-between">
+
+                <div class="flex justify-between items-center">
                   <span class="text-gray-400">Priority</span>
-                  <span class="text-white uppercase">{@selected_task.priority}</span>
+                  <div class="flex items-center gap-1">
+                    <%= for p <- ["critical", "high", "medium", "low"] do %>
+                      <button
+                        type="button"
+                        phx-click="update_task_priority"
+                        phx-value-id={@selected_task.id}
+                        phx-value-priority={p}
+                        class={[
+                          "px-2 py-0.5 rounded text-[10px] font-mono transition-smooth uppercase",
+                          @selected_task.priority == p && p == "critical" &&
+                            "bg-red-600 text-white font-bold",
+                          @selected_task.priority == p && p == "high" &&
+                            "bg-orange-600 text-white font-bold",
+                          @selected_task.priority == p && p == "medium" &&
+                            "bg-blue-600 text-white font-bold",
+                          @selected_task.priority == p && p == "low" &&
+                            "bg-gray-600 text-white font-bold",
+                          @selected_task.priority != p &&
+                            "bg-[#161b22] text-gray-400 hover:text-white"
+                        ]}
+                      >
+                        {p}
+                      </button>
+                    <% end %>
+                  </div>
                 </div>
-                <div class="flex justify-between">
+
+                <div class="flex justify-between items-center">
                   <span class="text-gray-400">Worker PID</span>
                   <span class="text-emerald-400">{@selected_task.worker_pid || "Unassigned"}</span>
                 </div>
-                <div class="flex justify-between">
-                  <span class="text-gray-400">Created</span>
-                  <span class="text-gray-300">Just now</span>
+              </div>
+
+              <!-- Status Transition Dropdown Across 8 Columns -->
+              <div class="pt-3 border-t border-[#21262d] space-y-1.5">
+                <div class="text-[11px] text-gray-400 uppercase tracking-wider">
+                  Move Status
+                </div>
+                <div class="grid grid-cols-4 gap-1">
+                  <%= for s <- Kanban.Task.statuses() do %>
+                    <button
+                      type="button"
+                      phx-click="move_task"
+                      phx-value-id={@selected_task.id}
+                      phx-value-status={s}
+                      class={[
+                        "px-2 py-1 rounded text-[10px] uppercase font-bold transition-smooth text-center",
+                        @selected_task.status == s && "bg-emerald-600 text-white shadow-sm",
+                        @selected_task.status != s &&
+                          "bg-[#161b22] hover:bg-[#21262d] text-gray-400 hover:text-white"
+                      ]}
+                    >
+                      {s}
+                    </button>
+                  <% end %>
                 </div>
               </div>
 
-              <!-- Effort Estimate Button (Image 1) -->
+              <!-- Effort Estimate Button -->
               <div class="pt-3 border-t border-[#21262d]">
                 <div class="text-[11px] font-mono text-gray-400 uppercase tracking-wider mb-2">
                   Estimate
@@ -1664,7 +1746,7 @@
                 <% end %>
               </div>
 
-              <!-- Latest Summary (Image 1) -->
+              <!-- Latest Summary -->
               <%= if @selected_task.latest_summary do %>
                 <div class="pt-3 border-t border-[#21262d]">
                   <div class="text-[11px] font-mono text-gray-400 uppercase tracking-wider mb-2">
@@ -1676,22 +1758,33 @@
                 </div>
               <% end %>
 
-              <!-- Quick Worker Actions -->
-              <div class="pt-3 border-t border-[#21262d] flex gap-2">
+              <!-- Quick Worker Actions & Delete -->
+              <div class="pt-3 border-t border-[#21262d] flex flex-col gap-2">
+                <div class="flex gap-2">
+                  <button
+                    phx-click="claim_task"
+                    phx-value-id={@selected_task.id}
+                    class="flex-1 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-mono font-medium transition-smooth"
+                  >
+                    Claim & Run Worker
+                  </button>
+                  <button
+                    phx-click="move_task"
+                    phx-value-id={@selected_task.id}
+                    phx-value-status="done"
+                    class="px-3 py-2 bg-[#21262d] hover:bg-gray-700 text-gray-300 rounded-xl text-xs font-mono transition-smooth"
+                  >
+                    Mark Done
+                  </button>
+                </div>
                 <button
-                  phx-click="claim_task"
+                  type="button"
+                  phx-click="delete_task"
                   phx-value-id={@selected_task.id}
-                  class="flex-1 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-mono font-medium transition-smooth"
+                  class="w-full py-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/20 rounded-xl text-xs font-mono transition-smooth flex items-center justify-center gap-1.5"
                 >
-                  Claim & Run Worker
-                </button>
-                <button
-                  phx-click="move_task"
-                  phx-value-id={@selected_task.id}
-                  phx-value-status="done"
-                  class="px-3 py-2 bg-[#21262d] hover:bg-gray-700 text-gray-300 rounded-xl text-xs font-mono transition-smooth"
-                >
-                  Mark Done
+                  <.icon name="hero-trash" class="w-3.5 h-3.5" />
+                  <span>Delete Task</span>
                 </button>
               </div>
             </div>
@@ -1699,16 +1792,16 @@
         <% end %>
       </div>
 
-      <!-- FLOATING RAINBOW GLOW PROMPT INPUT BOX (Image 2) -->
+      <!-- FLOATING RAINBOW GLOW PROMPT INPUT BOX -->
       <footer class="p-5 pt-0 bg-gradient-to-t from-[#0a0d12] via-[#0a0d12]/95 to-transparent shrink-0">
         <div class="max-w-4xl mx-auto">
-          <!-- Announcement Pill (Image 2) -->
+          <!-- Announcement Pill -->
           <div class="flex items-center gap-2 mb-2 px-2">
             <span class="text-cyan-400 text-xs">✦</span>
             <span class="text-xs font-mono text-gray-400">New: Opus 4.7 & Gemini 3.7 Flash High are active with Multi-Agent Swarm</span>
           </div>
 
-          <!-- Rainbow Border Glow Container (Image 2) -->
+          <!-- Rainbow Border Glow Container -->
           <div class="rainbow-box-wrapper shadow-2xl">
             <div class="bg-[#11151c] rounded-[1.2rem] p-3">
               <.form
@@ -1724,11 +1817,11 @@
                   class="w-full bg-transparent border-0 text-white placeholder-gray-500 font-sans text-sm focus:outline-none focus:ring-0 resize-none px-2 py-1"
                 ></textarea>
 
-                <!-- Bottom Action Toolbar (Image 2) -->
+                <!-- Bottom Action Toolbar -->
                 <div class="flex items-center justify-between pt-2 border-t border-[#21262d] px-1">
-                  <!-- Left Tool / Model Badges (Image 2) -->
+                  <!-- Left Tool / Model Badges -->
                   <div class="flex items-center gap-2">
-                    <!-- Model Pill Dropdown (Matching Reference Image) -->
+                    <!-- Model Pill Dropdown -->
                     <div class="relative">
                       <button
                         type="button"
@@ -1770,11 +1863,19 @@
                       <% end %>
                     </div>
 
-                    <!-- Tool Icons (Image 2) with Luxury Tooltips -->
+                    <!-- Interactive Tool Pills -->
                     <div class="tooltip-trigger">
                       <button
                         type="button"
-                        class="p-1.5 rounded-lg bg-[#161b22] border border-[#21262d] text-gray-400 hover:text-white transition-smooth"
+                        phx-click="toggle_tool"
+                        phx-value-tool="ast_search"
+                        class={[
+                          "p-1.5 rounded-lg border transition-smooth",
+                          MapSet.member?(@active_tools, "ast_search") &&
+                            "bg-cyan-500/20 text-cyan-300 border-cyan-500/40 shadow-xs",
+                          !MapSet.member?(@active_tools, "ast_search") &&
+                            "bg-[#161b22] border-[#21262d] text-gray-400 hover:text-white"
+                        ]}
                       >
                         <.icon name="hero-magnifying-glass" class="w-3.5 h-3.5" />
                       </button>
@@ -1784,7 +1885,12 @@
                         </div>
                         <div class="flex items-center justify-between text-[11px] font-mono text-gray-400 pt-1 border-t border-white/10">
                           <span class="text-gray-300">Semantic AST Query</span>
-                          <span class="text-cyan-400 font-semibold">Active</span>
+                          <span class="text-cyan-400 font-semibold">{if MapSet.member?(
+                                                                          @active_tools,
+                                                                          "ast_search"
+                                                                        ),
+                                                                        do: "Active",
+                                                                        else: "Disabled"}</span>
                         </div>
                       </div>
                     </div>
@@ -1792,9 +1898,17 @@
                     <div class="tooltip-trigger">
                       <button
                         type="button"
-                        class="p-1.5 rounded-lg bg-[#161b22] border border-[#21262d] text-gray-400 hover:text-white transition-smooth"
+                        phx-click="toggle_tool"
+                        phx-value-tool="swarm"
+                        class={[
+                          "p-1.5 rounded-lg border transition-smooth",
+                          MapSet.member?(@active_tools, "swarm") &&
+                            "bg-amber-500/20 text-amber-300 border-amber-500/40 shadow-xs",
+                          !MapSet.member?(@active_tools, "swarm") &&
+                            "bg-[#161b22] border-[#21262d] text-gray-400 hover:text-white"
+                        ]}
                       >
-                        <.icon name="hero-cpu-chip" class="w-3.5 h-3.5 text-amber-400" />
+                        <.icon name="hero-cpu-chip" class="w-3.5 h-3.5" />
                       </button>
                       <div class="luxury-tooltip">
                         <div class="text-xs font-semibold text-white tracking-tight mb-1">
@@ -1802,7 +1916,12 @@
                         </div>
                         <div class="flex items-center justify-between text-[11px] font-mono text-gray-400 pt-1 border-t border-white/10">
                           <span class="text-gray-300">Planner & Coder & Verifier</span>
-                          <span class="text-amber-400 font-semibold">Auto-Heal</span>
+                          <span class="text-amber-400 font-semibold">{if MapSet.member?(
+                                                                           @active_tools,
+                                                                           "swarm"
+                                                                         ),
+                                                                         do: "Active",
+                                                                         else: "Disabled"}</span>
                         </div>
                       </div>
                     </div>
@@ -1810,9 +1929,17 @@
                     <div class="tooltip-trigger">
                       <button
                         type="button"
-                        class="p-1.5 rounded-lg bg-[#161b22] border border-[#21262d] text-gray-400 hover:text-white transition-smooth"
+                        phx-click="toggle_tool"
+                        phx-value-tool="web_search"
+                        class={[
+                          "p-1.5 rounded-lg border transition-smooth",
+                          MapSet.member?(@active_tools, "web_search") &&
+                            "bg-emerald-500/20 text-emerald-300 border-emerald-500/40 shadow-xs",
+                          !MapSet.member?(@active_tools, "web_search") &&
+                            "bg-[#161b22] border-[#21262d] text-gray-400 hover:text-white"
+                        ]}
                       >
-                        <.icon name="hero-globe-alt" class="w-3.5 h-3.5 text-cyan-400" />
+                        <.icon name="hero-globe-alt" class="w-3.5 h-3.5" />
                       </button>
                       <div class="luxury-tooltip">
                         <div class="text-xs font-semibold text-white tracking-tight mb-1">
@@ -1820,13 +1947,18 @@
                         </div>
                         <div class="flex items-center justify-between text-[11px] font-mono text-gray-400 pt-1 border-t border-white/10">
                           <span class="text-gray-300">Tavily & Documentation</span>
-                          <span class="text-emerald-400 font-semibold">Ready</span>
+                          <span class="text-emerald-400 font-semibold">{if MapSet.member?(
+                                                                             @active_tools,
+                                                                             "web_search"
+                                                                           ),
+                                                                           do: "Active",
+                                                                           else: "Disabled"}</span>
                         </div>
                       </div>
                     </div>
                   </div>
 
-                  <!-- Right Send Button with Luxury Tooltip -->
+                  <!-- Right Send Button -->
                   <div class="tooltip-trigger">
                     <button
                       type="submit"
@@ -1853,7 +1985,191 @@
     </main>
   </div>
 
-  <!-- Settings Modal with Usage History (Matching Reference Image media_1787240939225.jpg) -->
+  <!-- Autonomous Goal Creation Modal -->
+  <%= if @show_goal_modal do %>
+    <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md p-4">
+      <div class="bg-[#11151c] border border-[#21262d] rounded-3xl w-full max-w-lg p-6 shadow-2xl font-sans text-xs space-y-4 animate-in fade-in zoom-in-95">
+        <div class="flex items-center justify-between pb-3 border-b border-[#21262d]">
+          <div class="flex items-center gap-2.5">
+            <div class="w-8 h-8 rounded-xl bg-gradient-to-tr from-amber-500 to-orange-500 flex items-center justify-center text-white font-bold text-xs shadow-md">
+              <.icon name="hero-flag" class="w-4 h-4 text-white" />
+            </div>
+            <div>
+              <h3 class="text-sm font-bold text-white tracking-tight">Create Autonomous Goal</h3>
+              <p class="text-[11px] font-mono text-gray-400">
+                Launch a multi-agent goal lifecycle
+              </p>
+            </div>
+          </div>
+          <button
+            phx-click="close_goal_modal"
+            class="text-gray-400 hover:text-white p-1 rounded-lg"
+          >
+            <.icon name="hero-x-mark" class="w-5 h-5" />
+          </button>
+        </div>
+
+        <.form for={@goal_form} phx-submit="create_goal" class="space-y-3 font-mono text-xs">
+          <div>
+            <label class="block text-gray-400 mb-1 font-semibold">Goal Objective / Title</label>
+            <input
+              type="text"
+              name="goal[title]"
+              placeholder="e.g. Implement payment webhook reconcile engine"
+              class="w-full bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-2 text-white font-sans text-xs focus:outline-none focus:border-amber-500"
+              required
+            />
+          </div>
+          <div>
+            <label class="block text-gray-400 mb-1 font-semibold">Detailed Instructions (Optional)</label>
+            <textarea
+              name="goal[description]"
+              rows="3"
+              placeholder="Add constraints, target files, or acceptance criteria..."
+              class="w-full bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-2 text-white font-sans text-xs focus:outline-none focus:border-amber-500 resize-none"
+            ></textarea>
+          </div>
+          <div class="flex items-center gap-2 pt-1">
+            <input
+              type="checkbox"
+              name="goal[auto_start]"
+              value="true"
+              checked
+              id="goal-auto-start"
+              class="rounded bg-[#0d1117] border-[#30363d] text-amber-500 focus:ring-0"
+            />
+            <label for="goal-auto-start" class="text-gray-300 text-xs">Auto-start Swarm Coordinator immediately</label>
+          </div>
+          <div class="flex justify-end gap-2 pt-3 border-t border-[#21262d]">
+            <button
+              type="button"
+              phx-click="close_goal_modal"
+              class="px-4 py-2 bg-[#21262d] text-gray-300 rounded-xl"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              class="px-5 py-2 bg-gradient-to-r from-amber-500 to-orange-500 text-white font-bold rounded-xl shadow-md"
+            >
+              Launch Goal
+            </button>
+          </div>
+        </.form>
+      </div>
+    </div>
+  <% end %>
+
+  <!-- Cancel Session Modal (Rollback vs Commit) -->
+  <%= if @show_cancel_modal do %>
+    <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md p-4">
+      <div class="bg-[#11151c] border border-[#21262d] rounded-3xl w-full max-w-md p-6 shadow-2xl font-sans text-xs space-y-4 animate-in fade-in zoom-in-95">
+        <div class="flex items-center justify-between pb-3 border-b border-[#21262d]">
+          <div class="flex items-center gap-2.5 text-rose-400 font-bold">
+            <.icon name="hero-stop-circle" class="w-5 h-5 text-rose-400" />
+            <h3 class="text-sm font-bold text-white">Stop & Cancel Session</h3>
+          </div>
+          <button
+            phx-click="close_cancel_modal"
+            class="text-gray-400 hover:text-white p-1 rounded-lg"
+          >
+            <.icon name="hero-x-mark" class="w-5 h-5" />
+          </button>
+        </div>
+
+        <p class="text-gray-300 text-xs leading-relaxed font-sans">
+          How would you like to handle any uncommitted MultiPatch changes in this session?
+        </p>
+
+        <div class="space-y-2 font-mono text-xs">
+          <button
+            type="button"
+            phx-click="cancel_session"
+            phx-value-mode="rollback"
+            class="w-full p-3 rounded-2xl bg-[#161b22] hover:bg-[#1f242c] border border-rose-500/30 text-left transition-smooth group"
+          >
+            <div class="font-bold text-rose-300 flex items-center gap-2 mb-1">
+              <.icon name="hero-arrow-uturn-left" class="w-4 h-4 text-rose-400" />
+              <span>Rollback Snapshots</span>
+            </div>
+            <p class="text-[11px] text-gray-400 font-sans">
+              Reverts all applied patches back to the clean pre-session snapshot state.
+            </p>
+          </button>
+
+          <button
+            type="button"
+            phx-click="cancel_session"
+            phx-value-mode="commit"
+            class="w-full p-3 rounded-2xl bg-[#161b22] hover:bg-[#1f242c] border border-emerald-500/30 text-left transition-smooth group"
+          >
+            <div class="font-bold text-emerald-300 flex items-center gap-2 mb-1">
+              <.icon name="hero-check-badge" class="w-4 h-4 text-emerald-400" />
+              <span>Commit Changes</span>
+            </div>
+            <p class="text-[11px] text-gray-400 font-sans">
+              Stages and commits all generated files to git with a cancellation record.
+            </p>
+          </button>
+        </div>
+
+        <div class="flex justify-end pt-2 border-t border-[#21262d]">
+          <button
+            type="button"
+            phx-click="close_cancel_modal"
+            class="px-4 py-2 bg-[#21262d] text-gray-300 rounded-xl"
+          >
+            Keep Session Running
+          </button>
+        </div>
+      </div>
+    </div>
+  <% end %>
+
+  <!-- Expanded Message Modal -->
+  <%= if @expanded_message_id do %>
+    <% expanded_msg = Enum.find(@messages, &((&1.id || "") == @expanded_message_id)) %>
+    <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-6">
+      <div class="bg-[#11151c] border border-[#21262d] rounded-3xl w-full max-w-3xl max-h-[85vh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in-95">
+        <div class="p-4 border-b border-[#21262d] bg-[#161b22] flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <.icon name="hero-chat-bubble-bottom-center-text" class="w-4 h-4 text-blue-400" />
+            <span class="font-bold text-white text-xs font-mono uppercase">
+              {if expanded_msg,
+                do: expanded_msg.agent_name || expanded_msg.role,
+                else: "Message Inspector"}
+            </span>
+          </div>
+          <div class="flex items-center gap-2">
+            <%= if expanded_msg do %>
+              <button
+                id="copy-expanded-msg-btn"
+                phx-hook="CodeCopy"
+                data-code={expanded_msg.content}
+                class="px-2.5 py-1 bg-[#21262d] hover:bg-[#30363d] text-gray-200 rounded-lg text-xs font-mono transition-smooth flex items-center gap-1.5"
+              >
+                <.icon name="hero-clipboard-document" class="w-3.5 h-3.5" />
+                <span>Copy</span>
+              </button>
+            <% end %>
+            <button
+              phx-click="close_expand_message"
+              class="text-gray-400 hover:text-white p-1 rounded-lg"
+            >
+              <.icon name="hero-x-mark" class="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+        <div class="p-6 overflow-y-auto font-mono text-xs leading-relaxed text-gray-200 bg-[#0a0d12]">
+          <%= if expanded_msg do %>
+            <.markdown_content content={expanded_msg.content} />
+          <% end %>
+        </div>
+      </div>
+    </div>
+  <% end %>
+
+  <!-- Settings Modal with Usage History -->
   <%= if @show_settings_modal do %>
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md p-4">
       <div class="bg-[#11151c] border border-[#21262d] rounded-3xl w-full max-w-2xl p-6 shadow-2xl font-sans text-xs space-y-5 animate-in fade-in zoom-in-95 max-h-[90vh] overflow-y-auto">
@@ -1878,7 +2194,7 @@
           </button>
         </div>
 
-        <!-- Top Section: Credits Used & Tally Bar (Matching Reference Image) -->
+        <!-- Top Section: Credits Used & Tally Bar -->
         <div class="bg-[#161b22]/70 border border-[#21262d] rounded-2xl p-5 relative">
           <div class="flex items-start justify-between mb-2">
             <div>
@@ -1894,7 +2210,7 @@
             </div>
           </div>
 
-          <!-- Tally Tick Vertical Hash Bar (Matching Reference Image) -->
+          <!-- Tally Tick Vertical Hash Bar -->
           <div class="tally-tick-bar my-3">
             <%= for tick <- 1..65 do %>
               <div class={[
@@ -1912,12 +2228,16 @@
           </div>
         </div>
 
-        <!-- Usage History Table Section (Matching Reference Image) -->
+        <!-- Usage History Table Section -->
         <div class="bg-[#161b22]/70 border border-[#21262d] rounded-2xl p-5">
           <div class="flex items-center justify-between mb-4">
             <div class="flex items-center gap-3">
               <h4 class="text-sm font-bold text-white tracking-tight">Usage History</h4>
-              <button class="px-3 py-1 rounded-full border border-white/20 hover:bg-white/10 text-white text-[11px] font-mono transition-smooth">
+              <button
+                type="button"
+                phx-click="toggle_all_usage_modal"
+                class="px-3 py-1 rounded-full border border-white/20 hover:bg-white/10 text-white text-[11px] font-mono transition-smooth"
+              >
                 View all
               </button>
             </div>
@@ -1933,7 +2253,7 @@
             <div class="col-span-3 text-right">Credits</div>
           </div>
 
-          <!-- Table Rows (Matching Reference Image) -->
+          <!-- Table Rows -->
           <div class="divide-y divide-[#21262d]/60 font-mono text-xs">
             <div class="grid grid-cols-12 gap-2 py-2.5 items-center text-gray-300">
               <div class="col-span-4 text-gray-400">Aug 20, 07:26 PM</div>
@@ -2090,7 +2410,7 @@
                   @selected_scheduled_task.priority in ["medium", "low"] &&
                     "bg-blue-500/15 border border-blue-500/30 text-blue-300"
                 ]}>
-                  {String.capitalize(@selected_scheduled_task.priority)} Priority
+                  {String.capitalize(@selected_scheduled_task.priority || "medium")} Priority
                 </span>
               </div>
               <h3 class="text-base font-bold text-white tracking-tight">
@@ -2177,10 +2497,12 @@
           <div class="flex items-center gap-2">
             <button
               type="button"
-              phx-click="close_scheduled_task_modal"
-              class="px-4 py-2 bg-[#1c2128] hover:bg-[#21262d] text-gray-300 rounded-xl text-xs font-mono border border-[#30363d] transition-smooth"
+              phx-click="open_edit_scheduled_task"
+              phx-value-id={@selected_scheduled_task.id}
+              class="px-3.5 py-2 bg-[#1c2128] hover:bg-[#21262d] text-cyan-300 rounded-xl text-xs font-mono border border-cyan-500/30 transition-smooth flex items-center gap-1.5"
             >
-              Close
+              <.icon name="hero-pencil-square" class="w-3.5 h-3.5" />
+              <span>Edit Task</span>
             </button>
             <button
               type="button"
@@ -2197,14 +2519,104 @@
     </div>
   <% end %>
 
-  <%!-- Create Agent Task Modal (Matching Reference Image media_1787246700849.png) --%>
+  <!-- Edit Scheduled Task Modal -->
+  <%= if @show_edit_scheduled_task_modal && @selected_scheduled_task do %>
+    <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md animate-in fade-in duration-150">
+      <div class="bg-[#11151c] border border-[#21262d] rounded-3xl w-full max-w-lg p-6 shadow-2xl font-mono text-xs space-y-4 animate-in zoom-in-95 duration-150">
+        <div class="flex items-center justify-between pb-3 border-b border-[#21262d]">
+          <h3 class="text-sm font-bold text-white flex items-center gap-2">
+            <.icon name="hero-pencil-square" class="w-4 h-4 text-cyan-400" /> Edit Scheduled Task
+          </h3>
+          <button
+            phx-click="close_edit_scheduled_task"
+            class="text-gray-400 hover:text-white p-1 rounded-lg"
+          >✕</button>
+        </div>
+
+        <.form
+          for={to_form(%{})}
+          phx-submit="update_scheduled_task"
+          class="space-y-3 font-mono text-xs"
+        >
+          <input type="hidden" name="task[id]" value={@selected_scheduled_task.id} />
+          <div>
+            <label class="block text-gray-400 mb-1">Title</label>
+            <input
+              type="text"
+              name="task[title]"
+              value={@selected_scheduled_task.title}
+              class="w-full bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-2 text-white font-sans text-xs focus:outline-none focus:border-cyan-500"
+              required
+            />
+          </div>
+          <div>
+            <label class="block text-gray-400 mb-1">Description / Instructions</label>
+            <textarea
+              name="task[description]"
+              rows="2"
+              class="w-full bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-2 text-white font-sans text-xs focus:outline-none focus:border-cyan-500 resize-none"
+            ><%= @selected_scheduled_task.description %></textarea>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-gray-400 mb-1">Priority</label>
+              <select
+                name="task[priority]"
+                class="w-full bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-2 text-white text-xs"
+              >
+                <%= for p <- ["low", "medium", "high", "critical"] do %>
+                  <option value={p} selected={@selected_scheduled_task.priority == p}>
+                    {String.capitalize(p)}
+                  </option>
+                <% end %>
+              </select>
+            </div>
+            <div>
+              <label class="block text-gray-400 mb-1">Assignee</label>
+              <select
+                name="task[assignee]"
+                class="w-full bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-2 text-white text-xs"
+              >
+                <%= for a <- ["default", "planner", "coder", "verifier"] do %>
+                  <option value={a} selected={@selected_scheduled_task.assignee == a}>{a}</option>
+                <% end %>
+              </select>
+            </div>
+          </div>
+          <div>
+            <label class="block text-gray-400 mb-1">Cron Expression (Optional)</label>
+            <input
+              type="text"
+              name="task[cron_expression]"
+              value={@selected_scheduled_task.cron_expression || ""}
+              placeholder="e.g. 0 0 * * *"
+              class="w-full bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-2 text-amber-300 font-mono text-xs"
+            />
+          </div>
+          <div class="flex justify-end gap-2 pt-3 border-t border-[#21262d]">
+            <button
+              type="button"
+              phx-click="close_edit_scheduled_task"
+              class="px-4 py-2 bg-[#21262d] text-gray-300 rounded-xl"
+            >Cancel</button>
+            <button
+              type="submit"
+              class="px-5 py-2 bg-cyan-600 hover:bg-cyan-500 text-white rounded-xl font-bold"
+            >Save Changes</button>
+          </div>
+        </.form>
+      </div>
+    </div>
+  <% end %>
+
+  <%!-- Create Agent Task Modal --%>
   <%= if @show_new_task_modal do %>
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md animate-in fade-in duration-150">
       <div
         id="new-task-modal"
         class="bg-[#11151c] border border-[#21262d] rounded-3xl w-full max-w-lg p-6 shadow-2xl font-mono text-xs animate-in zoom-in-95 duration-150 space-y-4"
       >
-        <%!-- Modal Header (Matching Reference Image media_1787246700849.png) --%>
+        <%!-- Modal Header --%>
         <div class="flex items-center justify-between pb-3 border-b border-[#21262d]">
           <h3 class="text-sm font-bold text-white flex items-center gap-2">
             <.icon name="hero-plus-circle" class="w-4 h-4 text-orange-400" /> Create Agent Task
@@ -2239,7 +2651,7 @@
             ></textarea>
           </div>
 
-          <%!-- Status & Priority Row (Custom Glassmorphic Dropdowns matching theme) --%>
+          <%!-- Status & Priority Row --%>
           <div class="grid grid-cols-2 gap-3">
             <%!-- Status Custom Dropdown --%>
             <div class="relative">
@@ -2258,7 +2670,7 @@
                       "bg-amber-400 shadow-[0_0_6px_rgba(245,158,11,0.8)]",
                     @new_task_status == "ready" &&
                       "bg-emerald-400 shadow-[0_0_6px_rgba(34,197,94,0.8)]",
-                    @new_task_status == "triage" && "bg-purple-400",
+                    @new_task_status == "triage" && "bg-gray-400",
                     @new_task_status == "todo" && "bg-blue-400",
                     @new_task_status == "running" &&
                       "bg-cyan-400 shadow-[0_0_6px_rgba(6,182,212,0.8)]"
@@ -2374,7 +2786,7 @@
             </div>
           </div>
 
-          <%!-- Assignee & Tag Row (Custom Glassmorphic Dropdown) --%>
+          <%!-- Assignee & Tag Row --%>
           <div class="grid grid-cols-2 gap-3">
             <%!-- Assignee Custom Dropdown --%>
             <div class="relative">
@@ -2462,7 +2874,7 @@
             </div>
           </div>
 
-          <%!-- Custom Date & Time Schedule Picker Section (Matching media_1787247860901.png) --%>
+          <%!-- Custom Date & Time Schedule Picker Section --%>
           <div class="p-3.5 bg-[#161b22]/70 border border-[#21262d] rounded-2xl space-y-3">
             <div class="flex items-center justify-between text-[11px] font-mono font-semibold text-gray-300">
               <span class="flex items-center gap-1.5">
@@ -2481,7 +2893,7 @@
             </div>
 
             <div class="grid grid-cols-2 gap-3">
-              <%!-- Custom Popover Date Picker (Matching media_1787247860901.png) --%>
+              <%!-- Custom Popover Date Picker --%>
               <div class="relative">
                 <label class="block text-gray-400 mb-1 text-[10px]">Target Date</label>
                 <div
@@ -2499,13 +2911,13 @@
                 </div>
                 <input type="text" name="scheduled_at_date" value={@new_task_date} class="hidden" />
 
-                <%!-- Popover Calendar Card (Matching media_1787247860901.png) --%>
+                <%!-- Popover Calendar Card --%>
                 <%= if @show_date_picker_popover do %>
                   <div
                     id="custom-date-picker-popover"
                     class="absolute bottom-full left-0 mb-2 z-50 w-64 bg-[#22272e] border border-[#30363d] rounded-2xl p-3 shadow-2xl shadow-black/80 font-mono text-xs select-none animate-in fade-in zoom-in-95 duration-100"
                   >
-                    <%!-- Header Row: August 2026 + Navigation Arrows --%>
+                    <%!-- Header Row --%>
                     <div class="flex items-center justify-between mb-2.5 px-1">
                       <div class="flex items-center gap-1 text-white font-bold text-xs font-sans">
                         <span>{month_name(@picker_month)} {@picker_year}</span>
@@ -2531,7 +2943,7 @@
                       </div>
                     </div>
 
-                    <%!-- Weekday Row (S M T W T F S) --%>
+                    <%!-- Weekday Row --%>
                     <div class="grid grid-cols-7 gap-0.5 mb-1 text-center">
                       <%= for d <- ["S", "M", "T", "W", "T", "F", "S"] do %>
                         <div class="text-[10px] font-sans font-semibold text-gray-400 py-0.5">
@@ -2540,7 +2952,7 @@
                       <% end %>
                     </div>
 
-                    <%!-- 6-Week Monthly Grid (42 cells matching screenshot) --%>
+                    <%!-- 6-Week Monthly Grid --%>
                     <div class="grid grid-cols-7 gap-0.5 text-center">
                       <%= for cell <- calendar_grid_cells(@picker_year, @picker_month, @new_task_date) do %>
                         <button
@@ -2565,7 +2977,7 @@
                       <% end %>
                     </div>
 
-                    <%!-- Popover Footer: Clear and Today --%>
+                    <%!-- Popover Footer --%>
                     <div class="flex items-center justify-between pt-2 mt-2 border-t border-[#30363d] px-1 text-xs">
                       <button
                         type="button"
@@ -2619,7 +3031,7 @@
             </div>
           </div>
 
-          <%!-- Bottom Action Buttons (Matching Reference Image) --%>
+          <%!-- Bottom Action Buttons --%>
           <div class="flex justify-end gap-2 pt-3 border-t border-[#21262d]">
             <button
               type="button"
@@ -2636,14 +3048,14 @@
     </div>
   <% end %>
 
-  <%!-- Set Focus Time / Time & Date Picker Modal (Matching media_1787247904808.png & media_1787242440125.jpg) --%>
+  <%!-- Set Focus Time / Time & Date Picker Modal --%>
   <%= if @show_time_picker do %>
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md animate-in fade-in duration-150">
       <div
         class="bg-[#11151c] border border-[#21262d] rounded-3xl w-full max-w-md p-6 shadow-2xl space-y-5 animate-in zoom-in-95 duration-150"
         id="time-picker-modal"
       >
-        <%!-- Modal Header (Matching Reference Image) --%>
+        <%!-- Modal Header --%>
         <div class="flex items-start justify-between">
           <div class="flex items-center gap-3">
             <div class="w-10 h-10 rounded-2xl bg-[#1c2128] border border-[#30363d] flex items-center justify-center text-gray-300 shadow-inner shrink-0">
@@ -2668,7 +3080,7 @@
           </button>
         </div>
 
-        <%!-- Select Status Section (Fixed Layout - Zero Truncation matching media_1787247904808.png) --%>
+        <%!-- Select Status Section --%>
         <div>
           <div class="flex items-center gap-1.5 text-xs font-semibold text-gray-300 font-sans mb-2.5">
             <span>Select status</span>
@@ -2708,7 +3120,7 @@
           </div>
         </div>
 
-        <!-- Select Time Section (Matching Reference Image) -->
+        <!-- Select Time Section -->
         <div>
           <div class="flex items-center gap-1.5 text-xs font-semibold text-gray-300 font-sans mb-2.5">
             <span>Select time</span>
@@ -2758,7 +3170,7 @@
           </div>
         </div>
 
-        <!-- Custom Time Input (Optional Toggle) -->
+        <!-- Custom Time Input -->
         <%= if @show_custom_time_input do %>
           <div class="pt-2 border-t border-[#21262d] animate-in fade-in">
             <label class="block text-[11px] font-mono text-gray-400 mb-1">Enter Custom Time / Interval</label>
@@ -2771,7 +3183,7 @@
           </div>
         <% end %>
 
-        <!-- Footer Action Bar (Matching Reference Image) -->
+        <!-- Footer Action Bar -->
         <div class="flex items-center justify-between pt-3 border-t border-[#21262d]">
           <button
             type="button"

@@ -1,17 +1,20 @@
 defmodule IexCodeWeb.WorkspaceComponents do
   @moduledoc """
   Reusable Phoenix Function Components for the Next-Level IexCode Desktop UI.
-  Implements Milestone 3 UI/UX & Live Telemetry Features:
+  Implements Milestone 3 & 4 UI/UX, Inline Editor, Diff Hunk Management & Live Telemetry:
   - F5: Live Telemetry & 4-Column Subagent Cards (<.subagent_cards>)
   - F6: Hierarchical Operation Tree (<.operation_tree>, <.tree_node>)
-  - F7: Interactive Code Diff Viewer (<.diff_viewer>)
-  - F8: File Tree Explorer & Search (<.file_explorer>)
-  - F9: Terminal Session Integration (<.terminal_session>)
+  - F7: Interactive Diff Hunk Viewer (<.interactive_diff_viewer>, <.diff_viewer>)
+  - F8: Interactive Inline Code Editor & File Explorer (<.file_explorer>)
+  - F9: Terminal Session Integration & Runner (<.terminal_session>)
+  - F10: Collapsible Reasoning / Thinking Trace (<.thinking_trace>)
+  - F11: Markdown & Code Block Formatter (<.markdown_content>)
   """
   use Phoenix.Component
   import IexCodeWeb.CoreComponents
   import Phoenix.HTML
   alias IexCode.Engine.OperationManager
+  alias IexCode.Tools.Git.DiffParser
 
   # ============================================================================
   # F5: Live Telemetry & 4-Column Subagent Cards
@@ -93,6 +96,16 @@ defmodule IexCodeWeb.WorkspaceComponents do
             true -> to_string(op.status)
           end
 
+        normalized_status =
+          case String.downcase(status) do
+            "completed" -> "completed"
+            "done" -> "completed"
+            "failed" -> "failed"
+            "error" -> "failed"
+            "running" -> "running"
+            _ -> "idle"
+          end
+
         progress = if op && is_number(op.progress), do: op.progress, else: 0
         pid_str = if op && op.pid_str, do: op.pid_str, else: nil
         duration = if op && op.duration_ms, do: "#{op.duration_ms}ms", else: "--"
@@ -101,12 +114,13 @@ defmodule IexCodeWeb.WorkspaceComponents do
           id={"subagent-card-#{agent.key}"}
           class={[
             "bg-[#11151c] border rounded-2xl p-4 flex flex-col justify-between transition-smooth relative overflow-hidden",
-            status == "running" && "#{agent.border_color} shadow-lg shadow-#{agent.color}-500/10",
-            status != "running" && "border-[#21262d] hover:border-[#30363d]"
+            normalized_status == "running" &&
+              "#{agent.border_color} shadow-lg shadow-#{agent.color}-500/10",
+            normalized_status != "running" && "border-[#21262d] hover:border-[#30363d]"
           ]}
         >
           <!-- Active neon top line -->
-          <%= if status == "running" do %>
+          <%= if normalized_status == "running" do %>
             <div class={[
               "absolute top-0 left-0 right-0 h-0.5",
               agent.bg_color,
@@ -140,14 +154,15 @@ defmodule IexCodeWeb.WorkspaceComponents do
                   </span>
                 <% end %>
                 <span class={[
-                  "text-[10px] font-mono px-1.5 py-0.5 rounded border",
-                  status == "running" &&
+                  "text-[10px] font-mono px-1.5 py-0.5 rounded border font-semibold",
+                  normalized_status == "running" &&
                     "text-amber-400 bg-amber-500/10 border-amber-500/30 animate-pulse",
-                  status == "completed" && "text-emerald-400 bg-emerald-500/10 border-emerald-500/30",
-                  status == "failed" && "text-rose-400 bg-rose-500/10 border-rose-500/30",
-                  status == "idle" && "text-gray-400 bg-[#161b22] border-[#21262d]"
+                  normalized_status == "completed" &&
+                    "text-emerald-400 bg-emerald-500/10 border-emerald-500/30",
+                  normalized_status == "failed" && "text-rose-400 bg-rose-500/10 border-rose-500/30",
+                  normalized_status == "idle" && "text-gray-400 bg-[#161b22] border-[#21262d]"
                 ]}>
-                  {String.upcase(status)}
+                  {String.upcase(normalized_status)}
                 </span>
               </div>
             </div>
@@ -165,7 +180,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
               <strong class="text-gray-300">{duration}</strong></span>
               <span class={[
                 "font-semibold",
-                if(status == "completed", do: "text-emerald-400", else: "text-gray-300")
+                if(normalized_status == "completed", do: "text-emerald-400", else: "text-gray-300")
               ]}>
                 {progress}%
               </span>
@@ -175,9 +190,9 @@ defmodule IexCodeWeb.WorkspaceComponents do
                 class={[
                   "h-full rounded-full transition-all duration-300 ease-out",
                   agent.bg_color,
-                  status == "running" && agent.shadow
+                  normalized_status == "running" && agent.shadow
                 ]}
-                style={"width: #{max(progress, if(status == "running", do: 10, else: 0))}%"}
+                style={"width: #{max(progress, if(normalized_status == "running", do: 10, else: 0))}%"}
               >
               </div>
             </div>
@@ -385,18 +400,55 @@ defmodule IexCodeWeb.WorkspaceComponents do
   end
 
   # ============================================================================
-  # F7: Interactive Code Diff Viewer
+  # F7: Interactive Code Diff Hunk Viewer (<.interactive_diff_viewer>, <.diff_viewer>)
   # ============================================================================
 
   @doc """
-  Renders side-by-side and inline syntax-highlighted code diff viewer for proposed and applied multi-file patches.
-  Consumes unified diff strings from MultiPatch and Git diffs.
+  Renders interactive side-by-side and inline code diff viewer with per-hunk action buttons:
+  - "Accept Hunk" (`accept_hunk`), "Reject Hunk" (`reject_hunk`), "Revert Hunk" (`revert_hunk`)
+  - "Revert File" (`revert_file`), "Accept All Hunks" (`accept_all_hunks`)
   """
   attr :diff_text, :string, default: ""
   attr :diff_mode, :string, default: "inline"
   attr :file_path, :string, default: nil
+  attr :hunks, :list, default: nil
+  attr :status, :any, default: :modified
+  attr :additions, :integer, default: 0
+  attr :deletions, :integer, default: 0
 
-  def diff_viewer(assigns) do
+  def diff_viewer(assigns), do: interactive_diff_viewer(assigns)
+
+  def interactive_diff_viewer(assigns) do
+    diff_text = assigns[:diff_text] || ""
+    hunks = assigns[:hunks]
+    status = assigns[:status] || :modified
+    file_path = assigns[:file_path]
+    diff_mode = assigns[:diff_mode] || "inline"
+
+    # Decompose diff_text into structured hunks if not explicitly passed
+    resolved_hunks =
+      cond do
+        is_list(hunks) && hunks != [] ->
+          hunks
+
+        is_binary(diff_text) && String.trim(diff_text) != "" ->
+          case DiffParser.parse(diff_text) do
+            {:ok, [file_diff | _]} -> file_diff.hunks
+            _ -> []
+          end
+
+        true ->
+          []
+      end
+
+    assigns =
+      assigns
+      |> assign(:diff_text, diff_text)
+      |> assign(:status, status)
+      |> assign(:file_path, file_path)
+      |> assign(:diff_mode, diff_mode)
+      |> assign(:resolved_hunks, resolved_hunks)
+
     ~H"""
     <div
       id="diff-viewer-container"
@@ -404,14 +456,46 @@ defmodule IexCodeWeb.WorkspaceComponents do
     >
       <!-- Toolbar Header -->
       <div class="p-3 border-b border-[#21262d] bg-[#161b22] flex items-center justify-between shrink-0 font-mono text-xs">
-        <div class="flex items-center gap-2">
-          <.icon name="hero-code-bracket-square" class="w-4 h-4 text-cyan-400" />
-          <span class="font-semibold text-white truncate max-w-md">
+        <div class="flex items-center gap-2 min-w-0">
+          <.icon name="hero-code-bracket-square" class="w-4 h-4 text-cyan-400 shrink-0" />
+          <span class="font-semibold text-white truncate max-w-xs md:max-w-md">
             {@file_path || "Multi-File Patch Preview"}
+          </span>
+          <span class={[
+            "px-2 py-0.5 rounded text-[10px] font-bold uppercase shrink-0",
+            to_string(@status) in ["added", "untracked"] &&
+              "bg-emerald-500/10 text-emerald-400 border border-emerald-500/30",
+            to_string(@status) == "deleted" &&
+              "bg-rose-500/10 text-rose-400 border border-rose-500/30",
+            true && "bg-amber-500/10 text-amber-400 border border-amber-500/30"
+          ]}>
+            {to_string(@status || "MODIFIED")}
           </span>
         </div>
 
-        <div class="flex items-center gap-3">
+        <div class="flex items-center gap-2 shrink-0">
+          <!-- File Actions: Revert File & Accept All -->
+          <%= if @file_path do %>
+            <button
+              phx-click="revert_file"
+              phx-value-file={@file_path}
+              class="px-2.5 py-1 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 rounded-lg text-xs font-mono transition-smooth flex items-center gap-1"
+              title="Revert entire file to clean git state"
+            >
+              <.icon name="hero-arrow-uturn-left" class="w-3.5 h-3.5" />
+              <span class="hidden sm:inline">Revert File</span>
+            </button>
+            <button
+              phx-click="accept_all_hunks"
+              phx-value-file={@file_path}
+              class="px-2.5 py-1 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 rounded-lg text-xs font-mono transition-smooth flex items-center gap-1"
+              title="Stage all changes for this file"
+            >
+              <.icon name="hero-check" class="w-3.5 h-3.5" />
+              <span class="hidden sm:inline">Accept All</span>
+            </button>
+          <% end %>
+
           <!-- View Mode Toggle -->
           <div class="flex items-center bg-[#0d1117] p-1 rounded-lg border border-[#21262d]">
             <button
@@ -438,7 +522,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
             </button>
           </div>
 
-          <!-- Copy Button -->
+          <!-- Copy Diff Button -->
           <button
             id="copy-diff-btn"
             phx-hook="CodeCopy"
@@ -446,22 +530,176 @@ defmodule IexCodeWeb.WorkspaceComponents do
             class="px-2.5 py-1 bg-[#21262d] hover:bg-[#30363d] text-gray-200 rounded-lg text-xs font-mono transition-smooth flex items-center gap-1.5"
           >
             <.icon name="hero-clipboard-document" class="w-3.5 h-3.5" />
-            <span>Copy Diff</span>
+            <span class="hidden md:inline">Copy Diff</span>
           </button>
         </div>
       </div>
 
-      <!-- Diff Body -->
-      <div class="flex-1 overflow-auto font-mono text-xs leading-relaxed p-2 bg-[#0a0d12]">
+      <!-- Diff Body with Granular Hunks -->
+      <div class="flex-1 overflow-auto font-mono text-xs leading-relaxed p-3 bg-[#0a0d12] space-y-4">
         <%= if is_nil(@diff_text) or String.trim(@diff_text) == "" do %>
           <div class="p-8 text-center text-gray-500">
             No patch or diff selected.
           </div>
         <% else %>
-          <%= if @diff_mode == "inline" do %>
-            <.inline_diff diff={@diff_text} />
+          <%= if @resolved_hunks != [] do %>
+            <%= for hunk <- @resolved_hunks do %>
+              <.hunk_card
+                hunk={hunk}
+                file_path={@file_path}
+                diff_mode={@diff_mode}
+              />
+            <% end %>
           <% else %>
-            <.split_diff diff={@diff_text} />
+            <!-- Fallback to plain line renderer if no hunks parsed -->
+            <%= if @diff_mode == "inline" do %>
+              <.inline_diff diff={@diff_text} />
+            <% else %>
+              <.split_diff diff={@diff_text} />
+            <% end %>
+          <% end %>
+        <% end %>
+      </div>
+    </div>
+    """
+  end
+
+  @doc """
+  Renders an individual hunk card with hunk header and Accept / Reject / Revert action buttons.
+  """
+  attr :hunk, :any, required: true
+  attr :file_path, :string, default: nil
+  attr :diff_mode, :string, default: "inline"
+
+  def hunk_card(assigns) do
+    ~H"""
+    <div
+      id={"hunk-card-#{@hunk.id}"}
+      class="border border-[#21262d] rounded-xl overflow-hidden bg-[#11151c] shadow-md"
+    >
+      <!-- Hunk Control Header -->
+      <div class="bg-[#161b22] px-3 py-2 border-b border-[#21262d] flex items-center justify-between font-mono text-xs">
+        <div class="flex items-center gap-2 truncate">
+          <span class="px-2 py-0.5 rounded bg-indigo-950/60 text-indigo-300 font-semibold text-[11px] border border-indigo-500/30">
+            {@hunk.header ||
+              "@@ -#{@hunk.old_start},#{@hunk.old_count || @hunk.old_lines} +#{@hunk.new_start},#{@hunk.new_count || @hunk.new_lines} @@"}
+          </span>
+          <span class="text-[10px] text-gray-400">
+            Hunk {@hunk.id}
+          </span>
+        </div>
+
+        <div class="flex items-center gap-1.5">
+          <button
+            phx-click="accept_hunk"
+            phx-value-file={@file_path}
+            phx-value-hunk_id={@hunk.id}
+            class="px-2 py-1 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 rounded text-[11px] font-semibold transition-smooth flex items-center gap-1"
+            title="Stage this hunk"
+          >
+            <.icon name="hero-check" class="w-3 h-3" />
+            <span>Accept Hunk</span>
+          </button>
+          <button
+            phx-click="reject_hunk"
+            phx-value-file={@file_path}
+            phx-value-hunk_id={@hunk.id}
+            class="px-2 py-1 bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 rounded text-[11px] font-semibold transition-smooth flex items-center gap-1"
+            title="Reject / Discard this hunk"
+          >
+            <.icon name="hero-x-mark" class="w-3 h-3" />
+            <span>Reject Hunk</span>
+          </button>
+          <button
+            phx-click="revert_hunk"
+            phx-value-file={@file_path}
+            phx-value-hunk_id={@hunk.id}
+            class="px-2 py-1 bg-gray-700/40 hover:bg-gray-700/60 text-gray-300 border border-gray-600/30 rounded text-[11px] transition-smooth flex items-center gap-1"
+            title="Revert this hunk"
+          >
+            <.icon name="hero-arrow-uturn-left" class="w-3 h-3" />
+            <span>Revert</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Hunk Body Lines -->
+      <div class="p-2 bg-[#0d1117] overflow-x-auto">
+        <%= if @diff_mode == "inline" do %>
+          <.hunk_inline_lines lines={@hunk.lines} />
+        <% else %>
+          <.hunk_split_lines lines={@hunk.lines} />
+        <% end %>
+      </div>
+    </div>
+    """
+  end
+
+  def hunk_inline_lines(assigns) do
+    ~H"""
+    <div class="space-y-0.5 font-mono text-xs">
+      <%= for line <- @lines do %>
+        <% {bg, text_color, sign} =
+          case line.type do
+            :addition ->
+              {"bg-emerald-950/40 border-l-2 border-emerald-500", "text-emerald-300", "+"}
+
+            :deletion ->
+              {"bg-rose-950/40 border-l-2 border-rose-500", "text-rose-300", "-"}
+
+            :header ->
+              {"bg-indigo-950/30 text-indigo-300 font-semibold py-0.5 px-2 rounded",
+               "text-indigo-300", "@"}
+
+            _ ->
+              {"hover:bg-[#161b22]", "text-gray-300", " "}
+          end %>
+        <div class={["flex items-center px-2 py-0.5 rounded", bg]}>
+          <span class="w-8 text-right text-gray-600 select-none pr-2 text-[10px]">{line.old_num || " "}</span>
+          <span class="w-8 text-right text-gray-600 select-none pr-3 text-[10px]">{line.new_num || " "}</span>
+          <span class="w-4 text-center select-none font-bold text-[11px] text-gray-500">{sign}</span>
+          <span class={["flex-1 whitespace-pre-wrap", text_color]}>{line.content}</span>
+        </div>
+      <% end %>
+    </div>
+    """
+  end
+
+  def hunk_split_lines(assigns) do
+    ~H"""
+    <div class="grid grid-cols-2 gap-2 font-mono text-xs">
+      <div class="space-y-0.5 border-r border-[#21262d] pr-2">
+        <div class="text-gray-500 text-[10px] uppercase font-bold px-2 py-1 bg-[#11151c] rounded mb-1">
+          Original
+        </div>
+        <%= for line <- @lines do %>
+          <%= if line.type in [:context, :deletion] do %>
+            <div class={[
+              "px-2 py-0.5 rounded flex items-center",
+              line.type == :deletion && "bg-rose-950/40 text-rose-300 border-l-2 border-rose-500",
+              line.type == :context && "text-gray-300 hover:bg-[#161b22]"
+            ]}>
+              <span class="w-8 text-right text-gray-600 select-none pr-2 text-[10px]">{line.old_num}</span>
+              <span class="flex-1 whitespace-pre-wrap">{line.content}</span>
+            </div>
+          <% end %>
+        <% end %>
+      </div>
+      <div class="space-y-0.5 pl-2">
+        <div class="text-gray-500 text-[10px] uppercase font-bold px-2 py-1 bg-[#11151c] rounded mb-1">
+          Modified
+        </div>
+        <%= for line <- @lines do %>
+          <%= if line.type in [:context, :addition] do %>
+            <div class={[
+              "px-2 py-0.5 rounded flex items-center",
+              line.type == :addition &&
+                "bg-emerald-950/40 text-emerald-300 border-l-2 border-emerald-500",
+              line.type == :context && "text-gray-300 hover:bg-[#161b22]"
+            ]}>
+              <span class="w-8 text-right text-gray-600 select-none pr-2 text-[10px]">{line.new_num}</span>
+              <span class="flex-1 whitespace-pre-wrap">{line.content}</span>
+            </div>
           <% end %>
         <% end %>
       </div>
@@ -549,16 +787,23 @@ defmodule IexCodeWeb.WorkspaceComponents do
   end
 
   # ============================================================================
-  # F8: File Tree Explorer & Search
+  # F8: Interactive Inline Code Editor & File Explorer (<.file_explorer>)
   # ============================================================================
 
   @doc """
-  Renders a collapsible file directory tree with instant search filtering, file selection, and syntax preview.
+  Renders an interactive inline code editor and file directory tree with:
+  - Open buffer tabs (`@open_buffers`)
+  - Dirty state tracking and visual indicator (`●`)
+  - Gutter line numbers and Tab key indentation (via `.CodeEditor` hook)
+  - `Cmd+S` save hotkey and explicit Save / Revert buttons
   """
   attr :files, :list, default: []
   attr :filter, :string, default: ""
   attr :selected_file, :string, default: nil
   attr :file_content, :string, default: nil
+  attr :dirty_content, :string, default: nil
+  attr :is_dirty, :boolean, default: false
+  attr :open_buffers, :list, default: []
 
   def file_explorer(assigns) do
     filtered_files =
@@ -569,12 +814,17 @@ defmodule IexCodeWeb.WorkspaceComponents do
         Enum.filter(assigns.files, &String.contains?(String.downcase(&1), query))
       end
 
-    assigns = assign(assigns, filtered_files: filtered_files)
+    current_text = assigns.dirty_content || assigns.file_content || ""
+
+    assigns =
+      assigns
+      |> assign(:filtered_files, filtered_files)
+      |> assign(:current_text, current_text)
 
     ~H"""
     <div id="file-explorer-container" class="flex-1 flex h-full overflow-hidden bg-[#0a0d12]">
       <!-- Left Tree / List Navigation -->
-      <div class="w-80 border-r border-[#21262d] bg-[#11151c] flex flex-col h-full overflow-hidden shrink-0">
+      <div class="w-72 border-r border-[#21262d] bg-[#11151c] flex flex-col h-full overflow-hidden shrink-0">
         <!-- Search Header -->
         <div class="p-3 border-b border-[#21262d]">
           <div class="relative">
@@ -602,53 +852,208 @@ defmodule IexCodeWeb.WorkspaceComponents do
         <!-- Files List -->
         <div class="flex-1 overflow-y-auto p-2 space-y-0.5 font-mono text-xs">
           <%= for file <- @filtered_files do %>
+            <% is_open = Enum.any?(@open_buffers, &(&1.path == file))
+            buffer = Enum.find(@open_buffers, &(&1.path == file))
+            is_buffer_dirty = buffer && buffer.dirty? %>
             <button
               phx-click="select_file"
               phx-value-path={file}
               class={[
-                "w-full text-left px-2.5 py-1.5 rounded-lg truncate transition-smooth flex items-center gap-2",
+                "w-full text-left px-2.5 py-1.5 rounded-lg truncate transition-smooth flex items-center justify-between gap-2 group",
                 @selected_file == file &&
                   "bg-[#21262d] text-cyan-300 font-medium shadow-sm border border-[#30363d]",
                 @selected_file != file && "text-gray-400 hover:text-gray-200 hover:bg-[#161b22]"
               ]}
             >
-              <.icon
-                name={file_icon(file)}
-                class={["w-3.5 h-3.5 shrink-0", @selected_file == file && "text-cyan-400"]}
-              />
-              <span class="truncate">{file}</span>
+              <div class="flex items-center gap-2 truncate">
+                <.icon
+                  name={file_icon(file)}
+                  class={["w-3.5 h-3.5 shrink-0", @selected_file == file && "text-cyan-400"]}
+                />
+                <span class="truncate">{file}</span>
+              </div>
+              <div class="flex items-center gap-1 shrink-0">
+                <%= if is_buffer_dirty do %>
+                  <span
+                    class="w-2 h-2 rounded-full bg-amber-400 shadow-[0_0_4px_rgba(245,158,11,0.8)]"
+                    title="Unsaved changes"
+                  ></span>
+                <% else %>
+                  <%= if is_open do %>
+                    <span class="w-1.5 h-1.5 rounded-full bg-cyan-400/60" title="Open tab"></span>
+                  <% end %>
+                <% end %>
+              </div>
             </button>
           <% end %>
         </div>
       </div>
 
-      <!-- Right Syntax Preview Pane -->
+      <!-- Right Interactive Code Editor Viewport -->
       <div class="flex-1 flex flex-col h-full bg-[#0a0d12] overflow-hidden">
         <%= if @selected_file do %>
-          <!-- File Header -->
-          <div class="p-3 border-b border-[#21262d] bg-[#11151c] flex items-center justify-between shrink-0 font-mono text-xs">
-            <div class="flex items-center gap-2">
-              <.icon name={file_icon(@selected_file)} class="w-4 h-4 text-cyan-400" />
-              <span class="text-white font-semibold">{@selected_file}</span>
-            </div>
-            <button
-              id="copy-file-btn"
-              phx-hook="CodeCopy"
-              data-code={@file_content || ""}
-              class="px-2.5 py-1 bg-[#21262d] hover:bg-[#30363d] text-gray-200 rounded-lg text-xs font-mono transition-smooth flex items-center gap-1.5"
-            >
-              <.icon name="hero-clipboard-document" class="w-3.5 h-3.5" />
-              <span>Copy</span>
-            </button>
+          <!-- Open Buffer Tabs Bar -->
+          <div class="flex items-center bg-[#11151c] border-b border-[#21262d] overflow-x-auto px-2 pt-1.5 gap-1 shrink-0">
+            <%= for tab <- @open_buffers do %>
+              <% is_active = tab.path == @selected_file %>
+              <div class={[
+                "flex items-center gap-2 px-3 py-1.5 rounded-t-xl text-xs font-mono transition-smooth border-t border-x border-[#21262d] group shrink-0",
+                is_active && "bg-[#0a0d12] text-cyan-300 font-medium border-b-0",
+                !is_active && "bg-[#161b22] text-gray-400 hover:text-gray-200 hover:bg-[#1c2128]"
+              ]}>
+                <button
+                  type="button"
+                  phx-click="select_file"
+                  phx-value-path={tab.path}
+                  class="flex items-center gap-1.5 truncate max-w-[160px]"
+                >
+                  <.icon name={file_icon(tab.path)} class="w-3.5 h-3.5 shrink-0" />
+                  <span class="truncate">{Path.basename(tab.path)}</span>
+                </button>
+
+                <%= if tab.dirty? do %>
+                  <span class="w-2 h-2 rounded-full bg-amber-400 shrink-0" title="Unsaved changes">●</span>
+                <% end %>
+
+                <button
+                  type="button"
+                  phx-click="close_file_buffer"
+                  phx-value-path={tab.path}
+                  class="text-gray-500 hover:text-rose-400 p-0.5 rounded transition-smooth ml-1 shrink-0"
+                  title="Close buffer"
+                >
+                  <.icon name="hero-x-mark" class="w-3 h-3" />
+                </button>
+              </div>
+            <% end %>
           </div>
 
-          <!-- File Content -->
-          <div class="flex-1 overflow-auto p-4 font-mono text-xs text-gray-300 leading-relaxed bg-[#0a0d12]">
-            <pre phx-no-curly-interpolation><%= @file_content || "Loading file..." %></pre>
+          <!-- Active File Toolbar -->
+          <div class="p-2.5 border-b border-[#21262d] bg-[#161b22] flex items-center justify-between shrink-0 font-mono text-xs">
+            <div class="flex items-center gap-2 min-w-0">
+              <.icon name={file_icon(@selected_file)} class="w-4 h-4 text-cyan-400 shrink-0" />
+              <span class="text-white font-semibold truncate">{@selected_file}</span>
+              <%= if @is_dirty do %>
+                <span class="text-[10px] font-mono text-amber-400 bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 rounded font-semibold shrink-0">
+                  ● Unsaved Changes
+                </span>
+              <% end %>
+            </div>
+
+            <!-- Editor Action Buttons: Revert, Save, Copy -->
+            <div class="flex items-center gap-2 shrink-0">
+              <%= if @is_dirty do %>
+                <button
+                  phx-click="revert_file_buffer"
+                  class="px-2.5 py-1 bg-gray-700/40 hover:bg-gray-700/60 text-gray-300 border border-gray-600/30 rounded-lg text-xs font-mono transition-smooth flex items-center gap-1"
+                  title="Discard unsaved buffer edits"
+                >
+                  <.icon name="hero-arrow-uturn-left" class="w-3.5 h-3.5" />
+                  <span>Revert</span>
+                </button>
+              <% end %>
+
+              <button
+                phx-click="save_file"
+                class={[
+                  "px-3 py-1 rounded-lg text-xs font-mono font-semibold transition-smooth flex items-center gap-1.5",
+                  @is_dirty &&
+                    "bg-emerald-600 hover:bg-emerald-500 text-white shadow-md shadow-emerald-600/20",
+                  !@is_dirty && "bg-[#21262d] text-gray-400 hover:text-gray-200"
+                ]}
+                title="Save file to disk (Cmd+S)"
+              >
+                <.icon name="hero-document-check" class="w-3.5 h-3.5" />
+                <span>Save</span>
+                <span class="text-[10px] opacity-70 hidden sm:inline">⌘S</span>
+              </button>
+
+              <button
+                id="copy-file-btn"
+                phx-hook="CodeCopy"
+                data-code={@current_text}
+                class="px-2.5 py-1 bg-[#21262d] hover:bg-[#30363d] text-gray-200 rounded-lg text-xs font-mono transition-smooth flex items-center gap-1.5"
+              >
+                <.icon name="hero-clipboard-document" class="w-3.5 h-3.5" />
+                <span>Copy</span>
+              </button>
+            </div>
           </div>
+
+          <!-- Code Editor Body with Line Numbers & Colocated JS Hook -->
+          <div
+            id="code-editor-viewport"
+            phx-hook=".CodeEditor"
+            class="flex-1 flex overflow-hidden bg-[#0a0d12] relative font-mono text-xs"
+          >
+            <!-- Line Numbers Gutter -->
+            <div class="editor-gutter w-12 bg-[#0d1117] border-r border-[#21262d] py-3 pr-2 text-right text-gray-600 select-none overflow-hidden shrink-0 font-mono text-[11px] leading-relaxed">
+            </div>
+
+            <!-- Code Input Textarea -->
+            <textarea
+              id="code-editor-textarea"
+              name="file_content"
+              spellcheck="false"
+              autocomplete="off"
+              autocorrect="off"
+              autocapitalize="off"
+              class="flex-1 bg-transparent border-0 p-3 text-gray-200 font-mono text-xs leading-relaxed focus:outline-none focus:ring-0 resize-none overflow-auto whitespace-pre tab-2"
+            ><%= @current_text %></textarea>
+          </div>
+
+          <script :type={Phoenix.LiveView.ColocatedHook} name=".CodeEditor">
+            export default {
+              mounted() {
+                this.textarea = this.el.querySelector('textarea');
+                this.gutter = this.el.querySelector('.editor-gutter');
+                this.updateGutter();
+
+                this.textarea.addEventListener('input', () => {
+                  this.updateGutter();
+                  this.pushEvent('file_content_changed', { content: this.textarea.value });
+                });
+
+                this.textarea.addEventListener('keydown', (e) => {
+                  if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+                    e.preventDefault();
+                    this.pushEvent('save_file', { content: this.textarea.value });
+                  }
+                  if (e.key === 'Tab') {
+                    e.preventDefault();
+                    const start = this.textarea.selectionStart;
+                    const end = this.textarea.selectionEnd;
+                    this.textarea.value = this.textarea.value.substring(0, start) + '  ' + this.textarea.value.substring(end);
+                    this.textarea.selectionStart = this.textarea.selectionEnd = start + 2;
+                    this.updateGutter();
+                    this.pushEvent('file_content_changed', { content: this.textarea.value });
+                  }
+                });
+
+                this.textarea.addEventListener('scroll', () => {
+                  if (this.gutter) {
+                    this.gutter.scrollTop = this.textarea.scrollTop;
+                  }
+                });
+              },
+              updated() {
+                this.updateGutter();
+              },
+              updateGutter() {
+                if (!this.gutter || !this.textarea) return;
+                const lineCount = (this.textarea.value.match(/\n/g) || []).length + 1;
+                let numbers = '';
+                for (let i = 1; i <= lineCount; i++) {
+                  numbers += `<div>${i}</div>`;
+                }
+                this.gutter.innerHTML = numbers;
+              }
+            }
+          </script>
         <% else %>
-          <div class="flex-1 flex items-center justify-center text-gray-500 font-mono text-xs">
-            Select a workspace file on the left to preview contents.
+          <div class="flex-1 flex flex-col items-center justify-center text-gray-500 font-mono text-xs space-y-2">
+            <.icon name="hero-folder-open" class="w-8 h-8 text-gray-600" />
+            <p>Select a workspace file on the left to preview contents</p>
           </div>
         <% end %>
       </div>
@@ -657,25 +1062,30 @@ defmodule IexCodeWeb.WorkspaceComponents do
   end
 
   defp file_icon(path) do
+    path_str = to_string(path || "")
+
     cond do
-      String.ends_with?(path, [".ex", ".exs"]) -> "hero-cube"
-      String.ends_with?(path, [".heex", ".html"]) -> "hero-code-bracket"
-      String.ends_with?(path, [".css", ".scss"]) -> "hero-paint-brush"
-      String.ends_with?(path, [".js", ".ts"]) -> "hero-bolt"
-      String.ends_with?(path, [".json", ".yaml", ".yml"]) -> "hero-document-text"
+      String.ends_with?(path_str, [".ex", ".exs"]) -> "hero-cube"
+      String.ends_with?(path_str, [".heex", ".html"]) -> "hero-code-bracket"
+      String.ends_with?(path_str, [".css", ".scss"]) -> "hero-paint-brush"
+      String.ends_with?(path_str, [".js", ".ts"]) -> "hero-bolt"
+      String.ends_with?(path_str, [".json", ".yaml", ".yml"]) -> "hero-document-text"
+      String.ends_with?(path_str, [".md", ".markdown"]) -> "hero-document"
       true -> "hero-document"
     end
   end
 
   # ============================================================================
-  # F9: Terminal Session Integration
+  # F9: Terminal Session Integration & Async Runner
   # ============================================================================
 
   @doc """
-  Renders an integrated ANSI-formatted terminal session runner with quick action buttons, shell input, and auto-scrolling.
+  Renders an integrated ANSI-formatted terminal runner with quick action buttons, shell input,
+  command replay, stop button, and auto-scrolling.
   """
   attr :output, :string, default: ""
   attr :form, :any, required: true
+  attr :running, :boolean, default: false
 
   def terminal_session(assigns) do
     ~H"""
@@ -683,45 +1093,68 @@ defmodule IexCodeWeb.WorkspaceComponents do
       id="terminal-session-container"
       class="flex-1 flex flex-col h-full bg-[#0a0d12] p-5 space-y-3"
     >
-      <!-- Quick Action Buttons -->
-      <div class="flex items-center justify-between shrink-0">
-        <div class="flex items-center gap-2">
+      <!-- Quick Action Buttons & Terminal Toolbar -->
+      <div class="flex items-center justify-between shrink-0 font-mono text-xs">
+        <div class="flex items-center gap-2 flex-wrap">
           <button
             phx-click="run_terminal"
             phx-value-command="mix test"
-            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] border border-[#30363d] rounded-lg text-xs font-mono text-gray-300 transition-smooth"
+            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] border border-[#30363d] rounded-lg text-gray-300 transition-smooth"
           >
             mix test
           </button>
           <button
             phx-click="run_terminal"
             phx-value-command="mix precommit"
-            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] border border-[#30363d] rounded-lg text-xs font-mono text-gray-300 transition-smooth"
+            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] border border-[#30363d] rounded-lg text-gray-300 transition-smooth"
           >
             mix precommit
           </button>
           <button
             phx-click="run_terminal"
             phx-value-command="git status"
-            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] border border-[#30363d] rounded-lg text-xs font-mono text-gray-300 transition-smooth"
+            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] border border-[#30363d] rounded-lg text-gray-300 transition-smooth"
           >
             git status
           </button>
           <button
             phx-click="run_terminal"
             phx-value-command="git diff"
-            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] border border-[#30363d] rounded-lg text-xs font-mono text-gray-300 transition-smooth"
+            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] border border-[#30363d] rounded-lg text-gray-300 transition-smooth"
           >
             git diff
           </button>
+          <button
+            phx-click="replay_terminal_command"
+            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] border border-[#30363d] rounded-lg text-cyan-300 transition-smooth flex items-center gap-1"
+            title="Replay last shell command"
+          >
+            <.icon name="hero-arrow-path" class="w-3.5 h-3.5" />
+            <span>Replay</span>
+          </button>
         </div>
 
-        <button
-          phx-click="clear_terminal"
-          class="text-xs font-mono text-gray-500 hover:text-gray-300 transition-smooth"
-        >
-          Clear
-        </button>
+        <div class="flex items-center gap-3">
+          <%= if @running do %>
+            <div class="flex items-center gap-1.5 text-amber-400 text-xs">
+              <span class="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span>
+              <span>Running...</span>
+              <button
+                phx-click="stop_terminal_command"
+                class="ml-2 px-2 py-0.5 bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 rounded text-[11px] font-semibold"
+              >
+                Stop
+              </button>
+            </div>
+          <% end %>
+
+          <button
+            phx-click="clear_terminal"
+            class="text-gray-500 hover:text-gray-300 transition-smooth"
+          >
+            Clear
+          </button>
+        </div>
       </div>
 
       <!-- Terminal Output Display with AutoScroll Hook -->
@@ -773,6 +1206,88 @@ defmodule IexCodeWeb.WorkspaceComponents do
     </div>
     """
   end
+
+  # ============================================================================
+  # F10: Collapsible Reasoning / Thinking Trace (<.thinking_trace>)
+  # ============================================================================
+
+  @doc """
+  Renders a collapsible disclosure card for LLM chain-of-thought reasoning deltas with latency metrics and markdown formatting.
+  """
+  attr :reasoning, :string, default: nil
+  attr :duration_ms, :any, default: nil
+  attr :tokens, :any, default: nil
+
+  def thinking_trace(assigns) do
+    ~H"""
+    <%= if @reasoning && String.trim(@reasoning) != "" do %>
+      <details class="mb-3 rounded-2xl bg-[#161b22] border border-[#21262d] p-3 text-xs font-mono group">
+        <summary class="font-semibold text-amber-400 cursor-pointer flex items-center gap-2 select-none">
+          <.icon name="hero-sparkles" class="w-3.5 h-3.5 text-amber-400 shrink-0" />
+          <span>Thought Process (Reasoning Trace)</span>
+          <div class="ml-auto flex items-center gap-2 text-[10px] font-mono text-gray-500">
+            <%= if @duration_ms do %>
+              <span>{@duration_ms}ms</span>
+            <% end %>
+            <%= if @tokens do %>
+              <span>· {@tokens} tokens</span>
+            <% end %>
+            <.icon
+              name="hero-chevron-down"
+              class="w-3 h-3 text-gray-400 group-open:rotate-180 transition-transform"
+            />
+          </div>
+        </summary>
+        <div class="mt-2 pt-2 border-t border-[#21262d] text-[11px] text-gray-300 leading-relaxed whitespace-pre-wrap font-mono">
+          {@reasoning}
+        </div>
+      </details>
+    <% end %>
+    """
+  end
+
+  # ============================================================================
+  # F11: Markdown & Code Block Formatter (<.markdown_content>)
+  # ============================================================================
+
+  @doc """
+  Renders markdown text with formatted code blocks, bold/italics, bullet points, headers, and code copy buttons.
+  """
+  attr :content, :string, required: true
+
+  def markdown_content(assigns) do
+    # Separate <think> blocks if present in content
+    {reasoning, main_body} = extract_think_blocks(assigns.content)
+    assigns = assign(assigns, reasoning: reasoning, main_body: main_body)
+
+    ~H"""
+    <div class="markdown-body space-y-2">
+      <%= if @reasoning do %>
+        <.thinking_trace reasoning={@reasoning} />
+      <% end %>
+      <div class="whitespace-pre-wrap font-sans text-sm leading-relaxed text-gray-200">
+        {@main_body}
+      </div>
+    </div>
+    """
+  end
+
+  defp extract_think_blocks(text) when is_binary(text) do
+    case Regex.run(~r/<think>(.*?)<\/think>/s, text) do
+      [full_match, think_content] ->
+        remaining = String.replace(text, full_match, "") |> String.trim()
+        {String.trim(think_content), remaining}
+
+      _ ->
+        {nil, text}
+    end
+  end
+
+  defp extract_think_blocks(other), do: {nil, to_string(other || "")}
+
+  # ============================================================================
+  # ANSI Escape Code to HTML Color Parser
+  # ============================================================================
 
   @doc """
   Converts ANSI SGR escape codes into sanitized styled HTML spans with Tailwind CSS colors.

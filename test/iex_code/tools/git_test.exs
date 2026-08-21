@@ -98,4 +98,84 @@ defmodule IexCode.Tools.GitTest do
       assert msg == "test: update test_runner_test"
     end
   end
+
+  describe "Git.apply_patch/3 and Git.restore_file/3" do
+    @describetag :tmp_dir
+
+    setup %{tmp_dir: tmp_dir} do
+      {_, 0} = System.cmd("git", ["init", "-b", "main"], cd: tmp_dir)
+      {_, 0} = System.cmd("git", ["config", "user.name", "Test User"], cd: tmp_dir)
+      {_, 0} = System.cmd("git", ["config", "user.email", "test@example.com"], cd: tmp_dir)
+
+      sample_file = Path.join(tmp_dir, "lib/hello.ex")
+      File.mkdir_p!(Path.dirname(sample_file))
+      File.write!(sample_file, "defmodule Hello do\n  def world, do: :hi\nend\n")
+
+      System.cmd("git", ["add", "lib/hello.ex"], cd: tmp_dir)
+      System.cmd("git", ["commit", "-m", "init"], cd: tmp_dir)
+
+      {:ok, %{tmp_dir: tmp_dir, sample_file: sample_file}}
+    end
+
+    test "apply_patch applies patch to working tree and can reverse it", %{
+      tmp_dir: tmp_dir,
+      sample_file: sample_file
+    } do
+      patch = """
+      diff --git a/lib/hello.ex b/lib/hello.ex
+      --- a/lib/hello.ex
+      +++ b/lib/hello.ex
+      @@ -1,3 +1,3 @@
+       defmodule Hello do
+      -  def world, do: :hi
+      +  def world, do: :hello_world
+       end
+      """
+
+      assert {:ok, _} = Git.apply_patch(tmp_dir, patch)
+      assert File.read!(sample_file) =~ ":hello_world"
+
+      # Apply in reverse
+      assert {:ok, _} = Git.apply_patch(tmp_dir, patch, reverse: true)
+      assert File.read!(sample_file) =~ ":hi"
+    end
+
+    test "apply_patch with cached: true stages changes directly into index", %{
+      tmp_dir: tmp_dir,
+      sample_file: sample_file
+    } do
+      patch = """
+      diff --git a/lib/hello.ex b/lib/hello.ex
+      --- a/lib/hello.ex
+      +++ b/lib/hello.ex
+      @@ -1,3 +1,3 @@
+       defmodule Hello do
+      -  def world, do: :hi
+      +  def world, do: :cached_change
+       end
+      """
+
+      assert {:ok, _} = Git.apply_patch(tmp_dir, patch, cached: true)
+
+      assert {:ok, staged_diff} = Git.diff(tmp_dir, staged: true)
+      assert staged_diff =~ ":cached_change"
+
+      # Working tree file was untouched
+      assert File.read!(sample_file) =~ ":hi"
+    end
+
+    test "restore_file restores working tree file and unstages", %{
+      tmp_dir: tmp_dir,
+      sample_file: sample_file
+    } do
+      File.write!(sample_file, "modified content\n")
+      Git.stage("lib/hello.ex", tmp_dir)
+
+      assert {:ok, _} = Git.restore_file(tmp_dir, "lib/hello.ex")
+      assert File.read!(sample_file) =~ "defmodule Hello do"
+
+      assert {:ok, status} = Git.status(tmp_dir)
+      assert status.clean? == true
+    end
+  end
 end

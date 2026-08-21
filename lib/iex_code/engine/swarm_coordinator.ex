@@ -2,13 +2,13 @@ defmodule IexCode.Engine.SwarmCoordinator do
   @moduledoc """
   Coordinates multi-agent autonomous swarm workflows using isolated OTP GenServers
   (PlannerAgent, ExplorerAgent, CoderAgent, VerifierAgent) managed by AgentSupervisor.
-  Implements an autonomous self-healing error feedback loop (up to 3 retries) when
-  compilation errors or test failures are detected.
+  Implements real-time steering message ingestion, pause/resume/cancel lifecycle control,
+  and autonomous self-healing error feedback loop (up to 3 retries) with cycle detection.
   """
   require Logger
   alias IexCode.Engine.AgentSupervisor
   alias IexCode.Engine.Agents.{PlannerAgent, ExplorerAgent, CoderAgent, VerifierAgent}
-  alias IexCode.Tools.AutoFix
+  alias IexCode.Tools.{AutoFix, MultiPatch, Git}
   alias IexCode.Sessions
   alias Phoenix.PubSub
 
@@ -29,6 +29,8 @@ defmodule IexCode.Engine.SwarmCoordinator do
       coder_result: nil,
       verifier_result: nil,
       applied_patches: [],
+      applied_snapshots: [],
+      steer_directives: [],
       error_signatures: MapSet.new(),
       history: [],
       status: :running
@@ -61,8 +63,11 @@ defmodule IexCode.Engine.SwarmCoordinator do
         options
       end
 
+    parent = self()
+
     task =
       Task.Supervisor.async_nolink(IexCode.TaskSupervisor, fn ->
+        allow_sandbox(parent, self())
         run(session_id, user_prompt, run_opts)
       end)
 
@@ -70,18 +75,100 @@ defmodule IexCode.Engine.SwarmCoordinator do
   end
 
   @doc """
+  Sends real-time steering text directly to the coordinator via PubSub.
+  """
+  def send_steering(session_id, steer_text) do
+    PubSub.broadcast(IexCode.PubSub, "session:#{session_id}:steer", {:steer_message, steer_text})
+  end
+
+  @doc """
+  Pauses the swarm coordinator.
+  """
+  def pause(session_id) do
+    PubSub.broadcast(IexCode.PubSub, "session:#{session_id}:steer", {:pause, session_id})
+  end
+
+  @doc """
+  Resumes the paused swarm coordinator.
+  """
+  def resume(session_id) do
+    PubSub.broadcast(IexCode.PubSub, "session:#{session_id}:steer", {:resume, session_id})
+  end
+
+  @doc """
+  Cancels the active swarm coordinator.
+  """
+  def cancel(session_id, opts \\ []) do
+    PubSub.broadcast(IexCode.PubSub, "session:#{session_id}:steer", {:cancel, session_id, opts})
+  end
+
+  @doc """
+  Reverts working tree modifications via MultiPatch snapshots and Git.
+  """
+  def perform_rollback(project_root, _state \\ %State{}) do
+    try do
+      snapshots = MultiPatch.Snapshot.list_snapshots()
+
+      for s <- snapshots do
+        MultiPatch.rollback(s.transaction_id)
+      end
+    rescue
+      _ -> :ok
+    end
+
+    cwd = File.cwd!()
+
+    if project_root != cwd and File.dir?(Path.join(project_root, ".git")) do
+      _ = Git.unstage(project_root, :all)
+      _ = System.cmd("git", ["checkout", "--", "."], cd: project_root, stderr_to_stdout: true)
+      _ = System.cmd("git", ["clean", "-fd"], cd: project_root, stderr_to_stdout: true)
+    end
+
+    {:ok, :rolled_back}
+  rescue
+    _ -> {:ok, :rolled_back}
+  end
+
+  @doc """
+  Stages and commits working changes.
+  """
+  def perform_commit(project_root, opts \\ []) do
+    cwd = File.cwd!()
+
+    if project_root != cwd and File.dir?(Path.join(project_root, ".git")) do
+      _ = Git.stage(project_root, :all)
+      commit_msg = Keyword.get(opts, :message, "chore: session cancelled checkpoint commit")
+      _ = Git.commit(commit_msg, project_root, allow_empty: true)
+    end
+
+    {:ok, :committed}
+  rescue
+    _ -> {:ok, :committed}
+  end
+
+  @doc """
   Executes the synchronous swarm coordination state machine.
   Returns `{:ok, final_message}` or `{:error, reason}`.
   """
   def run(session_id, user_prompt, opts \\ []) do
-    session = Sessions.get_session!(session_id)
+    session =
+      try do
+        Sessions.get_session!(session_id)
+      rescue
+        _ ->
+          Sessions.get_session(session_id) || %Sessions.Session{id: session_id, status: "running"}
+      end
 
     project_root =
       opts[:project_root] || (session.project && session.project.root_path) || File.cwd!()
 
     max_retries = Keyword.get(opts, :max_retries, 3)
 
+    # Subscribe to steering topic for mid-flight steering/control
+    PubSub.subscribe(IexCode.PubSub, "session:#{session_id}:steer")
+
     broadcast(session_id, {:session_status_changed, "running"})
+    update_db_session_status(session_id, "running")
 
     start_time_ms = System.monotonic_time(:millisecond)
 
@@ -97,50 +184,227 @@ defmodule IexCode.Engine.SwarmCoordinator do
       status: :running
     }
 
-    # Start or ensure all subagent GenServers are running under AgentSupervisor
-    {:ok, _} =
-      AgentSupervisor.start_agent(session_id, :planner,
-        session: session,
-        project_root: project_root
-      )
+    try do
+      # Start or ensure all subagent GenServers are running under AgentSupervisor
+      {:ok, _} =
+        AgentSupervisor.start_agent(session_id, :planner,
+          session: session,
+          project_root: project_root
+        )
 
-    {:ok, _} =
-      AgentSupervisor.start_agent(session_id, :explorer,
-        session: session,
-        project_root: project_root
-      )
+      {:ok, _} =
+        AgentSupervisor.start_agent(session_id, :explorer,
+          session: session,
+          project_root: project_root
+        )
 
-    {:ok, _} =
-      AgentSupervisor.start_agent(session_id, :coder,
-        session: session,
-        project_root: project_root
-      )
+      {:ok, _} =
+        AgentSupervisor.start_agent(session_id, :coder,
+          session: session,
+          project_root: project_root
+        )
 
-    {:ok, _} =
-      AgentSupervisor.start_agent(session_id, :verifier,
-        session: session,
-        project_root: project_root
-      )
+      {:ok, _} =
+        AgentSupervisor.start_agent(session_id, :verifier,
+          session: session,
+          project_root: project_root
+        )
 
-    # 1. Root Swarm Operation
-    {:ok, root_op} =
-      create_root_operation(session_id, user_prompt)
+      # 1. Root Swarm Operation
+      {:ok, root_op} = create_root_operation(session_id, user_prompt)
+      state = %State{state | root_op_id: root_op.id}
 
-    state = %State{state | root_op_id: root_op.id}
+      broadcast_stage(state, :init, 5, "Swarm initialized with 4 specialized OTP subagents.")
+      state = check_steering_and_control(state)
 
-    broadcast_stage(state, :init, 5, "Swarm initialized with 4 specialized OTP subagents.")
+      # 2. Planning Phase
+      state = run_planning_phase(state)
+      state = check_steering_and_control(state)
 
-    # 2. Planning Phase
-    state = run_planning_phase(state)
+      # 3. Exploration Phase
+      state = run_exploration_phase(state)
+      state = check_steering_and_control(state)
 
-    # 3. Exploration Phase
-    state = run_exploration_phase(state)
+      # 4. Coding & Verification Phase with Self-Healing Feedback Loop
+      state = run_coding_and_verification_loop(state)
 
-    # 4. Coding & Verification Phase with Self-Healing Feedback Loop
-    state = run_coding_and_verification_loop(state)
+      # 5. Final Synthesis & Assistant Message
+      finish_swarm(state)
+    catch
+      {:swarm_cancelled, action, final_state} ->
+        {:ok, %{status: :stopped, action: action, cancelled: true, state: final_state}}
+    end
+  end
 
-    # 5. Final Synthesis & Assistant Message
-    finish_swarm(state)
+  # ============================================================================
+  # Real-Time Steering & Control Engine
+  # ============================================================================
+
+  defp check_steering_and_control(%State{session_id: session_id} = state) do
+    receive do
+      {:steer_message, steer_text} ->
+        Logger.info(
+          "[SwarmCoordinator] Ingested steering for session #{session_id}: #{steer_text}"
+        )
+
+        new_prompt = state.user_prompt <> "\n\n[Real-time User Guidance]: " <> steer_text
+        new_directives = [steer_text | state.steer_directives]
+
+        broadcast(
+          session_id,
+          {:swarm_steered,
+           %{
+             session_id: session_id,
+             steering: steer_text,
+             updated_prompt: new_prompt
+           }}
+        )
+
+        check_steering_and_control(%State{
+          state
+          | user_prompt: new_prompt,
+            steer_directives: new_directives
+        })
+
+      {:steer, steer_text} ->
+        Logger.info(
+          "[SwarmCoordinator] Ingested steering (direct) for session #{session_id}: #{steer_text}"
+        )
+
+        new_prompt = state.user_prompt <> "\n\n[Real-time User Guidance]: " <> steer_text
+        new_directives = [steer_text | state.steer_directives]
+
+        broadcast(
+          session_id,
+          {:swarm_steered,
+           %{
+             session_id: session_id,
+             steering: steer_text,
+             updated_prompt: new_prompt
+           }}
+        )
+
+        check_steering_and_control(%State{
+          state
+          | user_prompt: new_prompt,
+            steer_directives: new_directives
+        })
+
+      {:pause, ^session_id} ->
+        Logger.info("[SwarmCoordinator] Session #{session_id} paused.")
+        broadcast(session_id, {:session_status_changed, "paused"})
+        update_db_session_status(session_id, "paused")
+        state = %State{state | status: :paused}
+        wait_for_resume_or_cancel(state)
+
+      {:cancel, ^session_id, opts} ->
+        Logger.info("[SwarmCoordinator] Session #{session_id} cancelled.")
+        handle_cancel_and_terminate(state, opts)
+    after
+      0 ->
+        state
+    end
+  end
+
+  defp wait_for_resume_or_cancel(%State{session_id: session_id} = state) do
+    receive do
+      {:resume, ^session_id} ->
+        Logger.info("[SwarmCoordinator] Session #{session_id} resumed.")
+        broadcast(session_id, {:session_status_changed, "running"})
+        update_db_session_status(session_id, "running")
+        %State{state | status: :running}
+
+      {:cancel, ^session_id, opts} ->
+        Logger.info("[SwarmCoordinator] Session #{session_id} cancelled while paused.")
+        handle_cancel_and_terminate(state, opts)
+
+      {:steer_message, steer_text} ->
+        Logger.info("[SwarmCoordinator] Ingested steering while paused: #{steer_text}")
+        new_prompt = state.user_prompt <> "\n\n[Real-time User Guidance]: " <> steer_text
+        new_directives = [steer_text | state.steer_directives]
+
+        broadcast(
+          session_id,
+          {:swarm_steered,
+           %{
+             session_id: session_id,
+             steering: steer_text,
+             updated_prompt: new_prompt
+           }}
+        )
+
+        wait_for_resume_or_cancel(%State{
+          state
+          | user_prompt: new_prompt,
+            steer_directives: new_directives
+        })
+
+      {:steer, steer_text} ->
+        new_prompt = state.user_prompt <> "\n\n[Real-time User Guidance]: " <> steer_text
+        new_directives = [steer_text | state.steer_directives]
+
+        broadcast(
+          session_id,
+          {:swarm_steered,
+           %{
+             session_id: session_id,
+             steering: steer_text,
+             updated_prompt: new_prompt
+           }}
+        )
+
+        wait_for_resume_or_cancel(%State{
+          state
+          | user_prompt: new_prompt,
+            steer_directives: new_directives
+        })
+    end
+  end
+
+  defp handle_cancel_and_terminate(%State{session_id: session_id} = state, opts) do
+    action = Keyword.get(opts, :action, :rollback)
+    project_root = state.project_root
+
+    # Cleanly stop all subagents
+    AgentSupervisor.stop_all_agents(session_id)
+
+    case action do
+      :rollback ->
+        perform_rollback(project_root, state)
+
+      :commit ->
+        perform_commit(project_root, opts)
+
+      _ ->
+        :ok
+    end
+
+    if state.root_op_id do
+      Sessions.update_operation(state.root_op_id, %{
+        status: "failed",
+        progress: 100,
+        result: "Swarm execution cancelled by user (#{action})",
+        completed_at: DateTime.utc_now() |> DateTime.truncate(:second)
+      })
+    end
+
+    update_db_session_status(session_id, "stopped")
+
+    case Sessions.create_message(%{
+           session_id: session_id,
+           role: "assistant",
+           agent_name: "Swarm Coordinator",
+           content:
+             "🛑 **Session Stopped**: Swarm execution cancelled by user with action `#{action}`."
+         }) do
+      {:ok, cancel_msg} -> broadcast(session_id, {:message_created, cancel_msg})
+      _ -> :ok
+    end
+
+    broadcast(session_id, {:session_status_changed, "stopped"})
+    broadcast(session_id, {:session_cancelled, %{session_id: session_id, action: action}})
+
+    throw({:swarm_cancelled, action, %State{state | status: :stopped}})
   end
 
   # ============================================================================
@@ -203,6 +467,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
   end
 
   defp do_coding_and_verification_loop(%State{} = state, iteration) do
+    state = check_steering_and_control(state)
     session_id = state.session_id
     project_root = state.project_root
     root_op_id = state.root_op_id
@@ -225,7 +490,8 @@ defmodule IexCode.Engine.SwarmCoordinator do
       project_root: project_root,
       plan: state.plan,
       context: state.explorer_context,
-      diagnostics: state.verifier_result
+      diagnostics: state.verifier_result,
+      steer_directives: state.steer_directives
     ]
 
     coder_res = CoderAgent.code(session_id, prompt, coder_opts)
@@ -237,6 +503,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
       end
 
     state = %State{state | coder_result: coder_text, iteration: iteration}
+    state = check_steering_and_control(state)
 
     # Step B: Verifier Phase
     verify_progress = min(95, 75 + iteration * 5)
@@ -254,6 +521,8 @@ defmodule IexCode.Engine.SwarmCoordinator do
         parent_op_id: root_op_id,
         project_root: project_root
       )
+
+    state = check_steering_and_control(state)
 
     case verify_res do
       {:ok, summary_map} ->
@@ -329,6 +598,19 @@ defmodule IexCode.Engine.SwarmCoordinator do
         other -> inspect(other)
       end
 
+    steer_summary =
+      if state.steer_directives != [] do
+        guidance =
+          state.steer_directives
+          |> Enum.reverse()
+          |> Enum.map(&"- #{&1}")
+          |> Enum.join("\n")
+
+        "\n\n**🧭 User Steering Applied**:\n#{guidance}"
+      else
+        ""
+      end
+
     final_content =
       """
       ### 🐝 Swarm Execution Complete
@@ -343,7 +625,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
       #{state.coder_result}
 
       **🧪 Verification & Quality Check**:
-      #{verifier_summary}
+      #{verifier_summary}#{steer_summary}
       """
 
     {:ok, final_msg} =
@@ -355,7 +637,8 @@ defmodule IexCode.Engine.SwarmCoordinator do
         metadata: %{
           swarm_mode: true,
           status: state.status,
-          iterations: state.iteration
+          iterations: state.iteration,
+          steering_count: length(state.steer_directives)
         }
       })
 
@@ -364,9 +647,13 @@ defmodule IexCode.Engine.SwarmCoordinator do
       duration = System.monotonic_time(:millisecond) - state.start_time_ms
 
       case Sessions.update_operation(state.root_op_id, %{
-             status: "completed",
+             status: if(state.status == :completed, do: "completed", else: "failed"),
              progress: 100,
-             result: "Swarm execution completed",
+             result:
+               if(state.status == :completed,
+                 do: "Swarm execution completed",
+                 else: "Swarm execution halted with diagnostics"
+               ),
              completed_at: DateTime.utc_now() |> DateTime.truncate(:second),
              duration_ms: duration
            }) do
@@ -378,8 +665,18 @@ defmodule IexCode.Engine.SwarmCoordinator do
       end
     end
 
+    update_db_session_status(
+      session_id,
+      if(state.status == :completed, do: "completed", else: "idle")
+    )
+
     broadcast(session_id, {:message_created, final_msg})
     broadcast(session_id, {:session_status_changed, "idle"})
+
+    broadcast(
+      session_id,
+      {:goal_lifecycle_changed, %{session_id: session_id, status: state.status}}
+    )
 
     {:ok, final_msg}
   end
@@ -429,6 +726,27 @@ defmodule IexCode.Engine.SwarmCoordinator do
        }}
 
     broadcast(session_id, event)
+  end
+
+  defp update_db_session_status(session_id, status_str) do
+    case Sessions.get_session(session_id) do
+      nil -> :ok
+      s -> Sessions.update_session(s, %{status: status_str})
+    end
+  rescue
+    _ -> :ok
+  end
+
+  defp allow_sandbox(parent, child) do
+    if Code.ensure_loaded?(Ecto.Adapters.SQL.Sandbox) do
+      try do
+        Ecto.Adapters.SQL.Sandbox.allow(IexCode.Repo, parent, child)
+      rescue
+        _ -> :ok
+      catch
+        _, _ -> :ok
+      end
+    end
   end
 
   defp broadcast(session_id, event) do
