@@ -105,13 +105,117 @@ defmodule IexCode.Kanban do
     end
   end
 
-  def move_task_status(%Task{} = task, new_status)
-      when new_status in ~w(triage todo scheduled ready running blocked review done) do
-    update_task(task, %{status: new_status})
+  def move_task_status(%Task{} = task, new_status) do
+    normalized = normalize_status(new_status)
+
+    if normalized in Task.statuses() do
+      update_task(task, %{status: normalized})
+    else
+      {:error, :invalid_status}
+    end
   end
 
-  def move_task_status(%Task{}, _invalid_status), do: {:error, :invalid_status}
   def move_task_status(_invalid_task, _status), do: {:error, :invalid_task}
+
+  defp normalize_status(status) when is_binary(status) do
+    case String.downcase(String.trim(status)) do
+      "in_progress" -> "running"
+      "in-progress" -> "running"
+      "failed" -> "blocked"
+      "complete" -> "done"
+      "completed" -> "done"
+      s -> s
+    end
+  end
+
+  defp normalize_status(_), do: nil
+
+  @doc """
+  Adds a subtask to a task and recomputes completion progress.
+  """
+  def add_subtask(%Task{} = task, subtask_params) do
+    title =
+      case subtask_params do
+        %{"title" => t} -> t
+        %{title: t} -> t
+        t when is_binary(t) -> t
+        _ -> ""
+      end
+      |> to_string()
+      |> String.trim()
+
+    if title == "" do
+      {:error, :empty_title}
+    else
+      subtask = %{
+        "id" => Ecto.UUID.generate(),
+        "title" => title,
+        "completed" => false
+      }
+
+      current = task.subtasks || []
+      update_task(task, %{subtasks: current ++ [subtask]})
+    end
+  end
+
+  def add_subtask(task_id, subtask_params) when is_binary(task_id) do
+    case get_task(task_id) do
+      nil -> {:error, :not_found}
+      task -> add_subtask(task, subtask_params)
+    end
+  end
+
+  @doc """
+  Toggles the completion status of a subtask.
+  """
+  def toggle_subtask(%Task{} = task, subtask_id) do
+    target_id = to_string(subtask_id)
+    current = task.subtasks || []
+
+    updated =
+      Enum.map(current, fn s ->
+        sid = to_string(s["id"] || s[:id])
+
+        if sid == target_id do
+          done? = s["completed"] == true or s[:completed] == true
+          Map.put(s, "completed", not done?)
+        else
+          s
+        end
+      end)
+
+    update_task(task, %{subtasks: updated})
+  end
+
+  def toggle_subtask(task_id, subtask_id) when is_binary(task_id) do
+    case get_task(task_id) do
+      nil -> {:error, :not_found}
+      task -> toggle_subtask(task, subtask_id)
+    end
+  end
+
+  @doc """
+  Deletes a subtask from a task.
+  """
+  def delete_subtask(%Task{} = task, subtask_id) do
+    target_id = to_string(subtask_id)
+    current = task.subtasks || []
+
+    updated =
+      Enum.reject(current, fn s ->
+        sid = to_string(s["id"] || s[:id])
+        sid == target_id
+      end)
+
+    update_task(task, %{subtasks: updated})
+  end
+
+  def delete_subtask(task_id, subtask_id) when is_binary(task_id) do
+    case get_task(task_id) do
+      nil -> {:error, :not_found}
+      task -> delete_subtask(task, subtask_id)
+    end
+  end
 
   def delete_task(%Task{} = task) do
     project_id = task.project_id

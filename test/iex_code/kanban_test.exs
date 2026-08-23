@@ -69,7 +69,7 @@ defmodule IexCode.KanbanTest do
     assert estimated.estimate =~ "High effort"
   end
 
-  test "returns error for invalid task status or invalid task", %{
+  test "normalizes agile statuses when moving task status", %{
     project: project,
     session: session
   } do
@@ -77,13 +77,75 @@ defmodule IexCode.KanbanTest do
       Kanban.create_task(%{
         project_id: project.id,
         session_id: session.id,
-        title: "Invalid status test",
-        status: "ready"
+        title: "Agile status normalization",
+        status: "todo"
       })
 
-    assert {:error, :invalid_status} = Kanban.move_task_status(task, "custom_status_xyz")
-    assert {:error, :invalid_status} = Kanban.move_task_status(task, "")
-    assert {:error, :invalid_status} = Kanban.move_task_status(task, nil)
-    assert {:error, :invalid_task} = Kanban.move_task_status(nil, "done")
+    assert {:ok, running} = Kanban.move_task_status(task, "in_progress")
+    assert running.status == "running"
+
+    assert {:ok, blocked} = Kanban.move_task_status(running, "failed")
+    assert blocked.status == "blocked"
+
+    assert {:ok, done} = Kanban.move_task_status(blocked, "complete")
+    assert done.status == "done"
+
+    assert {:ok, done2} = Kanban.move_task_status(done, "completed")
+    assert done2.status == "done"
+  end
+
+  test "manages subtasks and dynamically computes steps_completed and steps_total", %{
+    project: project,
+    session: session
+  } do
+    {:ok, task} =
+      Kanban.create_task(%{
+        project_id: project.id,
+        session_id: session.id,
+        title: "Subtasks Feature Test",
+        status: "todo"
+      })
+
+    assert task.subtasks == []
+    assert task.steps_total == 0
+    assert task.steps_completed == 0
+
+    # Add 1st subtask
+    assert {:ok, task1} = Kanban.add_subtask(task, %{"title" => "Write schema"})
+    assert length(task1.subtasks) == 1
+    assert task1.steps_total == 1
+    assert task1.steps_completed == 0
+    [subtask1] = task1.subtasks
+
+    # Add 2nd subtask by ID
+    assert {:ok, task2} = Kanban.add_subtask(task1.id, "Add LiveView event handlers")
+    assert length(task2.subtasks) == 2
+    assert task2.steps_total == 2
+    assert task2.steps_completed == 0
+    [_, subtask2] = task2.subtasks
+
+    # Toggle 1st subtask to completed
+    assert {:ok, task3} = Kanban.toggle_subtask(task2, subtask1["id"])
+    assert task3.steps_total == 2
+    assert task3.steps_completed == 1
+
+    # Toggle 2nd subtask by task_id string
+    assert {:ok, task4} = Kanban.toggle_subtask(task3.id, subtask2["id"])
+    assert task4.steps_total == 2
+    assert task4.steps_completed == 2
+
+    # Untoggle 1st subtask
+    assert {:ok, task5} = Kanban.toggle_subtask(task4, subtask1["id"])
+    assert task5.steps_total == 2
+    assert task5.steps_completed == 1
+
+    # Delete 2nd subtask
+    assert {:ok, task6} = Kanban.delete_subtask(task5.id, subtask2["id"])
+    assert length(task6.subtasks) == 1
+    assert task6.steps_total == 1
+    assert task6.steps_completed == 0
+
+    # Reject empty subtask
+    assert {:error, :empty_title} = Kanban.add_subtask(task6, %{"title" => "   "})
   end
 end

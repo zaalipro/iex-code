@@ -151,4 +151,56 @@ defmodule IexCode.Sessions do
     |> where([o], o.session_id == ^session_id)
     |> Repo.delete_all()
   end
+
+  @doc """
+  Queries real LLM usage history aggregated from messages and sessions.
+  """
+  def list_usage_history(limit \\ 10) do
+    query =
+      from(m in Message,
+        join: s in assoc(m, :session),
+        where: m.input_tokens > 0 or m.output_tokens > 0,
+        order_by: [desc: m.inserted_at],
+        limit: ^limit,
+        select: %{
+          id: m.id,
+          date: m.inserted_at,
+          model: s.model_name,
+          provider: s.model_provider,
+          tokens: m.input_tokens + m.output_tokens,
+          input_tokens: m.input_tokens,
+          output_tokens: m.output_tokens,
+          cost_cents: m.cost_cents
+        }
+      )
+
+    case Repo.retry_on_busy(fn -> Repo.all(query) end) do
+      results when is_list(results) and results != [] ->
+        results
+
+      _ ->
+        case Repo.retry_on_busy(fn ->
+               from(s in Session,
+                 order_by: [desc: s.updated_at],
+                 limit: ^limit,
+                 select: %{
+                   id: s.id,
+                   date: s.inserted_at,
+                   model: s.model_name,
+                   provider: s.model_provider,
+                   tokens: 0,
+                   input_tokens: 0,
+                   output_tokens: 0,
+                   cost_cents: 0
+                 }
+               )
+               |> Repo.all()
+             end) do
+          sessions when is_list(sessions) -> sessions
+          _ -> []
+        end
+    end
+  rescue
+    _ -> []
+  end
 end

@@ -698,6 +698,190 @@ defmodule IexCodeWeb.WorkspaceLiveTest do
     assert created_task.assignee == "coder"
   end
 
+  test "handles subtask addition, toggling, deletion and inline editing in task drawer", %{
+    conn: conn,
+    workspace_path: path
+  } do
+    project = create_project_fixture(%{root_path: path})
+    session = create_session_fixture(project)
+
+    {:ok, task} =
+      IexCode.Kanban.create_task(%{
+        project_id: project.id,
+        session_id: session.id,
+        title: "Subtasks Drawer Feature",
+        description: "Initial description",
+        tags: ["initial"]
+      })
+
+    {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+    # Open task drawer
+    view
+    |> render_hook("open_task_drawer", %{"id" => task.id})
+
+    assert has_element?(view, "#drawer-edit-task-#{task.id}")
+
+    # Inline edit task details (title, description, tags)
+    view
+    |> form("#drawer-edit-task-#{task.id}", %{
+      "task_id" => task.id,
+      "title" => "Updated Drawer Feature Title",
+      "description" => "Updated detailed description",
+      "tags" => "ui, kanban, zero-gap"
+    })
+    |> render_submit()
+
+    assert render(view) =~ "Task updated"
+    updated = IexCode.Kanban.get_task!(task.id)
+    assert updated.title == "Updated Drawer Feature Title"
+    assert updated.description == "Updated detailed description"
+    assert updated.tags == ["ui", "kanban", "zero-gap"]
+
+    # Add a subtask
+    view
+    |> form("form[phx-submit='add_subtask']", %{
+      "task_id" => task.id,
+      "title" => "First Subtask Item"
+    })
+    |> render_submit()
+
+    assert render(view) =~ "First Subtask Item"
+    task_with_subtask = IexCode.Kanban.get_task!(task.id)
+    assert length(task_with_subtask.subtasks) == 1
+    assert task_with_subtask.steps_total == 1
+    assert task_with_subtask.steps_completed == 0
+    [sub] = task_with_subtask.subtasks
+    sid = sub["id"]
+
+    # Toggle subtask to completed
+    view
+    |> element("button[phx-click='toggle_subtask'][phx-value-id='#{sid}']")
+    |> render_click()
+
+    task_toggled = IexCode.Kanban.get_task!(task.id)
+    assert task_toggled.steps_completed == 1
+
+    # Delete subtask
+    view
+    |> element("button[phx-click='delete_subtask'][phx-value-id='#{sid}']")
+    |> render_click()
+
+    task_deleted = IexCode.Kanban.get_task!(task.id)
+    assert task_deleted.subtasks == []
+    assert task_deleted.steps_total == 0
+  end
+
+  test "handles send_steering and resets steer_text", %{conn: conn, workspace_path: path} do
+    project = create_project_fixture(%{root_path: path})
+    session = create_session_fixture(project)
+    {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+    # Send steering
+    html =
+      view
+      |> render_hook("send_steering", %{"steering" => "Focus on passing tests only"})
+
+    assert html =~ "Steering guidance delivered"
+  end
+
+  test "handles set_task_schedule_type event", %{conn: conn, workspace_path: path} do
+    project = create_project_fixture(%{root_path: path})
+    session = create_session_fixture(project)
+    {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+    view
+    |> render_hook("set_task_schedule_type", %{"type" => "scheduled"})
+
+    # Check that LiveView state remains responsive
+    assert render(view) =~ "Today's tasks" or render(view) =~ "Today&#39;s tasks"
+  end
+
+  test "handles saving complete settings fields and rendering usage history", %{
+    conn: conn,
+    workspace_path: path
+  } do
+    project = create_project_fixture(%{root_path: path})
+    session = create_session_fixture(project)
+    {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+    # Open settings modal
+    view
+    |> render_hook("toggle_settings_modal", %{})
+
+    assert render(view) =~ "Provider Keys &amp; Settings" or
+             render(view) =~ "Provider Keys & Settings"
+
+    # Save full settings
+    view
+    |> form("form[phx-submit='save_settings']", %{
+      "settings" => %{
+        "default_model_provider" => "anthropic",
+        "default_model" => "claude-3-7-sonnet",
+        "anthropic_api_key" => "sk-ant-test-liveview",
+        "anthropic_base_url" => "https://api.anthropic.com",
+        "openai_api_key" => "sk-proj-test-liveview",
+        "openai_base_url" => "https://api.openai.com/v1",
+        "swarm_agent_count" => "8",
+        "temperature" => "0.5",
+        "max_tokens" => "8192",
+        "auto_save" => "true"
+      }
+    })
+    |> render_submit()
+
+    assert render(view) =~ "Settings saved successfully"
+    saved = IexCode.Settings.get_settings()
+    assert saved.default_model_provider == "anthropic"
+    assert saved.default_model == "claude-3-7-sonnet"
+    assert saved.anthropic_api_key == "sk-ant-test-liveview"
+    assert saved.swarm_agent_count == 8
+    assert saved.temperature == 0.5
+    assert saved.max_tokens == 8192
+    assert saved.auto_save == true
+  end
+
+  test "handles file explorer folder expand/collapse and insert_code_to_editor", %{
+    conn: conn,
+    workspace_path: path
+  } do
+    project = create_project_fixture(%{root_path: path})
+    session = create_session_fixture(project)
+
+    # Create dummy files
+    sub_dir = Path.join(path, "lib/demo")
+    File.mkdir_p!(sub_dir)
+    file1 = Path.join(sub_dir, "sample.ex")
+    File.write!(file1, "defmodule Demo.Sample do\nend\n")
+
+    {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+    # Switch to files tab
+    view
+    |> element("#tab-btn-files")
+    |> render_click()
+
+    # Toggle folder collapse
+    view
+    |> element("button[phx-click='toggle_folder'][phx-value-path='lib']")
+    |> render_click()
+
+    # Select file to open in buffer
+    view
+    |> render_hook("select_file", %{"path" => "lib/demo/sample.ex"})
+
+    assert render(view) =~ "sample.ex"
+
+    # Insert code into editor buffer
+    snippet = "  def hello, do: :world\n"
+
+    view
+    |> render_hook("insert_code_to_editor", %{"code" => snippet})
+
+    assert render(view) =~ "Inserted snippet into lib/demo/sample.ex"
+    assert render(view) =~ "def hello, do: :world"
+  end
+
   # Terminal execution is async via Port: poll until the expected output
   # (e.g. an exit marker) shows up in the rendered buffer.
   defp wait_for_terminal(view, match?, deadline \\ 2000) do

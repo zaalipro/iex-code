@@ -89,6 +89,7 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:dirty_content, nil)
       |> assign(:is_dirty?, false)
       |> assign(:file_filter, "")
+      |> assign(:expanded_folders, all_directory_paths(files))
       # Interactive Diff assigns (real git state; populated by refresh_git_state below)
       |> assign(:diff_text, "")
       |> assign(:diff_mode, "inline")
@@ -141,6 +142,8 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:user_availability, "Available")
       |> assign(:user_availability_subtext, "Instant notifications & swarm active")
       |> assign(:new_task_status, "scheduled")
+      |> assign(:task_schedule_type, "scheduled")
+      |> assign(:usage_history, Sessions.list_usage_history(10))
       |> assign(:new_task_priority, "medium")
       |> assign(:new_task_assignee, "default")
       |> assign(:open_modal_dropdown, nil)
@@ -716,8 +719,69 @@ defmodule IexCodeWeb.WorkspaceLive do
   end
 
   @impl true
-  def handle_event("set_task_schedule_type", _params, socket) do
-    {:noreply, socket}
+  def handle_event("set_task_schedule_type", %{"type" => type}, socket) do
+    {:noreply,
+     socket
+     |> assign(:task_schedule_type, type)
+     |> assign(:new_task_status, type)}
+  end
+
+  def handle_event("set_task_schedule_type", params, socket) do
+    type = params["type"] || params["schedule_type"] || "scheduled"
+
+    {:noreply,
+     socket
+     |> assign(:task_schedule_type, type)
+     |> assign(:new_task_status, type)}
+  end
+
+  @impl true
+  def handle_event("toggle_folder", %{"path" => path}, socket) do
+    expanded = socket.assigns.expanded_folders || MapSet.new()
+
+    new_expanded =
+      if MapSet.member?(expanded, path) do
+        MapSet.delete(expanded, path)
+      else
+        MapSet.put(expanded, path)
+      end
+
+    {:noreply, assign(socket, :expanded_folders, new_expanded)}
+  end
+
+  @impl true
+  def handle_event("insert_code_to_editor", %{"code" => code}, socket) do
+    file_path = socket.assigns.selected_file
+
+    if file_path do
+      current = socket.assigns.dirty_content || socket.assigns.file_content || ""
+
+      new_text =
+        cond do
+          current == "" -> code
+          String.ends_with?(current, "\n") -> current <> code <> "\n"
+          true -> current <> "\n\n" <> code <> "\n"
+        end
+
+      buffers =
+        Enum.map(socket.assigns.open_buffers, fn b ->
+          if b.path == file_path do
+            %{b | dirty_content: new_text, dirty?: true}
+          else
+            b
+          end
+        end)
+
+      {:noreply,
+       socket
+       |> assign(:dirty_content, new_text)
+       |> assign(:is_dirty?, true)
+       |> assign(:open_buffers, buffers)
+       |> put_flash(:info, "Inserted snippet into #{file_path}")}
+    else
+      {:noreply,
+       put_flash(socket, :error, "No active file buffer. Open a file in the editor first.")}
+    end
   end
 
   @impl true
@@ -868,7 +932,17 @@ defmodule IexCodeWeb.WorkspaceLive do
   @impl true
   def handle_event("refresh_files", _params, socket) do
     files = list_project_files(socket.assigns.project.root_path)
-    {:noreply, assign(socket, :project_files, files)}
+
+    new_expanded =
+      MapSet.union(
+        socket.assigns.expanded_folders || MapSet.new(),
+        all_directory_paths(files)
+      )
+
+    {:noreply,
+     socket
+     |> assign(:project_files, files)
+     |> assign(:expanded_folders, new_expanded)}
   end
 
   # ============================================================================
@@ -1754,7 +1828,11 @@ defmodule IexCodeWeb.WorkspaceLive do
 
     if text != "" do
       SessionServer.send_steering(socket.assigns.session.id, text)
-      {:noreply, put_flash(socket, :info, "Steering guidance delivered to active swarm")}
+
+      {:noreply,
+       socket
+       |> assign(:steer_text, "")
+       |> put_flash(:info, "Steering guidance delivered to active swarm")}
     else
       {:noreply, socket}
     end
@@ -1986,6 +2064,79 @@ defmodule IexCodeWeb.WorkspaceLive do
   end
 
   @impl true
+  def handle_event("add_subtask", params, socket) do
+    task_id =
+      params["task_id"] || (socket.assigns.selected_task && socket.assigns.selected_task.id)
+
+    title = params["title"] || params["subtask_title"] || ""
+
+    if task_id && String.trim(title) != "" do
+      case Kanban.add_subtask(task_id, %{"title" => title}) do
+        {:ok, updated} ->
+          tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
+
+          {:noreply,
+           socket
+           |> assign(:tasks, tasks)
+           |> assign(:selected_task, updated)
+           |> put_flash(:info, "Subtask added")}
+
+        {:error, reason} ->
+          {:noreply, put_flash(socket, :error, "Failed to add subtask: #{inspect(reason)}")}
+      end
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("toggle_subtask", %{"id" => subtask_id} = params, socket) do
+    task_id =
+      params["task_id"] || (socket.assigns.selected_task && socket.assigns.selected_task.id)
+
+    if task_id do
+      case Kanban.toggle_subtask(task_id, subtask_id) do
+        {:ok, updated} ->
+          tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
+
+          {:noreply,
+           socket
+           |> assign(:tasks, tasks)
+           |> assign(:selected_task, updated)}
+
+        {:error, reason} ->
+          {:noreply, put_flash(socket, :error, "Failed to toggle subtask: #{inspect(reason)}")}
+      end
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("delete_subtask", %{"id" => subtask_id} = params, socket) do
+    task_id =
+      params["task_id"] || (socket.assigns.selected_task && socket.assigns.selected_task.id)
+
+    if task_id do
+      case Kanban.delete_subtask(task_id, subtask_id) do
+        {:ok, updated} ->
+          tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
+
+          {:noreply,
+           socket
+           |> assign(:tasks, tasks)
+           |> assign(:selected_task, updated)
+           |> put_flash(:info, "Subtask deleted")}
+
+        {:error, reason} ->
+          {:noreply, put_flash(socket, :error, "Failed to delete subtask: #{inspect(reason)}")}
+      end
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
   def handle_event("update_task", params, socket) do
     id = params["id"] || (socket.assigns.selected_task && socket.assigns.selected_task.id)
     task_params = params["task"] || params
@@ -1996,12 +2147,28 @@ defmodule IexCodeWeb.WorkspaceLive do
           {:noreply, put_flash(socket, :error, "Task not found")}
 
         task ->
+          tags =
+            cond do
+              is_list(task_params["tags"]) ->
+                task_params["tags"]
+
+              is_binary(task_params["tags"]) ->
+                task_params["tags"]
+                |> String.split(",")
+                |> Enum.map(&String.trim/1)
+                |> Enum.reject(&(&1 == ""))
+
+              true ->
+                task.tags
+            end
+
           attrs = %{
             title: task_params["title"] || task.title,
             description: task_params["description"] || task.description,
             priority: task_params["priority"] || task.priority,
             assignee: task_params["assignee"] || task.assignee,
-            status: task_params["status"] || task.status
+            status: task_params["status"] || task.status,
+            tags: tags
           }
 
           case Kanban.update_task(task, attrs) do
@@ -2320,23 +2487,36 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("toggle_settings_modal", _params, socket) do
-    {:noreply, assign(socket, :show_settings_modal, !socket.assigns.show_settings_modal)}
+    show? = !socket.assigns.show_settings_modal
+    usage = if show?, do: Sessions.list_usage_history(10), else: socket.assigns.usage_history
+    {:noreply, socket |> assign(:show_settings_modal, show?) |> assign(:usage_history, usage)}
   end
 
   @impl true
   def handle_event("save_settings", %{"settings" => params}, socket) do
     # Only overwrite the stored API key when the submitted value is non-empty
-    params =
-      case params["openai_api_key"] do
-        key when is_binary(key) and key != "" -> params
-        _ -> Map.delete(params, "openai_api_key")
-      end
+    clean_params =
+      params
+      |> then(fn p ->
+        case p["openai_api_key"] do
+          key when is_binary(key) and key != "" -> p
+          _ -> Map.delete(p, "openai_api_key")
+        end
+      end)
+      |> then(fn p ->
+        case p["anthropic_api_key"] do
+          key when is_binary(key) and key != "" -> p
+          _ -> Map.delete(p, "anthropic_api_key")
+        end
+      end)
+      |> sanitize_settings_params()
 
-    case Settings.update_settings(params) do
+    case Settings.update_settings(clean_params) do
       {:ok, updated} ->
         {:noreply,
          socket
          |> assign(:settings, updated)
+         |> assign(:usage_history, Sessions.list_usage_history(10))
          |> assign(:settings_form, Settings.change_settings(updated) |> to_form())
          |> assign(:show_settings_modal, false)
          |> put_flash(:info, "Settings saved successfully")}
@@ -3355,11 +3535,10 @@ defmodule IexCodeWeb.WorkspaceLive do
       root_path
       |> Path.join("**/*")
       |> Path.wildcard()
-      |> Enum.reject(&String.contains?(&1, ["_build", "deps", ".git", ".elixir_ls"]))
+      |> Enum.reject(&String.contains?(&1, ["_build", "deps", ".git", ".elixir_ls", ".agents"]))
       |> Enum.filter(&File.regular?/1)
       |> Enum.map(&Path.relative_to(&1, root_path))
       |> Enum.sort()
-      |> Enum.take(100)
     else
       []
     end
@@ -3553,4 +3732,66 @@ defmodule IexCodeWeb.WorkspaceLive do
 
     prev_cells ++ current_cells ++ next_cells
   end
+
+  defp sanitize_settings_params(params) when is_map(params) do
+    params
+    |> maybe_parse_int("swarm_agent_count")
+    |> maybe_parse_int("max_tokens")
+    |> maybe_parse_float("temperature")
+    |> maybe_parse_bool("auto_save")
+  end
+
+  defp maybe_parse_int(map, key) do
+    case Map.get(map, key) do
+      val when is_binary(val) and val != "" ->
+        case Integer.parse(val) do
+          {int, _} -> Map.put(map, key, int)
+          :error -> map
+        end
+
+      _ ->
+        map
+    end
+  end
+
+  defp maybe_parse_float(map, key) do
+    case Map.get(map, key) do
+      val when is_binary(val) and val != "" ->
+        case Float.parse(val) do
+          {flt, _} -> Map.put(map, key, flt)
+          :error -> map
+        end
+
+      _ ->
+        map
+    end
+  end
+
+  defp maybe_parse_bool(map, key) do
+    case Map.get(map, key) do
+      "true" -> Map.put(map, key, true)
+      "false" -> Map.put(map, key, false)
+      "1" -> Map.put(map, key, true)
+      "0" -> Map.put(map, key, false)
+      _ -> map
+    end
+  end
+
+  defp all_directory_paths(files) when is_list(files) do
+    files
+    |> Enum.flat_map(fn file ->
+      parts = Path.split(to_string(file))
+
+      if length(parts) > 1 do
+        Enum.map(1..(length(parts) - 1), fn len ->
+          parts |> Enum.take(len) |> Path.join()
+        end)
+      else
+        []
+      end
+    end)
+    |> MapSet.new()
+  end
+
+  defp all_directory_paths(_), do: MapSet.new()
 end

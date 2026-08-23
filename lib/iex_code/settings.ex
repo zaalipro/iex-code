@@ -95,7 +95,9 @@ defmodule IexCode.Settings do
       default_model_provider: @default_provider,
       default_model: @default_model,
       swarm_agent_count: 4,
-      auto_save: true
+      auto_save: true,
+      temperature: 0.2,
+      max_tokens: 4096
     }
   end
 

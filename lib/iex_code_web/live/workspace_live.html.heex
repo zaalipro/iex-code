@@ -2022,6 +2022,7 @@
           <.file_explorer
             files={@project_files}
             filter={@file_filter}
+            expanded_folders={@expanded_folders}
             selected_file={@selected_file}
             file_content={@file_content}
             dirty_content={@dirty_content}
@@ -2074,11 +2075,141 @@
 
             <!-- Drawer Body -->
             <div class="p-5 space-y-5 flex-1 font-mono text-xs">
-              <!-- Task Title -->
-              <div>
-                <h3 class="text-base font-bold text-white tracking-tight leading-snug font-sans">
-                  {@selected_task.title}
-                </h3>
+              <!-- Inline Task Editing Form -->
+              <form
+                phx-submit="update_task"
+                id={"drawer-edit-task-#{@selected_task.id}"}
+                class="space-y-3"
+              >
+                <input type="hidden" name="task_id" value={@selected_task.id} />
+                <div>
+                  <label class="block text-[11px] text-gray-400 uppercase tracking-wider mb-1 font-mono">Title</label>
+                  <input
+                    type="text"
+                    name="title"
+                    value={@selected_task.title}
+                    required
+                    class="w-full bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-1.5 text-white font-sans text-sm font-bold focus:border-cyan-500 focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label class="block text-[11px] text-gray-400 uppercase tracking-wider mb-1 font-mono">Description</label>
+                  <textarea
+                    name="description"
+                    rows="3"
+                    placeholder="Task details and requirements..."
+                    class="w-full bg-[#0d1117] border border-[#30363d] rounded-xl p-2.5 text-xs text-gray-300 font-mono focus:border-cyan-500 focus:outline-none"
+                  >{@selected_task.description}</textarea>
+                </div>
+
+                <div>
+                  <label class="block text-[11px] text-gray-400 uppercase tracking-wider mb-1 font-mono">Tags (comma-separated)</label>
+                  <input
+                    type="text"
+                    name="tags"
+                    value={Enum.join(@selected_task.tags || [], ", ")}
+                    placeholder="e.g. backend, urgent, liveview"
+                    class="w-full bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-1.5 text-xs text-gray-300 font-mono focus:border-cyan-500 focus:outline-none"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  class="w-full py-1.5 bg-[#161b22] hover:bg-[#21262d] text-cyan-300 border border-cyan-500/30 rounded-xl text-xs font-mono font-medium transition-smooth flex items-center justify-center gap-1.5"
+                >
+                  <.icon name="hero-check" class="w-3.5 h-3.5" />
+                  <span>Save Task Details</span>
+                </button>
+              </form>
+
+              <!-- Subtasks Checklist Section -->
+              <div class="pt-3 border-t border-[#21262d] space-y-3">
+                <div class="flex items-center justify-between">
+                  <span class="text-[11px] font-mono text-gray-400 uppercase tracking-wider">
+                    Subtasks ({@selected_task.steps_completed}/{@selected_task.steps_total})
+                  </span>
+                  <% subtask_pct =
+                    if @selected_task.steps_total > 0 do
+                      min(
+                        100,
+                        round(@selected_task.steps_completed / @selected_task.steps_total * 100)
+                      )
+                    else
+                      0
+                    end %>
+                  <span class="text-[11px] font-mono font-bold text-emerald-400">{subtask_pct}%</span>
+                </div>
+
+                <!-- Progress Bar -->
+                <div class="w-full bg-[#0d1117] border border-[#21262d] rounded-full h-2 overflow-hidden">
+                  <div
+                    class="bg-emerald-500 h-full rounded-full transition-all duration-300 shadow-[0_0_8px_rgba(16,185,129,0.5)]"
+                    style={"width: #{subtask_pct}%"}
+                  >
+                  </div>
+                </div>
+
+                <!-- Subtasks Items List -->
+                <div class="space-y-1.5 max-h-48 overflow-y-auto">
+                  <%= for subtask <- (@selected_task.subtasks || []) do %>
+                    <% is_done = subtask["completed"] == true or subtask[:completed] == true
+                    sid = subtask["id"] || subtask[:id] %>
+                    <div class="flex items-center justify-between gap-2 p-2 bg-[#161b22] border border-[#21262d] rounded-xl group hover:border-[#30363d] transition-smooth">
+                      <button
+                        type="button"
+                        phx-click="toggle_subtask"
+                        phx-value-id={sid}
+                        class="flex items-center gap-2 flex-1 text-left min-w-0"
+                      >
+                        <span class={[
+                          "w-4 h-4 rounded flex items-center justify-center border transition-smooth shrink-0",
+                          is_done && "bg-emerald-500 border-emerald-500 text-white",
+                          !is_done && "border-gray-500 bg-[#0d1117] hover:border-gray-400"
+                        ]}>
+                          <%= if is_done do %>
+                            <.icon name="hero-check" class="w-3 h-3 stroke-[3]" />
+                          <% end %>
+                        </span>
+                        <span class={[
+                          "text-xs font-mono truncate",
+                          is_done && "line-through text-gray-500",
+                          !is_done && "text-gray-200 font-medium"
+                        ]}>
+                          {subtask["title"] || subtask[:title]}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        phx-click="delete_subtask"
+                        phx-value-id={sid}
+                        class="text-gray-500 hover:text-rose-400 p-1 rounded transition-smooth opacity-0 group-hover:opacity-100"
+                        title="Delete subtask"
+                      >
+                        <.icon name="hero-trash" class="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  <% end %>
+                </div>
+
+                <!-- Add Subtask Input Form -->
+                <form phx-submit="add_subtask" class="flex gap-2 pt-1">
+                  <input type="hidden" name="task_id" value={@selected_task.id} />
+                  <input
+                    type="text"
+                    name="title"
+                    placeholder="Add a subtask..."
+                    required
+                    class="flex-1 bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-1.5 text-xs text-white font-mono placeholder-gray-500 focus:border-cyan-500 focus:outline-none"
+                  />
+                  <button
+                    type="submit"
+                    class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-mono font-medium transition-smooth shrink-0 flex items-center gap-1"
+                  >
+                    <.icon name="hero-plus" class="w-3.5 h-3.5" />
+                    <span>Add</span>
+                  </button>
+                </form>
               </div>
 
               <!-- Metadata Grid -->
@@ -2727,7 +2858,7 @@
               </button>
             </div>
             <div class="px-3 py-1 rounded-full bg-[#11151c] border border-[#21262d] text-gray-400 text-xs font-mono">
-              30 Days
+              Real Telemetry
             </div>
           </div>
 
@@ -2735,70 +2866,65 @@
           <div class="grid grid-cols-12 gap-2 text-[11px] font-mono text-gray-500 uppercase tracking-wider pb-2 border-b border-[#21262d]">
             <div class="col-span-4">Date</div>
             <div class="col-span-5">Model</div>
-            <div class="col-span-3 text-right">Credits</div>
+            <div class="col-span-3 text-right">Tokens / Credits</div>
           </div>
 
-          <!-- Table Rows -->
-          <div class="divide-y divide-[#21262d]/60 font-mono text-xs">
-            <div class="grid grid-cols-12 gap-2 py-2.5 items-center text-gray-300">
-              <div class="col-span-4 text-gray-400">Aug 20, 07:26 PM</div>
-              <div class="col-span-5 text-white font-medium">Claude 3.7 Sonnet Thinking</div>
-              <div class="col-span-3 text-right text-amber-400 font-semibold">641.5K</div>
-            </div>
-            <div class="grid grid-cols-12 gap-2 py-2.5 items-center text-gray-300">
-              <div class="col-span-4 text-gray-400">Aug 20, 07:21 PM</div>
-              <div class="col-span-5 text-white font-medium">Gemini 3.7 Flash High</div>
-              <div class="col-span-3 text-right text-amber-400 font-semibold">334.1K</div>
-            </div>
-            <div class="grid grid-cols-12 gap-2 py-2.5 items-center text-gray-300">
-              <div class="col-span-4 text-gray-400">Aug 20, 07:18 PM</div>
-              <div class="col-span-5 text-white font-medium">GPT 5.4 Turbo Codex</div>
-              <div class="col-span-3 text-right text-amber-400 font-semibold">194.4K</div>
-            </div>
-            <div class="grid grid-cols-12 gap-2 py-2.5 items-center text-gray-300">
-              <div class="col-span-4 text-gray-400">Aug 20, 07:05 PM</div>
-              <div class="col-span-5 text-white font-medium">Gemini 3.7 Flash High</div>
-              <div class="col-span-3 text-right text-gray-400 font-semibold">112.8K</div>
-            </div>
+          <!-- Table Rows (Dynamically Queried) -->
+          <div class="divide-y divide-[#21262d]/60 font-mono text-xs max-h-48 overflow-y-auto">
+            <%= if @usage_history && @usage_history != [] do %>
+              <%= for usage <- @usage_history do %>
+                <div class="grid grid-cols-12 gap-2 py-2.5 items-center text-gray-300">
+                  <div class="col-span-4 text-gray-400">
+                    {Calendar.strftime(usage.date, "%b %d, %I:%M %p")}
+                  </div>
+                  <div class="col-span-5 text-white font-medium truncate">
+                    {usage.model || "Default"}
+                  </div>
+                  <div class="col-span-3 text-right text-amber-400 font-semibold">
+                    <%= if usage.tokens >= 1000 do %>
+                      {Float.round(usage.tokens / 1000, 1)}K
+                    <% else %>
+                      {usage.tokens}
+                    <% end %>
+                  </div>
+                </div>
+              <% end %>
+            <% else %>
+              <div class="py-4 text-center text-gray-500 font-mono text-xs">
+                No token usage records found yet
+              </div>
+            <% end %>
           </div>
         </div>
 
-        <!-- LLM API Key Configuration Form -->
+        <!-- LLM API Key & Settings Configuration Form -->
         <div class="bg-[#161b22]/70 border border-[#21262d] rounded-2xl p-5">
           <h4 class="text-xs font-bold text-white tracking-tight mb-3 uppercase font-mono">
-            Provider Keys & Endpoint
+            Provider Keys & Settings
           </h4>
           <.form
             for={@settings_form}
             phx-submit="save_settings"
-            class="space-y-3 font-mono text-xs"
+            class="space-y-4 font-mono text-xs"
           >
-            <div>
-              <label class="block text-gray-400 mb-1">OpenAI / Proxy API Key</label>
-              <input
-                type="password"
-                name="settings[openai_api_key]"
-                value=""
-                placeholder={
-                  if key = @settings.openai_api_key do
-                    "•••• #{String.slice(key, -4..-1)}"
-                  else
-                    "Enter API key"
-                  end
-                }
-                aria-label="OpenAI or Proxy API key (leave blank to keep the stored key)"
-                class="w-full bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-2 text-white font-mono"
-              />
-            </div>
+            <!-- Provider Selection & Default Model -->
             <div class="grid grid-cols-2 gap-3">
               <div>
-                <label class="block text-gray-400 mb-1">Base URL</label>
-                <input
-                  type="text"
-                  name="settings[openai_base_url]"
-                  value={@settings.openai_base_url}
-                  class="w-full bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-2 text-white font-mono text-[11px]"
-                />
+                <label class="block text-gray-400 mb-1">Default Provider</label>
+                <select
+                  name="settings[default_model_provider]"
+                  class="w-full bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-2 text-white font-mono text-xs focus:border-cyan-500 focus:outline-none"
+                >
+                  <option
+                    value="anthropic"
+                    selected={@settings.default_model_provider == "anthropic"}
+                  >
+                    Anthropic
+                  </option>
+                  <option value="openai" selected={@settings.default_model_provider == "openai"}>
+                    OpenAI / Proxy
+                  </option>
+                </select>
               </div>
               <div>
                 <label class="block text-gray-400 mb-1">Default Model</label>
@@ -2806,22 +2932,141 @@
                   type="text"
                   name="settings[default_model]"
                   value={@settings.default_model}
-                  class="w-full bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-2 text-white font-mono text-[11px]"
+                  class="w-full bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-2 text-white font-mono text-xs focus:border-cyan-500 focus:outline-none"
                 />
               </div>
             </div>
-            <div class="flex justify-end gap-2 pt-2 border-t border-[#21262d]">
+
+            <!-- OpenAI / Proxy Credentials -->
+            <div class="space-y-2 pt-2 border-t border-[#21262d]">
+              <div class="text-[11px] font-bold text-gray-400 uppercase tracking-wider">
+                OpenAI / Proxy Configuration
+              </div>
+              <div>
+                <label class="block text-gray-400 mb-1">OpenAI API Key</label>
+                <input
+                  type="password"
+                  name="settings[openai_api_key]"
+                  value=""
+                  placeholder={
+                    if key = @settings.openai_api_key,
+                      do: "•••• #{String.slice(key, -4..-1)}",
+                      else: "Enter OpenAI API Key"
+                  }
+                  aria-label="OpenAI API key"
+                  class="w-full bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-2 text-white font-mono"
+                />
+              </div>
+              <div>
+                <label class="block text-gray-400 mb-1">OpenAI Base URL</label>
+                <input
+                  type="text"
+                  name="settings[openai_base_url]"
+                  value={@settings.openai_base_url}
+                  class="w-full bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-2 text-white font-mono text-[11px] focus:border-cyan-500 focus:outline-none"
+                />
+              </div>
+            </div>
+
+            <!-- Anthropic Credentials -->
+            <div class="space-y-2 pt-2 border-t border-[#21262d]">
+              <div class="text-[11px] font-bold text-gray-400 uppercase tracking-wider">
+                Anthropic Configuration
+              </div>
+              <div>
+                <label class="block text-gray-400 mb-1">Anthropic API Key</label>
+                <input
+                  type="password"
+                  name="settings[anthropic_api_key]"
+                  value=""
+                  placeholder={
+                    if key = @settings.anthropic_api_key,
+                      do: "•••• #{String.slice(key, -4..-1)}",
+                      else: "Enter Anthropic API Key"
+                  }
+                  aria-label="Anthropic API key"
+                  class="w-full bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-2 text-white font-mono"
+                />
+              </div>
+              <div>
+                <label class="block text-gray-400 mb-1">Anthropic Base URL</label>
+                <input
+                  type="text"
+                  name="settings[anthropic_base_url]"
+                  value={@settings.anthropic_base_url}
+                  class="w-full bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-2 text-white font-mono text-[11px] focus:border-cyan-500 focus:outline-none"
+                />
+              </div>
+            </div>
+
+            <!-- Swarm Agent Count, Temperature, Max Tokens & Auto-Save -->
+            <div class="grid grid-cols-2 gap-3 pt-2 border-t border-[#21262d]">
+              <div>
+                <label class="block text-gray-400 mb-1">Swarm Agents (1-32)</label>
+                <input
+                  type="number"
+                  name="settings[swarm_agent_count]"
+                  min="1"
+                  max="32"
+                  value={@settings.swarm_agent_count}
+                  class="w-full bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-2 text-white font-mono text-xs focus:border-cyan-500 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label class="block text-gray-400 mb-1">Temperature (0.0 - 2.0)</label>
+                <input
+                  type="number"
+                  step="0.05"
+                  min="0.0"
+                  max="2.0"
+                  name="settings[temperature]"
+                  value={@settings.temperature || 0.2}
+                  class="w-full bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-2 text-white font-mono text-xs focus:border-cyan-500 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label class="block text-gray-400 mb-1">Max Tokens</label>
+                <input
+                  type="number"
+                  step="256"
+                  min="256"
+                  max="128000"
+                  name="settings[max_tokens]"
+                  value={@settings.max_tokens || 4096}
+                  class="w-full bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-2 text-white font-mono text-xs focus:border-cyan-500 focus:outline-none"
+                />
+              </div>
+              <div class="flex items-center gap-2 pt-5">
+                <input type="hidden" name="settings[auto_save]" value="false" />
+                <input
+                  type="checkbox"
+                  id="settings-auto-save"
+                  name="settings[auto_save]"
+                  value="true"
+                  checked={@settings.auto_save}
+                  class="rounded bg-[#0d1117] border-[#30363d] text-emerald-600 focus:ring-emerald-500"
+                />
+                <label
+                  for="settings-auto-save"
+                  class="text-gray-300 text-xs font-mono cursor-pointer select-none"
+                >
+                  Auto-Save Files
+                </label>
+              </div>
+            </div>
+
+            <div class="flex justify-end gap-2 pt-3 border-t border-[#21262d]">
               <button
                 type="button"
                 phx-click="toggle_settings_modal"
-                class="px-4 py-2 bg-[#21262d] text-gray-300 rounded-xl"
+                class="px-4 py-2 bg-[#21262d] hover:bg-gray-700 text-gray-300 rounded-xl transition-smooth"
               >
                 Close
               </button>
               <button
                 type="submit"
                 phx-disable-with="Saving..."
-                class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-bold"
+                class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-bold transition-smooth"
               >
                 Save Configuration
               </button>

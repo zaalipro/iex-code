@@ -838,6 +838,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
   """
   attr :files, :list, default: []
   attr :filter, :string, default: ""
+  attr :expanded_folders, :any, default: MapSet.new()
   attr :selected_file, :string, default: nil
   attr :file_content, :string, default: nil
   attr :dirty_content, :string, default: nil
@@ -845,19 +846,30 @@ defmodule IexCodeWeb.WorkspaceComponents do
   attr :open_buffers, :list, default: []
 
   def file_explorer(assigns) do
-    filtered_files =
-      if assigns.filter == "" or is_nil(assigns.filter) do
-        assigns.files
-      else
+    has_filter = assigns.filter != "" and not is_nil(assigns.filter)
+    expanded = assigns.expanded_folders || MapSet.new()
+
+    tree_items =
+      if has_filter do
         query = String.downcase(assigns.filter)
-        Enum.filter(assigns.files, &String.contains?(String.downcase(&1), query))
+
+        assigns.files
+        |> Enum.filter(&String.contains?(String.downcase(&1), query))
+        |> Enum.map(fn file ->
+          %{type: :file, name: file, path: file, depth: 0}
+        end)
+      else
+        assigns.files
+        |> build_file_tree()
+        |> flatten_file_tree(expanded, 0)
       end
 
     current_text = assigns.dirty_content || assigns.file_content || ""
 
     assigns =
       assigns
-      |> assign(:filtered_files, filtered_files)
+      |> assign(:tree_items, tree_items)
+      |> assign(:has_filter, has_filter)
       |> assign(:current_text, current_text)
 
     ~H"""
@@ -878,7 +890,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
             <.icon name="hero-magnifying-glass" class="w-4 h-4 text-gray-400 absolute left-2.5 top-2" />
           </div>
           <div class="flex items-center justify-between mt-2 px-1 text-[11px] font-mono text-gray-400">
-            <span>{length(@filtered_files)} files</span>
+            <span>{if @has_filter, do: length(@tree_items), else: length(@files)} files</span>
             <button
               phx-click="refresh_files"
               class="hover:text-white transition-smooth flex items-center gap-1"
@@ -888,42 +900,65 @@ defmodule IexCodeWeb.WorkspaceComponents do
           </div>
         </div>
 
-        <!-- Files List -->
+        <!-- Files List & Hierarchical Tree -->
         <div class="flex-1 overflow-y-auto p-2 space-y-0.5 font-mono text-xs">
-          <%= for file <- @filtered_files do %>
-            <% is_open = Enum.any?(@open_buffers, &(&1.path == file))
-            buffer = Enum.find(@open_buffers, &(&1.path == file))
-            is_buffer_dirty = buffer && buffer.dirty? %>
-            <button
-              phx-click="select_file"
-              phx-value-path={file}
-              class={[
-                "w-full text-left px-2.5 py-1.5 rounded-lg truncate transition-smooth flex items-center justify-between gap-2 group",
-                @selected_file == file &&
-                  "bg-[#21262d] text-cyan-300 font-medium shadow-sm border border-[#30363d]",
-                @selected_file != file && "text-gray-400 hover:text-gray-200 hover:bg-[#161b22]"
-              ]}
-            >
-              <div class="flex items-center gap-2 truncate">
+          <%= for item <- @tree_items do %>
+            <%= if item.type == :dir do %>
+              <button
+                type="button"
+                phx-click="toggle_folder"
+                phx-value-path={item.path}
+                style={"padding-left: #{item.depth * 12 + 6}px"}
+                class="w-full text-left py-1 pr-2 rounded-lg truncate transition-smooth flex items-center gap-1.5 text-gray-400 hover:text-white hover:bg-[#161b22] group"
+              >
                 <.icon
-                  name={file_icon(file)}
-                  class={["w-3.5 h-3.5 shrink-0", @selected_file == file && "text-cyan-400"]}
+                  name={if item.expanded, do: "hero-chevron-down", else: "hero-chevron-right"}
+                  class="w-3 h-3 text-gray-500 group-hover:text-gray-300 shrink-0"
                 />
-                <span class="truncate">{file}</span>
-              </div>
-              <div class="flex items-center gap-1 shrink-0">
-                <%= if is_buffer_dirty do %>
-                  <span
-                    class="w-2 h-2 rounded-full bg-amber-400 shadow-[0_0_4px_rgba(245,158,11,0.8)]"
-                    title="Unsaved changes"
-                  ></span>
-                <% else %>
-                  <%= if is_open do %>
-                    <span class="w-1.5 h-1.5 rounded-full bg-cyan-400/60" title="Open tab"></span>
+                <.icon
+                  name={if item.expanded, do: "hero-folder-open", else: "hero-folder"}
+                  class="w-3.5 h-3.5 text-amber-400 shrink-0"
+                />
+                <span class="truncate font-medium text-gray-300 group-hover:text-white">{item.name}</span>
+              </button>
+            <% else %>
+              <% is_open = Enum.any?(@open_buffers, &(&1.path == item.path))
+              buffer = Enum.find(@open_buffers, &(&1.path == item.path))
+              is_buffer_dirty = buffer && buffer.dirty? %>
+              <button
+                type="button"
+                phx-click="select_file"
+                phx-value-path={item.path}
+                style={"padding-left: #{if @has_filter, do: 8, else: item.depth * 12 + 16}px"}
+                class={[
+                  "w-full text-left py-1.5 pr-2.5 rounded-lg truncate transition-smooth flex items-center justify-between gap-2 group",
+                  @selected_file == item.path &&
+                    "bg-[#21262d] text-cyan-300 font-medium shadow-sm border border-[#30363d]",
+                  @selected_file != item.path &&
+                    "text-gray-400 hover:text-gray-200 hover:bg-[#161b22]"
+                ]}
+              >
+                <div class="flex items-center gap-2 truncate">
+                  <.icon
+                    name={file_icon(item.name)}
+                    class={["w-3.5 h-3.5 shrink-0", @selected_file == item.path && "text-cyan-400"]}
+                  />
+                  <span class="truncate">{item.name}</span>
+                </div>
+                <div class="flex items-center gap-1 shrink-0">
+                  <%= if is_buffer_dirty do %>
+                    <span
+                      class="w-2 h-2 rounded-full bg-amber-400 shadow-[0_0_4px_rgba(245,158,11,0.8)]"
+                      title="Unsaved changes"
+                    ></span>
+                  <% else %>
+                    <%= if is_open do %>
+                      <span class="w-1.5 h-1.5 rounded-full bg-cyan-400/60" title="Open tab"></span>
+                    <% end %>
                   <% end %>
-                <% end %>
-              </div>
-            </button>
+                </div>
+              </button>
+            <% end %>
           <% end %>
         </div>
       </div>
@@ -1134,6 +1169,64 @@ defmodule IexCodeWeb.WorkspaceComponents do
     end
   end
 
+  defp build_file_tree(files) do
+    Enum.reduce(files, %{}, fn file, acc ->
+      parts = Path.split(file)
+      put_file_in_tree(acc, parts, file)
+    end)
+  end
+
+  defp put_file_in_tree(acc, [filename], full_path) do
+    Map.put(acc, filename, {:file, filename, full_path})
+  end
+
+  defp put_file_in_tree(acc, [dir | rest], full_path) do
+    dir_entry =
+      case Map.get(acc, dir) do
+        {:dir, name, path, children} ->
+          {:dir, name, path, children}
+
+        _ ->
+          full_parts = Path.split(full_path)
+          dir_idx = Enum.find_index(full_parts, &(&1 == dir))
+
+          dir_path =
+            if dir_idx do
+              full_parts |> Enum.take(dir_idx + 1) |> Path.join()
+            else
+              dir
+            end
+
+          {:dir, dir, dir_path, %{}}
+      end
+
+    {:dir, name, path, children} = dir_entry
+    updated_children = put_file_in_tree(children, rest, full_path)
+    Map.put(acc, dir, {:dir, name, path, updated_children})
+  end
+
+  defp flatten_file_tree(tree, expanded_folders, depth) do
+    tree
+    |> Enum.sort_by(fn
+      {name, {:dir, _, _, _}} -> {0, String.downcase(name)}
+      {name, {:file, _, _}} -> {1, String.downcase(name)}
+    end)
+    |> Enum.flat_map(fn
+      {_name, {:dir, name, path, children}} ->
+        is_expanded = MapSet.member?(expanded_folders, path)
+        item = %{type: :dir, name: name, path: path, depth: depth, expanded: is_expanded}
+
+        if is_expanded do
+          [item | flatten_file_tree(children, expanded_folders, depth + 1)]
+        else
+          [item]
+        end
+
+      {_name, {:file, name, full_path}} ->
+        [%{type: :file, name: name, path: full_path, depth: depth}]
+    end)
+  end
+
   # ============================================================================
   # F9: Terminal Session Integration & Async Runner
   # ============================================================================
@@ -1324,19 +1417,110 @@ defmodule IexCodeWeb.WorkspaceComponents do
   def markdown_content(assigns) do
     # Separate <think> blocks if present in content
     {reasoning, main_body} = extract_think_blocks(assigns.content)
-    assigns = assign(assigns, reasoning: reasoning, main_body: main_body)
+    chunks = parse_markdown_chunks(main_body)
+    assigns = assign(assigns, reasoning: reasoning, chunks: chunks)
 
     ~H"""
     <div class="markdown-body space-y-2">
       <%= if @reasoning do %>
         <.thinking_trace reasoning={@reasoning} />
       <% end %>
-      <div class="whitespace-pre-wrap font-sans text-sm leading-relaxed text-gray-200">
-        {@main_body}
+      <div class="space-y-2.5 font-sans text-sm leading-relaxed text-gray-200">
+        <%= for chunk <- @chunks do %>
+          <%= case chunk do %>
+            <% {:text, text} -> %>
+              <div class="whitespace-pre-wrap">
+                {text}
+              </div>
+            <% {:code, lang, code} -> %>
+              <div class="rounded-xl border border-[#30363d] bg-[#0d1117] overflow-hidden my-2.5 shadow-sm">
+                <div class="flex items-center justify-between px-3 py-1.5 bg-[#161b22] border-b border-[#21262d] text-xs font-mono text-gray-400">
+                  <span class="text-cyan-400 font-bold uppercase tracking-wider text-[11px]">{lang}</span>
+                  <div class="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      phx-click="insert_code_to_editor"
+                      phx-value-code={code}
+                      class="flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-300 border border-emerald-500/30 transition-smooth"
+                      title="Insert into active editor buffer"
+                    >
+                      <.icon name="hero-arrow-down-tray" class="w-3.5 h-3.5" />
+                      <span>Insert into Editor</span>
+                    </button>
+                    <button
+                      type="button"
+                      phx-hook="CodeCopy"
+                      data-code={code}
+                      id={"copy-code-" <> to_string(:erlang.phash2({lang, code}))}
+                      class="flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded bg-[#21262d] hover:bg-gray-700 text-gray-300 transition-smooth"
+                      title="Copy code"
+                    >
+                      <.icon name="hero-clipboard" class="w-3.5 h-3.5" />
+                      <span>Copy</span>
+                    </button>
+                  </div>
+                </div>
+                <pre class="p-3 font-mono text-xs text-gray-200 overflow-x-auto selection:bg-cyan-900/60 leading-normal"><code>{code}</code></pre>
+              </div>
+          <% end %>
+        <% end %>
       </div>
     </div>
     """
   end
+
+  defp parse_markdown_chunks(text) when is_binary(text) do
+    regex = ~r/```([a-zA-Z0-9_\-\.\+\#]*)\r?\n(.*?)```/s
+
+    case Regex.scan(regex, text, return: :index) do
+      [] ->
+        if text != "", do: [{:text, text}], else: []
+
+      matches ->
+        {chunks, last_idx} =
+          Enum.reduce(matches, {[], 0}, fn
+            [{start, len}, {lang_start, lang_len}, {code_start, code_len}], {acc, prev} ->
+              before_text =
+                if start > prev do
+                  String.slice(text, prev, start - prev)
+                else
+                  nil
+                end
+
+              lang =
+                if lang_len > 0 do
+                  String.slice(text, lang_start, lang_len) |> String.trim()
+                else
+                  "code"
+                end
+
+              code = String.slice(text, code_start, code_len) |> String.trim_trailing()
+
+              acc =
+                if before_text && before_text != "" do
+                  [{:text, before_text} | acc]
+                else
+                  acc
+                end
+
+              acc = [{:code, if(lang == "", do: "code", else: lang), code} | acc]
+              {acc, start + len}
+          end)
+
+        remaining = String.slice(text, last_idx..-1)
+
+        final_chunks =
+          if remaining && remaining != "" do
+            [{:text, remaining} | chunks]
+          else
+            chunks
+          end
+
+        Enum.reverse(final_chunks)
+    end
+  end
+
+  defp parse_markdown_chunks(_), do: []
 
   defp extract_think_blocks(text) when is_binary(text) do
     case Regex.run(~r/<think>(.*?)<\/think>/s, text) do

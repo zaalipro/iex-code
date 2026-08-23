@@ -13,6 +13,8 @@ defmodule IexCode.Settings.AppSettings do
     field :default_model, :string, default: "claude-3-7-sonnet"
     field :swarm_agent_count, :integer, default: 4
     field :auto_save, :boolean, default: true
+    field :temperature, :float, default: 0.2
+    field :max_tokens, :integer, default: 4096
 
     timestamps(type: :utc_datetime)
   end
@@ -29,12 +31,22 @@ defmodule IexCode.Settings.AppSettings do
       :default_model_provider,
       :default_model,
       :swarm_agent_count,
-      :auto_save
+      :auto_save,
+      :temperature,
+      :max_tokens
     ])
     |> validate_inclusion(:default_model_provider, @model_providers)
     |> validate_number(:swarm_agent_count,
       greater_than_or_equal_to: 1,
       less_than_or_equal_to: 32
+    )
+    |> validate_number(:temperature,
+      greater_than_or_equal_to: 0.0,
+      less_than_or_equal_to: 2.0
+    )
+    |> validate_number(:max_tokens,
+      greater_than_or_equal_to: 1,
+      less_than_or_equal_to: 128_000
     )
   end
 end
