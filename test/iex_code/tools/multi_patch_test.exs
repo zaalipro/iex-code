@@ -1,5 +1,5 @@
 defmodule IexCode.Tools.MultiPatchTest do
-  use ExUnit.Case, async: false
+  use IexCode.DataCase, async: false
   alias IexCode.Tools.MultiPatch
 
   @tag :tmp_dir

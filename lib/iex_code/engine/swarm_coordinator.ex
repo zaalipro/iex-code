@@ -9,12 +9,13 @@ defmodule IexCode.Engine.SwarmCoordinator do
   alias IexCode.Engine.AgentSupervisor
   alias IexCode.Engine.Agents.{PlannerAgent, ExplorerAgent, CoderAgent, VerifierAgent}
   alias IexCode.Tools.{AutoFix, MultiPatch, Git}
-  alias IexCode.Sessions
+  alias IexCode.{Runs, Sessions}
   alias Phoenix.PubSub
 
   defmodule State do
     defstruct [
       :session_id,
+      :run_id,
       :session,
       :project_root,
       :user_prompt,
@@ -62,6 +63,10 @@ defmodule IexCode.Engine.SwarmCoordinator do
       else
         options
       end
+
+    if project_root do
+      IexCode.Tools.MultiPatch.Snapshot.claim_unscoped(project_root, session_id)
+    end
 
     parent = self()
 
@@ -114,13 +119,24 @@ defmodule IexCode.Engine.SwarmCoordinator do
   """
   def perform_rollback(_project_root, state \\ %State{}) do
     session_id = Map.get(state, :session_id)
-    snapshots = MultiPatch.Snapshot.list_snapshots(session_id)
+    run_id = Map.get(state, :run_id)
 
-    results = Enum.map(snapshots, &MultiPatch.rollback(&1.transaction_id))
+    if is_binary(session_id) and session_id != "" do
+      snapshots =
+        if is_binary(run_id) and run_id != "" do
+          MultiPatch.Snapshot.list_run_snapshots(run_id)
+        else
+          MultiPatch.Snapshot.list_snapshots(session_id)
+        end
 
-    case Enum.filter(results, &match?({:error, _}, &1)) do
-      [] -> {:ok, :rolled_back}
-      errors -> {:error, errors}
+      results = Enum.map(snapshots, &MultiPatch.rollback(&1.transaction_id))
+
+      case Enum.filter(results, &match?({:error, _}, &1)) do
+        [] -> {:ok, :rolled_back}
+        errors -> {:error, errors}
+      end
+    else
+      {:error, :missing_session_scope}
     end
   rescue
     e -> {:error, Exception.message(e)}
@@ -203,6 +219,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
 
     state = %State{
       session_id: session_id,
+      run_id: opts[:run_id],
       session: session,
       project_root: project_root,
       user_prompt: user_prompt,
@@ -587,6 +604,8 @@ defmodule IexCode.Engine.SwarmCoordinator do
     broadcast_stage(%State{state | iteration: iteration}, :coding, progress_pct, msg)
 
     coder_opts = [
+      session_id: session_id,
+      run_id: state.run_id,
       parent_op_id: root_op_id,
       project_root: project_root,
       plan: state.plan,
@@ -656,7 +675,11 @@ defmodule IexCode.Engine.SwarmCoordinator do
           %State{state | verifier_result: diagnostics, status: :failed, stage: :failed}
         else
           # Apply instant auto-fix heuristics if applicable
-          auto_fix_res = AutoFix.apply_auto_fix(project_root, diagnostics, session_id: session_id)
+          auto_fix_res =
+            AutoFix.apply_auto_fix(project_root, diagnostics,
+              session_id: session_id,
+              run_id: state.run_id
+            )
 
           auto_fix_summary =
             case auto_fix_res do
@@ -907,7 +930,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
   end
 
   defp broadcast_stage(
-         %State{session_id: session_id, start_time_ms: start_time},
+         %State{session_id: session_id, start_time_ms: start_time} = state,
          stage,
          progress,
          message
@@ -927,7 +950,23 @@ defmodule IexCode.Engine.SwarmCoordinator do
        }}
 
     broadcast(session_id, event)
+    persist_run_stage(state, stage, progress, message)
   end
+
+  defp persist_run_stage(%State{run_id: run_id}, stage, progress, message)
+       when is_binary(run_id) do
+    _ = Runs.record_progress(run_id, progress, message, "swarm.#{stage}")
+    :ok
+  rescue
+    error ->
+      Logger.warning(
+        "[SwarmCoordinator] Could not persist run stage #{stage}: #{Exception.message(error)}"
+      )
+
+      :ok
+  end
+
+  defp persist_run_stage(_state, _stage, _progress, _message), do: :ok
 
   defp update_db_session_status(session_id, status_str) do
     case Sessions.get_session(session_id) do

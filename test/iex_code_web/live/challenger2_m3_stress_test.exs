@@ -465,26 +465,4 @@ defmodule IexCodeWeb.Challenger2M3StressTest do
       assert WorkspaceComponents.ansi_to_html(nil) |> Phoenix.HTML.safe_to_string() == ""
     end
   end
-
-  # Terminal execution is async via Port: poll until the expected output
-  # (e.g. an exit marker) shows up in the rendered buffer.
-  defp wait_for_terminal(view, match?, deadline \\ 2000) do
-    html = render(view)
-
-    cond do
-      match?.(html) ->
-        html
-
-      deadline <= 0 ->
-        flunk("timed out waiting for expected terminal output")
-
-      true ->
-        Process.sleep(50)
-        wait_for_terminal(view, match?, deadline - 50)
-    end
-  end
-
-  defp count_exit_markers(html) do
-    html |> String.split("[Exit ") |> length() |> Kernel.-(1)
-  end
 end

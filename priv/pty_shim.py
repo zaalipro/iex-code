@@ -297,9 +297,20 @@ def main():
                             if len(payload) >= 1:
                                 sig = payload[0]
                                 try:
-                                    os.killpg(child_pid, sig)
+                                    # Interactive shells put foreground jobs in
+                                    # their own process group. Signalling the
+                                    # shell's original group leaves commands
+                                    # such as `sleep` running. Ask the PTY for
+                                    # its current foreground group so Ctrl+C,
+                                    # Ctrl+Z, and continuation target the job
+                                    # the user actually sees.
+                                    foreground_pgid = os.tcgetpgrp(master_fd)
+                                    os.killpg(foreground_pgid, sig)
                                 except (ProcessLookupError, OSError):
-                                    pass
+                                    try:
+                                        os.killpg(child_pid, sig)
+                                    except (ProcessLookupError, OSError):
+                                        pass
                         elif opcode == OP_CLOSE:
                             kill_child_group(child_pid)
                             running = False

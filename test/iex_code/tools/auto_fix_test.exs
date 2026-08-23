@@ -1,5 +1,5 @@
 defmodule IexCode.Tools.AutoFixTest do
-  use ExUnit.Case, async: false
+  use IexCode.DataCase, async: false
   alias IexCode.Tools.AutoFix
   alias IexCode.Tools.TestRunner.{Result, Failure, CompilationError, StackFrame}
 

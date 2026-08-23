@@ -11,6 +11,7 @@ defmodule IexCode.Application do
         IexCode.Repo,
         {Ecto.Migrator,
          repos: Application.fetch_env!(:iex_code, :ecto_repos), skip: skip_migrations?()},
+        IexCode.DatabasePermissions,
         {DNSCluster, query: Application.get_env(:iex_code, :dns_cluster_query) || :ignore},
         {Phoenix.PubSub, name: IexCode.PubSub},
         {Registry, keys: :unique, name: IexCode.SessionRegistry},
@@ -20,6 +21,8 @@ defmodule IexCode.Application do
         IexCode.Engine.AgentSupervisor,
         IexCode.Tools.TerminalSupervisor,
         {IexCode.Tools.MultiPatch.Snapshot.Owner, []},
+        run_dispatcher_child(),
+        kanban_scheduler_child(),
         IexCodeWeb.Endpoint,
         desktop_child()
       ]
@@ -41,6 +44,18 @@ defmodule IexCode.Application do
        ]}
     else
       nil
+    end
+  end
+
+  defp run_dispatcher_child do
+    if Application.get_env(:iex_code, :start_run_dispatcher, true) do
+      IexCode.Runs.RunDispatcher
+    end
+  end
+
+  defp kanban_scheduler_child do
+    if Application.get_env(:iex_code, :start_kanban_scheduler, true) do
+      IexCode.Kanban.Scheduler
     end
   end
 

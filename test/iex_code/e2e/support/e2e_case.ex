@@ -90,7 +90,7 @@ defmodule IexCode.E2E.Case do
     end)
 
     {:ok,
-     conn: Phoenix.ConnTest.build_conn(),
+     conn: Phoenix.ConnTest.build_conn() |> Map.put(:host, "localhost"),
      workspace_path: temp_dir,
      mock_llm: mock_server_info,
      mock_llm_pid: mock_server_pid}

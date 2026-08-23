@@ -1,17 +1,20 @@
 defmodule IexCodeWeb.WorkspaceLive do
   use IexCodeWeb, :live_view
   require Logger
-  alias IexCode.{Projects, Sessions, Settings, Kanban}
+  alias IexCode.{Projects, Runs, Sessions, Settings, Kanban}
   alias IexCode.Engine.SessionServer
+  alias IexCode.Runs.RunDispatcher
   alias IexCode.Tools.Git
   alias IexCode.Tools.Git.{DiffParser, HunkOps}
   alias IexCode.Tools.TerminalServer
   alias IexCodeWeb.CommandPalette
   alias Phoenix.PubSub
   import IexCodeWeb.WorkspaceComponents
+  import IexCodeWeb.RunComponents
 
   # Terminal output is capped to the last N lines (ring buffer)
   @terminal_output_max_lines 500
+  @workspace_tabs ~w(kanban swarm calendar changes tests ast chat files terminal)
 
   @impl true
   def mount(params, _session, socket) do
@@ -26,6 +29,7 @@ defmodule IexCodeWeb.WorkspaceLive do
     if connected?(socket) do
       PubSub.subscribe(IexCode.PubSub, "session:#{session.id}")
       PubSub.subscribe(IexCode.PubSub, "session:#{session.id}:terminal")
+      Runs.subscribe_session(session.id)
       Kanban.subscribe(project.id)
       SessionServer.ensure_started(session.id)
       _ = TerminalServer.ensure_started(session.id, workspace_path: project.root_path)
@@ -41,6 +45,13 @@ defmodule IexCodeWeb.WorkspaceLive do
       end
 
     operations = Sessions.list_operations(session.id)
+    durable_runs = Runs.list_runs(session_id: session.id, limit: 100)
+    selected_run = List.first(durable_runs)
+    run_events = if selected_run, do: Runs.list_latest_events(selected_run, limit: 500), else: []
+    run_steps = if selected_run, do: Runs.list_steps(selected_run), else: []
+    run_approvals = if selected_run, do: Runs.list_approvals(selected_run), else: []
+    pending_approval_count = Runs.count_pending_approvals(session.id)
+    run_artifacts = if selected_run, do: Runs.list_artifacts(selected_run), else: []
     settings = Settings.get_settings()
     files = list_project_files(project.root_path)
     sessions = Sessions.list_sessions_for_project(project.id)
@@ -78,6 +89,16 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:messages, messages)
       |> assign(:all_messages, messages)
       |> assign(:operations, operations)
+      |> assign(:selected_run, selected_run)
+      |> assign(:run_steps, run_steps)
+      |> assign(:run_approvals, run_approvals)
+      |> assign(:run_artifacts, run_artifacts)
+      |> assign(:run_rows, durable_runs)
+      |> assign(:run_event_rows, run_events)
+      |> assign(:run_count, length(durable_runs))
+      |> assign(:run_counts, run_counts(durable_runs, pending_approval_count))
+      |> assign(:run_dispatcher_stats, safe_dispatcher_stats())
+      |> assign(:dispatch_mode, "background")
       |> assign(:expanded_ops, MapSet.new())
       |> assign(:active_agent, nil)
       |> assign(:active_stage, :init)
@@ -268,8 +289,10 @@ defmodule IexCodeWeb.WorkspaceLive do
               if connected?(socket) do
                 PubSub.unsubscribe(IexCode.PubSub, "session:#{old_id}")
                 PubSub.unsubscribe(IexCode.PubSub, "session:#{old_id}:terminal")
+                PubSub.unsubscribe(IexCode.PubSub, "runs:session:#{old_id}")
                 PubSub.subscribe(IexCode.PubSub, "session:#{new_session.id}")
                 PubSub.subscribe(IexCode.PubSub, "session:#{new_session.id}:terminal")
+                Runs.subscribe_session(new_session.id)
 
                 if new_session.project_id != old_project_id do
                   PubSub.unsubscribe(IexCode.PubSub, "kanban:#{old_project_id}")
@@ -320,6 +343,7 @@ defmodule IexCodeWeb.WorkspaceLive do
                 |> assign(:terminal_occupant, terminal_occupant)
                 |> assign(:terminal_active_cmd, nil)
                 |> assign(:terminal_output, "")
+                |> assign_run_projection(new_session.id)
                 |> refresh_git_state()
 
               {:noreply, socket}
@@ -335,8 +359,12 @@ defmodule IexCodeWeb.WorkspaceLive do
   # ============================================================================
 
   @impl true
-  def handle_event("switch_tab", %{"tab" => tab}, socket) do
-    socket = assign(socket, :active_tab, tab)
+  def handle_event("switch_tab", %{"tab" => tab}, socket) when tab in @workspace_tabs do
+    socket =
+      socket
+      |> assign(:active_tab, tab)
+      |> maybe_set_tab_dispatch_mode(tab)
+
     socket = if tab == "changes", do: refresh_git_state(socket), else: socket
 
     socket =
@@ -347,8 +375,15 @@ defmodule IexCodeWeb.WorkspaceLive do
     {:noreply, socket}
   end
 
-  def handle_event("switch_tab", %{"sidebar_tab" => tab}, socket) do
-    socket = assign(socket, :active_tab, tab)
+  def handle_event("switch_tab", %{"tab" => _invalid}, socket), do: {:noreply, socket}
+
+  def handle_event("switch_tab", %{"sidebar_tab" => tab}, socket)
+      when tab in @workspace_tabs do
+    socket =
+      socket
+      |> assign(:active_tab, tab)
+      |> maybe_set_tab_dispatch_mode(tab)
+
     socket = if tab == "changes", do: refresh_git_state(socket), else: socket
 
     socket =
@@ -358,6 +393,8 @@ defmodule IexCodeWeb.WorkspaceLive do
 
     {:noreply, socket}
   end
+
+  def handle_event("switch_tab", %{"sidebar_tab" => _invalid}, socket), do: {:noreply, socket}
 
   @impl true
   def handle_event("switch_changes_subtab", %{"tab" => tab}, socket) do
@@ -728,10 +765,21 @@ defmodule IexCodeWeb.WorkspaceLive do
         #{task.description || "No description provided."}
         """
 
-        SessionServer.send_prompt(socket.assigns.session.id, prompt)
+        run_attrs = %{
+          project_id: socket.assigns.project.id,
+          session_id: socket.assigns.session.id,
+          objective: String.trim(prompt),
+          kind: "coding_swarm",
+          mode: "swarm",
+          priority: task_priority_to_run_priority(task.priority),
+          metadata: %{"source" => "scheduled_task", "kanban_task_id" => task.id}
+        }
 
-        case Kanban.update_task(task, %{status: "running"}) do
-          {:ok, updated} ->
+        case RunDispatcher.enqueue(run_attrs) do
+          {:ok, run} ->
+            {:ok, updated} =
+              Kanban.update_task(task, %{status: "running", worker_pid: "run:#{run.id}"})
+
             tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
 
             {:noreply,
@@ -739,10 +787,16 @@ defmodule IexCodeWeb.WorkspaceLive do
              |> assign(:tasks, tasks)
              |> assign(:selected_task, updated)
              |> assign(:show_scheduled_task_modal, false)
-             |> put_flash(:info, "Task '#{task.title}' dispatched to the session")}
+             |> select_run_projection(run)
+             |> assign(:active_tab, "swarm")
+             |> put_flash(
+               :info,
+               "Task '#{task.title}' dispatched to the session via the durable run queue"
+             )}
 
           {:error, reason} ->
-            {:noreply, put_flash(socket, :error, "Failed to trigger task: #{inspect(reason)}")}
+            {:noreply,
+             put_flash(socket, :error, "Failed to queue task: #{format_run_error(reason)}")}
         end
     end
   end
@@ -1435,8 +1489,8 @@ defmodule IexCodeWeb.WorkspaceLive do
     query_spec =
       %{
         query: query,
-        type: if(type_filter != "all", do: String.to_atom(type_filter), else: nil),
-        visibility: if(vis_filter != "all", do: String.to_atom(vis_filter), else: nil)
+        type: if(type_filter != "all", do: type_filter, else: nil),
+        visibility: if(vis_filter != "all", do: vis_filter, else: nil)
       }
       |> Enum.reject(fn {_, v} -> is_nil(v) end)
       |> Map.new()
@@ -1463,8 +1517,8 @@ defmodule IexCodeWeb.WorkspaceLive do
     query_spec =
       %{
         query: query,
-        type: if(type_filter != "all", do: String.to_atom(type_filter), else: nil),
-        visibility: if(vis_filter != "all", do: String.to_atom(vis_filter), else: nil)
+        type: if(type_filter != "all", do: type_filter, else: nil),
+        visibility: if(vis_filter != "all", do: vis_filter, else: nil)
       }
       |> Enum.reject(fn {_, v} -> is_nil(v) end)
       |> Map.new()
@@ -1500,8 +1554,8 @@ defmodule IexCodeWeb.WorkspaceLive do
     query_spec =
       %{
         query: query,
-        type: if(type_filter != "all", do: String.to_atom(type_filter), else: nil),
-        visibility: if(vis != "all", do: String.to_atom(vis), else: nil)
+        type: if(type_filter != "all", do: type_filter, else: nil),
+        visibility: if(vis != "all", do: vis, else: nil)
       }
       |> Enum.reject(fn {_, v} -> is_nil(v) end)
       |> Map.new()
@@ -2334,13 +2388,72 @@ defmodule IexCodeWeb.WorkspaceLive do
   # ============================================================================
 
   @impl true
+  def handle_event("select_async_run", %{"id" => run_id}, socket) do
+    case Runs.get_run(run_id) do
+      %Runs.Run{session_id: session_id} = run when session_id == socket.assigns.session.id ->
+        {:noreply, select_run_projection(socket, run)}
+
+      _ ->
+        {:noreply, put_flash(socket, :error, "Run not found in this session")}
+    end
+  end
+
+  @impl true
+  def handle_event("pause_async_run", %{"id" => run_id}, socket) do
+    control_async_run(socket, run_id, :pause)
+  end
+
+  @impl true
+  def handle_event("resume_async_run", %{"id" => run_id}, socket) do
+    control_async_run(socket, run_id, :resume)
+  end
+
+  @impl true
+  def handle_event("cancel_async_run", %{"id" => run_id}, socket) do
+    control_async_run(socket, run_id, :cancel)
+  end
+
+  @impl true
+  def handle_event("retry_async_run", %{"id" => run_id}, socket) do
+    control_async_run(socket, run_id, :retry)
+  end
+
+  @impl true
+  def handle_event(
+        "decide_run_approval",
+        %{"id" => approval_id, "decision" => decision},
+        socket
+      )
+      when decision in ["approved", "denied"] do
+    approval = Runs.get_approval(approval_id)
+
+    if approval && socket.assigns.selected_run &&
+         approval.run_id == socket.assigns.selected_run.id do
+      case Runs.decide_approval(approval, decision, %{
+             decided_by: "local-user",
+             decision_note: "Decision recorded in workspace run console"
+           }) do
+        {:ok, _updated} ->
+          {:noreply,
+           socket
+           |> refresh_selected_run()
+           |> put_flash(:info, "Approval decision persisted")}
+
+        {:error, reason} ->
+          {:noreply, put_flash(socket, :error, "Decision failed: #{format_run_error(reason)}")}
+      end
+    else
+      {:noreply, put_flash(socket, :error, "Approval not found in the selected run")}
+    end
+  end
+
+  def handle_event("decide_run_approval", _params, socket), do: {:noreply, socket}
+
+  @impl true
   def handle_event("submit_prompt", %{"prompt" => prompt_text}, socket) do
     text = String.trim(prompt_text)
 
     if text != "" do
-      session_id = socket.assigns.session.id
-      SessionServer.send_prompt(session_id, text)
-
       tab =
         cond do
           String.starts_with?(text, "/swarm") -> "swarm"
@@ -2348,14 +2461,58 @@ defmodule IexCodeWeb.WorkspaceLive do
           true -> socket.assigns.active_tab
         end
 
-      {:noreply,
-       socket
-       |> assign(:active_tab, tab)
-       |> assign(:prompt_form, to_form(%{"prompt" => ""}))}
+      if socket.assigns.dispatch_mode == "background" do
+        objective =
+          text
+          |> String.replace_prefix("/swarm", "")
+          |> String.trim()
+          |> then(
+            &if(&1 == "", do: "Analyze the workspace and propose the next safe change", else: &1)
+          )
+
+        attrs = %{
+          project_id: socket.assigns.project.id,
+          session_id: socket.assigns.session.id,
+          objective: objective,
+          kind: "coding_swarm",
+          mode: "swarm",
+          priority: "normal",
+          metadata: %{"source" => "workspace_composer", "original_prompt" => text}
+        }
+
+        case RunDispatcher.enqueue(attrs) do
+          {:ok, run} ->
+            {:noreply,
+             socket
+             |> assign(:active_tab, "swarm")
+             |> assign(:prompt_form, to_form(%{"prompt" => ""}))
+             |> select_run_projection(run)
+             |> put_flash(:info, "Background run queued. It will continue if you disconnect.")}
+
+          {:error, reason} ->
+            {:noreply,
+             put_flash(socket, :error, "Could not queue run: #{format_run_error(reason)}")}
+        end
+      else
+        SessionServer.send_prompt(socket.assigns.session.id, text)
+
+        {:noreply,
+         socket
+         |> assign(:active_tab, tab)
+         |> assign(:prompt_form, to_form(%{"prompt" => ""}))}
+      end
     else
       {:noreply, socket}
     end
   end
+
+  @impl true
+  def handle_event("set_dispatch_mode", %{"mode" => mode}, socket)
+      when mode in ["background", "interactive"] do
+    {:noreply, assign(socket, :dispatch_mode, mode)}
+  end
+
+  def handle_event("set_dispatch_mode", _params, socket), do: {:noreply, socket}
 
   @impl true
   def handle_event("toggle_swarm", _params, socket) do
@@ -2509,17 +2666,23 @@ defmodule IexCodeWeb.WorkspaceLive do
     session_id = socket.assigns.session.id
 
     if String.trim(cmd) != "" do
-      _ = TerminalServer.run_command(session_id, cmd)
+      command_result = TerminalServer.run_command_with_id(session_id, cmd)
 
       updated_history =
         [cmd | Enum.reject(socket.assigns.terminal_history, &(&1 == cmd))]
         |> Enum.take(25)
 
-      {:noreply,
-       socket
-       |> assign(:terminal_history, updated_history)
-       |> assign(:terminal_active_cmd, cmd)
-       |> assign(:terminal_form, to_form(%{"command" => cmd}))}
+      case command_result do
+        {:ok, _command_id} ->
+          {:noreply,
+           socket
+           |> assign(:terminal_history, updated_history)
+           |> assign(:terminal_active_cmd, cmd)
+           |> assign(:terminal_form, to_form(%{"command" => cmd}))}
+
+        {:error, reason} ->
+          {:noreply, put_flash(socket, :error, "Terminal command failed: #{inspect(reason)}")}
+      end
     else
       {:noreply, socket}
     end
@@ -2578,7 +2741,9 @@ defmodule IexCodeWeb.WorkspaceLive do
   def handle_event("kill_terminal_session", _params, socket) do
     session_id = socket.assigns.session.id
     _ = TerminalServer.send_signal(session_id, :sigint)
-    {:noreply, socket |> assign(:terminal_active_cmd, nil) |> put_flash(:info, "Terminal command stopped")}
+
+    {:noreply,
+     socket |> assign(:terminal_active_cmd, nil) |> put_flash(:info, "Terminal command stopped")}
   end
 
   @impl true
@@ -2961,6 +3126,34 @@ defmodule IexCodeWeb.WorkspaceLive do
   end
 
   @impl true
+  def handle_info(
+        {:terminal_command_completed,
+         %{session_id: sid, exit_code: code, command_id: _command_id}},
+        socket
+      ) do
+    if sid == socket.assigns.session.id do
+      exit_msg = "\n[Exit #{code}#{if code == 0, do: ": OK", else: ": Error"}]\n"
+
+      {:noreply,
+       socket
+       |> append_terminal_output(exit_msg)
+       |> assign(:terminal_active_cmd, nil)
+       |> push_event("terminal_output", %{data: exit_msg})}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_info({:terminal_command_started, %{session_id: sid, command: command}}, socket) do
+    if sid == socket.assigns.session.id do
+      {:noreply, assign(socket, :terminal_active_cmd, command)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
   def handle_info({:terminal_exit, %{session_id: sid, exit_code: code}}, socket) do
     if sid == socket.assigns.session.id do
       exit_msg = "\r\n[Process completed with exit code #{code}]\r\n"
@@ -3168,6 +3361,78 @@ defmodule IexCodeWeb.WorkspaceLive do
        |> assign(:test_runner_progress_msg, "Test task exited abnormally: #{inspect(reason)}")
        |> assign(:test_runner_async_task, nil)}
     end
+  end
+
+  # Durable run updates are broadcast only after their transaction commits.
+  # Refreshing from the database here makes PubSub a low-latency hint while the
+  # journal remains the source of truth after reconnects or missed messages.
+  @impl true
+  def handle_info({:run_created, run}, socket) do
+    if run.session_id == socket.assigns.session.id do
+      {:noreply, select_run_projection(socket, run)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_info({:run_updated, run}, socket) do
+    if run.session_id == socket.assigns.session.id do
+      socket = sync_run_linked_task(socket, run)
+
+      if socket.assigns.selected_run && socket.assigns.selected_run.id == run.id do
+        {:noreply, select_run_projection(socket, run)}
+      else
+        {:noreply, assign_run_projection(socket, socket.assigns.session.id)}
+      end
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_info({:run_event, event}, socket) do
+    if socket.assigns.selected_run && event.run_id == socket.assigns.selected_run.id do
+      updated_run = Runs.get_run(event.run_id) || socket.assigns.selected_run
+
+      events = Runs.list_latest_events(updated_run, limit: 500)
+      {:noreply, socket |> assign(:selected_run, updated_run) |> assign(:run_event_rows, events)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_info({event_name, entity}, socket)
+      when event_name in [
+             :run_step_created,
+             :run_step_updated,
+             :run_command_enqueued,
+             :run_command_updated,
+             :run_approval_requested,
+             :run_approval_decided,
+             :run_artifact_created
+           ] do
+    cond do
+      socket.assigns.selected_run && entity.run_id == socket.assigns.selected_run.id ->
+        {:noreply, refresh_selected_run(socket)}
+
+      event_name in [:run_approval_requested, :run_approval_decided] ->
+        {:noreply, refresh_run_counts(socket)}
+
+      true ->
+        {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_info({:async_run_started, run, _pid}, socket) do
+    {:noreply, select_run_projection(socket, Runs.get_run(run.id) || run)}
+  end
+
+  @impl true
+  def handle_info({:async_run_updated, run}, socket) do
+    {:noreply, select_run_projection(socket, Runs.get_run(run.id) || run)}
   end
 
   @impl true
@@ -3809,6 +4074,200 @@ defmodule IexCodeWeb.WorkspaceLive do
       end
     end
     |> Enum.filter(& &1)
+  end
+
+  # Durable asynchronous run projection. Runs and their journal are loaded from
+  # SQLite, never inferred from ephemeral worker PIDs, so reconnects are exact.
+  defp assign_run_projection(socket, session_id) do
+    runs = Runs.list_runs(session_id: session_id, limit: 100)
+    selected = List.first(runs)
+    approvals = if selected, do: Runs.list_approvals(selected), else: []
+    pending_approval_count = Runs.count_pending_approvals(session_id)
+
+    socket
+    |> assign(:selected_run, selected)
+    |> assign(:run_steps, if(selected, do: Runs.list_steps(selected), else: []))
+    |> assign(:run_approvals, approvals)
+    |> assign(:run_artifacts, if(selected, do: Runs.list_artifacts(selected), else: []))
+    |> assign(:run_rows, runs)
+    |> assign(
+      :run_event_rows,
+      if(selected, do: Runs.list_latest_events(selected, limit: 500), else: [])
+    )
+    |> assign(:run_count, length(runs))
+    |> assign(:run_counts, run_counts(runs, pending_approval_count))
+    |> assign(:run_dispatcher_stats, safe_dispatcher_stats())
+  end
+
+  defp select_run_projection(socket, run) do
+    approvals = Runs.list_approvals(run)
+    session_runs = Runs.list_runs(session_id: socket.assigns.session.id, limit: 100)
+    pending_approval_count = Runs.count_pending_approvals(socket.assigns.session.id)
+
+    socket
+    |> assign(:selected_run, run)
+    |> assign(:run_steps, Runs.list_steps(run))
+    |> assign(:run_approvals, approvals)
+    |> assign(:run_artifacts, Runs.list_artifacts(run))
+    |> assign(:run_rows, session_runs)
+    |> assign(:run_event_rows, Runs.list_latest_events(run, limit: 500))
+    |> assign(:run_count, length(session_runs))
+    |> assign(:run_counts, run_counts(session_runs, pending_approval_count))
+    |> assign(:run_dispatcher_stats, safe_dispatcher_stats())
+  end
+
+  defp refresh_selected_run(socket) do
+    case socket.assigns.selected_run do
+      nil -> assign_run_projection(socket, socket.assigns.session.id)
+      selected -> select_run_projection(socket, Runs.get_run(selected.id) || selected)
+    end
+  end
+
+  defp refresh_run_counts(socket) do
+    runs = Runs.list_runs(session_id: socket.assigns.session.id, limit: 100)
+    pending_approval_count = Runs.count_pending_approvals(socket.assigns.session.id)
+
+    socket
+    |> assign(:run_rows, runs)
+    |> assign(:run_count, length(runs))
+    |> assign(:run_counts, run_counts(runs, pending_approval_count))
+  end
+
+  defp run_counts(runs, pending_approval_count) do
+    %{
+      active: Enum.count(runs, &(&1.status in ["running", "paused"])),
+      queued: Enum.count(runs, &(&1.status == "queued")),
+      attention: Enum.count(runs, &(&1.status in ["failed", "interrupted"])),
+      approvals: pending_approval_count
+    }
+  end
+
+  defp safe_dispatcher_stats do
+    if Process.whereis(RunDispatcher) do
+      RunDispatcher.get_stats() |> Map.put(:online, true)
+    else
+      offline_dispatcher_stats()
+    end
+  catch
+    :exit, _ -> offline_dispatcher_stats()
+  end
+
+  defp offline_dispatcher_stats do
+    %{online: false, queued: 0, active: 0, capacity: 0, max_concurrency: 0, projects: []}
+  end
+
+  defp control_async_run(socket, run_id, action) do
+    run = Runs.get_run(run_id)
+
+    if run && run.session_id == socket.assigns.session.id do
+      result =
+        case action do
+          :pause -> RunDispatcher.pause(run)
+          :resume -> RunDispatcher.resume(run)
+          :cancel -> RunDispatcher.cancel(run)
+          :retry -> RunDispatcher.retry(run)
+        end
+
+      case result do
+        {:ok, updated} ->
+          label = action |> Atom.to_string() |> String.capitalize()
+
+          {:noreply,
+           socket
+           |> select_run_projection(updated)
+           |> put_flash(:info, "#{label} request persisted")}
+
+        {:error, reason} ->
+          {:noreply, put_flash(socket, :error, "Run control failed: #{format_run_error(reason)}")}
+      end
+    else
+      {:noreply, put_flash(socket, :error, "Run not found in this session")}
+    end
+  catch
+    :exit, _ ->
+      {:noreply, put_flash(socket, :error, "The run dispatcher is not available")}
+  end
+
+  defp format_run_error(%Ecto.Changeset{} = changeset) do
+    changeset.errors
+    |> Enum.map_join(", ", fn {field, {message, _}} -> "#{field} #{message}" end)
+  end
+
+  defp format_run_error(reason), do: inspect(reason)
+
+  defp task_priority_to_run_priority("critical"), do: "critical"
+  defp task_priority_to_run_priority("high"), do: "high"
+  defp task_priority_to_run_priority("low"), do: "low"
+  defp task_priority_to_run_priority(_), do: "normal"
+
+  # Chat is intentionally live and conversational. All operational views keep
+  # the safer durable background default.
+  defp maybe_set_tab_dispatch_mode(socket, "chat"),
+    do: assign(socket, :dispatch_mode, "interactive")
+
+  defp maybe_set_tab_dispatch_mode(socket, _tab), do: socket
+
+  defp sync_run_linked_task(socket, run) do
+    task_id = Map.get(run.metadata || %{}, "kanban_task_id")
+
+    if is_binary(task_id) do
+      case Kanban.get_task(task_id) do
+        nil ->
+          socket
+
+        task ->
+          recurring? = task.cron_expression not in [nil, ""]
+
+          attrs =
+            cond do
+              recurring? ->
+                # This row already represents the next occurrence. The
+                # dispatcher projects terminal state only through the guarded
+                # `run:<id>` claim, so the previous occurrence cannot touch it.
+                nil
+
+              run.status in ["completed", "failed", "interrupted", "cancelled"] ->
+                :terminal
+
+              true ->
+                status =
+                  case run.status do
+                    "queued" -> "ready"
+                    "running" -> "running"
+                    "paused" -> "blocked"
+                    _ -> task.status
+                  end
+
+                %{
+                  status: status,
+                  worker_pid: "run:#{run.id}",
+                  latest_summary: "Durable run #{run.status}"
+                }
+            end
+
+          update_result =
+            case attrs do
+              nil -> :noop
+              :terminal -> Kanban.project_run_terminal(run.id, run.status, run.error_message)
+              attrs -> Kanban.update_task(task, attrs)
+            end
+
+          case update_result do
+            {:ok, updated} ->
+              tasks =
+                Enum.map(socket.assigns.tasks, fn existing ->
+                  if existing.id == updated.id, do: updated, else: existing
+                end)
+
+              assign(socket, :tasks, tasks)
+
+            _ ->
+              socket
+          end
+      end
+    else
+      socket
+    end
   end
 
   defp month_name(1), do: "January"

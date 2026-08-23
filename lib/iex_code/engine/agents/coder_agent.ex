@@ -89,6 +89,7 @@ defmodule IexCode.Engine.Agents.CoderAgent do
   @impl true
   def handle_call({:code, prompt, opts}, _from, %State{} = state) do
     session_id = state.session_id
+    opts = Keyword.put_new(opts, :session_id, session_id)
     project_root = opts[:project_root] || state.project_root
     parent_op_id = opts[:parent_op_id]
 
@@ -150,6 +151,7 @@ defmodule IexCode.Engine.Agents.CoderAgent do
                    session,
                    project_root,
                    parent_op_id,
+                   opts[:run_id],
                    progress,
                    0
                  ) do
@@ -218,6 +220,7 @@ defmodule IexCode.Engine.Agents.CoderAgent do
          session,
          project_root,
          parent_op_id,
+         run_id,
          progress,
          iteration
        ) do
@@ -236,7 +239,10 @@ defmodule IexCode.Engine.Agents.CoderAgent do
           progress.(60, "Executing #{length(tool_calls)} tool call(s)...")
 
           tool_messages =
-            Enum.map(tool_calls, &execute_tool_call(&1, session_id, project_root, parent_op_id))
+            Enum.map(
+              tool_calls,
+              &execute_tool_call(&1, session_id, project_root, parent_op_id, run_id)
+            )
 
           run_tool_loop(
             session_id,
@@ -245,6 +251,7 @@ defmodule IexCode.Engine.Agents.CoderAgent do
             session,
             project_root,
             parent_op_id,
+            run_id,
             progress,
             iteration + 1
           )
@@ -261,16 +268,17 @@ defmodule IexCode.Engine.Agents.CoderAgent do
     end
   end
 
-  defp execute_tool_call(tc, session_id, project_root, parent_op_id) do
+  defp execute_tool_call(tc, session_id, project_root, parent_op_id, run_id) do
     args =
       if is_map(tc.args) do
         Map.merge(
+          tc.args,
           %{
             "session_id" => session_id,
+            "run_id" => run_id,
             "agent_name" => "CoderAgent",
             "op_id" => parent_op_id
-          },
-          tc.args
+          }
         )
       else
         tc.args

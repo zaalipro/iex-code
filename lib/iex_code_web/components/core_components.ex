@@ -9,11 +9,7 @@ defmodule IexCodeWeb.CoreComponents do
   them in any way you want, based on your application growth and needs.
 
   The foundation for styling is Tailwind CSS, a utility-first CSS framework,
-  augmented with daisyUI, a Tailwind CSS plugin that provides UI components
-  and themes. Here are useful references:
-
-    * [daisyUI](https://daisyui.com/docs/intro/) - a good place to get
-      started and see the available components.
+  with project-owned component styles. Here are useful references:
 
     * [Tailwind CSS](https://tailwindcss.com) - the foundational framework
       we build on. You will use it for layout, sizing, flexbox, grid, and
@@ -186,11 +182,16 @@ defmodule IexCodeWeb.CoreComponents do
   slot :inner_block, required: true
 
   def button(%{rest: rest} = assigns) do
-    variants = %{"primary" => "btn-primary", nil => "btn-primary btn-soft"}
+    variants = %{
+      "primary" =>
+        "inline-flex items-center justify-center rounded-xl bg-[#ff7e5f] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#ff6b48] active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50",
+      nil =>
+        "inline-flex items-center justify-center rounded-xl border border-[#30363d] bg-[#161b22] px-4 py-2 text-sm font-semibold text-gray-100 transition-colors hover:border-[#484f58] hover:bg-[#1c222b] active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50"
+    }
 
     assigns =
       assign_new(assigns, :class, fn ->
-        ["btn", Map.fetch!(variants, assigns[:variant])]
+        Map.fetch!(variants, assigns[:variant])
       end)
 
     if rest[:href] || rest[:navigate] || rest[:patch] do
@@ -297,7 +298,7 @@ defmodule IexCodeWeb.CoreComponents do
       end)
 
     ~H"""
-    <div class="fieldset mb-2">
+    <div class="mb-2">
       <label for={@id}>
         <input
           type="hidden"
@@ -306,7 +307,7 @@ defmodule IexCodeWeb.CoreComponents do
           disabled={@rest[:disabled]}
           form={@rest[:form]}
         />
-        <span class="label">
+        <span class="flex items-center gap-2 text-sm text-gray-300">
           <input
             type="checkbox"
             id={@id}
@@ -315,7 +316,10 @@ defmodule IexCodeWeb.CoreComponents do
             checked={@checked}
             aria-invalid={@errors != [] && "true"}
             aria-describedby={describe_errors(@errors, @id)}
-            class={@class || "checkbox checkbox-sm"}
+            class={
+              @class ||
+                "h-4 w-4 rounded border-[#484f58] bg-[#0d1117] text-[#ff7e5f] accent-[#ff7e5f] focus:ring-2 focus:ring-[#79c0ff]"
+            }
             {@rest}
           />{@label}
         </span>
@@ -327,9 +331,9 @@ defmodule IexCodeWeb.CoreComponents do
 
   def input(%{type: "select"} = assigns) do
     ~H"""
-    <div class="fieldset mb-2">
+    <div class="mb-2">
       <label for={@id}>
-        <span :if={@label} class="label mb-1">{@label}</span>
+        <span :if={@label} class="mb-1 block text-xs font-medium text-gray-300">{@label}</span>
         <select
           id={@id}
           name={@name}
@@ -354,17 +358,18 @@ defmodule IexCodeWeb.CoreComponents do
 
   def input(%{type: "textarea"} = assigns) do
     ~H"""
-    <div class="fieldset mb-2">
+    <div class="mb-2">
       <label for={@id}>
-        <span :if={@label} class="label mb-1">{@label}</span>
+        <span :if={@label} class="mb-1 block text-xs font-medium text-gray-300">{@label}</span>
         <textarea
           id={@id}
           name={@name}
           aria-invalid={@errors != [] && "true"}
           aria-describedby={describe_errors(@errors, @id)}
           class={[
-            @class || "w-full textarea",
-            @errors != [] && (@error_class || "textarea-error")
+            @class ||
+              "w-full rounded-xl border border-[#30363d] bg-[#0d1117] px-3 py-2 text-sm text-white placeholder-gray-600 outline-none transition-colors focus:border-[#79c0ff]",
+            @errors != [] && (@error_class || "border-rose-500 text-rose-200")
           ]}
           {@rest}
         >{Phoenix.HTML.Form.normalize_value("textarea", @value)}</textarea>
@@ -377,9 +382,9 @@ defmodule IexCodeWeb.CoreComponents do
   # All other inputs text, datetime-local, url, password, etc. are handled here...
   def input(assigns) do
     ~H"""
-    <div class="fieldset mb-2">
+    <div class="mb-2">
       <label for={@id}>
-        <span :if={@label} class="label mb-1">{@label}</span>
+        <span :if={@label} class="mb-1 block text-xs font-medium text-gray-300">{@label}</span>
         <input
           type={@type}
           name={@name}
@@ -388,8 +393,9 @@ defmodule IexCodeWeb.CoreComponents do
           aria-invalid={@errors != [] && "true"}
           aria-describedby={describe_errors(@errors, @id)}
           class={[
-            @class || "w-full input",
-            @errors != [] && (@error_class || "input-error")
+            @class ||
+              "w-full rounded-xl border border-[#30363d] bg-[#0d1117] px-3 py-2 text-sm text-white placeholder-gray-600 outline-none transition-colors focus:border-[#79c0ff]",
+            @errors != [] && (@error_class || "border-rose-500 text-rose-200")
           ]}
           {@rest}
         />
@@ -405,7 +411,7 @@ defmodule IexCodeWeb.CoreComponents do
 
   defp error(assigns) do
     ~H"""
-    <p id={@id} class="mt-1.5 flex gap-2 items-center text-sm text-error">
+    <p id={@id} class="mt-1.5 flex items-center gap-2 text-sm text-rose-400">
       <.icon name="hero-exclamation-circle" class="size-5" />
       {render_slot(@inner_block)}
     </p>

@@ -1,133 +1,403 @@
-# Project: Interactive PTY Terminal with xterm.js & Supervised OTP Backend
+# IexCode Product Architecture and Roadmap
 
-## Architecture
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           WorkspaceLive (Frontend)                          │
-│   ├── TerminalHook (xterm.js + FitAddon + SearchAddon + WebLinksAddon)     │
-│   ├── Quick Action Toolbar (iex, mix test, mix precommit, git status/diff)  │
-│   └── Visual Occupant Pill ("🤖 Agent Active" vs "User Interactive")        │
-└─────────────────────────────────────▲───────────────────────────────────────┘
-                                      │ Phoenix PubSub / LiveView push_event
-                                      │ Topic: "session:<session_id>:terminal"
-┌─────────────────────────────────────▼───────────────────────────────────────┐
-│                      IexCode.Tools.TerminalServer (Facade)                   │
-│   ├── ensure_started/2, send_input/2, resize/3, send_signal/2               │
-│   ├── run_command/2, run_agent_command/4, get_history/1, clear/1, restart/2 │
-│   ├── search_history/3, kill/1, whereis/1, running?/1, get_state/1          │
-└─────────────────────────────────────▲───────────────────────────────────────┘
-                                      │ Dynamic Registry & Supervision
-┌─────────────────────────────────────▼───────────────────────────────────────┐
-│                    IexCode.Tools.TerminalSupervisor                         │
-│   └── IexCode.Tools.TerminalSession (GenServer per workspace session)       │
-│       ├── Registered at {:via, Registry, {IexCode.SessionRegistry, ...}}    │
-│       ├── Ring buffer history management, UTF8Buffer & replay               │
-│       ├── Occupant state management (:user | {:agent, name, op_id})         │
-│       └── IexCode.Tools.PTYAdapter (priv/pty_shim.py + Port fallback)       │
-│           └── Native OS Shell Process (zsh / bash / iex -S mix)             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
+## Product intent
 
-## Feature Inventory
-| # | Feature | Description | Milestone | Source |
-|---|---------|-------------|-----------|--------|
-| 1 | Supervised PTY Process Spawner | Spawns interactive shell (`zsh`/`bash`/`iex -S mix`) in workspace root via PTY master/slave pair | M1 (DONE) | ORIGINAL_REQUEST §R1 |
-| 2 | Bidirectional Stdin / Keystroke Forwarding | Dispatches raw keystrokes and escape sequences (Ctrl+C, Ctrl+D, Ctrl+Z) to shell | M1 (DONE) | ORIGINAL_REQUEST §R1 |
-| 3 | PubSub Raw Output Streaming | Streams stdout/stderr chunks in real-time over PubSub topic `session:<session_id>:terminal` | M1 (DONE) | ORIGINAL_REQUEST §R1 |
-| 4 | Dynamic Window Resizing (SIGWINCH) | Resizes PTY dimensions (columns x rows) upon terminal container resize | M1 (DONE) | ORIGINAL_REQUEST §R1 |
-| 5 | Shell Lifecycle & Clean Termination | Gracefully restarts, kills, or re-spawns shell process without leaving zombie processes | M1 (DONE) | ORIGINAL_REQUEST §R1 |
-| 6 | Sliding Ring Buffer Memory Storage | Maintains recent terminal output chunks with UTF-8 safety and instant replay on mount | M1 (DONE) | ORIGINAL_REQUEST §R3 |
-| 7 | Agent Command Execution Dispatch | Allows `ExplorerAgent`, `CoderAgent`, `VerifierAgent` to dispatch shell commands | M2 (DONE) | ORIGINAL_REQUEST §R3 |
-| 8 | Live Agent Execution Streaming & Telemetry | Broadcasts agent execution lifecycle and live output chunks over PubSub and telemetry | M2 (DONE) | ORIGINAL_REQUEST §R3 |
-| 9 | Visual Terminal Occupation Indicator | Displays visual banner/status badge showing User Session vs Agent Occupied | M2 (DONE) | ORIGINAL_REQUEST §R3 |
-| 10 | Searchable Terminal History API | Server-side and client-side searchable terminal scrollback API | M2 (DONE) | ORIGINAL_REQUEST §R3 |
-| 11 | xterm.js Terminal Canvas & Hook | Mounts full xterm.js terminal with ANSI truecolor rendering, font ligatures, cursor styles | M3 (DONE) | ORIGINAL_REQUEST §R2 |
-| 12 | Terminal Dimension Auto-Fitting (`fitAddon`) | Observes resize observer events and pushes updated `cols`/`rows` to LiveView | M3 (DONE) | ORIGINAL_REQUEST §R2 |
-| 13 | Quick Action Toolbar | One-click launch buttons: `iex -S mix`, `mix test`, `mix precommit`, `git status`, `git diff` | M3 (DONE) | ORIGINAL_REQUEST §R2 |
-| 14 | Terminal Clear & History Reset | Clears xterm.js screen and resets terminal viewport | M3 (DONE) | ORIGINAL_REQUEST §R2 |
-| 15 | LiveView Workspace Integration | Connects `WorkspaceLive` and `WorkspaceComponents` to PTY backend via PubSub & events | M3 (DONE) | ORIGINAL_REQUEST §R2 |
-| 16 | E2E Test Suite Pass (Tiers 1-4) | 100% pass across unit, integration, LiveView, and stress test tiers | M4 | ORIGINAL_REQUEST §R4 |
-| 17 | Adversarial Coverage Hardening (Tier 5) | White-box adversarial testing, edge cases, flood resistance, and zombie checks | M4 | ORIGINAL_REQUEST §R4 |
-| 18 | Strict Precommit Verification | 0 compiler warnings, 0 format discrepancies, 100% test pass rate on `mix precommit` | M4 | ORIGINAL_REQUEST §R4 |
+IexCode is a local-first, native-workspace coding harness. Its purpose is to let a
+developer delegate work to supervised agents, observe every operation, inspect and
+edit artifacts, run verification, and decide what reaches Git without leaving one
+Phoenix LiveView workspace.
 
-## Milestones
-| # | Name | Scope | Dependencies | Status |
-|---|------|-------|-------------|--------|
-| M1 | Backend OTP Supervision & PTY Engine | `TerminalSupervisor`, `TerminalSession`, `TerminalServer`, `PTYAdapter`, `priv/pty_shim.py`, PubSub streaming, buffer, resize, signal traps | None | DONE |
-| M2 | Agent Terminal Execution & Telemetry | `run_agent_command/4`, agent telemetry events, occupant state management, search API, agent integration | M1 | DONE |
-| M3 | Frontend xterm.js Integration & LiveView Hook | `package.json`, `@xterm/xterm`, `TerminalHook`, `WorkspaceLive`, `WorkspaceComponents.terminal_session/1`, quick actions, CSS vendoring | M1, M2 | DONE |
-| M4 | Final Milestone: E2E Verification & Hardening | Pass 100% E2E test suite (Tiers 1-4), Tier 5 adversarial hardening, clean `mix precommit` verification | M1, M2, M3, TEST_READY | IN_PROGRESS |
+The application now includes the first implemented slice of a **durable asynchronous
+run system**: runs are queued in SQLite, claimed with leases, serialized per project,
+and recorded in an ordered event journal. The next phases generalize the persisted
+two-step graph into dependency-aware parallel execution, approvals, and checkpoints.
 
-## Interface Contracts
+“Asynchronous” does not mean “unobservable.” A run must always expose its plan,
+dependencies, current owners, tool activity, artifacts, verification, cost, and the
+decisions it is waiting for.
 
-### `IexCode.Tools.TerminalServer`
-```elixir
-@spec ensure_started(session_id :: String.t(), opts :: keyword()) :: {:ok, pid()} | {:error, term()}
-@spec send_input(session_id :: String.t(), data :: binary(), opts :: keyword()) :: :ok | {:error, term()}
-@spec resize(session_id :: String.t(), cols :: pos_integer(), rows :: pos_integer()) :: :ok | {:error, term()}
-@spec send_signal(session_id :: String.t(), signal :: atom() | binary()) :: :ok | {:error, term()}
-@spec run_command(session_id :: String.t(), command :: String.t()) :: :ok | {:error, term()}
-@spec run_agent_command(session_id :: String.t(), command :: String.t(), agent_name :: String.t(), opts :: keyword()) ::
-        {:ok, %{output: String.t(), exit_code: integer(), duration_ms: integer()}} | {:error, term()}
-@spec search_history(session_id :: String.t(), query :: String.t() | Regex.t(), opts :: keyword()) ::
-        {:ok, [%{line_number: integer(), text: String.t(), match_range: {integer(), integer()}}]} | {:error, term()}
-@spec get_history(session_id :: String.t()) :: binary()
-@spec clear(session_id :: String.t()) :: :ok
-@spec restart(session_id :: String.t(), opts :: keyword()) :: {:ok, pid()} | {:error, term()}
-@spec kill(session_id :: String.t()) :: :ok
-@spec whereis(session_id :: String.t()) :: pid() | nil
-@spec running?(session_id :: String.t()) :: boolean()
-@spec get_state(session_id :: String.t()) :: {:ok, map()} | {:error, :not_found}
+## Non-negotiable execution boundary
+
+IexCode operates directly in the selected project root.
+
+- No per-run Git worktrees.
+- No containers or application sandbox layer.
+- No shadow copy that becomes a second source of truth.
+- File, Git, test, and shell operations use the native workspace and the launching
+  user's OS permissions.
+
+The safety strategy is therefore **coordination and review**, not isolation. Current
+safety mechanisms include path containment for workspace tools, patch preflight and
+staleness validation, atomic multi-file patch writes with snapshots, process timeouts,
+supervision, and explicit rollback/commit choices in supported workflows. They do not
+make arbitrary shell commands reversible.
+
+The roadmap adds workspace leases and file-level write locks so concurrent work is
+visible and conflicting writes are prevented. Today the dispatcher excludes a second
+active background run for the same project, but interactive tools can bypass it.
+
+## Current system
+
+### Runtime topology
+
+```text
+IexCode.Application
+├── IexCode.Repo (SQLite/WAL)
+├── Phoenix.PubSub
+├── Session Registry
+├── Agent Registry
+├── Task.Supervisor
+├── SessionSupervisor (DynamicSupervisor)
+│   └── SessionServer per active coding session
+├── AgentSupervisor (DynamicSupervisor)
+│   ├── PlannerAgent
+│   ├── ExplorerAgent
+│   ├── CoderAgent
+│   └── VerifierAgent
+├── TerminalSupervisor (DynamicSupervisor)
+│   └── TerminalSession per active terminal
+├── RunDispatcher (leased durable background workers)
+├── Kanban.Scheduler (due/recurring task claims)
+├── MultiPatch Snapshot Owner (durable SQLite + ETS cache)
+└── IexCodeWeb.Endpoint
+    └── WorkspaceLive
 ```
 
-### PubSub Topic: `"session:<session_id>:terminal"`
-- `{:terminal_output, %{session_id: String.t(), data: binary(), timestamp: DateTime.t()}}`
-- `{:terminal_status, %{session_id: String.t(), status: atom(), shell: binary(), occupant: term()}}`
-- `{:terminal_occupant, %{session_id: String.t(), occupant: :user | {:agent, String.t(), String.t() | nil}}}`
-- `{:terminal_exit, %{session_id: String.t(), exit_code: integer(), reason: term()}}`
-- `{:terminal_cleared, %{session_id: String.t()}}`
-- `{:terminal_resized, %{session_id: String.t(), cols: integer(), rows: integer()}}`
+`SessionServer` owns the live lifecycle of a coding session. `SwarmCoordinator` runs
+the fixed Planner → Explorer → Coder → Verifier workflow and can iterate after failed
+verification. `OperationManager` executes supervised tasks, persists operation status,
+monitors crashes, and broadcasts telemetry. LiveView subscribes to session and terminal
+topics and rehydrates messages, operations, durable runs, steps, and sequenced events
+when it mounts. `RunDispatcher` is independent of the socket and allows only one active
+background run per project.
 
-## Code Layout
+### Persisted records
+
+| Record | What is persisted now |
+| --- | --- |
+| Project | Name, native root path, description, last-opened time |
+| Session | Project, model/provider selection, swarm flag, lifecycle status |
+| Message | Role, content, tool-call metadata, token/cost fields |
+| Operation | Parent, agent, type, progress, result/error, PID string, timings |
+| Kanban task | Workflow state, priority, assignee, subtasks, schedule, metadata |
+| App settings | Provider endpoints/keys and basic generation/swarm preferences |
+| Run | Objective, typed executor, lifecycle, priority, progress, budgets, attempts, lease, timings |
+| Run step | Typed `prepare`/`execute` graph nodes, dependencies, attempts, result/error |
+| Run event | Per-run monotonic sequence, type, source, bounded payload, occurrence time |
+| Run command/approval/artifact | Command idempotency keys plus persistence APIs for review decisions and artifact metadata |
+| Mutation snapshot | Durable native-workspace rollback manifest, mirrored in ETS |
+
+The current graph is deliberately small. General fan-out/fan-in DAG planning, durable
+model-token deltas, enforced approval policy, and resumable checkpoints remain future
+work.
+
+### Workspace surface
+
+| Surface | Implemented today |
+| --- | --- |
+| Kanban | CRUD, eight states, drag/move actions, filters, assignees, priorities, subtasks, and scheduling fields |
+| Swarm | Durable run ledger and bounded event-journal view plus four supervised agents, self-correction, progress, steering, pause/resume/cancel |
+| Calendar | Month navigation, task editing/run-now, plus a supervised UTC cron scheduler with atomic claims, stable occurrence keys, recurrence, and stale recovery |
+| Changes/Git | Status rails, inline/split diffs, stage/unstage, hunk operations, branches, fetch/pull, commit generation and commit |
+| Tests/AutoFix | Async test subprocess, ANSI cleanup, structured failures, heuristic proposals, preview/apply/rollback and re-verification |
+| AST | Elixir modules, functions, private functions, macros, specs, and types with editor jumps |
+| Chat | Persisted messages, model switching, markdown/thinking presentation, tool-backed single-agent or swarm dispatch |
+| Files/Editor | Tree/search, multiple buffers, dirty state, save/revert/close, jump-to-line, code insertion |
+| Terminal | Native supervised PTY, xterm.js, input/signals/resize, scrollback/search, agent occupation, quick actions |
+| Global controls | Settings, project/session selection, goal controls, usage view, and Cmd/Ctrl+K palette |
+
+### Developer-tool layer
+
+- `IexCode.Tools.ASTSearch`: Elixir AST symbol discovery.
+- `IexCode.Tools.MultiPatch`: AST/exact/fuzzy matching, preflight validation,
+  atomic writes, snapshots, and rollback.
+- `IexCode.Tools.TestRunner`: native `mix test` execution and structured parsing.
+- `IexCode.Tools.AutoFix`: bounded heuristic repair proposals.
+- `IexCode.Tools.Git`: native status, diff, staging, branches, pull/fetch, and commit.
+- `IexCode.Tools.TerminalServer`: supervised native interactive terminal facade.
+- `IexCode.LLM`: OpenAI-compatible and Anthropic streaming, retry, fallback,
+  circuit breaking, SSE parsing, and UTF-8 boundary handling.
+
+### Current lifecycle
+
+```text
+user prompt / manual goal
+        │
+        ▼
+SessionServer ──starts──▶ supervised task
+        │                       │
+        │                single agent or
+        │                fixed swarm loop
+        │                       │
+        ├◀──── PubSub telemetry ┤
+        │                       │
+        └── persists messages and operation summaries
 ```
+
+Interactive session work survives a LiveView disconnect but not an application restart.
+Durable background runs additionally survive process loss as records: on boot an expired
+lease becomes `interrupted` and must be retried explicitly, preventing partial native
+workspace effects from being replayed blindly.
+
+## What is current, partial, and planned
+
+| Capability | State | Notes |
+| --- | --- | --- |
+| Supervised OTP agents and operations | Current | Dynamic supervisors, registries, monitored tasks |
+| Live PubSub progress | Current | Low-latency but ephemeral transport |
+| Durable messages and operation summaries | Current | Rehydrated by LiveView |
+| Native PTY and developer tools | Current | Execute in the real project root |
+| Atomic MultiPatch rollback | Current | Applies only to writes performed through MultiPatch |
+| Pause/resume/cancel/steer | Current | Live process control; not a durable command inbox |
+| Fixed four-agent correction loop | Current | Sequential domain workflow, not a general scheduler |
+| LLM streaming transport | Current | Parser/callback support exists |
+| Token-by-token durable chat events | Partial | Normal session flow currently publishes the completed message |
+| Calendar recurrence | Current | Supervised UTC polling, due claims, recurrence, stale recovery, and durable run enqueue |
+| Model providers | Partial | OpenAI-compatible and Anthropic adapters only |
+| Configurable swarm-agent count | Partial | Setting persists, but engine topology remains four canonical roles |
+| Durable run/event model | Current | Transactional run/step/event/command/approval/artifact records; checkpoints remain planned |
+| Run budgets | Partial | Token/cost/time fields persist; executor-side hard enforcement remains planned |
+| Dependency-aware parallel DAG | Planned | Includes budgets, retries, fan-out/fan-in, and locks |
+| Native workspace coordination | Partial | Dispatcher excludes a second active run per project; interactive/file/Git locks remain planned |
+| Approval and durable command records | Partial | Command idempotency keys and approval records exist; policy enforcement/inbox UX remain planned |
+| Restart reconciliation | Partial | Expired workers become interrupted; safe checkpoint resume is not implemented |
+| Automatic calendar worker | Current | Supervised claims, stable occurrence keys, recurrence, stale recovery, and existing-run reuse |
+| Direct Gemini/local adapters | Planned | Compatible endpoints can be used today through OpenAI adapter |
+
+## Target asynchronous architecture
+
+```text
+                         ┌───────────────────────┐
+user / calendar / API ──▶│ durable Run Command  │
+                         │ inbox                 │
+                         └──────────┬────────────┘
+                                    ▼
+                         ┌───────────────────────┐
+                         │ Run Dispatcher        │
+                         │ claim + lease + limits│
+                         └──────────┬────────────┘
+                                    ▼
+                         ┌───────────────────────┐
+                         │ Run Supervisor        │
+                         │ dependency scheduler  │
+                         └──────┬─────────┬──────┘
+                         ready steps      │ events
+                                ▼         ▼
+                   ┌───────────────┐  ┌─────────────────┐
+                   │ agent / tool  │  │ append-only Run │
+                   │ workers       │  │ Event journal   │
+                   └───────┬───────┘  └────────┬────────┘
+                           │ artifacts          │ replay/live tail
+                           ▼                    ▼
+                   ┌───────────────┐  ┌─────────────────┐
+                   │ native locked │  │ LiveView run    │
+                   │ workspace     │  │ console         │
+                   └───────────────┘  └─────────────────┘
+```
+
+PubSub remains the fast notification layer. SQLite is the source of truth. A consumer
+receiving a notification reads events after its last sequence number; dropped or
+duplicated notifications therefore do not lose state.
+
+### Durable records and remaining extensions
+
+The following describes both the implemented ledger and the fields still needed for
+the target scheduler. Items explicitly marked planned are not current behavior.
+
+#### Run
+
+- Owns a goal across process and socket lifetimes.
+- Current states are `queued`, `running`, `paused`, `completed`, `failed`, `cancelled`,
+  and `interrupted`; a distinct review-waiting state is planned.
+- Stores priority, token/cost/time budgets, attempts, worker lease, and the latest event
+  sequence. General execution policy and checkpoint cursors are planned.
+
+#### Run step
+
+- A typed unit of agent or tool work.
+- Stores dependencies, params, result/error, attempts, progress, timestamps, and status.
+  Per-step leases/timeouts and general ready-node scheduling are planned.
+- The dispatcher currently executes a fixed `prepare → execute` graph; it does not yet
+  schedule an arbitrary dependency DAG.
+
+#### Run event
+
+- Append-only and monotonically sequenced within a run.
+- Currently records run/step transitions, progress, command/approval/artifact creation,
+  retries, and related metadata. Model deltas, locks, and complete tool I/O are planned.
+- `(run_id, sequence)` is unique. Events do not currently have a producer idempotency key.
+
+#### Artifact
+
+- Stores typed artifact metadata and a URI linked to a run and optional producing step.
+- Checksums and arbitrary metadata are supported; enforced workspace revision and
+  lifecycle status are planned.
+
+#### Run command and approval
+
+- Run commands have per-run idempotency keys; approval request/decision persistence APIs exist.
+- Dispatcher pause/resume/cancel and swarm steering currently use direct GenServer and
+  PubSub control paths; they are not yet consumed from a durable control inbox.
+
+#### Workspace lease and file lock
+
+- A renewable worker lease and active-run query currently prevent the dispatcher from
+  starting two background runs for one project.
+- File locks, Git-exclusive locks, read/write lock modes, wait queues, and lock UI are
+  planned. Interactive host controls are not governed by the run lease.
+
+This is coordination in the native checkout, not isolation and not a worktree.
+
+## Target scheduler invariants
+
+1. **Database state wins.** OTP processes are executors and caches, not the sole record
+   of a run.
+2. **At-least-once dispatch, idempotent effects.** Claims may be retried; step effects
+   must use stable keys and preconditions.
+3. **One ordered event stream per run.** Every state transition has a sequence number.
+4. **No write without ownership.** Planned mutating-tool gates must hold the required workspace or
+   file lock and validate the expected file digest/revision.
+5. **Review is a state.** Waiting for a human does not occupy a worker or masquerade as
+   running.
+6. **Cancellation is cooperative, then forceful.** Stop new dispatch, signal active
+   work, terminate after a deadline, and record the final outcome.
+7. **Recovery is deterministic.** Current expired run leases become `interrupted` and
+   require explicit retry; future checkpoints may resume only where a tool contract permits.
+8. **History is bounded in memory, complete on disk.** The database journal is durable;
+   cursor pagination and a windowed LiveView stream remain planned.
+
+## Delivery roadmap
+
+### A0 — Documentation and baseline
+
+**State: current work**
+
+- Maintain one product description covering the complete nine-tool workspace.
+- Treat `mix precommit` on the current checkout as the quality gate; historical agent
+  reports are supporting context, not current proof.
+- Record platform and native-execution limitations explicitly.
+
+### A1 — Durable run ledger
+
+**State: run/step/event ledger implemented; checkpoints planned**
+
+- Run, step, event, artifact, command, and approval persistence is implemented.
+- Add explicit checkpoint persistence and recovery contracts.
+- Centralize validated state transitions.
+- Append events transactionally with their corresponding state change.
+- Build session-history migration/adapters without breaking existing sessions.
+
+**Exit:** a queued run and its event history survive an application restart. Cursor-based
+storage replay is implemented; cursor-driven LiveView pagination remains in A5.
+
+### A2 — Dispatcher and recovery
+
+**State: leasing/reconciliation implemented; durable controls and checkpoint resume planned**
+
+- Claim queued runs with renewable leases.
+- Reconcile expired run/step claims on boot.
+- Persist pause/resume/cancel/steer commands and acknowledgements instead of relying
+  only on live GenServer/PubSub control.
+- The current executor passes the run id into the four-agent coordinator and records
+  progress; extend that integration for durable controls and checkpoint recovery.
+
+**Exit:** disconnecting the browser has no effect on execution, and restarting the app
+recovers a run according to its checkpoint and tool capabilities.
+
+### A3 — Native workspace coordination
+
+**State: partial; coarse project exclusivity implemented**
+
+- Add project leases, file read/write locks, Git-exclusive locks, heartbeats, and stale
+  lock recovery.
+- Require mutating tools to declare paths before dispatch where possible.
+- Surface owners, wait queues, conflicts, expected digests, and workspace revision.
+- Preserve direct native execution; do not introduce worktrees or sandboxes.
+
+**Exit:** concurrent steps cannot silently overwrite each other, and Git/index
+operations cannot overlap incompatible mutations.
+
+### A4 — Dependency-aware execution
+
+**State: planned; depends on A1–A3**
+
+- Replace the fixed pipeline as the only orchestration option with a persisted DAG.
+- Dispatch independent ready steps concurrently within run/workspace/provider budgets.
+- Support fan-out/fan-in, typed outputs, retry policies, deadlines, cycle validation,
+  and manual gates.
+- Make agent count and role topology an engine policy rather than a display-only value.
+
+**Exit:** a run can prove parallel execution of independent read/analysis steps while
+serializing conflicting mutations and verification prerequisites.
+
+### A5 — Event-native LiveView console
+
+**State: partial; durable ledger and bounded journal view implemented**
+
+- Tail and replay sequenced events with cursor pagination, LiveView streams, and bounded memory.
+- Publish real response/reasoning/tool deltas instead of only completed messages.
+- Show DAG state, lock ownership, queue position, retries, approvals, tokens, cost, and
+  latency from recorded data.
+- Provide artifact-centric plan, patch, test, terminal, and commit review.
+
+**Exit:** reload/reconnect produces the same run view without fabricated metrics or
+lost deltas.
+
+### A6 — Scheduled and provider-complete operation
+
+**State: core scheduler implemented; dead-letter/notification and provider expansion planned**
+
+- Supervised due-task claims, recurrence, stale recovery, and durable run creation are implemented.
+- Add explicit retry policy, notification, and dead-letter workflows.
+- Add first-class direct Gemini and local-provider adapters only when their transport,
+  cancellation, usage, and error behavior meet the same contracts.
+- Add encrypted/keychain-backed secret storage before shared or remote deployment.
+
+**Exit:** due-task outcomes are observable through retry/dead-letter UX, and each
+supported provider passes a shared conformance suite.
+
+## Deliberate non-goals for the near term
+
+- Remote multi-tenant execution.
+- Pretending native commands are harmless or reversible.
+- Using Git worktrees as the concurrency model.
+- Replacing OTP/PubSub with an external job system before the local durable model is
+  proven.
+- Claiming arbitrary autonomous code changes are safe without verification and review.
+
+## Code map
+
+```text
 lib/iex_code/
-├── application.ex                             # Starts TerminalSupervisor in supervision tree
-├── tools/
-│   ├── terminal_supervisor.ex                 # DynamicSupervisor for active TerminalSessions
-│   ├── terminal_server.ex                     # Public client facade
-│   ├── terminal_session.ex                    # GenServer per workspace session
-│   └── pty_adapter.ex                         # PTY process spawner and fallback
-priv/
-└── pty_shim.py                                # POSIX PTY master/slave bridge
+├── application.ex              # supervision tree
+├── engine/                     # sessions, agents, operations, swarm coordination
+├── llm/                        # provider clients, SSE, UTF-8, retry/fallback
+├── tools/                      # files, AST, patches, tests, Git, terminal
+├── projects.ex / projects/     # native workspaces
+├── sessions.ex / sessions/     # conversations and operation history
+├── kanban.ex / kanban/         # tasks, schedules, workflow
+└── settings.ex / settings/     # local provider/application settings
 
 lib/iex_code_web/
-├── live/
-│   └── workspace_live.ex                      # LiveView terminal events, subscriptions, push_events
-└── components/
-    └── workspace_components.ex                # terminal_session/1 template, toolbar, xterm viewport
+├── live/workspace_live.ex
+├── live/workspace_live.html.heex
+├── components/workspace_components.ex
+└── command_palette.ex
 
-assets/
-├── package.json                               # @xterm/xterm, addons dependencies
-├── vendor/
-│   └── xterm.css                              # Vendored xterm CSS for Tailwind v4
-├── js/
-│   ├── app.js                                 # Register TerminalHook in Hooks
-│   └── hooks/
-│       └── terminal_hook.js                   # xterm.js hook, FitAddon, events, paste
-└── css/
-    └── app.css                                # Imports vendor/xterm.css
-
-test/
-├── iex_code/
-│   ├── tools/
-│   │   ├── terminal_session_test.exs          # Backend unit tests
-│   │   ├── terminal_server_test.exs           # Facade unit tests
-│   │   └── terminal_stress_test.exs           # High-throughput & crash tests
-│   ├── engine/
-│   │   └── agent_terminal_execution_test.exs  # Agent telemetry & command tests
-│   └── e2e_terminal/
-│       └── e2e_pty_terminal_test.exs          # Opaque-box E2E test suite
-└── iex_code_web/
-    └── live/
-        └── workspace_live_terminal_test.exs   # LiveView integration tests
+assets/js/hooks/terminal_hook.js # xterm.js LiveView bridge
+priv/pty_shim.py                 # POSIX PTY bridge
+test/                            # unit, integration, E2E, adversarial, stress, PTY
 ```
+
+## Quality gate
+
+Every implementation milestone ends with:
+
+```bash
+mix precommit
+```
+
+Feature work should add focused domain tests, LiveView interaction tests using stable
+DOM IDs, restart/recovery tests for durable execution, concurrency tests for claims and
+locks, and native-workspace smoke tests. Browser smoke testing is part of release
+verification, but is not replaced by static template assertions.

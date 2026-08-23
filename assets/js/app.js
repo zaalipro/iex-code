@@ -5,6 +5,28 @@ import {hooks as colocatedHooks} from "phoenix-colocated/iex_code"
 import topbar from "../vendor/topbar"
 import TerminalHook from "./hooks/terminal_hook"
 
+// Theme behavior lives in the supported application bundle rather than an
+// inline layout script, so CSP can remain strict in desktop and release builds.
+const systemTheme = () => matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"
+const setTheme = (theme) => {
+  if (theme === "system") {
+    localStorage.removeItem("phx:theme")
+    document.documentElement.dataset.theme = systemTheme()
+    document.documentElement.dataset.themeSource = "system"
+  } else {
+    localStorage.setItem("phx:theme", theme)
+    document.documentElement.dataset.theme = theme
+    document.documentElement.dataset.themeSource = "user"
+  }
+}
+
+setTheme(localStorage.getItem("phx:theme") || "system")
+window.addEventListener("storage", (event) => event.key === "phx:theme" && setTheme(event.newValue || "system"))
+window.addEventListener("phx:set-theme", (event) => setTheme(event.target.dataset.phxTheme))
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+  if (document.documentElement.dataset.themeSource === "system") setTheme("system")
+})
+
 const Hooks = {
   TerminalHook,
   KeyboardSubmit: {
@@ -102,10 +124,12 @@ topbar.config({barColors: {0: "#ff5e3a"}, shadowColor: "rgba(0, 0, 0, 0.3)"})
 window.addEventListener("phx:page-loading-start", (_info) => topbar.show(300))
 window.addEventListener("phx:page-loading-stop", (_info) => topbar.hide())
 
-// Toggle a body-level class so CSS can render a disconnected indicator
-// (see the `body.phx-disconnected` rule in assets/css/app.css)
-liveSocket.onConnect(() => document.body.classList.remove("phx-disconnected"))
-liveSocket.onDisconnect(() => document.body.classList.add("phx-disconnected"))
+// Track the underlying Phoenix socket with its supported channel callbacks.
+liveSocket.socket.onOpen(() => document.body.classList.remove("phx-disconnected"))
+liveSocket.socket.onClose(() => document.body.classList.add("phx-disconnected"))
+liveSocket.socket.onError(() => document.body.classList.add("phx-disconnected"))
+window.addEventListener("offline", () => document.body.classList.add("phx-disconnected"))
+window.addEventListener("online", () => document.body.classList.remove("phx-disconnected"))
 
 liveSocket.connect()
 window.liveSocket = liveSocket

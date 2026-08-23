@@ -1,7 +1,25 @@
 <Layouts.app flash={@flash}>
-  <div class="flex h-screen w-full bg-[#0a0d12] text-[#f0f6fc] font-sans antialiased overflow-hidden select-none">
+  <a href="#main-content" class="workspace-skip-link">Skip to workspace content</a>
+  <div
+    id="workspace-shell"
+    phx-hook=".ResponsiveShell"
+    class="workspace-shell flex h-dvh min-h-0 w-full bg-[#0a0d12] text-[#f0f6fc] font-sans antialiased overflow-hidden select-none"
+  >
     <!-- Sidebar: Sessions & Projects Navigation -->
-    <aside class="w-64 bg-[#11151c] border-r border-[#21262d] flex flex-col justify-between shrink-0">
+    <aside
+      id="workspace-sidebar"
+      aria-label="Workspace navigation"
+      class="workspace-sidebar w-64 bg-[#11151c] border-r border-[#21262d] flex flex-col justify-between shrink-0"
+    >
+      <button
+        id="workspace-sidebar-close"
+        type="button"
+        data-sidebar-close
+        aria-label="Close workspace navigation"
+        class="workspace-sidebar-close lg:hidden"
+      >
+        <.icon name="hero-x-mark" class="w-5 h-5" />
+      </button>
       <div class="flex flex-col h-full overflow-hidden">
         <!-- Brand / Workspace Header -->
         <div class="p-3.5 border-b border-[#21262d] relative">
@@ -100,11 +118,12 @@
         </div>
 
         <!-- Primary Navigation Links (Including Chat) -->
-        <div class="px-3 py-2 space-y-0.5">
+        <nav id="workspace-primary-nav" aria-label="Primary" class="px-3 py-2 space-y-0.5">
           <button
             id="sidebar-tab-kanban"
             phx-click="switch_tab"
             phx-value-sidebar_tab="kanban"
+            aria-current={if @active_tab == "kanban", do: "page", else: false}
             class={[
               "w-full flex items-center gap-2.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-smooth text-left",
               @active_tab == "kanban" && "bg-[#21262d] text-white shadow-sm font-semibold",
@@ -119,6 +138,7 @@
             id="sidebar-tab-swarm"
             phx-click="switch_tab"
             phx-value-sidebar_tab="swarm"
+            aria-current={if @active_tab == "swarm", do: "page", else: false}
             class={[
               "w-full flex items-center gap-2.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-smooth text-left",
               @active_tab == "swarm" && "bg-[#21262d] text-white shadow-sm font-semibold",
@@ -133,6 +153,7 @@
             id="sidebar-tab-calendar"
             phx-click="switch_tab"
             phx-value-sidebar_tab="calendar"
+            aria-current={if @active_tab == "calendar", do: "page", else: false}
             class={[
               "w-full flex items-center gap-2.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-smooth text-left",
               @active_tab == "calendar" && "bg-[#21262d] text-white shadow-sm font-semibold",
@@ -147,6 +168,7 @@
             id="sidebar-tab-changes"
             phx-click="switch_tab"
             phx-value-sidebar_tab="changes"
+            aria-current={if @active_tab == "changes", do: "page", else: false}
             class={[
               "w-full flex items-center gap-2.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-smooth text-left",
               @active_tab == "changes" && "bg-[#21262d] text-white shadow-sm font-semibold",
@@ -161,6 +183,7 @@
             id="sidebar-tab-tests"
             phx-click="switch_tab"
             phx-value-sidebar_tab="tests"
+            aria-current={if @active_tab == "tests", do: "page", else: false}
             class={[
               "w-full flex items-center gap-2.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-smooth text-left",
               @active_tab == "tests" && "bg-[#21262d] text-white shadow-sm font-semibold",
@@ -175,6 +198,7 @@
             id="sidebar-tab-ast"
             phx-click="switch_tab"
             phx-value-sidebar_tab="ast"
+            aria-current={if @active_tab == "ast", do: "page", else: false}
             class={[
               "w-full flex items-center gap-2.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-smooth text-left",
               @active_tab == "ast" && "bg-[#21262d] text-white shadow-sm font-semibold",
@@ -189,6 +213,7 @@
             id="sidebar-tab-chat"
             phx-click="switch_tab"
             phx-value-sidebar_tab="chat"
+            aria-current={if @active_tab == "chat", do: "page", else: false}
             class={[
               "w-full flex items-center gap-2.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-smooth text-left",
               @active_tab == "chat" && "bg-[#21262d] text-white shadow-sm font-semibold",
@@ -203,6 +228,7 @@
             id="sidebar-tab-files"
             phx-click="switch_tab"
             phx-value-sidebar_tab="files"
+            aria-current={if @active_tab == "files", do: "page", else: false}
             class={[
               "w-full flex items-center gap-2.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-smooth text-left",
               @active_tab == "files" && "bg-[#21262d] text-white shadow-sm font-semibold",
@@ -217,6 +243,7 @@
             id="sidebar-tab-terminal"
             phx-click="switch_tab"
             phx-value-sidebar_tab="terminal"
+            aria-current={if @active_tab == "terminal", do: "page", else: false}
             class={[
               "w-full flex items-center gap-2.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-smooth text-left",
               @active_tab == "terminal" && "bg-[#21262d] text-white shadow-sm font-semibold",
@@ -226,7 +253,7 @@
             <.icon name="hero-command-line" class="w-3.5 h-3.5 text-gray-400" />
             <span>Terminal</span>
           </button>
-        </div>
+        </nav>
 
         <!-- Sessions Subtree -->
         <div class="flex-1 overflow-y-auto px-3 py-2">
@@ -323,17 +350,58 @@
       </div>
     </aside>
 
+    <button
+      id="workspace-sidebar-backdrop"
+      type="button"
+      data-sidebar-close
+      tabindex="-1"
+      aria-label="Close workspace navigation"
+      class="workspace-sidebar-backdrop"
+    ></button>
+
     <!-- Main Workspace Area -->
-    <main class="flex-1 flex flex-col h-full min-w-0 bg-[#0a0d12] relative overflow-hidden">
+    <main
+      id="main-content"
+      tabindex="-1"
+      class="flex-1 flex flex-col h-full min-w-0 bg-[#0a0d12] relative overflow-hidden"
+    >
+      <h1 class="sr-only">IexCode workspace: {@project.name}</h1>
       <!-- Top Navigation Bar & Tab Switchers -->
-      <header class="h-14 border-b border-[#21262d] bg-[#11151c] flex items-center justify-between px-5 shrink-0">
-        <div class="flex items-center gap-2">
+      <header
+        id="workspace-header"
+        class="h-14 border-b border-[#21262d] bg-[#11151c] flex items-center justify-between gap-2 px-3 md:px-4 xl:px-5 shrink-0"
+      >
+        <div class="flex min-w-0 items-center gap-2">
+          <button
+            id="workspace-sidebar-open"
+            type="button"
+            data-sidebar-open
+            aria-controls="workspace-sidebar"
+            aria-expanded="false"
+            aria-label="Open workspace navigation"
+            class="workspace-sidebar-open lg:hidden"
+          >
+            <.icon name="hero-bars-3" class="w-5 h-5" />
+          </button>
+          <div class="min-w-0 xl:hidden">
+            <div class="truncate text-[10px] font-mono uppercase tracking-wider text-gray-500">
+              {@project.name}
+            </div>
+            <div class="truncate text-sm font-semibold text-white">
+              {String.capitalize(@active_tab)}
+            </div>
+          </div>
           <!-- Modern Tab Navigation -->
-          <div class="flex items-center bg-[#161b22] p-1 rounded-xl border border-[#21262d] gap-1">
+          <nav
+            id="workspace-desktop-tabs"
+            aria-label="Workspace views"
+            class="hidden xl:flex items-center bg-[#161b22] p-1 rounded-xl border border-[#21262d] gap-1"
+          >
             <button
               id="tab-btn-kanban"
               phx-click="switch_tab"
               phx-value-tab="kanban"
+              aria-pressed={@active_tab == "kanban"}
               class={[
                 "px-3 py-1 rounded-lg text-xs font-mono font-medium flex items-center gap-1.5 transition-smooth",
                 @active_tab == "kanban" && "bg-[#21262d] text-white shadow-sm",
@@ -347,6 +415,7 @@
               id="tab-btn-swarm"
               phx-click="switch_tab"
               phx-value-tab="swarm"
+              aria-pressed={@active_tab == "swarm"}
               class={[
                 "px-3 py-1 rounded-lg text-xs font-mono font-medium flex items-center gap-1.5 transition-smooth",
                 @active_tab == "swarm" && "bg-[#21262d] text-white shadow-sm",
@@ -360,6 +429,7 @@
               id="tab-btn-calendar"
               phx-click="switch_tab"
               phx-value-tab="calendar"
+              aria-pressed={@active_tab == "calendar"}
               class={[
                 "px-3 py-1 rounded-lg text-xs font-mono font-medium flex items-center gap-1.5 transition-smooth",
                 @active_tab == "calendar" && "bg-[#21262d] text-white shadow-sm",
@@ -373,6 +443,7 @@
               id="tab-btn-changes"
               phx-click="switch_tab"
               phx-value-tab="changes"
+              aria-pressed={@active_tab == "changes"}
               class={[
                 "px-3 py-1 rounded-lg text-xs font-mono font-medium flex items-center gap-1.5 transition-smooth",
                 @active_tab == "changes" && "bg-[#21262d] text-white shadow-sm",
@@ -386,6 +457,7 @@
               id="tab-btn-tests"
               phx-click="switch_tab"
               phx-value-tab="tests"
+              aria-pressed={@active_tab == "tests"}
               class={[
                 "px-3 py-1 rounded-lg text-xs font-mono font-medium flex items-center gap-1.5 transition-smooth",
                 @active_tab == "tests" && "bg-[#21262d] text-white shadow-sm",
@@ -399,6 +471,7 @@
               id="tab-btn-ast"
               phx-click="switch_tab"
               phx-value-tab="ast"
+              aria-pressed={@active_tab == "ast"}
               class={[
                 "px-3 py-1 rounded-lg text-xs font-mono font-medium flex items-center gap-1.5 transition-smooth",
                 @active_tab == "ast" && "bg-[#21262d] text-white shadow-sm",
@@ -412,6 +485,7 @@
               id="tab-btn-chat"
               phx-click="switch_tab"
               phx-value-tab="chat"
+              aria-pressed={@active_tab == "chat"}
               class={[
                 "px-3 py-1 rounded-lg text-xs font-mono font-medium flex items-center gap-1.5 transition-smooth",
                 @active_tab == "chat" && "bg-[#21262d] text-white shadow-sm",
@@ -425,6 +499,7 @@
               id="tab-btn-files"
               phx-click="switch_tab"
               phx-value-tab="files"
+              aria-pressed={@active_tab == "files"}
               class={[
                 "px-3 py-1 rounded-lg text-xs font-mono font-medium flex items-center gap-1.5 transition-smooth",
                 @active_tab == "files" && "bg-[#21262d] text-white shadow-sm",
@@ -438,6 +513,7 @@
               id="tab-btn-terminal"
               phx-click="switch_tab"
               phx-value-tab="terminal"
+              aria-pressed={@active_tab == "terminal"}
               class={[
                 "px-3 py-1 rounded-lg text-xs font-mono font-medium flex items-center gap-1.5 transition-smooth",
                 @active_tab == "terminal" && "bg-[#21262d] text-white shadow-sm",
@@ -446,11 +522,14 @@
             >
               <.icon name="hero-command-line" class="w-3.5 h-3.5 text-gray-400" /> Terminal
             </button>
-          </div>
+          </nav>
         </div>
 
         <!-- Top Right Actions -->
-        <div class="flex items-center gap-3">
+        <div
+          id="workspace-header-actions"
+          class="flex min-w-0 items-center gap-1.5 md:gap-2 xl:gap-3"
+        >
           <div class="tooltip-trigger">
             <button
               phx-click="toggle_swarm"
@@ -462,7 +541,7 @@
               ]}
             >
               <.icon name="hero-sparkles" class="w-3.5 h-3.5" />
-              <span>Swarm: {if @session.swarm_mode, do: "ON", else: "OFF"}</span>
+              <span class="hidden md:inline">Swarm: {if @session.swarm_mode, do: "ON", else: "OFF"}</span>
             </button>
             <div class="luxury-tooltip luxury-tooltip-bottom">
               <div class="text-xs font-semibold text-white tracking-tight mb-1">
@@ -497,8 +576,8 @@
                   "bg-amber-400 shadow-[0_0_8px_rgba(245,158,11,0.8)]",
                 @user_availability == "Offline" && "bg-gray-400"
               ]}></span>
-              <span class="text-white font-semibold">{@user_availability}</span>
-              <span class="text-gray-500 text-[10px]">· {@selected_time_slot
+              <span class="hidden sm:inline text-white font-semibold">{@user_availability}</span>
+              <span class="hidden md:inline text-gray-500 text-[10px]">· {@selected_time_slot
               |> String.split(" - ")
               |> List.first()}</span>
             </button>
@@ -522,7 +601,7 @@
               class="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-[#ff5e3a] hover:bg-[#ff4e24] text-white text-xs font-medium font-mono shadow-md shadow-orange-500/20 transition-smooth"
             >
               <.icon name="hero-plus" class="w-3.5 h-3.5" />
-              <span>New Task</span>
+              <span class="hidden sm:inline">New Task</span>
             </button>
             <div class="luxury-tooltip luxury-tooltip-bottom">
               <div class="text-xs font-semibold text-white tracking-tight mb-1">
@@ -538,12 +617,12 @@
       </header>
 
       <!-- View Containers -->
-      <div class="flex-1 flex overflow-hidden">
+      <div id="workspace-views" class="flex-1 flex min-w-0 overflow-hidden">
         <!-- TAB 1: KANBAN BOARD -->
         <%= if @active_tab == "kanban" do %>
-          <div class="flex-1 flex flex-col h-full overflow-hidden p-5">
+          <div class="flex-1 flex flex-col h-full min-w-0 overflow-hidden p-3 md:p-5">
             <!-- Header & Filter Bar -->
-            <div class="flex items-center justify-between mb-4 shrink-0">
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-4 shrink-0">
               <div class="flex items-center gap-3">
                 <h2 class="text-lg font-semibold text-white tracking-tight flex items-center gap-2">
                   Today's tasks
@@ -554,7 +633,7 @@
               </div>
 
               <!-- Filter Bar -->
-              <div class="flex items-center gap-2.5 text-xs font-mono text-gray-400">
+              <div class="flex max-w-full items-center gap-2.5 overflow-x-auto pb-1 text-xs font-mono text-gray-400">
                 <.form
                   for={to_form(@kanban_filter)}
                   id="kanban-filter-form"
@@ -972,6 +1051,18 @@
         <!-- TAB 2: COACH & SWARM VIEW -->
         <%= if @active_tab == "swarm" do %>
           <div class="flex-1 flex flex-col h-full overflow-y-auto p-5 space-y-5">
+            <.run_control_plane
+              runs={@run_rows}
+              run_count={@run_count}
+              run_counts={@run_counts}
+              selected_run={@selected_run}
+              steps={@run_steps}
+              events={@run_event_rows}
+              approvals={@run_approvals}
+              artifacts={@run_artifacts}
+              stats={@run_dispatcher_stats}
+            />
+
             <!-- Swarm Coach Hero Card -->
             <div class="bg-[#11151c] border border-[#21262d] rounded-3xl p-6 shadow-2xl relative overflow-hidden">
               <div class="bg-[#161b22]/70 border border-[#21262d] rounded-2xl p-5 mb-4 relative">
@@ -2371,12 +2462,22 @@
       </div>
 
       <!-- FLOATING RAINBOW GLOW PROMPT INPUT BOX -->
-      <footer class="p-5 pt-0 bg-gradient-to-t from-[#0a0d12] via-[#0a0d12]/95 to-transparent shrink-0">
+      <footer
+        id="prompt-composer"
+        aria-label="Agent prompt composer"
+        class="p-2 pt-0 sm:p-3 sm:pt-0 xl:p-5 xl:pt-0 bg-gradient-to-t from-[#0a0d12] via-[#0a0d12]/95 to-transparent shrink-0"
+      >
         <div class="max-w-4xl mx-auto">
           <!-- Announcement Pill -->
-          <div class="flex items-center gap-2 mb-2 px-2">
-            <span class="text-cyan-400 text-xs">✦</span>
-            <span class="text-xs font-mono text-gray-400">New: Opus 4.7 & Gemini 3.7 Flash High are active with Multi-Agent Swarm</span>
+          <div class="hidden sm:flex items-center gap-2 mb-2 px-2">
+            <span class="text-[#ff8a68] text-xs">◆</span>
+            <span class="text-xs font-mono text-gray-400">
+              <%= if @dispatch_mode == "background" do %>
+                Durable mode · queued work continues after you disconnect
+              <% else %>
+                Interactive mode · keep this session open for live conversation
+              <% end %>
+            </span>
           </div>
 
           <!-- Rainbow Border Glow Container -->
@@ -2398,9 +2499,49 @@
                 ></textarea>
 
                 <!-- Bottom Action Toolbar -->
-                <div class="flex items-center justify-between pt-2 border-t border-[#21262d] px-1">
+                <div class="flex min-w-0 items-center justify-between gap-2 pt-2 border-t border-[#21262d] px-1">
                   <!-- Left Tool / Model Badges -->
-                  <div class="flex items-center gap-2">
+                  <div class="flex min-w-0 items-center gap-1.5 sm:gap-2">
+                    <div
+                      id="dispatch-mode-switcher"
+                      class="flex shrink-0 items-center border border-[#30363d] bg-[#11161d] p-0.5"
+                      role="group"
+                      aria-label="Prompt dispatch mode"
+                    >
+                      <button
+                        id="dispatch-mode-background"
+                        type="button"
+                        phx-click="set_dispatch_mode"
+                        phx-value-mode="background"
+                        aria-pressed={@dispatch_mode == "background"}
+                        title="Persist and run asynchronously"
+                        class={[
+                          "flex items-center gap-1 px-2 py-1 font-mono text-[10px] transition-colors",
+                          @dispatch_mode == "background" && "bg-[#ff7e5f] text-white",
+                          @dispatch_mode != "background" && "text-gray-500 hover:text-gray-200"
+                        ]}
+                      >
+                        <.icon name="hero-queue-list" class="h-3 w-3" />
+                        <span class="hidden lg:inline">Background</span>
+                      </button>
+                      <button
+                        id="dispatch-mode-interactive"
+                        type="button"
+                        phx-click="set_dispatch_mode"
+                        phx-value-mode="interactive"
+                        aria-pressed={@dispatch_mode == "interactive"}
+                        title="Send to the live session"
+                        class={[
+                          "flex items-center gap-1 px-2 py-1 font-mono text-[10px] transition-colors",
+                          @dispatch_mode == "interactive" && "bg-[#30363d] text-white",
+                          @dispatch_mode != "interactive" && "text-gray-500 hover:text-gray-200"
+                        ]}
+                      >
+                        <.icon name="hero-bolt" class="h-3 w-3" />
+                        <span class="hidden lg:inline">Interactive</span>
+                      </button>
+                    </div>
+
                     <!-- Model Pill Dropdown -->
                     <div class="relative">
                       <button
@@ -2410,10 +2551,10 @@
                         aria-haspopup="listbox"
                         aria-expanded={@open_dropdown == "model"}
                         aria-label="Select AI model"
-                        class="flex items-center bg-[#161b22] hover:bg-[#1c2128] border border-[#30363d] rounded-xl px-2.5 py-1 text-xs font-mono text-gray-200 transition-smooth"
+                        class="flex min-w-0 max-w-28 sm:max-w-none items-center bg-[#161b22] hover:bg-[#1c2128] border border-[#30363d] rounded-xl px-2.5 py-1 text-xs font-mono text-gray-200 transition-smooth"
                       >
                         <.icon name="hero-sparkles" class="w-3.5 h-3.5 text-amber-400 mr-1.5" />
-                        <span>{@session.model_name}</span>
+                        <span class="truncate">{@session.model_name}</span>
                         <.icon name="hero-chevron-up-down" class="w-3 h-3 text-gray-400 ml-1.5" />
                       </button>
 
@@ -2548,17 +2689,19 @@
                   </div>
 
                   <!-- Right Send Button -->
-                  <div class="tooltip-trigger">
+                  <div class="tooltip-trigger shrink-0">
                     <button
                       type="submit"
                       phx-disable-with="Executing..."
                       class="px-4 py-1.5 rounded-xl bg-gradient-to-r from-[#ff7e5f] to-[#feb47b] text-white font-semibold text-xs font-mono shadow-md shadow-orange-500/20 hover:opacity-90 transition-smooth"
                     >
-                      Execute
+                      {if @dispatch_mode == "background", do: "Queue run", else: "Send"}
                     </button>
                     <div class="luxury-tooltip luxury-tooltip-left">
                       <div class="text-xs font-semibold text-white tracking-tight mb-1">
-                        Run Swarm Workflow
+                        {if @dispatch_mode == "background",
+                          do: "Start durable background run",
+                          else: "Send live prompt"}
                       </div>
                       <div class="flex items-center justify-between text-[11px] font-mono text-gray-400 pt-1 border-t border-white/10">
                         <span class="text-gray-300">Trigger Pipeline</span>
@@ -2574,6 +2717,90 @@
       </footer>
     </main>
   </div>
+
+  <script :type={Phoenix.LiveView.ColocatedHook} name=".ResponsiveShell">
+    export default {
+      mounted() {
+        this.openButton = this.el.querySelector('[data-sidebar-open]')
+        this.sidebar = this.el.querySelector('#workspace-sidebar')
+        this.lastFocused = null
+
+        this.setSidebarAccessibility = (isOpen) => {
+          const isDesktop = this.desktopQuery.matches
+          this.sidebar.inert = !isDesktop && !isOpen
+          if (isDesktop) {
+            this.sidebar.removeAttribute('aria-hidden')
+          } else {
+            this.sidebar.setAttribute('aria-hidden', isOpen ? 'false' : 'true')
+          }
+        }
+
+        this.openSidebar = () => {
+          if (this.desktopQuery.matches) return
+          this.lastFocused = document.activeElement
+          this.el.classList.add('sidebar-is-open')
+          this.openButton?.setAttribute('aria-expanded', 'true')
+          this.setSidebarAccessibility(true)
+          requestAnimationFrame(() => this.sidebar?.querySelector('[data-sidebar-close]')?.focus())
+        }
+
+        this.closeSidebar = (restoreFocus = true) => {
+          const wasOpen = this.el.classList.contains('sidebar-is-open')
+          this.el.classList.remove('sidebar-is-open')
+          this.openButton?.setAttribute('aria-expanded', 'false')
+          this.setSidebarAccessibility(false)
+          if (wasOpen && restoreFocus) this.lastFocused?.focus?.()
+        }
+
+        this.handleClick = (event) => {
+          if (event.target.closest('[data-sidebar-open]')) this.openSidebar()
+          if (event.target.closest('[data-sidebar-close]')) this.closeSidebar()
+          if (event.target.closest('#workspace-primary-nav button')) this.closeSidebar()
+        }
+
+        this.handleKeydown = (event) => {
+          if (event.key === 'Escape') {
+            this.closeSidebar()
+            return
+          }
+
+          if (event.key !== 'Tab' || !this.el.classList.contains('sidebar-is-open')) return
+
+          const focusable = [...this.sidebar.querySelectorAll(
+            'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+          )].filter(element => !element.inert && element.offsetParent !== null)
+          if (focusable.length === 0) return
+
+          const first = focusable[0]
+          const last = focusable[focusable.length - 1]
+          if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault()
+            last.focus()
+          } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault()
+            first.focus()
+          }
+        }
+
+        this.handleViewportChange = (event) => {
+          this.closeSidebar(false)
+          this.setSidebarAccessibility(false)
+        }
+
+        this.desktopQuery = window.matchMedia('(min-width: 64rem)')
+        this.setSidebarAccessibility(false)
+        this.el.addEventListener('click', this.handleClick)
+        window.addEventListener('keydown', this.handleKeydown)
+        this.desktopQuery.addEventListener('change', this.handleViewportChange)
+      },
+
+      destroyed() {
+        this.el.removeEventListener('click', this.handleClick)
+        window.removeEventListener('keydown', this.handleKeydown)
+        this.desktopQuery?.removeEventListener('change', this.handleViewportChange)
+      }
+    }
+  </script>
 
   <!-- Autonomous Goal Creation Modal -->
   <%= if @show_goal_modal do %>

@@ -385,7 +385,12 @@ defmodule IexCode.Engine.SessionServer do
     unless swarm_handled_cancel? do
       case action do
         :rollback ->
-          SwarmCoordinator.perform_rollback(project_root)
+          IexCode.Tools.MultiPatch.Snapshot.claim_unscoped(project_root, session_id)
+
+          SwarmCoordinator.perform_rollback(
+            project_root,
+            %SwarmCoordinator.State{session_id: session_id, project_root: project_root}
+          )
 
         :commit ->
           SwarmCoordinator.perform_commit(project_root, opts)

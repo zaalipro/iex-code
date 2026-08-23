@@ -1,5 +1,11 @@
 import Config
 
+# Background database polling cannot own a SQL Sandbox connection before an
+# individual test starts its sandbox owner. Dispatcher tests start it under the
+# test supervisor after checkout.
+config :iex_code, :start_run_dispatcher, false
+config :iex_code, :start_kanban_scheduler, false
+
 # Configure your database
 #
 # The MIX_TEST_PARTITION environment variable can be used

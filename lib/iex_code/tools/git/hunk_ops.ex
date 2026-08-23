@@ -13,6 +13,7 @@ defmodule IexCode.Tools.Git.HunkOps do
   alias IexCode.Tools.Git
   alias IexCode.Tools.Git.DiffParser
   alias IexCode.Tools.MultiPatch
+  alias IexCode.WorkspacePath
 
   @doc """
   Accepts a specific hunk.
@@ -103,8 +104,16 @@ defmodule IexCode.Tools.Git.HunkOps do
   """
   @spec revert_file(Path.t(), Path.t()) :: {:ok, :reverted} | {:error, term()}
   def revert_file(project_root, file_path) do
-    full_path = resolve_file_path(project_root, file_path)
+    with {:ok, full_path} <- resolve_file_path(project_root, file_path),
+         {:ok, canonical_root} <- resolve_file_path(project_root, "") do
+      git_path = Path.relative_to(full_path, canonical_root)
+      do_revert_file(project_root, git_path, full_path)
+    else
+      {:error, reason} -> {:error, {:invalid_path, file_path, reason}}
+    end
+  end
 
+  defp do_revert_file(project_root, file_path, full_path) do
     # Check git status first
     case Git.status(project_root) do
       {:ok, status} ->
@@ -251,8 +260,13 @@ defmodule IexCode.Tools.Git.HunkOps do
   end
 
   defp fallback_revert_hunk_in_file(project_root, file_path, hunk) do
-    full_path = resolve_file_path(project_root, file_path)
+    case resolve_file_path(project_root, file_path) do
+      {:ok, full_path} -> do_fallback_revert_hunk_in_file(full_path, hunk)
+      {:error, reason} -> {:error, {:invalid_path, file_path, reason}}
+    end
+  end
 
+  defp do_fallback_revert_hunk_in_file(full_path, hunk) do
     if not File.exists?(full_path) do
       {:error, :file_not_found}
     else
@@ -279,8 +293,13 @@ defmodule IexCode.Tools.Git.HunkOps do
   end
 
   defp fallback_apply_hunk_in_file(project_root, file_path, hunk) do
-    full_path = resolve_file_path(project_root, file_path)
+    case resolve_file_path(project_root, file_path) do
+      {:ok, full_path} -> do_fallback_apply_hunk_in_file(full_path, hunk)
+      {:error, reason} -> {:error, {:invalid_path, file_path, reason}}
+    end
+  end
 
+  defp do_fallback_apply_hunk_in_file(full_path, hunk) do
     if not File.exists?(full_path) do
       {:error, :file_not_found}
     else
@@ -387,10 +406,6 @@ defmodule IexCode.Tools.Git.HunkOps do
   end
 
   defp resolve_file_path(project_root, path) do
-    if Path.type(path) == :absolute do
-      path
-    else
-      Path.expand(Path.join(project_root, path))
-    end
+    WorkspacePath.resolve(project_root, path)
   end
 end

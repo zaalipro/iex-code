@@ -1,0 +1,688 @@
+defmodule IexCode.Runs.RunDispatcher do
+  @moduledoc """
+  Supervised dispatcher for durable asynchronous coding runs.
+
+  Runs are claimed atomically through `IexCode.Runs`, are bounded by a global
+  concurrency limit, and are exclusive per project. Workers are monitored and
+  all observable state is persisted before PubSub notifications are emitted.
+  A dispatcher restart marks abandoned work interrupted; it never replays a
+  partially executed coding run automatically.
+  """
+
+  use GenServer
+
+  require Logger
+
+  alias IexCode.{Kanban, Projects, Runs, Sessions}
+  alias IexCode.Runs.Run
+
+  @default_poll_interval 1_000
+  @default_heartbeat_interval 5_000
+  @default_lease_ms 15_000
+  @default_cancel_grace_ms 1_500
+
+  defstruct [
+    :name,
+    :worker_id,
+    :executor,
+    :task_supervisor,
+    :max_concurrency,
+    :poll_interval,
+    :heartbeat_interval,
+    :lease_ms,
+    :cancel_grace_ms,
+    workers: %{},
+    run_refs: %{},
+    cancelling: MapSet.new()
+  ]
+
+  @type server :: GenServer.server()
+
+  def start_link(opts \\ []) do
+    name = Keyword.get(opts, :name, __MODULE__)
+    GenServer.start_link(__MODULE__, opts, name: name)
+  end
+
+  @doc "Persists and schedules a typed run."
+  def enqueue(attrs, server \\ __MODULE__) when is_map(attrs) do
+    with :ok <- validate_typed_attrs(attrs),
+         {:ok, run} <- Runs.create_run_with_steps(attrs, initial_steps(attrs)) do
+      dispatch(server)
+      {:ok, run}
+    end
+  end
+
+  @doc "Wakes the dispatcher without blocking the caller."
+  def dispatch(server \\ __MODULE__) do
+    GenServer.cast(server, :dispatch)
+  end
+
+  @doc "Cancels a queued, paused, or active run."
+  def cancel(run_or_id, server \\ __MODULE__) do
+    GenServer.call(server, {:cancel, run_id(run_or_id)}, 30_000)
+  end
+
+  @doc "Requeues an eligible terminal/interrupted run as a new attempt."
+  def retry(run_or_id, server \\ __MODULE__) do
+    GenServer.call(server, {:retry, run_id(run_or_id)}, 30_000)
+  end
+
+  @doc "Pauses an active worker without discarding its process or context."
+  def pause(run_or_id, server \\ __MODULE__) do
+    GenServer.call(server, {:pause, run_id(run_or_id)})
+  end
+
+  @doc "Resumes a paused active worker."
+  def resume(run_or_id, server \\ __MODULE__) do
+    GenServer.call(server, {:resume, run_id(run_or_id)})
+  end
+
+  def get_stats(server \\ __MODULE__), do: GenServer.call(server, :get_stats)
+  def active_runs(server \\ __MODULE__), do: GenServer.call(server, :active_runs)
+  def subscribe(run_or_id), do: Runs.subscribe(run_or_id)
+
+  @impl true
+  def init(opts) do
+    Process.flag(:trap_exit, true)
+    process_name = Keyword.get(opts, :name, __MODULE__)
+
+    state = %__MODULE__{
+      name: process_name,
+      worker_id: Keyword.get(opts, :worker_id, default_worker_id()),
+      executor:
+        Keyword.get(
+          opts,
+          :executor,
+          Application.get_env(:iex_code, :run_executor, IexCode.Runs.Executor)
+        ),
+      task_supervisor: Keyword.get(opts, :task_supervisor, IexCode.TaskSupervisor),
+      max_concurrency:
+        positive(
+          Keyword.get(
+            opts,
+            :max_concurrency,
+            Application.get_env(:iex_code, :run_dispatcher_max_concurrency, 2)
+          ),
+          2
+        ),
+      poll_interval: positive(Keyword.get(opts, :poll_interval, @default_poll_interval), 1_000),
+      heartbeat_interval:
+        positive(Keyword.get(opts, :heartbeat_interval, @default_heartbeat_interval), 5_000),
+      lease_ms: positive(Keyword.get(opts, :lease_ms, @default_lease_ms), 15_000),
+      cancel_grace_ms:
+        positive(Keyword.get(opts, :cancel_grace_ms, @default_cancel_grace_ms), 1_500)
+    }
+
+    # A new dispatcher identity cannot safely resume writes abandoned by an old
+    # worker. Reconciliation deliberately ends at `interrupted`.
+    owned_cutoff =
+      DateTime.utc_now()
+      |> DateTime.add(state.lease_ms, :millisecond)
+      |> DateTime.truncate(:second)
+
+    interrupted =
+      Runs.reconcile_orphaned_runs(
+        lease_owner: state.worker_id,
+        expired_before: owned_cutoff
+      ) ++ Runs.reconcile_orphaned_runs([])
+
+    Enum.each(interrupted, &interrupt_running_steps/1)
+    Enum.each(interrupted, &project_terminal_task/1)
+    schedule_poll(state.poll_interval)
+    schedule_heartbeat(state.heartbeat_interval)
+    send(self(), :drain)
+    {:ok, state}
+  end
+
+  @impl true
+  def handle_cast(:dispatch, state) do
+    send(self(), :drain)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_call(:get_stats, _from, state) do
+    active = map_size(state.workers)
+    queued = state |> queued_count()
+
+    {:reply,
+     %{
+       queued: queued,
+       active: active,
+       capacity: max(state.max_concurrency - active, 0),
+       max_concurrency: state.max_concurrency,
+       projects: active_project_ids(state),
+       worker_id: state.worker_id
+     }, state}
+  end
+
+  def handle_call(:active_runs, _from, state) do
+    runs =
+      state.workers
+      |> Map.values()
+      |> Enum.map(&Runs.get_run(&1.run_id))
+      |> Enum.reject(&is_nil/1)
+
+    {:reply, runs, state}
+  end
+
+  def handle_call({:cancel, nil}, _from, state), do: {:reply, {:error, :not_found}, state}
+
+  def handle_call({:cancel, run_id}, _from, state) do
+    case Runs.get_run(run_id) do
+      nil ->
+        {:reply, {:error, :not_found}, state}
+
+      %Run{status: status} when status in ~w(completed failed cancelled) ->
+        {:reply, {:error, {:invalid_transition, status, "cancelled"}}, state}
+
+      %Run{} = run ->
+        active? = Map.has_key?(state.run_refs, run_id)
+
+        with {:ok, requested} <- Runs.request_cancellation(run),
+             :ok <- maybe_broadcast_cancel(active?, requested),
+             {:ok, cancelled} <- Runs.transition_run(requested, "cancelled") do
+          cancel_open_steps(cancelled)
+          project_terminal_task(cancelled)
+          new_state = begin_worker_cancellation(state, run_id)
+          send(self(), :drain)
+          {:reply, {:ok, cancelled}, new_state}
+        else
+          error -> {:reply, error, state}
+        end
+    end
+  end
+
+  def handle_call({:retry, nil}, _from, state), do: {:reply, {:error, :not_found}, state}
+
+  def handle_call({:retry, run_id}, _from, state) do
+    result =
+      with %Run{} = run <- Runs.get_run(run_id) do
+        Runs.retry_run(run, steps: retry_attempt_steps(run))
+      else
+        nil -> {:error, :not_found}
+      end
+
+    if match?({:ok, _}, result), do: send(self(), :drain)
+    {:reply, result, state}
+  end
+
+  def handle_call({:pause, run_id}, _from, state) do
+    result = transition_controlled_run(state, run_id, "paused", {:pause, session_id(run_id)})
+    {:reply, result, state}
+  end
+
+  def handle_call({:resume, run_id}, _from, state) do
+    result = transition_controlled_run(state, run_id, "running", {:resume, session_id(run_id)})
+    {:reply, result, state}
+  end
+
+  @impl true
+  def handle_info(:drain, state) do
+    {:noreply, drain_capacity(state)}
+  end
+
+  def handle_info(:poll, state) do
+    schedule_poll(state.poll_interval)
+    interrupted = Runs.reconcile_orphaned_runs([])
+    Enum.each(interrupted, &interrupt_running_steps/1)
+    Enum.each(interrupted, &project_terminal_task/1)
+    {:noreply, drain_capacity(state)}
+  end
+
+  def handle_info(:heartbeat, state) do
+    schedule_heartbeat(state.heartbeat_interval)
+
+    Enum.each(state.workers, fn {_ref, worker} ->
+      unless MapSet.member?(state.cancelling, worker.run_id) do
+        _ = Runs.renew_lease(worker.run_id, state.worker_id, state.lease_ms)
+      end
+    end)
+
+    {:noreply, state}
+  end
+
+  def handle_info({ref, result}, state) when is_reference(ref) do
+    case Map.fetch(state.workers, ref) do
+      {:ok, worker} ->
+        Process.demonitor(ref, [:flush])
+        state = finish_worker(state, ref, worker, result)
+        send(self(), :drain)
+        {:noreply, state}
+
+      :error ->
+        {:noreply, state}
+    end
+  end
+
+  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
+    case Map.fetch(state.workers, ref) do
+      {:ok, worker} ->
+        state = finish_worker(state, ref, worker, {:worker_exit, reason})
+        send(self(), :drain)
+        {:noreply, state}
+
+      :error ->
+        {:noreply, state}
+    end
+  end
+
+  def handle_info({:force_cancel, run_id, pid}, state) do
+    if Map.has_key?(state.run_refs, run_id) and Process.alive?(pid) do
+      _ = Task.Supervisor.terminate_child(state.task_supervisor, pid)
+    end
+
+    {:noreply, state}
+  end
+
+  def handle_info(_message, state), do: {:noreply, state}
+
+  defp drain_capacity(state) do
+    if map_size(state.workers) < state.max_concurrency do
+      opts = [
+        lease_ms: state.lease_ms,
+        exclude_project_ids: active_project_ids(state)
+      ]
+
+      case Runs.claim_next_run(state.worker_id, opts) do
+        {:ok, %Run{} = run} ->
+          state |> start_worker(run) |> drain_capacity()
+
+        :none ->
+          state
+
+        {:error, reason} ->
+          Logger.warning("RunDispatcher claim failed: #{inspect(reason)}")
+          state
+      end
+    else
+      state
+    end
+  end
+
+  defp start_worker(state, run) do
+    case prepare_claimed_run(run) do
+      {:ok, execute_step} ->
+        executor = state.executor
+
+        task =
+          Task.Supervisor.async(state.task_supervisor, fn ->
+            progress = fn percent, message ->
+              report_progress(run.id, state.worker_id, state.lease_ms, percent, message)
+            end
+
+            execute(executor, run, progress)
+          end)
+
+        worker = %{
+          run_id: run.id,
+          project_id: run.project_id,
+          pid: task.pid,
+          execute_step_id: execute_step.id
+        }
+
+        workers = Map.put(state.workers, task.ref, worker)
+        run_refs = Map.put(state.run_refs, run.id, task.ref)
+
+        broadcast_session(run, {:async_run_started, run, task.pid})
+        %{state | workers: workers, run_refs: run_refs}
+
+      {:error, reason} ->
+        case Runs.transition_run(run, "failed", error_attrs(reason)) do
+          {:ok, failed} -> project_terminal_task(failed)
+          _ -> :ok
+        end
+
+        state
+    end
+  end
+
+  defp execute(executor, run, progress) do
+    executor.execute(run, progress)
+  rescue
+    error -> {:error, {error, __STACKTRACE__}}
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  defp report_progress(run_id, worker_id, lease_ms, percent, message) do
+    percent = percent |> max(0) |> min(100)
+
+    with {:ok, _leased_run} <- Runs.renew_lease(run_id, worker_id, lease_ms),
+         {:ok, run} <- Runs.record_progress(run_id, percent, message, "worker") do
+      broadcast_session(run, {:async_run_updated, run})
+      :ok
+    else
+      error -> exit({:run_lease_lost, error})
+    end
+  end
+
+  defp finish_worker(state, ref, worker, result) do
+    run = Runs.get_run(worker.run_id)
+    cancelling? = MapSet.member?(state.cancelling, worker.run_id)
+
+    unless is_nil(run) or cancelling? or run.status == "cancelled" do
+      {status, attrs} = terminal_result(result)
+      finish_execute_step(worker.execute_step_id, status, attrs)
+
+      attrs =
+        case attrs do
+          %{metadata: result_metadata} ->
+            %{attrs | metadata: Map.merge(run.metadata || %{}, result_metadata)}
+
+          _ ->
+            attrs
+        end
+
+      case Runs.transition_run(run, status, attrs) do
+        {:ok, updated} ->
+          project_terminal_task(updated)
+          broadcast_session(updated, {:async_run_updated, updated})
+
+        {:error, {:invalid_transition, _, _}} ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning("RunDispatcher finalization failed: #{inspect(reason)}")
+      end
+    end
+
+    if run && run.lease_owner == state.worker_id do
+      _ = Runs.release_lease(run.id, state.worker_id)
+    end
+
+    %{
+      state
+      | workers: Map.delete(state.workers, ref),
+        run_refs: Map.delete(state.run_refs, worker.run_id),
+        cancelling: MapSet.delete(state.cancelling, worker.run_id)
+    }
+  end
+
+  defp terminal_result({:ok, result}),
+    do: {"completed", %{metadata: %{"result" => inspect(result)}}}
+
+  defp terminal_result(:ok), do: {"completed", %{}}
+
+  defp terminal_result({:error, reason}),
+    do: {"failed", error_attrs(reason)}
+
+  defp terminal_result({:worker_exit, reason}),
+    do: {"interrupted", error_attrs(reason)}
+
+  defp terminal_result(other), do: {"completed", %{metadata: %{"result" => inspect(other)}}}
+
+  defp error_attrs(reason) do
+    %{error_message: format_reason(reason), error_details: %{"reason" => inspect(reason)}}
+  end
+
+  defp format_reason({exception, stacktrace}) when is_exception(exception),
+    do: Exception.format(:error, exception, stacktrace)
+
+  defp format_reason({kind, reason}) when kind in [:exit, :throw],
+    do: "#{kind}: #{inspect(reason)}"
+
+  defp format_reason(reason), do: inspect(reason)
+
+  defp begin_worker_cancellation(state, run_id) do
+    case Map.fetch(state.run_refs, run_id) do
+      {:ok, ref} ->
+        worker = Map.fetch!(state.workers, ref)
+        Process.send_after(self(), {:force_cancel, run_id, worker.pid}, state.cancel_grace_ms)
+        %{state | cancelling: MapSet.put(state.cancelling, run_id)}
+
+      :error ->
+        state
+    end
+  end
+
+  defp transition_controlled_run(state, run_id, status, control) do
+    with %Run{} = run <- Runs.get_run(run_id),
+         true <- Map.has_key?(state.run_refs, run_id),
+         {:ok, updated} <- Runs.transition_run(run, status) do
+      broadcast_control(updated, control)
+      transition_active_step(updated, status)
+      broadcast_session(updated, {:async_run_updated, updated})
+      {:ok, updated}
+    else
+      nil -> {:error, :not_found}
+      false -> {:error, :not_active}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp queued_count(_state) do
+    Runs.list_runs(status: "queued", limit: 1_000) |> length()
+  rescue
+    _ -> 0
+  end
+
+  defp active_project_ids(state) do
+    state.workers |> Map.values() |> Enum.map(& &1.project_id) |> Enum.uniq()
+  end
+
+  defp validate_typed_attrs(attrs) do
+    kind = Map.get(attrs, :kind) || Map.get(attrs, "kind")
+    mode = Map.get(attrs, :mode) || Map.get(attrs, "mode")
+    objective = Map.get(attrs, :objective) || Map.get(attrs, "objective")
+    project_id = Map.get(attrs, :project_id) || Map.get(attrs, "project_id")
+    session_id = Map.get(attrs, :session_id) || Map.get(attrs, "session_id")
+
+    if Enum.all?([kind, mode, objective, project_id, session_id], &(is_binary(&1) and &1 != "")) do
+      :ok
+    else
+      {:error, :invalid_typed_run}
+    end
+  end
+
+  defp metadata_kind(attrs) do
+    metadata = Map.get(attrs, :metadata) || Map.get(attrs, "metadata") || %{}
+    Map.get(metadata, :kind) || Map.get(metadata, "kind")
+  end
+
+  defp run_id(%Run{id: id}), do: id
+  defp run_id(id) when is_binary(id), do: id
+  defp run_id(_), do: nil
+
+  defp session_id(run_id) do
+    case Runs.get_run(run_id) do
+      %Run{session_id: id} -> id
+      _ -> nil
+    end
+  end
+
+  defp maybe_broadcast_cancel(true, %Run{} = run) do
+    broadcast_control(run, {:cancel, run.session_id, [action: :rollback]})
+  end
+
+  defp maybe_broadcast_cancel(false, %Run{}), do: :ok
+
+  defp broadcast_control(%Run{} = run, message), do: broadcast_control(run.session_id, message)
+
+  defp broadcast_control(session_id, message) when is_binary(session_id) do
+    Phoenix.PubSub.broadcast(IexCode.PubSub, "session:#{session_id}:steer", message)
+  end
+
+  defp broadcast_control(_, _), do: :ok
+
+  defp broadcast_session(%Run{} = run, event) do
+    Phoenix.PubSub.broadcast(IexCode.PubSub, "session:#{run.session_id}", event)
+    Phoenix.PubSub.broadcast(IexCode.PubSub, "runs:session:#{run.session_id}", event)
+  rescue
+    _ -> :ok
+  end
+
+  defp schedule_poll(interval), do: Process.send_after(self(), :poll, interval)
+  defp schedule_heartbeat(interval), do: Process.send_after(self(), :heartbeat, interval)
+
+  defp positive(value, _default) when is_integer(value) and value > 0, do: value
+  defp positive(_value, default), do: default
+
+  defp default_worker_id do
+    "#{node()}:run-dispatcher"
+  end
+
+  defp project_terminal_task(%Run{status: status} = run)
+       when status in ["completed", "failed", "cancelled", "interrupted"] do
+    _ = Kanban.project_run_terminal(run.id, status, run.error_message)
+    :ok
+  end
+
+  defp project_terminal_task(_run), do: :ok
+
+  defp retry_attempt_steps(%Run{} = run) do
+    {prepare_key, execute_key} = attempt_step_keys(run)
+    base_position = run.attempt * 2
+
+    [
+      %{
+        key: prepare_key,
+        kind: "prepare",
+        title: "Validate durable run inputs",
+        status: "ready",
+        position: base_position
+      },
+      %{
+        key: execute_key,
+        kind: "execute",
+        title: "Execute #{run.kind}",
+        status: "pending",
+        position: base_position + 1,
+        depends_on: [prepare_key]
+      }
+    ]
+  end
+
+  defp initial_steps(attrs) do
+    kind = Map.get(attrs, :kind) || Map.get(attrs, "kind") || metadata_kind(attrs)
+
+    [
+      %{
+        key: "prepare",
+        kind: "prepare",
+        title: "Validate durable run inputs",
+        status: "ready",
+        position: 0
+      },
+      %{
+        key: "execute",
+        kind: "execute",
+        title: "Execute #{kind}",
+        status: "pending",
+        position: 1,
+        depends_on: ["prepare"]
+      }
+    ]
+  end
+
+  defp attempt_step_keys(%Run{attempt: 0}), do: {"prepare", "execute"}
+
+  defp attempt_step_keys(%Run{attempt: attempt}) do
+    next_attempt = attempt + 1
+    {"prepare.#{next_attempt}", "execute.#{next_attempt}"}
+  end
+
+  defp current_attempt_steps(%Run{} = run) do
+    keys =
+      if run.attempt <= 1 do
+        ["prepare", "execute"]
+      else
+        ["prepare.#{run.attempt}", "execute.#{run.attempt}"]
+      end
+
+    run
+    |> Runs.list_steps()
+    |> Enum.filter(&(&1.key in keys))
+  end
+
+  defp prepare_claimed_run(%Run{} = run) do
+    steps = current_attempt_steps(run)
+    prepare = Enum.find(steps, &(&1.kind == "prepare"))
+    execute = Enum.find(steps, &(&1.kind == "execute"))
+
+    cond do
+      is_nil(prepare) ->
+        {:error, :missing_prepare_step}
+
+      is_nil(execute) ->
+        fail_prepare(prepare, execute, :missing_execute_step)
+
+      true ->
+        with {:ok, running_prepare} <- Runs.transition_step(prepare, "running"),
+             :ok <- validate_relationships(run),
+             {:ok, _completed_prepare} <- Runs.transition_step(running_prepare, "completed"),
+             {:ok, running_execute} <- Runs.transition_step(execute, "running") do
+          {:ok, running_execute}
+        else
+          {:error, reason} -> fail_prepare(prepare, execute, reason)
+        end
+    end
+  end
+
+  defp fail_prepare(prepare, execute, reason) do
+    prepare = Runs.get_step(prepare.id) || prepare
+
+    if prepare.status not in ~w(completed failed cancelled) do
+      _ = Runs.transition_step(prepare, "failed", error_attrs(reason))
+    end
+
+    if execute && execute.status not in ~w(completed failed cancelled skipped) do
+      _ = Runs.transition_step(execute, "skipped")
+    end
+
+    {:error, reason}
+  end
+
+  defp validate_relationships(%Run{} = run) do
+    project = Projects.get_project!(run.project_id)
+    session = Sessions.get_session!(run.session_id)
+
+    cond do
+      session.project_id != project.id -> {:error, :session_project_mismatch}
+      not File.dir?(project.root_path) -> {:error, :project_root_not_found}
+      true -> :ok
+    end
+  rescue
+    Ecto.NoResultsError -> {:error, :invalid_project_or_session}
+  end
+
+  defp finish_execute_step(step_id, run_status, attrs) do
+    step_status =
+      case run_status do
+        "completed" -> "completed"
+        "interrupted" -> "interrupted"
+        "cancelled" -> "cancelled"
+        _ -> "failed"
+      end
+
+    step_attrs = Map.drop(attrs, [:metadata])
+    _ = Runs.transition_step(step_id, step_status, step_attrs)
+    :ok
+  end
+
+  defp cancel_open_steps(run) do
+    run
+    |> Runs.list_steps()
+    |> Enum.filter(&(&1.status not in ~w(completed failed cancelled skipped interrupted)))
+    |> Enum.each(&Runs.transition_step(&1, "cancelled"))
+  end
+
+  defp interrupt_running_steps(run) do
+    run
+    |> Runs.list_steps()
+    |> Enum.filter(&(&1.status in ~w(running paused)))
+    |> Enum.each(&Runs.transition_step(&1, "interrupted"))
+  end
+
+  defp transition_active_step(run, status) do
+    step_status = if status == "paused", do: "paused", else: "running"
+
+    run
+    |> current_attempt_steps()
+    |> Enum.find(&(&1.kind == "execute" and &1.status in ~w(running paused)))
+    |> case do
+      nil -> :ok
+      step -> Runs.transition_step(step, step_status)
+    end
+  end
+end

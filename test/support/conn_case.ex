@@ -33,6 +33,9 @@ defmodule IexCodeWeb.ConnCase do
 
   setup tags do
     IexCode.DataCase.setup_sandbox(tags)
-    {:ok, conn: Phoenix.ConnTest.build_conn()}
+
+    conn = Phoenix.ConnTest.build_conn() |> Map.put(:host, "localhost")
+
+    {:ok, conn: conn}
   end
 end

@@ -3,6 +3,19 @@ defmodule IexCode.Repo do
     otp_app: :iex_code,
     adapter: Ecto.Adapters.SQLite3
 
+  @impl true
+  def init(_type, config) do
+    database = config[:database]
+
+    if is_binary(database) and database not in ["", ":memory:"] do
+      database |> Path.dirname() |> File.mkdir_p!()
+
+      if File.exists?(database), do: File.chmod(database, 0o600)
+    end
+
+    {:ok, config}
+  end
+
   @doc """
   Executes a function with exponential backoff retry on SQLite busy/locked errors.
   """

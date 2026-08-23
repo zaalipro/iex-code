@@ -7,6 +7,7 @@ defmodule IexCode.Tools.MultiPatch do
   """
 
   alias IexCode.Tools.MultiPatch.{Matcher, Diff, Snapshot}
+  alias IexCode.WorkspacePath
 
   @type tier :: Matcher.tier()
 
@@ -50,7 +51,7 @@ defmodule IexCode.Tools.MultiPatch do
     case plan_patches(project_root, patches, opts) do
       {:ok, planned_patches} ->
         # Phase 2: Transactional Disk Writes with Rollback Guard
-        tx_id = "tx_" <> to_string(System.system_time(:microsecond))
+        tx_id = "tx_" <> Ecto.UUID.generate()
         execute_writes(project_root, planned_patches, tx_id, opts)
 
       {:error, _reason} = err ->
@@ -101,8 +102,9 @@ defmodule IexCode.Tools.MultiPatch do
           | {:error, term()}
   def rollback(transaction_id) do
     case Snapshot.get_snapshot(transaction_id) do
-      {:ok, %{patches: patches}} ->
-        results = Enum.map(patches, &restore_patch/1)
+      {:ok, %{patches: patches, project_root: project_root}}
+      when is_binary(project_root) and project_root != "" ->
+        results = Enum.map(patches, &restore_scoped_patch(project_root, &1))
 
         restored = for {:restored, path} <- results, do: path
         skipped = for {:skipped, path} <- results, do: path
@@ -121,8 +123,18 @@ defmodule IexCode.Tools.MultiPatch do
             }}}
         end
 
+      {:ok, _unscoped_snapshot} ->
+        {:error, :missing_workspace_scope}
+
       {:error, :not_found} ->
         {:error, {:transaction_not_found, transaction_id}}
+    end
+  end
+
+  defp restore_scoped_patch(project_root, patch) do
+    case WorkspacePath.resolve(project_root, patch.path) do
+      {:ok, authorized_path} -> restore_patch(%{patch | full_path: authorized_path})
+      {:error, reason} -> {:failed, patch.path, {:invalid_path, reason}}
     end
   end
 
@@ -184,80 +196,83 @@ defmodule IexCode.Tools.MultiPatch do
         Enum.group_by(normalized_patches, fn p -> p.path end)
 
       Enum.reduce_while(grouped, {:ok, []}, fn {rel_path, file_patches}, {:ok, acc} ->
-        full_path = resolve_file_path(project_root, rel_path)
+        with {:ok, full_path} <- resolve_file_path(project_root, rel_path) do
+          if not File.exists?(full_path) do
+            {:halt, {:error, {:file_not_found, rel_path}}}
+          else
+            original_content = File.read!(full_path)
+            stat = File.stat!(full_path)
 
-        if not File.exists?(full_path) do
-          {:halt, {:error, {:file_not_found, rel_path}}}
-        else
-          original_content = File.read!(full_path)
-          stat = File.stat!(full_path)
+            # Apply patches sequentially in memory to original_content
+            res =
+              Enum.reduce_while(file_patches, {:ok, original_content, []}, fn patch,
+                                                                              {:ok,
+                                                                               current_content,
+                                                                               patch_acc} ->
+                target = patch.target
+                replacement = patch.replacement
 
-          # Apply patches sequentially in memory to original_content
-          res =
-            Enum.reduce_while(file_patches, {:ok, original_content, []}, fn patch,
-                                                                            {:ok, current_content,
-                                                                             patch_acc} ->
-              target = patch.target
-              replacement = patch.replacement
+                patch_opts = [
+                  allow_multiple: patch.allow_multiple,
+                  tier: patch.tier
+                ]
 
-              patch_opts = [
-                allow_multiple: patch.allow_multiple,
-                tier: patch.tier
-              ]
+                case Matcher.patch(current_content, target, replacement, patch_opts) do
+                  {:ok, %{content: next_content, tier: tier_used}} ->
+                    {:cont, {:ok, next_content, [{patch, tier_used} | patch_acc]}}
 
-              case Matcher.patch(current_content, target, replacement, patch_opts) do
-                {:ok, %{content: next_content, tier: tier_used}} ->
-                  {:cont, {:ok, next_content, [{patch, tier_used} | patch_acc]}}
+                  {:error, :not_found} ->
+                    {:halt, {:error, {:target_not_found, rel_path, target}}}
+                end
+              end)
 
-                {:error, :not_found} ->
-                  {:halt, {:error, {:target_not_found, rel_path, target}}}
-              end
-            end)
+            case res do
+              {:ok, final_content, applied_info} ->
+                # Validate Elixir syntax if requested
+                ext = Path.extname(rel_path)
 
-          case res do
-            {:ok, final_content, applied_info} ->
-              # Validate Elixir syntax if requested
-              ext = Path.extname(rel_path)
-
-              syntax_check =
-                if validate_syntax? and ext in [".ex", ".exs"] do
-                  case Code.string_to_quoted(final_content) do
-                    {:ok, _ast} -> :ok
-                    {:error, reason} -> {:error, {:syntax_error, rel_path, inspect(reason)}}
+                syntax_check =
+                  if validate_syntax? and ext in [".ex", ".exs"] do
+                    case Code.string_to_quoted(final_content) do
+                      {:ok, _ast} -> :ok
+                      {:error, reason} -> {:error, {:syntax_error, rel_path, inspect(reason)}}
+                    end
+                  else
+                    :ok
                   end
-                else
-                  :ok
+
+                case syntax_check do
+                  :ok ->
+                    diff_str = Diff.unified_diff(original_content, final_content, rel_path)
+                    # Determine predominant tier
+                    tiers = Enum.map(applied_info, fn {_p, t} -> t end)
+                    primary_tier = List.first(tiers) || :exact
+
+                    entry = %{
+                      path: rel_path,
+                      full_path: full_path,
+                      file_existed?: true,
+                      original_content: original_content,
+                      new_content: final_content,
+                      tier_used: primary_tier,
+                      all_tiers: tiers,
+                      diff: diff_str,
+                      # Captured for staleness detection between plan and write
+                      stat: %{size: stat.size, mtime: stat.mtime}
+                    }
+
+                    {:cont, {:ok, [entry | acc]}}
+
+                  {:error, reason} ->
+                    {:halt, {:error, reason}}
                 end
 
-              case syntax_check do
-                :ok ->
-                  diff_str = Diff.unified_diff(original_content, final_content, rel_path)
-                  # Determine predominant tier
-                  tiers = Enum.map(applied_info, fn {_p, t} -> t end)
-                  primary_tier = List.first(tiers) || :exact
-
-                  entry = %{
-                    path: rel_path,
-                    full_path: full_path,
-                    file_existed?: true,
-                    original_content: original_content,
-                    new_content: final_content,
-                    tier_used: primary_tier,
-                    all_tiers: tiers,
-                    diff: diff_str,
-                    # Captured for staleness detection between plan and write
-                    stat: %{size: stat.size, mtime: stat.mtime}
-                  }
-
-                  {:cont, {:ok, [entry | acc]}}
-
-                {:error, reason} ->
-                  {:halt, {:error, reason}}
-              end
-
-            {:error, reason} ->
-              {:halt, {:error, reason}}
+              {:error, reason} ->
+                {:halt, {:error, reason}}
+            end
           end
+        else
+          {:error, reason} -> {:halt, {:error, {:invalid_path, rel_path, reason}}}
         end
       end)
       |> case do
@@ -277,19 +292,28 @@ defmodule IexCode.Tools.MultiPatch do
 
   # --- Phase 2: Transactional Execution ---
 
-  defp execute_writes(_project_root, planned_patches, tx_id, opts) do
+  defp execute_writes(project_root, planned_patches, tx_id, opts) do
     # Save the snapshot BEFORE the first write so a crash mid-write still
     # leaves a recoverable transaction record.
     session_id = Keyword.get(opts, :session_id)
-    Snapshot.save_snapshot(tx_id, planned_patches, session_id: session_id)
+    run_id = Keyword.get(opts, :run_id)
 
-    case verify_targets_unchanged(planned_patches) do
-      :ok ->
-        write_all(planned_patches, tx_id)
+    with :ok <-
+           Snapshot.save_snapshot(tx_id, planned_patches,
+             session_id: session_id,
+             run_id: run_id,
+             project_root: project_root
+           ) do
+      case verify_targets_unchanged(planned_patches) do
+        :ok ->
+          write_all(planned_patches, tx_id)
 
-      {:error, :stale_target} = err ->
-        Snapshot.delete_snapshot(tx_id)
-        err
+        {:error, :stale_target} = err ->
+          Snapshot.delete_snapshot(tx_id)
+          err
+      end
+    else
+      {:error, reason} -> {:error, {:snapshot_persist_failed, reason}}
     end
   end
 
@@ -452,10 +476,6 @@ defmodule IexCode.Tools.MultiPatch do
   end
 
   defp resolve_file_path(project_root, path) do
-    if Path.type(path) == :absolute do
-      path
-    else
-      Path.expand(Path.join(project_root, path))
-    end
+    WorkspacePath.resolve(project_root, path)
   end
 end

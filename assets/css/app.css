@@ -11,37 +11,6 @@
 
 @plugin "../vendor/heroicons";
 
-@plugin "../vendor/daisyui" {
-  themes: false;
-}
-
-@plugin "../vendor/daisyui-theme" {
-  name: "dark";
-  default: true;
-  prefersdark: true;
-  color-scheme: "dark";
-  --color-base-100: #0a0d12;
-  --color-base-200: #11151c;
-  --color-base-300: #161b22;
-  --color-base-content: #f0f6fc;
-  --color-primary: #ff5e3a;
-  --color-primary-content: #ffffff;
-  --color-secondary: #a855f7;
-  --color-secondary-content: #ffffff;
-  --color-accent: #22c55e;
-  --color-accent-content: #022c22;
-  --color-neutral: #1c2128;
-  --color-neutral-content: #f9fafb;
-  --color-info: #38bdf8;
-  --color-info-content: #082f49;
-  --color-success: #22c55e;
-  --color-success-content: #064e3b;
-  --color-warning: #f59e0b;
-  --color-warning-content: #451a03;
-  --color-error: #ef4444;
-  --color-error-content: #450a0a;
-}
-
 @custom-variant phx-click-loading (.phx-click-loading&, .phx-click-loading &);
 @custom-variant phx-submit-loading (.phx-submit-loading&, .phx-submit-loading &);
 @custom-variant phx-change-loading (.phx-change-loading&, .phx-change-loading &);
@@ -392,3 +361,155 @@ body.phx-disconnected::after {
   pointer-events: auto;
 }
 
+/* Responsive application shell and keyboard accessibility */
+.workspace-skip-link {
+  position: fixed;
+  top: 0.75rem;
+  left: 0.75rem;
+  z-index: 200;
+  transform: translateY(-200%);
+  border: 1px solid #ff7e5f;
+  border-radius: 0.625rem;
+  background: #11151c;
+  color: #fff;
+  padding: 0.625rem 0.875rem;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5);
+  transition: transform 160ms ease;
+}
+
+.workspace-skip-link:focus {
+  transform: translateY(0);
+}
+
+:where(button, a, input, textarea, select, [role="button"]):focus-visible {
+  outline: 2px solid #79c0ff !important;
+  outline-offset: 2px !important;
+}
+
+.workspace-sidebar-open,
+.workspace-sidebar-close {
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  border: 1px solid #30363d;
+  border-radius: 0.75rem;
+  background: #161b22;
+  color: #c9d1d9;
+  transition: color 160ms ease, background-color 160ms ease, border-color 160ms ease;
+}
+
+.workspace-sidebar-open {
+  display: flex;
+  flex: 0 0 auto;
+}
+
+.workspace-sidebar-close {
+  display: flex;
+  position: absolute;
+  top: 0.75rem;
+  right: 0.75rem;
+  z-index: 3;
+}
+
+.workspace-sidebar-open:hover,
+.workspace-sidebar-close:hover {
+  border-color: #484f58;
+  background: #21262d;
+  color: #fff;
+}
+
+.workspace-sidebar {
+  position: fixed;
+  inset: 0 auto 0 0;
+  z-index: 80;
+  width: min(20rem, calc(100vw - 3rem));
+  max-width: 100%;
+  transform: translateX(-105%);
+  box-shadow: 24px 0 60px rgba(0, 0, 0, 0.48);
+  transition: transform 220ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.workspace-sidebar > div:first-of-type > div:first-child {
+  padding-right: 3.5rem;
+}
+
+.workspace-sidebar-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: block;
+  visibility: hidden;
+  border: 0;
+  background: rgba(3, 6, 10, 0.72);
+  opacity: 0;
+  backdrop-filter: blur(3px);
+  transition: opacity 180ms ease, visibility 180ms ease;
+}
+
+.workspace-shell.sidebar-is-open .workspace-sidebar {
+  transform: translateX(0);
+}
+
+.workspace-shell.sidebar-is-open .workspace-sidebar-backdrop {
+  visibility: visible;
+  opacity: 1;
+}
+
+@media (min-width: 64rem) {
+  .workspace-sidebar {
+    position: relative;
+    inset: auto;
+    z-index: auto;
+    width: 16rem;
+    transform: none;
+    box-shadow: none;
+  }
+
+  .workspace-sidebar > div:first-of-type > div:first-child {
+    padding-right: 0.875rem;
+  }
+
+  .workspace-sidebar-open,
+  .workspace-sidebar-close,
+  .workspace-sidebar-backdrop {
+    display: none;
+  }
+}
+
+@media (max-width: 47.99rem) {
+  #workspace-header-actions .luxury-tooltip {
+    display: none;
+  }
+
+  #workspace-header-actions button {
+    min-height: 2.25rem;
+  }
+
+  #prompt-composer .rainbow-box-wrapper,
+  #prompt-composer .rainbow-box-wrapper::before {
+    border-radius: 1rem;
+  }
+
+  #prompt-composer .rainbow-box-wrapper > div {
+    padding: 0.625rem;
+  }
+
+  #prompt-textarea {
+    min-height: 2.75rem;
+    max-height: 7rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -73,12 +73,30 @@ defmodule IexCode.Tools.TerminalServer do
   end
 
   @doc """
-  Sends a complete command string with an appended newline (`\\n`) to the terminal.
+  Queues a complete command for correlated, serialized execution.
+
+  This compatibility API returns `:ok`; use `run_command_with_id/2` when the
+  caller needs the generated command ID.
   """
   @spec run_command(session_id :: String.t(), command :: String.t()) :: :ok | {:error, term()}
   def run_command(session_id, command) when is_binary(session_id) and is_binary(command) do
-    cmd = if String.ends_with?(command, "\n"), do: command, else: command <> "\n"
-    send_input(session_id, cmd)
+    case run_command_with_id(session_id, command) do
+      {:ok, _command_id} -> :ok
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
+  Queues a command and returns the opaque ID used by command lifecycle PubSub events.
+  """
+  @spec run_command_with_id(session_id :: String.t(), command :: String.t()) ::
+          {:ok, String.t()} | {:error, term()}
+  def run_command_with_id(session_id, command)
+      when is_binary(session_id) and is_binary(command) do
+    case whereis(session_id) do
+      nil -> {:error, :not_found}
+      _pid -> TerminalSession.run_command(session_id, command)
+    end
   end
 
   @doc """

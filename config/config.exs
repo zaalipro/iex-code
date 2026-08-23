@@ -12,6 +12,11 @@ config :iex_code,
   start_desktop_window: false,
   generators: [timestamp_type: :utc_datetime]
 
+config :iex_code, :kanban_scheduler,
+  poll_interval: 30_000,
+  stale_after: 300_000,
+  claim_limit: 20
+
 # Configure the endpoint
 config :iex_code, IexCodeWeb.Endpoint,
   url: [host: "localhost"],

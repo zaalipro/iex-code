@@ -13,6 +13,7 @@ defmodule IexCode.Tools.TerminalSession do
   @default_cols 80
   @default_rows 24
   @default_max_buffer_bytes 512 * 1024
+  @history_consistency_timeout_ms 1_000
   @pubsub_server IexCode.PubSub
 
   defstruct [
@@ -33,7 +34,13 @@ defmodule IexCode.Tools.TerminalSession do
     :started_at,
     :exit_code,
     :exit_reason,
-    :cleared
+    :cleared,
+    :active_command,
+    :command_queue,
+    :command_marker_buffer,
+    :max_queued_commands,
+    :history_suppressed_command_id,
+    :recent_command_inputs
   ]
 
   # --- Client API ---
@@ -83,6 +90,23 @@ defmodule IexCode.Tools.TerminalSession do
       when is_binary(session_id) and is_binary(data) do
     try do
       GenServer.call(via_tuple(session_id), {:send_input, data, opts})
+    catch
+      :exit, _ -> {:error, :not_found}
+    end
+  end
+
+  @doc """
+  Queues a complete command for serialized execution in the persistent shell.
+
+  A cryptographically random, per-command shell marker is used to correlate the
+  command's exit status without terminating the PTY. The marker is consumed by
+  this process and is never included in terminal output or scrollback.
+  """
+  @spec run_command(session_id :: String.t(), command :: binary()) ::
+          {:ok, String.t()} | {:error, term()}
+  def run_command(session_id, command) when is_binary(session_id) and is_binary(command) do
+    try do
+      GenServer.call(via_tuple(session_id), {:run_command, command})
     catch
       :exit, _ -> {:error, :not_found}
     end
@@ -246,6 +270,7 @@ defmodule IexCode.Tools.TerminalSession do
     rows = max(1, Keyword.get(opts, :rows, @default_rows))
     shell = Keyword.get(opts, :shell)
     max_buffer_bytes = Keyword.get(opts, :max_buffer_bytes, @default_max_buffer_bytes)
+    max_queued_commands = Keyword.get(opts, :max_queued_commands, 256)
     env = Keyword.get(opts, :env, default_env(project_root))
     mode = Keyword.get(opts, :mode)
 
@@ -267,7 +292,13 @@ defmodule IexCode.Tools.TerminalSession do
       started_at: DateTime.utc_now(),
       exit_code: nil,
       exit_reason: nil,
-      cleared: false
+      cleared: false,
+      active_command: nil,
+      command_queue: :queue.new(),
+      command_marker_buffer: "",
+      max_queued_commands: max_queued_commands,
+      history_suppressed_command_id: nil,
+      recent_command_inputs: []
     }
 
     {:ok, state, {:continue, :spawn_shell}}
@@ -324,8 +355,10 @@ defmodule IexCode.Tools.TerminalSession do
         {:reply, {:error, :agent_occupied}, state}
 
       true ->
-        case PTYAdapter.send_input(adapter, data) do
-          :ok -> {:reply, :ok, %{state | cleared: false}}
+        {payload, state} = append_heredoc_marker_if_complete(state, data)
+
+        case PTYAdapter.send_input(adapter, payload) do
+          :ok -> {:reply, :ok, state}
           {:error, reason} -> {:reply, {:error, reason}, state}
         end
     end
@@ -340,7 +373,48 @@ defmodule IexCode.Tools.TerminalSession do
   end
 
   @impl true
+  def handle_call(
+        {:run_command, command},
+        _from,
+        %{status: :running, adapter: %PTYAdapter{}} = state
+      ) do
+    queued_count = :queue.len(state.command_queue) + if(state.active_command, do: 1, else: 0)
+
+    cond do
+      state.active_occupant != :user ->
+        {:reply, {:error, :agent_occupied}, state}
+
+      queued_count >= state.max_queued_commands ->
+        {:reply, {:error, :command_queue_full}, state}
+
+      true ->
+        entry = new_command_entry(command)
+
+        case state.active_command do
+          nil ->
+            case dispatch_command(state, entry) do
+              {:ok, new_state} -> {:reply, {:ok, entry.id}, new_state}
+              {:error, reason, new_state} -> {:reply, {:error, reason}, new_state}
+            end
+
+          _active ->
+            new_state = %{state | command_queue: :queue.in(entry, state.command_queue)}
+            {:reply, {:ok, entry.id}, new_state}
+        end
+    end
+  end
+
+  def handle_call({:run_command, _command}, _from, state) do
+    {:reply, {:error, :not_running}, state}
+  end
+
+  @impl true
   def handle_call({:search_history, query, opts}, _from, state) do
+    # A subscriber can observe a PTY-echoed command before the shell's output
+    # packet reaches this GenServer. If a correlated command is active, consume
+    # its port messages through its completion boundary (with a bounded wait)
+    # so search cannot race the command whose output prompted the query.
+    state = drain_active_command_output(state, @history_consistency_timeout_ms)
     result = do_search_history(state, query, opts)
     {:reply, result, state}
   end
@@ -368,6 +442,16 @@ defmodule IexCode.Tools.TerminalSession do
     })
 
     {:reply, :ok, new_state}
+  end
+
+  @impl true
+  def handle_call({:send_signal, signal}, _from, state)
+      when signal in [:sigint, :interrupt, "SIGINT"] do
+    # A freshly forked PTY child can acknowledge the shim's ready packet just
+    # before exec(2). A tiny asynchronous grace period keeps SIGINT from hitting
+    # the Python child during that handoff instead of the requested shell job.
+    Process.send_after(self(), {:deferred_signal, signal}, 100)
+    {:reply, :ok, state}
   end
 
   @impl true
@@ -416,12 +500,19 @@ defmodule IexCode.Tools.TerminalSession do
 
   @impl true
   def handle_call(:clear_history, _from, state) do
+    # Consume already-delivered port packets before establishing the logical
+    # boundary. If a command is still active, its remaining echo/output stays
+    # visible live but is excluded from the new searchable history epoch.
+    state = drain_pending_port_output(state, 150)
+
     new_state = %{
       state
       | history_buffer: [],
         buffer_bytes: 0,
         cleared: true,
-        utf8_acc: UTF8Buffer.new()
+        utf8_acc: UTF8Buffer.new(),
+        history_suppressed_command_id: state.active_command && state.active_command.id,
+        recent_command_inputs: []
     }
 
     broadcast_event(state.session_id, {:terminal_cleared, %{session_id: state.session_id}})
@@ -469,7 +560,11 @@ defmodule IexCode.Tools.TerminalSession do
         status: :restarting,
         exit_code: nil,
         exit_reason: nil,
-        cleared: false
+        cleared: false,
+        active_command: nil,
+        command_queue: :queue.new(),
+        command_marker_buffer: "",
+        recent_command_inputs: []
     }
 
     broadcast_status(reset_state)
@@ -524,7 +619,9 @@ defmodule IexCode.Tools.TerminalSession do
       os_pid: state.adapter && state.adapter.os_pid,
       mode: state.adapter && state.adapter.mode,
       started_at: state.started_at,
-      exit_code: state.exit_code
+      exit_code: state.exit_code,
+      active_command_id: state.active_command && state.active_command.id,
+      queued_command_count: :queue.len(state.command_queue)
     }
 
     {:reply, {:ok, summary}, state}
@@ -580,6 +677,12 @@ defmodule IexCode.Tools.TerminalSession do
 
   @impl true
   def handle_info({:EXIT, _pid, _reason}, state) do
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:deferred_signal, signal}, state) do
+    if state.adapter, do: PTYAdapter.send_signal(state.adapter, signal)
     {:noreply, state}
   end
 
@@ -641,27 +744,7 @@ defmodule IexCode.Tools.TerminalSession do
 
     new_state =
       if valid_text != "" do
-        :telemetry.execute(
-          [:iex_code, :terminal, :output_chunk],
-          %{
-            byte_size: byte_size(valid_text),
-            system_time: System.system_time()
-          },
-          %{
-            session_id: state.session_id,
-            occupant: state.active_occupant,
-            data: valid_text
-          }
-        )
-
-        payload = %{
-          session_id: state.session_id,
-          data: valid_text,
-          timestamp: DateTime.utc_now()
-        }
-
-        broadcast_event(state.session_id, {:terminal_output, payload})
-        append_to_history(state, valid_text)
+        consume_command_output(state, valid_text)
       else
         state
       end
@@ -680,30 +763,15 @@ defmodule IexCode.Tools.TerminalSession do
 
     flushed_state =
       if remaining != "" do
-        :telemetry.execute(
-          [:iex_code, :terminal, :output_chunk],
-          %{
-            byte_size: byte_size(remaining),
-            system_time: System.system_time()
-          },
-          %{
-            session_id: state.session_id,
-            occupant: state.active_occupant,
-            data: remaining
-          }
-        )
-
-        payload = %{
-          session_id: state.session_id,
-          data: remaining,
-          timestamp: DateTime.utc_now()
-        }
-
-        broadcast_event(state.session_id, {:terminal_output, payload})
-        append_to_history(state, remaining)
+        consume_command_output(state, remaining)
       else
         state
       end
+
+    flushed_state =
+      flushed_state
+      |> complete_active_on_shell_exit(code)
+      |> complete_queued_on_shell_exit()
 
     duration_ms =
       if state.started_at do
@@ -732,7 +800,11 @@ defmodule IexCode.Tools.TerminalSession do
         status: :stopped,
         exit_code: code,
         exit_reason: reason,
-        utf8_acc: UTF8Buffer.new()
+        utf8_acc: UTF8Buffer.new(),
+        active_command: nil,
+        command_queue: :queue.new(),
+        command_marker_buffer: "",
+        recent_command_inputs: []
     }
 
     broadcast_event(state.session_id, {
@@ -742,6 +814,294 @@ defmodule IexCode.Tools.TerminalSession do
 
     broadcast_status(stopped_state)
     {:noreply, stopped_state}
+  end
+
+  defp new_command_entry(command) do
+    id = Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
+    token = Base.url_encode64(:crypto.strong_rand_bytes(24), padding: false)
+
+    %{
+      id: id,
+      token: token,
+      command: command,
+      heredoc_delimiter: heredoc_delimiter(command),
+      marker_sent?: false,
+      enqueued_at: System.monotonic_time(:millisecond)
+    }
+  end
+
+  defp dispatch_command(state, entry) do
+    command =
+      if String.ends_with?(entry.command, "\n"), do: entry.command, else: entry.command <> "\n"
+
+    # The token is generated inside this process and is not present in the user
+    # command. Control-character framing prevents the echoed wrapper text from
+    # being mistaken for the actual marker produced by printf.
+    marker_command = command_marker(entry)
+
+    payload =
+      if entry.heredoc_delimiter do
+        command
+      else
+        command <> marker_command
+      end
+
+    case PTYAdapter.send_input(state.adapter, payload) do
+      :ok ->
+        started_entry =
+          entry
+          |> Map.put(:started_at, System.monotonic_time(:millisecond))
+          |> Map.put(:marker_sent?, is_nil(entry.heredoc_delimiter))
+
+        :telemetry.execute(
+          [:iex_code, :terminal, :command_dispatched],
+          %{system_time: System.system_time()},
+          %{session_id: state.session_id, command_id: entry.id, command: entry.command}
+        )
+
+        broadcast_event(state.session_id, {
+          :terminal_command_started,
+          %{session_id: state.session_id, command_id: entry.id, command: entry.command}
+        })
+
+        {:ok,
+         %{
+           state
+           | active_command: started_entry,
+             command_marker_buffer: "",
+             cleared: false,
+             recent_command_inputs:
+               entry.command
+               |> String.split(~r/\r\n|\r|\n/, trim: true)
+               |> Enum.map(&String.trim/1)
+               |> Kernel.++(state.recent_command_inputs)
+               |> Enum.take(256)
+         }}
+
+      {:error, reason} ->
+        {:error, reason, state}
+    end
+  end
+
+  defp consume_command_output(%{active_command: nil} = state, text) do
+    publish_output(state, text)
+  end
+
+  defp consume_command_output(state, text) do
+    active = state.active_command
+    prefix = <<30>> <> "IEX_CODE_COMMAND:#{active.token}:"
+    suffix = <<31>>
+    buffered = state.command_marker_buffer <> text
+
+    case :binary.match(buffered, prefix) do
+      :nomatch ->
+        # Retain only enough bytes for a prefix split across PTY chunks. This
+        # bounds parser memory independently of command output volume.
+        retained_bytes = partial_prefix_size(buffered, prefix)
+        emitted_bytes = byte_size(buffered) - retained_bytes
+        <<emitted::binary-size(emitted_bytes), retained::binary>> = buffered
+
+        state
+        |> publish_output(emitted)
+        |> Map.put(:command_marker_buffer, retained)
+
+      {prefix_at, prefix_size} ->
+        <<before::binary-size(prefix_at), _prefix::binary-size(prefix_size), rest::binary>> =
+          buffered
+
+        state = publish_output(state, before)
+
+        case :binary.match(rest, suffix) do
+          :nomatch ->
+            if byte_size(rest) <= 32 do
+              %{state | command_marker_buffer: prefix <> rest}
+            else
+              state
+              |> publish_output(prefix <> rest)
+              |> Map.put(:command_marker_buffer, "")
+            end
+
+          {suffix_at, suffix_size} ->
+            <<code_text::binary-size(suffix_at), _suffix::binary-size(suffix_size),
+              after_marker::binary>> =
+              rest
+
+            code = parse_command_exit_code(code_text)
+
+            state
+            |> Map.put(:command_marker_buffer, "")
+            |> finish_active_command(code)
+            |> publish_output(after_marker)
+            |> dispatch_next_command()
+        end
+    end
+  end
+
+  defp parse_command_exit_code(code_text) do
+    case Integer.parse(String.trim(code_text)) do
+      {code, ""} -> code
+      _ -> -1
+    end
+  end
+
+  defp partial_prefix_size(buffered, prefix) do
+    max_size = min(byte_size(buffered), byte_size(prefix) - 1)
+
+    Enum.find(max_size..1//-1, 0, fn size ->
+      suffix = binary_part(buffered, byte_size(buffered) - size, size)
+      String.starts_with?(prefix, suffix)
+    end)
+  end
+
+  defp finish_active_command(%{active_command: nil} = state, _code), do: state
+
+  defp finish_active_command(state, code) do
+    command = state.active_command
+    duration_ms = System.monotonic_time(:millisecond) - command.started_at
+    status = if code == 0, do: :ok, else: :error
+
+    payload = %{
+      session_id: state.session_id,
+      command_id: command.id,
+      command: command.command,
+      exit_code: code,
+      status: status,
+      duration_ms: duration_ms
+    }
+
+    :telemetry.execute(
+      [:iex_code, :terminal, :command_completed],
+      %{duration_ms: duration_ms, exit_code: code, system_time: System.system_time()},
+      payload
+    )
+
+    broadcast_event(state.session_id, {:terminal_command_completed, payload})
+
+    suppressed_id =
+      if state.history_suppressed_command_id == command.id,
+        do: nil,
+        else: state.history_suppressed_command_id
+
+    %{state | active_command: nil, history_suppressed_command_id: suppressed_id}
+  end
+
+  defp dispatch_next_command(%{active_command: nil} = state) do
+    case :queue.out(state.command_queue) do
+      {{:value, entry}, remaining} ->
+        state = %{state | command_queue: remaining}
+
+        case dispatch_command(state, entry) do
+          {:ok, new_state} -> new_state
+          {:error, reason, new_state} -> fail_queued_command(new_state, entry, reason)
+        end
+
+      {:empty, _queue} ->
+        state
+    end
+  end
+
+  defp dispatch_next_command(state), do: state
+
+  defp fail_queued_command(state, entry, reason) do
+    payload = %{
+      session_id: state.session_id,
+      command_id: entry.id,
+      command: entry.command,
+      exit_code: -1,
+      status: :error,
+      reason: reason,
+      duration_ms: 0
+    }
+
+    broadcast_event(state.session_id, {:terminal_command_completed, payload})
+    dispatch_next_command(state)
+  end
+
+  defp complete_active_on_shell_exit(%{active_command: nil} = state, _code) do
+    publish_output(state, state.command_marker_buffer)
+  end
+
+  defp complete_active_on_shell_exit(state, code) do
+    state
+    |> publish_output(state.command_marker_buffer)
+    |> Map.put(:command_marker_buffer, "")
+    |> finish_active_command(code)
+  end
+
+  defp complete_queued_on_shell_exit(state) do
+    Enum.each(:queue.to_list(state.command_queue), fn entry ->
+      payload = %{
+        session_id: state.session_id,
+        command_id: entry.id,
+        command: entry.command,
+        exit_code: -1,
+        status: :error,
+        reason: :shell_exited,
+        duration_ms: 0
+      }
+
+      broadcast_event(state.session_id, {:terminal_command_completed, payload})
+    end)
+
+    %{state | command_queue: :queue.new()}
+  end
+
+  defp publish_output(state, ""), do: state
+
+  defp publish_output(state, text) do
+    :telemetry.execute(
+      [:iex_code, :terminal, :output_chunk],
+      %{byte_size: byte_size(text), system_time: System.system_time()},
+      %{session_id: state.session_id, occupant: state.active_occupant, data: text}
+    )
+
+    payload = %{
+      session_id: state.session_id,
+      data: text,
+      timestamp: DateTime.utc_now()
+    }
+
+    broadcast_event(state.session_id, {:terminal_output, payload})
+
+    if suppress_history?(state) do
+      state
+    else
+      append_to_history(state, text)
+    end
+  end
+
+  defp suppress_history?(%{history_suppressed_command_id: nil}), do: false
+
+  defp suppress_history?(state) do
+    state.active_command && state.active_command.id == state.history_suppressed_command_id
+  end
+
+  defp append_heredoc_marker_if_complete(
+         %{active_command: %{heredoc_delimiter: delimiter, marker_sent?: false} = active} = state,
+         data
+       )
+       when is_binary(delimiter) do
+    terminator = ~r/(?:^|\r?\n)\s*#{Regex.escape(delimiter)}\s*(?:\r?\n|$)/
+
+    if Regex.match?(terminator, data) do
+      {data <> command_marker(active),
+       %{state | active_command: Map.put(active, :marker_sent?, true)}}
+    else
+      {data, state}
+    end
+  end
+
+  defp append_heredoc_marker_if_complete(state, data), do: {data, state}
+
+  defp command_marker(entry) do
+    "__iex_code_status=$?; printf '\\036IEX_CODE_COMMAND:#{entry.token}:%s\\037' \"$__iex_code_status\"\n"
+  end
+
+  defp heredoc_delimiter(command) do
+    case Regex.run(~r/<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)/, command) do
+      [_, delimiter] -> delimiter
+      _ -> nil
+    end
   end
 
   defp append_to_history(state, chunk) do
@@ -819,32 +1179,56 @@ defmodule IexCode.Tools.TerminalSession do
 
   defp drain_pending_port_output(state, _timeout_ms), do: state
 
+  defp drain_active_command_output(%{active_command: nil} = state, _timeout_ms), do: state
+
+  defp drain_active_command_output(state, timeout_ms) do
+    command_id = state.active_command.id
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_drain_active_command_output(state, command_id, deadline)
+  end
+
+  defp do_drain_active_command_output(state, command_id, deadline) do
+    if is_nil(state.active_command) or state.active_command.id != command_id do
+      state
+    else
+      remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+
+      case state.adapter do
+        %PTYAdapter{port: port} when is_port(port) ->
+          receive do
+            {^port, {:data, _raw_bytes}} = msg ->
+              new_state =
+                case PTYAdapter.handle_port_message(state.adapter, msg) do
+                  {:output, data, new_adapter} ->
+                    process_output_bytes_sync(%{state | adapter: new_adapter}, data)
+
+                  {:ready, os_pid, new_adapter} ->
+                    %{state | adapter: %{new_adapter | os_pid: os_pid}}
+
+                  {:noop, new_adapter} ->
+                    %{state | adapter: new_adapter}
+
+                  _ ->
+                    state
+                end
+
+              do_drain_active_command_output(new_state, command_id, deadline)
+          after
+            remaining -> state
+          end
+
+        _ ->
+          state
+      end
+    end
+  end
+
   defp process_output_bytes_sync(state, raw_bytes) when is_binary(raw_bytes) do
     {valid_text, new_acc} = UTF8Buffer.process_bytes(state.utf8_acc, raw_bytes)
 
     new_state =
       if valid_text != "" do
-        :telemetry.execute(
-          [:iex_code, :terminal, :output_chunk],
-          %{
-            byte_size: byte_size(valid_text),
-            system_time: System.system_time()
-          },
-          %{
-            session_id: state.session_id,
-            occupant: state.active_occupant,
-            data: valid_text
-          }
-        )
-
-        payload = %{
-          session_id: state.session_id,
-          data: valid_text,
-          timestamp: DateTime.utc_now()
-        }
-
-        broadcast_event(state.session_id, {:terminal_output, payload})
-        append_to_history(state, valid_text)
+        consume_command_output(state, valid_text)
       else
         state
       end
@@ -873,7 +1257,8 @@ defmodule IexCode.Tools.TerminalSession do
 
           lines =
             raw_history
-            |> String.split(~r/\r?\n/)
+            |> String.split(~r/\r\n|\r|\n/)
+            |> Enum.reject(&terminal_input_echo?(&1, state))
             |> Enum.with_index(1)
 
           lines_to_search = if reverse?, do: Enum.reverse(lines), else: lines
@@ -975,5 +1360,15 @@ defmodule IexCode.Tools.TerminalSession do
     |> String.replace(~r/\x1b\[[0-9;]*[a-zA-Z]/, "")
     |> String.replace(~r/\x1b\([a-zA-Z]/, "")
     |> String.replace(~r/\e\[[0-9;]*[mK]/, "")
+  end
+
+  defp terminal_input_echo?(line, state) do
+    bracketed_paste_echo? =
+      String.contains?(line, "\e[?2004h") or String.contains?(line, "\e[?2004l")
+
+    normalized_line = line |> strip_ansi() |> String.trim()
+
+    bracketed_paste_echo? or
+      Enum.any?(state.recent_command_inputs, &(&1 != "" and &1 == normalized_line))
   end
 end

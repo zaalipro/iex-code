@@ -61,6 +61,51 @@ defmodule IexCode.Tools.TerminalServerTest do
       assert {:ok, output} = receive_matching_output(session_id, token)
       assert String.contains?(output, token)
     end
+
+    test "correlates serialized commands with exit status and hides protocol markers", %{
+      session_id: session_id
+    } do
+      assert {:ok, _pid} = TerminalServer.ensure_started(session_id)
+
+      assert {:ok, first_id} =
+               TerminalServer.run_command_with_id(session_id, "printf FIRST; exit_code=0")
+
+      assert {:ok, second_id} =
+               TerminalServer.run_command_with_id(session_id, "printf SECOND; false")
+
+      assert first_id != second_id
+
+      assert_receive {:terminal_command_started,
+                      %{session_id: ^session_id, command_id: ^first_id}},
+                     3_000
+
+      assert_receive {:terminal_command_completed,
+                      %{
+                        session_id: ^session_id,
+                        command_id: ^first_id,
+                        exit_code: 0,
+                        status: :ok
+                      }},
+                     3_000
+
+      assert_receive {:terminal_command_started,
+                      %{session_id: ^session_id, command_id: ^second_id}},
+                     3_000
+
+      assert_receive {:terminal_command_completed,
+                      %{
+                        session_id: ^session_id,
+                        command_id: ^second_id,
+                        exit_code: 1,
+                        status: :error
+                      }},
+                     3_000
+
+      history = TerminalServer.get_history(session_id)
+      assert history =~ "FIRST"
+      assert history =~ "SECOND"
+      refute history =~ <<30>> <> "IEX_CODE_COMMAND:"
+    end
   end
 
   describe "resize/3 and send_signal/2" do

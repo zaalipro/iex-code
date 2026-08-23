@@ -6,6 +6,7 @@ defmodule IexCode.Tools do
   require Logger
 
   alias IexCode.Tools.{ASTSearch, Git, MultiPatch, TerminalServer, TestRunner}
+  alias IexCode.WorkspacePath
 
   @max_command_output 256_000
   @excluded_dirs ["_build", "deps", "node_modules", ".git"]
@@ -380,10 +381,13 @@ defmodule IexCode.Tools do
     end
   end
 
-  defp do_execute("multi_patch", %{"patches" => patches}, root_path, on_progress) do
+  defp do_execute("multi_patch", %{"patches" => patches} = args, root_path, on_progress) do
     on_progress.(20, "Applying #{length(patches)} patches atomically...")
 
-    case MultiPatch.apply_patches(root_path, patches) do
+    case MultiPatch.apply_patches(root_path, patches,
+           session_id: Map.get(args, "session_id"),
+           run_id: Map.get(args, "run_id")
+         ) do
       {:ok, summary} ->
         on_progress.(100, "Applied #{summary.applied} patches successfully")
 
@@ -842,21 +846,10 @@ defmodule IexCode.Tools do
     {:error, "Unknown tool: #{unknown_tool}"}
   end
 
-  # Resolves `path` against the workspace root and enforces containment:
-  # relative paths may not escape via `..` and absolute paths outside the
-  # root are rejected. Note this is a lexical check — symlinks inside the
-  # workspace pointing outside are not followed/resolved here.
   defp resolve_path(root_path, path) do
-    root = Path.expand(root_path)
-
-    candidate =
-      if Path.type(path) == :absolute, do: path, else: Path.join(root, path)
-
-    expanded = Path.expand(candidate)
-
-    case Path.relative_to(expanded, root) do
-      ^expanded -> {:error, :outside_workspace}
-      _relative -> {:ok, expanded}
+    case WorkspacePath.resolve(root_path, path) do
+      {:ok, full_path} -> {:ok, full_path}
+      {:error, _reason} -> {:error, :outside_workspace}
     end
   end
 
