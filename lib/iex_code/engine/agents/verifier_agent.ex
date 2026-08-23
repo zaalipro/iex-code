@@ -131,7 +131,13 @@ defmodule IexCode.Engine.Agents.VerifierAgent do
                   fn p ->
                     Tools.execute(
                       "run_command",
-                      %{"command" => "mix compile", "timeout_ms" => 20_000},
+                      %{
+                        "command" => "mix compile",
+                        "timeout_ms" => 20_000,
+                        "session_id" => session_id,
+                        "agent_name" => "VerifierAgent",
+                        "op_id" => parent_op_id
+                      },
                       project_root,
                       p
                     )
@@ -203,10 +209,15 @@ defmodule IexCode.Engine.Agents.VerifierAgent do
   @impl true
   def handle_call({:check_compile, compile_opts}, _from, %State{} = state) do
     project_root = compile_opts[:project_root] || state.project_root
+    session_id = compile_opts[:session_id] || state.session_id
 
-    res =
-      Tools.execute("run_command", %{"command" => "mix compile"}, project_root, fn _, _ -> :ok end)
+    args = %{
+      "command" => "mix compile",
+      "session_id" => session_id,
+      "agent_name" => "VerifierAgent"
+    }
 
+    res = Tools.execute("run_command", args, project_root, fn _, _ -> :ok end)
     {:reply, res, state}
   end
 

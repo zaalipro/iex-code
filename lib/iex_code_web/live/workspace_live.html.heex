@@ -2037,9 +2037,16 @@
           @active_tab != "terminal" && "hidden"
         ]}>
           <.terminal_session
+            session={@session}
+            running={@terminal_running?}
+            status={@terminal_status}
+            shell={@terminal_shell}
+            cols={@terminal_cols}
+            rows={@terminal_rows}
+            occupant={@terminal_occupant}
+            active_cmd={@terminal_active_cmd}
             output={@terminal_output}
             form={@terminal_form}
-            running={@terminal_running?}
           />
         </div>
 

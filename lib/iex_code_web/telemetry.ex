@@ -79,7 +79,38 @@ defmodule IexCodeWeb.Telemetry do
       summary("vm.memory.total", unit: {:byte, :kilobyte}),
       summary("vm.total_run_queue_lengths.total"),
       summary("vm.total_run_queue_lengths.cpu"),
-      summary("vm.total_run_queue_lengths.io")
+      summary("vm.total_run_queue_lengths.io"),
+
+      # Terminal Metrics
+      summary("iex_code.terminal.session_started.system_time",
+        tags: [:session_id, :shell],
+        unit: {:native, :millisecond},
+        description: "Terminal PTY shell started timestamp"
+      ),
+      summary("iex_code.terminal.command_dispatched.system_time",
+        tags: [:session_id, :agent_name],
+        unit: {:native, :millisecond},
+        description: "Terminal command dispatched timestamp"
+      ),
+      summary("iex_code.terminal.output_chunk.byte_size",
+        tags: [:session_id],
+        unit: {:byte, :byte},
+        description: "Size of terminal output chunks streamed"
+      ),
+      summary("iex_code.terminal.command_completed.duration_ms",
+        tags: [:session_id, :agent_name, :status],
+        unit: {:native, :millisecond},
+        description: "Duration of agent terminal command execution"
+      ),
+      summary("iex_code.terminal.command_completed.exit_code",
+        tags: [:session_id, :agent_name],
+        description: "Exit code of completed agent terminal commands"
+      ),
+      summary("iex_code.terminal.session_stopped.duration_ms",
+        tags: [:session_id, :reason],
+        unit: {:native, :millisecond},
+        description: "Duration of terminal session lifecycle"
+      )
     ]
   end
 

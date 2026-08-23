@@ -60,6 +60,14 @@ defmodule IexCode.Engine.Agents.ExplorerAgent do
   end
 
   @doc """
+  Executes a shell command in the context of the ExplorerAgent.
+  """
+  def run_command(target, command, opts \\ []) do
+    timeout = Keyword.get(opts, :timeout, 60_000)
+    GenServer.call(resolve_target(target), {:run_command, command, opts}, timeout)
+  end
+
+  @doc """
   Returns the current internal state of the ExplorerAgent.
   """
   def get_state(target) do
@@ -207,6 +215,23 @@ defmodule IexCode.Engine.Agents.ExplorerAgent do
   def handle_call({:grep, query, opts}, _from, %State{} = state) do
     project_root = opts[:project_root] || state.project_root
     res = Tools.execute("grep_search", %{"query" => query}, project_root, fn _, _ -> :ok end)
+    {:reply, res, state}
+  end
+
+  @impl true
+  def handle_call({:run_command, command, opts}, _from, %State{} = state) do
+    project_root = opts[:project_root] || state.project_root
+    timeout = Keyword.get(opts, :timeout_ms, 30_000)
+
+    args = %{
+      "command" => command,
+      "session_id" => state.session_id,
+      "agent_name" => "ExplorerAgent",
+      "op_id" => opts[:op_id] || state.current_op_id,
+      "timeout_ms" => timeout
+    }
+
+    res = Tools.execute("run_command", args, project_root, fn _, _ -> :ok end)
     {:reply, res, state}
   end
 

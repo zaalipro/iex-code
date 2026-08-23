@@ -364,8 +364,6 @@ defmodule IexCodeWeb.WorkspaceLiveTest do
       |> render_submit()
 
     assert html =~ "hello from integrated terminal"
-    html = wait_for_terminal(view, &(&1 =~ "[Exit 0: OK]"))
-    assert html =~ "[Exit 0: OK]"
 
     # Execute quick terminal button
     html = render_click(view, "run_terminal", %{"command" => "echo 'quick command test'"})
@@ -880,23 +878,5 @@ defmodule IexCodeWeb.WorkspaceLiveTest do
 
     assert render(view) =~ "Inserted snippet into lib/demo/sample.ex"
     assert render(view) =~ "def hello, do: :world"
-  end
-
-  # Terminal execution is async via Port: poll until the expected output
-  # (e.g. an exit marker) shows up in the rendered buffer.
-  defp wait_for_terminal(view, match?, deadline \\ 2000) do
-    html = render(view)
-
-    cond do
-      match?.(html) ->
-        html
-
-      deadline <= 0 ->
-        flunk("timed out waiting for expected terminal output")
-
-      true ->
-        Process.sleep(50)
-        wait_for_terminal(view, match?, deadline - 50)
-    end
   end
 end

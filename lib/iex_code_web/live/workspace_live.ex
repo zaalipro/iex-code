@@ -5,6 +5,7 @@ defmodule IexCodeWeb.WorkspaceLive do
   alias IexCode.Engine.SessionServer
   alias IexCode.Tools.Git
   alias IexCode.Tools.Git.{DiffParser, HunkOps}
+  alias IexCode.Tools.TerminalServer
   alias IexCodeWeb.CommandPalette
   alias Phoenix.PubSub
   import IexCodeWeb.WorkspaceComponents
@@ -24,8 +25,10 @@ defmodule IexCodeWeb.WorkspaceLive do
 
     if connected?(socket) do
       PubSub.subscribe(IexCode.PubSub, "session:#{session.id}")
+      PubSub.subscribe(IexCode.PubSub, "session:#{session.id}:terminal")
       Kanban.subscribe(project.id)
       SessionServer.ensure_started(session.id)
+      _ = TerminalServer.ensure_started(session.id, workspace_path: project.root_path)
     end
 
     messages = Sessions.list_messages(session.id)
@@ -52,6 +55,18 @@ defmodule IexCodeWeb.WorkspaceLive do
       end
 
     selected_task = List.first(tasks)
+
+    terminal_state =
+      case TerminalServer.get_state(session.id) do
+        {:ok, st} -> st
+        _ -> %{}
+      end
+
+    terminal_status = Map.get(terminal_state, :status, :ready)
+    terminal_shell = Map.get(terminal_state, :shell, "zsh")
+    terminal_cols = Map.get(terminal_state, :cols, 80)
+    terminal_rows = Map.get(terminal_state, :rows, 24)
+    terminal_occupant = Map.get(terminal_state, :occupant, :user)
 
     socket =
       socket
@@ -84,6 +99,8 @@ defmodule IexCodeWeb.WorkspaceLive do
       })
       # Inline Editor assigns
       |> assign(:open_buffers, [])
+      |> assign(:active_editor_path, nil)
+      |> assign(:active_editor_content, nil)
       |> assign(:selected_file, nil)
       |> assign(:file_content, nil)
       |> assign(:dirty_content, nil)
@@ -101,11 +118,25 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:git_error, nil)
       |> assign(:changes_subtab, "changes")
       |> assign(:project_files, files)
+      |> assign(:files, files)
       # Terminal assigns
-      |> assign(:terminal_output, "Ready. Type a command or click a quick action above.")
-      |> assign(:terminal_running?, false)
+      |> assign(:terminal_output, "")
+      |> assign(:terminal_running?, terminal_status in [:ready, :running])
+      |> assign(:terminal_status, terminal_status)
+      |> assign(:terminal_shell, terminal_shell)
+      |> assign(:terminal_cols, terminal_cols)
+      |> assign(:terminal_rows, terminal_rows)
+      |> assign(:terminal_occupant, terminal_occupant)
+      |> assign(:terminal_active_cmd, nil)
       |> assign(:terminal_port, nil)
-      |> assign(:terminal_history, ["mix test", "mix precommit", "git status", "git diff"])
+      |> assign(:terminal_history, [
+        "iex -S mix",
+        "mix test",
+        "mix precommit",
+        "git status",
+        "git diff"
+      ])
+      |> assign(:terminal_form, to_form(%{"command" => ""}))
       # Goal & Steering assigns
       |> assign(:show_goal_modal, false)
       |> assign(:show_cancel_modal, false)
@@ -236,7 +267,9 @@ defmodule IexCodeWeb.WorkspaceLive do
             project ->
               if connected?(socket) do
                 PubSub.unsubscribe(IexCode.PubSub, "session:#{old_id}")
+                PubSub.unsubscribe(IexCode.PubSub, "session:#{old_id}:terminal")
                 PubSub.subscribe(IexCode.PubSub, "session:#{new_session.id}")
+                PubSub.subscribe(IexCode.PubSub, "session:#{new_session.id}:terminal")
 
                 if new_session.project_id != old_project_id do
                   PubSub.unsubscribe(IexCode.PubSub, "kanban:#{old_project_id}")
@@ -244,6 +277,9 @@ defmodule IexCodeWeb.WorkspaceLive do
                 end
 
                 SessionServer.ensure_started(new_session.id)
+
+                _ =
+                  TerminalServer.ensure_started(new_session.id, workspace_path: project.root_path)
               end
 
               messages = Sessions.list_messages(new_session.id)
@@ -251,6 +287,18 @@ defmodule IexCodeWeb.WorkspaceLive do
               sessions = Sessions.list_sessions_for_project(project.id)
               files = list_project_files(project.root_path)
               tasks = Kanban.list_tasks(project.id)
+
+              terminal_state =
+                case TerminalServer.get_state(new_session.id) do
+                  {:ok, st} -> st
+                  _ -> %{}
+                end
+
+              terminal_status = Map.get(terminal_state, :status, :ready)
+              terminal_shell = Map.get(terminal_state, :shell, "zsh")
+              terminal_cols = Map.get(terminal_state, :cols, 80)
+              terminal_rows = Map.get(terminal_state, :rows, 24)
+              terminal_occupant = Map.get(terminal_state, :occupant, :user)
 
               socket =
                 socket
@@ -264,6 +312,14 @@ defmodule IexCodeWeb.WorkspaceLive do
                 |> assign(:all_messages, messages)
                 |> assign(:workspace_search, "")
                 |> assign(:operations, operations)
+                |> assign(:terminal_running?, terminal_status in [:ready, :running])
+                |> assign(:terminal_status, terminal_status)
+                |> assign(:terminal_shell, terminal_shell)
+                |> assign(:terminal_cols, terminal_cols)
+                |> assign(:terminal_rows, terminal_rows)
+                |> assign(:terminal_occupant, terminal_occupant)
+                |> assign(:terminal_active_cmd, nil)
+                |> assign(:terminal_output, "")
                 |> refresh_git_state()
 
               {:noreply, socket}
@@ -2413,72 +2469,136 @@ defmodule IexCodeWeb.WorkspaceLive do
   end
 
   # ============================================================================
-  # Event Handlers: Terminal Integration & Async Runner
+  # Event Handlers: Terminal Integration & PTY Control
   # ============================================================================
 
   @impl true
-  def handle_event("run_terminal", %{"command" => cmd}, socket) do
-    handle_event("run_terminal_command", %{"command" => cmd}, socket)
-  end
+  def handle_event("terminal_input", %{"data" => data}, socket) do
+    session_id = socket.assigns.session.id
 
-  @impl true
-  def handle_event("quick_terminal", %{"cmd" => cmd}, socket) do
-    handle_event("run_terminal_command", %{"command" => cmd}, socket)
-  end
-
-  @impl true
-  def handle_event("clear_terminal", _params, socket) do
-    {:noreply, assign(socket, :terminal_output, "")}
-  end
-
-  @impl true
-  def handle_event("run_terminal_command", %{"command" => cmd}, socket) do
-    full_cmd = String.trim(cmd)
-
-    cond do
-      full_cmd == "" ->
+    case TerminalServer.send_input(session_id, data) do
+      :ok ->
         {:noreply, socket}
 
-      socket.assigns.terminal_running? ->
-        {:noreply, put_flash(socket, :error, "A command is already running — stop it first")}
+      {:error, :agent_occupied} ->
+        {:noreply, put_flash(socket, :warning, "Terminal is locked by active agent.")}
 
-      true ->
-        root = socket.assigns.project.root_path
-
-        history =
-          [full_cmd | Enum.reject(socket.assigns.terminal_history, &(&1 == full_cmd))]
-          |> Enum.take(20)
-
-        port = start_terminal_port(root, full_cmd)
-
-        {:noreply,
-         socket
-         |> append_terminal_output("$ #{full_cmd}\n")
-         |> assign(:terminal_history, history)
-         |> assign(:terminal_form, to_form(%{"command" => ""}))
-         |> assign(:terminal_running?, true)
-         |> assign(:terminal_port, port)}
+      {:error, reason} ->
+        Logger.warning("[WorkspaceLive] Terminal input error: #{inspect(reason)}")
+        {:noreply, socket}
     end
   end
 
   @impl true
-  def handle_event("stop_terminal_command", _params, socket) do
-    kill_terminal_port(socket.assigns.terminal_port)
+  def handle_event("terminal_resize", params, socket) do
+    session_id = socket.assigns.session.id
+    cols = parse_terminal_dimension(params["cols"] || params[:cols], socket.assigns.terminal_cols)
+    rows = parse_terminal_dimension(params["rows"] || params[:rows], socket.assigns.terminal_rows)
 
-    {:noreply,
-     socket
-     |> append_terminal_output("\n[Command Interrupted]\n")
-     |> assign(:terminal_running?, false)
-     |> assign(:terminal_port, nil)
-     |> put_flash(:info, "Terminal command stopped")}
+    if cols > 0 and rows > 0 do
+      _ = TerminalServer.resize(session_id, cols, rows)
+      {:noreply, socket |> assign(:terminal_cols, cols) |> assign(:terminal_rows, rows)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("run_terminal_quick_action", params, socket) do
+    cmd = params["cmd"] || params["command"] || ""
+    session_id = socket.assigns.session.id
+
+    if String.trim(cmd) != "" do
+      _ = TerminalServer.run_command(session_id, cmd)
+
+      updated_history =
+        [cmd | Enum.reject(socket.assigns.terminal_history, &(&1 == cmd))]
+        |> Enum.take(25)
+
+      {:noreply,
+       socket
+       |> assign(:terminal_history, updated_history)
+       |> assign(:terminal_active_cmd, cmd)
+       |> assign(:terminal_form, to_form(%{"command" => cmd}))}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("run_terminal", params, socket) do
+    cmd = params["command"] || params["cmd"] || ""
+    handle_event("run_terminal_quick_action", %{"cmd" => cmd}, socket)
+  end
+
+  @impl true
+  def handle_event("run_terminal_command", params, socket) do
+    cmd = params["command"] || params["cmd"] || ""
+    handle_event("run_terminal_quick_action", %{"cmd" => cmd}, socket)
+  end
+
+  @impl true
+  def handle_event("quick_terminal", params, socket) do
+    cmd = params["command"] || params["cmd"] || ""
+    handle_event("run_terminal_quick_action", %{"cmd" => cmd}, socket)
+  end
+
+  @impl true
+  def handle_event("clear_terminal", _params, socket) do
+    session_id = socket.assigns.session.id
+    _ = TerminalServer.clear(session_id)
+    {:noreply, socket |> assign(:terminal_output, "") |> push_event("terminal_clear", %{})}
+  end
+
+  @impl true
+  def handle_event("restart_terminal_session", _params, socket) do
+    session_id = socket.assigns.session.id
+    root = socket.assigns.project.root_path
+    cols = socket.assigns.terminal_cols
+    rows = socket.assigns.terminal_rows
+
+    case TerminalServer.restart(session_id, workspace_path: root, cols: cols, rows: rows) do
+      {:ok, _pid} ->
+        {:noreply,
+         socket
+         |> assign(:terminal_running?, true)
+         |> assign(:terminal_status, :running)
+         |> assign(:terminal_occupant, :user)
+         |> assign(:terminal_active_cmd, nil)
+         |> assign(:terminal_output, "")
+         |> push_event("terminal_reset", %{})
+         |> put_flash(:info, "Terminal session restarted")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to restart terminal: #{inspect(reason)}")}
+    end
+  end
+
+  @impl true
+  def handle_event("kill_terminal_session", _params, socket) do
+    session_id = socket.assigns.session.id
+    _ = TerminalServer.send_signal(session_id, :sigint)
+    {:noreply, socket |> assign(:terminal_active_cmd, nil) |> put_flash(:info, "Terminal command stopped")}
+  end
+
+  @impl true
+  def handle_event("stop_terminal_command", params, socket) do
+    handle_event("kill_terminal_session", params, socket)
   end
 
   @impl true
   def handle_event("replay_terminal_command", _params, socket) do
     case socket.assigns.terminal_history do
-      [last_cmd | _] -> handle_event("run_terminal_command", %{"command" => last_cmd}, socket)
+      [last_cmd | _] -> handle_event("run_terminal_quick_action", %{"cmd" => last_cmd}, socket)
       [] -> {:noreply, put_flash(socket, :info, "No commands in history")}
     end
+  end
+
+  @impl true
+  def handle_event("request_terminal_history", _params, socket) do
+    session_id = socket.assigns.session.id
+    history = TerminalServer.get_history(session_id)
+    {:noreply, push_event(socket, "terminal_history", %{history: history})}
   end
 
   # ============================================================================
@@ -2780,6 +2900,107 @@ defmodule IexCodeWeb.WorkspaceLive do
      |> assign(:cancelling?, false)}
   end
 
+  # ============================================================================
+  # Info Handlers: Terminal Output & Lifecycle PubSub
+  # ============================================================================
+
+  @impl true
+  def handle_info({:terminal_output, %{session_id: sid, data: data}}, socket) do
+    if sid == socket.assigns.session.id do
+      {:noreply,
+       socket
+       |> append_terminal_output(data)
+       |> push_event("terminal_output", %{data: data})}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_info({:terminal_output, sid, data}, socket)
+      when is_binary(sid) and is_binary(data) do
+    if sid == socket.assigns.session.id do
+      {:noreply,
+       socket
+       |> append_terminal_output(data)
+       |> push_event("terminal_output", %{data: data})}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_info({:terminal_output, _session_id, _}, socket) do
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_info(
+        {:terminal_status, %{session_id: sid, status: status, shell: shell, occupant: occupant}},
+        socket
+      ) do
+    if sid == socket.assigns.session.id do
+      {:noreply,
+       socket
+       |> assign(:terminal_status, status)
+       |> assign(:terminal_shell, shell)
+       |> assign(:terminal_occupant, occupant)
+       |> assign(:terminal_running?, status in [:ready, :running])}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_info({:terminal_occupant, %{session_id: sid, occupant: occupant}}, socket) do
+    if sid == socket.assigns.session.id do
+      {:noreply, assign(socket, :terminal_occupant, occupant)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_info({:terminal_exit, %{session_id: sid, exit_code: code}}, socket) do
+    if sid == socket.assigns.session.id do
+      exit_msg = "\r\n[Process completed with exit code #{code}]\r\n"
+
+      {:noreply,
+       socket
+       |> assign(:terminal_running?, false)
+       |> assign(:terminal_status, :stopped)
+       |> assign(:terminal_active_cmd, nil)
+       |> append_terminal_output(exit_msg)
+       |> push_event("terminal_output", %{data: exit_msg})}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_info({:terminal_cleared, %{session_id: sid}}, socket) do
+    if sid == socket.assigns.session.id do
+      {:noreply,
+       socket
+       |> assign(:terminal_output, "")
+       |> push_event("terminal_clear", %{})}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_info({:terminal_resized, %{session_id: sid, cols: cols, rows: rows}}, socket) do
+    if sid == socket.assigns.session.id do
+      {:noreply,
+       socket
+       |> assign(:terminal_cols, cols)
+       |> assign(:terminal_rows, rows)}
+    else
+      {:noreply, socket}
+    end
+  end
+
   @impl true
   def handle_info({port, {:data, text}}, %{assigns: %{terminal_port: port}} = socket)
       when is_port(port) and is_binary(text) do
@@ -2811,17 +3032,6 @@ defmodule IexCodeWeb.WorkspaceLive do
         :ok
     end
 
-    {:noreply, socket}
-  end
-
-  @impl true
-  def handle_info({:terminal_output, _session_id, text}, socket)
-      when is_binary(text) and text != "" do
-    {:noreply, append_terminal_output(socket, text)}
-  end
-
-  @impl true
-  def handle_info({:terminal_output, _session_id, _}, socket) do
     {:noreply, socket}
   end
 
@@ -3166,44 +3376,6 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   # -- Terminal helpers --------------------------------------------------------
 
-  defp start_terminal_port(root, cmd) do
-    # stderr is folded into stdout via 2>&1; output streams to handle_info as
-    # {port, {:data, text}} messages, exit via {port, {:exit_status, code}}.
-    shell_cmd = "cd " <> shell_quote(Path.expand(root)) <> " && " <> cmd <> " 2>&1"
-
-    Port.open(
-      {:spawn_executable, "/bin/sh"},
-      [{:args, ["-c", shell_cmd]}, :binary, :exit_status, :stream]
-    )
-  end
-
-  defp shell_quote(path), do: "'" <> String.replace(path, "'", "'\\''") <> "'"
-
-  defp kill_terminal_port(nil), do: :ok
-
-  defp kill_terminal_port(port) when is_port(port) do
-    os_pid = :erlang.port_info(port, :os_pid)
-
-    try do
-      Port.close(port)
-    catch
-      _kind, _reason -> :ok
-    end
-
-    case os_pid do
-      :undefined ->
-        :ok
-
-      pid ->
-        try do
-          System.cmd("kill", ["-TERM", to_string(pid)], stderr_to_stdout: true)
-          :ok
-        rescue
-          _ -> :ok
-        end
-    end
-  end
-
   defp append_terminal_output(socket, text) do
     assign(socket, :terminal_output, cap_terminal_output(terminal_base(socket) <> text))
   end
@@ -3226,6 +3398,17 @@ defmodule IexCodeWeb.WorkspaceLive do
       output
     end
   end
+
+  defp parse_terminal_dimension(val, _default) when is_integer(val) and val > 0, do: val
+
+  defp parse_terminal_dimension(val, default) when is_binary(val) do
+    case Integer.parse(val) do
+      {int, _} when int > 0 -> int
+      _ -> default
+    end
+  end
+
+  defp parse_terminal_dimension(_val, default), do: default
 
   # -- History search ----------------------------------------------------------
 

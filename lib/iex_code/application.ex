@@ -18,6 +18,7 @@ defmodule IexCode.Application do
         {Task.Supervisor, name: IexCode.TaskSupervisor},
         IexCode.Engine.SessionSupervisor,
         IexCode.Engine.AgentSupervisor,
+        IexCode.Tools.TerminalSupervisor,
         {IexCode.Tools.MultiPatch.Snapshot.Owner, []},
         IexCodeWeb.Endpoint,
         desktop_child()

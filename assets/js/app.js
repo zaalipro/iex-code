@@ -3,8 +3,10 @@ import {Socket} from "phoenix"
 import {LiveSocket} from "phoenix_live_view"
 import {hooks as colocatedHooks} from "phoenix-colocated/iex_code"
 import topbar from "../vendor/topbar"
+import TerminalHook from "./hooks/terminal_hook"
 
 const Hooks = {
+  TerminalHook,
   KeyboardSubmit: {
     mounted() {
       this.el.addEventListener("keydown", (e) => {

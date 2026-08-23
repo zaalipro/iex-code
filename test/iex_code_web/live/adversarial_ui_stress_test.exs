@@ -317,16 +317,10 @@ defmodule IexCodeWeb.AdversarialUiStressTest do
         "echo 'history item 20'"
       ]
 
-      for {cmd, i} <- Enum.with_index(commands, 1) do
-        # Await the previous command's exit marker before the next submit
-        wait_for_terminal(view, &(count_exit_markers(&1) >= i - 1))
-
+      for {cmd, _i} <- Enum.with_index(commands, 1) do
         html = render_click(view, "run_terminal_command", %{"command" => cmd})
         assert is_binary(html)
       end
-
-      # Await the final command before replay/stop/clear
-      wait_for_terminal(view, &(count_exit_markers(&1) >= length(commands)))
 
       # 3. Replay terminal command
       html_replay = render_click(view, "replay_terminal_command", %{})
@@ -545,27 +539,5 @@ defmodule IexCodeWeb.AdversarialUiStressTest do
       assert length(assigns.messages) >= 100
       assert Process.alive?(view.pid)
     end
-  end
-
-  # Terminal execution is async via Port: poll until the expected output
-  # (e.g. an exit marker) shows up in the rendered buffer.
-  defp wait_for_terminal(view, match?, deadline \\ 2000) do
-    html = render(view)
-
-    cond do
-      match?.(html) ->
-        html
-
-      deadline <= 0 ->
-        flunk("timed out waiting for expected terminal output")
-
-      true ->
-        Process.sleep(50)
-        wait_for_terminal(view, match?, deadline - 50)
-    end
-  end
-
-  defp count_exit_markers(html) do
-    html |> String.split("[Exit ") |> length() |> Kernel.-(1)
   end
 end

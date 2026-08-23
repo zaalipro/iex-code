@@ -1,0 +1,419 @@
+defmodule IexCode.Tools.TerminalServer do
+  @moduledoc """
+  Public client facade for interactive PTY terminal sessions.
+  Provides high-level, fail-safe APIs for LiveViews, autonomous agents, and test suites.
+  """
+  require Logger
+
+  alias IexCode.Tools.TerminalSession
+  alias IexCode.Tools.TerminalSupervisor
+
+  @pubsub_server IexCode.PubSub
+
+  # --- Session Lifecycle ---
+
+  @doc """
+  Ensures a terminal session is running for the given `session_id`.
+  If already running, returns `{:ok, pid}`. Otherwise, spawns a new session under `TerminalSupervisor`.
+  """
+  @spec ensure_started(session_id :: String.t(), opts :: keyword()) ::
+          {:ok, pid()} | {:error, term()}
+  def ensure_started(session_id, opts \\ []) when is_binary(session_id) do
+    case whereis(session_id) do
+      pid when is_pid(pid) ->
+        if Process.alive?(pid) do
+          {:ok, pid}
+        else
+          TerminalSupervisor.start_session(session_id, opts)
+        end
+
+      nil ->
+        TerminalSupervisor.start_session(session_id, opts)
+    end
+  end
+
+  @doc """
+  Looks up the PID of the active terminal session for `session_id`.
+  Returns `pid` if alive, or `nil` if not running.
+  """
+  @spec whereis(session_id :: String.t()) :: pid() | nil
+  def whereis(session_id) when is_binary(session_id) do
+    TerminalSession.whereis(session_id)
+  end
+
+  @doc """
+  Returns true if the terminal session is currently running.
+  """
+  @spec running?(session_id :: String.t()) :: boolean()
+  def running?(session_id) when is_binary(session_id) do
+    case whereis(session_id) do
+      pid when is_pid(pid) -> Process.alive?(pid)
+      _ -> false
+    end
+  end
+
+  # --- Input & Commands ---
+
+  @doc """
+  Sends raw input bytes (keystrokes, escape sequences, control chars) to the shell process.
+  Returns `{:error, :agent_occupied}` if terminal is occupied by an agent unless `force: true` is passed.
+  Returns `{:error, :not_found}` if the session is not started.
+  """
+  @spec send_input(session_id :: String.t(), data :: binary(), opts :: keyword()) ::
+          :ok | {:error, term()}
+  def send_input(session_id, data, opts \\ [])
+      when is_binary(session_id) and is_binary(data) do
+    case whereis(session_id) do
+      nil ->
+        {:error, :not_found}
+
+      _pid ->
+        TerminalSession.send_input(session_id, data, opts)
+    end
+  end
+
+  @doc """
+  Sends a complete command string with an appended newline (`\\n`) to the terminal.
+  """
+  @spec run_command(session_id :: String.t(), command :: String.t()) :: :ok | {:error, term()}
+  def run_command(session_id, command) when is_binary(session_id) and is_binary(command) do
+    cmd = if String.ends_with?(command, "\n"), do: command, else: command <> "\n"
+    send_input(session_id, cmd)
+  end
+
+  @doc """
+  Executes a command synchronously on behalf of an autonomous agent, capturing output until completion.
+  Emits telemetry events `[:iex_code, :terminal, :command_dispatched]` and `[:iex_code, :terminal, :command_completed]`.
+  Guarantees occupant cleanup back to `:user`.
+  """
+  @spec run_agent_command(
+          session_id :: String.t(),
+          command :: String.t(),
+          agent_name :: String.t(),
+          opts :: keyword()
+        ) ::
+          {:ok, %{output: String.t(), exit_code: integer(), duration_ms: integer()}}
+          | {:error, term()}
+  def run_agent_command(session_id, command, agent_name, opts \\ [])
+      when is_binary(session_id) and is_binary(command) and is_binary(agent_name) do
+    timeout_ms = Keyword.get(opts, :timeout_ms, 30_000)
+    op_id = Keyword.get(opts, :op_id)
+    occupant = {:agent, agent_name, op_id}
+
+    with {:ok, _pid} <- ensure_started(session_id, opts),
+         :ok <- TerminalSession.set_occupant(session_id, occupant) do
+      token = "CMD_FIN_#{:erlang.unique_integer([:positive])}"
+      wrapped_cmd = "#{command}; echo '__AGENT_EXIT:'$?':TOKEN:#{token}__'\n"
+
+      # Execute collector in an isolated task to preserve caller's PubSub subscriptions
+      collector_task =
+        Task.async(fn ->
+          topic = "session:#{session_id}:terminal"
+          Phoenix.PubSub.subscribe(@pubsub_server, topic)
+          start_time = System.monotonic_time(:millisecond)
+
+          try do
+            collect_agent_output(session_id, token, "", start_time, timeout_ms)
+          after
+            Phoenix.PubSub.unsubscribe(@pubsub_server, topic)
+          end
+        end)
+
+      start_monotonic = System.monotonic_time(:millisecond)
+
+      :telemetry.execute(
+        [:iex_code, :terminal, :command_dispatched],
+        %{system_time: System.system_time()},
+        %{
+          session_id: session_id,
+          command: command,
+          occupant: occupant,
+          agent_name: agent_name,
+          op_id: op_id
+        }
+      )
+
+      try do
+        case TerminalSession.send_input(session_id, wrapped_cmd, force: true) do
+          :ok ->
+            case Task.await(collector_task, timeout_ms + 1_000) do
+              {:ok, res} ->
+                :telemetry.execute(
+                  [:iex_code, :terminal, :command_completed],
+                  %{
+                    duration_ms: res.duration_ms,
+                    exit_code: res.exit_code,
+                    system_time: System.system_time()
+                  },
+                  %{
+                    session_id: session_id,
+                    command: command,
+                    agent_name: agent_name,
+                    op_id: op_id,
+                    exit_code: res.exit_code,
+                    status: if(res.exit_code == 0, do: :ok, else: :error)
+                  }
+                )
+
+                {:ok, res}
+
+              {:error, _reason} = err ->
+                duration = System.monotonic_time(:millisecond) - start_monotonic
+
+                :telemetry.execute(
+                  [:iex_code, :terminal, :command_completed],
+                  %{
+                    duration_ms: duration,
+                    exit_code: -1,
+                    system_time: System.system_time()
+                  },
+                  %{
+                    session_id: session_id,
+                    command: command,
+                    agent_name: agent_name,
+                    op_id: op_id,
+                    exit_code: -1,
+                    status: :error
+                  }
+                )
+
+                err
+            end
+
+          {:error, reason} ->
+            Task.shutdown(collector_task, :brutal_kill)
+            {:error, reason}
+        end
+      rescue
+        e ->
+          Task.shutdown(collector_task, :brutal_kill)
+          {:error, e}
+      catch
+        :exit, {:timeout, _} ->
+          Task.shutdown(collector_task, :brutal_kill)
+          duration = System.monotonic_time(:millisecond) - start_monotonic
+
+          :telemetry.execute(
+            [:iex_code, :terminal, :command_completed],
+            %{
+              duration_ms: duration,
+              exit_code: -1,
+              system_time: System.system_time()
+            },
+            %{
+              session_id: session_id,
+              command: command,
+              agent_name: agent_name,
+              op_id: op_id,
+              exit_code: -1,
+              status: :error
+            }
+          )
+
+          {:error, :timeout}
+
+        :exit, reason ->
+          Task.shutdown(collector_task, :brutal_kill)
+          {:error, {:exit, reason}}
+      after
+        TerminalSession.set_occupant(session_id, :user)
+      end
+    end
+  end
+
+  defp collect_agent_output(session_id, token, acc, start_time, timeout_ms) do
+    elapsed = System.monotonic_time(:millisecond) - start_time
+    remaining = max(timeout_ms - elapsed, 0)
+    regex = ~r/\r?\n?__AGENT_EXIT:(\d+):TOKEN:#{token}__\r?\n?/
+
+    receive do
+      {:terminal_output, %{session_id: ^session_id, data: chunk}} ->
+        new_acc = acc <> chunk
+
+        case Regex.run(regex, new_acc) do
+          [match, code_str] ->
+            duration = System.monotonic_time(:millisecond) - start_time
+
+            clean_output =
+              new_acc
+              |> String.split(match, parts: 2)
+              |> List.first()
+              |> strip_agent_command_echo(token)
+              |> String.trim_trailing()
+
+            {:ok,
+             %{
+               output: clean_output,
+               exit_code: String.to_integer(code_str),
+               duration_ms: duration
+             }}
+
+          nil ->
+            collect_agent_output(session_id, token, new_acc, start_time, timeout_ms)
+        end
+
+      {:terminal_exit, %{session_id: ^session_id, exit_code: code}} ->
+        duration = System.monotonic_time(:millisecond) - start_time
+        {:ok, %{output: acc, exit_code: code || 0, duration_ms: duration}}
+    after
+      remaining ->
+        {:error, :timeout}
+    end
+  end
+
+  defp strip_agent_command_echo(output, token) do
+    output
+    |> String.replace(~r/;?\s*echo\s+['"]__AGENT_EXIT:[^'"]*['"]/, "")
+    |> String.replace(token, "")
+  end
+
+  # --- Terminal Window & Signals ---
+
+  @doc """
+  Resizes the terminal dimensions (cols x rows) and triggers SIGWINCH.
+  """
+  @spec resize(session_id :: String.t(), cols :: integer(), rows :: integer()) ::
+          :ok | {:error, term()}
+  def resize(session_id, cols, rows)
+      when is_binary(session_id) and is_integer(cols) and is_integer(rows) do
+    if cols <= 0 or rows <= 0 do
+      {:error, :invalid_dimensions}
+    else
+      case whereis(session_id) do
+        nil -> {:error, :not_found}
+        _pid -> TerminalSession.resize(session_id, cols, rows)
+      end
+    end
+  end
+
+  @doc """
+  Dispatches an OS signal or control sequence (`:sigint`, `:sigterm`, `:sigkill`, `:sigtstp`, `:eof`) to the shell.
+  """
+  @spec send_signal(session_id :: String.t(), signal :: atom() | binary()) ::
+          :ok | {:error, term()}
+  def send_signal(session_id, signal) when is_binary(session_id) do
+    case whereis(session_id) do
+      nil -> {:error, :not_found}
+      _pid -> TerminalSession.send_signal(session_id, signal)
+    end
+  end
+
+  # --- History & Inspection ---
+
+  @doc """
+  Searches the terminal session scrollback history for matching lines.
+
+  ## Options
+    * `:regex` / `:is_regex` - boolean, treat query as regex (default: `false`).
+    * `:case_sensitive` - boolean, case sensitive search (default: `false`).
+    * `:strip_ansi` - boolean, strip ANSI sequences before search (default: `true`).
+    * `:limit` / `:max_results` - pos_integer() | :infinity, max results (default: `100`).
+    * `:reverse` - boolean, return newest matches first (default: `false`).
+  """
+  @spec search_history(
+          session_id :: String.t(),
+          query :: String.t() | Regex.t(),
+          opts :: keyword()
+        ) ::
+          {:ok,
+           [
+             %{
+               line_number: integer(),
+               text: String.t(),
+               match_range: {integer(), integer()}
+             }
+           ]}
+          | {:error, term()}
+  def search_history(session_id, query, opts \\ [])
+      when is_binary(session_id) and (is_binary(query) or is_struct(query, Regex)) do
+    case whereis(session_id) do
+      nil -> {:error, :not_found}
+      _pid -> TerminalSession.search_history(session_id, query, opts)
+    end
+  end
+
+  @doc """
+  Retrieves accumulated UTF-8 scrollback history from the ring buffer.
+  Returns empty string if session is not running.
+  """
+  @spec get_history(session_id :: String.t()) :: binary()
+  def get_history(session_id) when is_binary(session_id) do
+    case whereis(session_id) do
+      nil -> ""
+      _pid -> TerminalSession.get_history(session_id)
+    end
+  end
+
+  @doc """
+  Clears the in-memory ring buffer and broadcasts `{:terminal_cleared, ...}` over PubSub.
+  """
+  @spec clear(session_id :: String.t()) :: :ok
+  def clear(session_id) when is_binary(session_id) do
+    case whereis(session_id) do
+      nil -> :ok
+      _pid -> TerminalSession.clear_history(session_id)
+    end
+  end
+
+  @doc """
+  Retrieves a full state inspection map from the running terminal session.
+  """
+  @spec get_state(session_id :: String.t()) :: {:ok, map()} | {:error, :not_found}
+  def get_state(session_id) when is_binary(session_id) do
+    case whereis(session_id) do
+      nil -> {:error, :not_found}
+      _pid -> TerminalSession.get_state(session_id)
+    end
+  end
+
+  # --- Restart & Termination ---
+
+  @doc """
+  Restarts the shell process within the terminal session by stopping the existing child
+  and spawning a fresh supervised session.
+  """
+  @spec restart(session_id :: String.t(), opts :: keyword()) :: {:ok, pid()} | {:error, term()}
+  def restart(session_id, opts \\ []) when is_binary(session_id) do
+    saved_opts =
+      case get_state(session_id) do
+        {:ok, state} ->
+          [
+            workspace_path: state.workspace_path,
+            cols: state.cols,
+            rows: state.rows,
+            shell: state.shell
+          ]
+
+        _ ->
+          []
+      end
+
+    merged_opts = Keyword.merge(saved_opts, opts)
+
+    _ = kill(session_id)
+    TerminalSupervisor.start_session(session_id, merged_opts)
+  end
+
+  @doc """
+  Stops and terminates the terminal session, sending SIGKILL and stopping the child process under supervision.
+  """
+  @spec kill(session_id :: String.t()) :: :ok
+  def kill(session_id) when is_binary(session_id) do
+    case whereis(session_id) do
+      nil ->
+        :ok
+
+      pid ->
+        ref = Process.monitor(pid)
+        _ = send_signal(session_id, :sigkill)
+        _ = TerminalSupervisor.stop_session(session_id)
+        _ = TerminalSession.stop(session_id)
+
+        receive do
+          {:DOWN, ^ref, :process, ^pid, _} -> :ok
+        after
+          1_000 -> :ok
+        end
+    end
+  end
+end

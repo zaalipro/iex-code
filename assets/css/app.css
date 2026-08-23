@@ -3,6 +3,7 @@
 
 @import "tailwindcss" source(none);
 @import "phoenix-colocated/iex_code/colocated.css";
+@import "../vendor/xterm.css";
 @source "../css";
 @source "../js";
 @source "../../lib/iex_code_web";

@@ -76,7 +76,10 @@ defmodule IexCode.DataCase do
     # Pass 3: Monitored termination of SessionSupervisor children
     terminate_supervisor_children(IexCode.Engine.SessionSupervisor, :dynamic)
 
-    # Pass 4: Flush Registries
+    # Pass 4: Monitored termination of TerminalSupervisor children
+    terminate_supervisor_children(IexCode.Tools.TerminalSupervisor, :dynamic)
+
+    # Pass 5: Flush Registries
     if Process.whereis(IexCode.Engine.AgentRegistry) do
       try do
         _ = :sys.get_state(IexCode.Engine.AgentRegistry)

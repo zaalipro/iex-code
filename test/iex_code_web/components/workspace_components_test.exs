@@ -315,23 +315,27 @@ defmodule IexCodeWeb.WorkspaceComponentsTest do
   # ============================================================================
 
   describe "<.terminal_session /> and ansi_to_html/1" do
-    test "renders quick action buttons, auto-scroll hook, and command form" do
-      assigns = %{output: "$ mix test\nAll 12 tests passed", form: to_form(%{"command" => ""})}
+    test "renders quick action buttons, xterm hook container, and terminal controls" do
+      assigns = %{session: %{id: "session-123"}, running: true, cols: 80, rows: 24}
 
       html =
         rendered_to_string(~H"""
-        <.terminal_session output={@output} form={@form} />
+        <.terminal_session session={@session} running={@running} cols={@cols} rows={@rows} />
         """)
 
-      assert html =~ "mix test"
-      assert html =~ "mix precommit"
-      assert html =~ "git status"
-      assert html =~ "git diff"
+      assert html =~ "btn-quick-iex"
+      assert html =~ "btn-quick-test"
+      assert html =~ "btn-quick-precommit"
+      assert html =~ "btn-quick-git-status"
+      assert html =~ "btn-quick-git-diff"
       assert html =~ "Clear"
-      assert html =~ "terminal-output-viewport"
-      assert html =~ "TerminalAutoScroll"
-      assert html =~ "id=\"terminal-form\""
-      assert html =~ "All 12 tests passed"
+      assert html =~ "Restart"
+      assert html =~ "Kill"
+      assert html =~ "terminal-xterm-container"
+      assert html =~ "phx-hook=\"TerminalHook\""
+      assert html =~ "phx-update=\"ignore\""
+      assert html =~ "data-session-id=\"session-123\""
+      assert html =~ "80x24"
     end
 
     test "ansi_to_html converts standard ANSI colors into styled spans" do

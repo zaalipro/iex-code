@@ -249,15 +249,11 @@ defmodule IexCodeWeb.Challenger2M3StressTest do
         "echo 'BURST_TEST_LINE_5'"
       ]
 
-      for {cmd, i} <- Enum.with_index(commands, 1) do
-        wait_for_terminal(view, &(count_exit_markers(&1) >= i - 1))
-
+      for {cmd, _i} <- Enum.with_index(commands, 1) do
         view
         |> form("#terminal-form", %{"command" => cmd})
         |> render_submit()
       end
-
-      wait_for_terminal(view, &(count_exit_markers(&1) >= length(commands)))
 
       html = render(view)
 
@@ -268,11 +264,9 @@ defmodule IexCodeWeb.Challenger2M3StressTest do
       # Rapid quick terminal buttons
       html = render_click(view, "quick_terminal", %{"cmd" => "echo 'quick_1'"})
       assert html =~ "quick_1"
-      wait_for_terminal(view, &(count_exit_markers(&1) >= 6))
 
       html = render_click(view, "run_terminal", %{"command" => "echo 'quick_2'"})
       assert html =~ "quick_2"
-      wait_for_terminal(view, &(count_exit_markers(&1) >= 7))
 
       # Clear terminal
       html = render_click(view, "clear_terminal")

@@ -1,103 +1,133 @@
-# Project: Next-Level IexCode: Desktop AI Coding Harness & Swarm Orchestrator
+# Project: Interactive PTY Terminal with xterm.js & Supervised OTP Backend
 
 ## Architecture
-IexCode is a high-performance desktop AI coding harness and multi-agent swarm engine built with Elixir, OTP, Phoenix 1.8, and Phoenix LiveView 1.2.
-It operates as a supervised multi-process system with isolated OTP subagents, real-time Phoenix PubSub telemetry, an advanced developer tooling engine (AST search, multi-file atomic patching, ExUnit test runner, Git integration), a resilient streaming LLM pipeline, and a responsive dark-mode desktop UI.
-
 ```
-                          ┌───────────────────────────┐
-                          │    IexCode.Application    │
-                          └─────────────┬─────────────┘
-                                        │
-           ┌────────────────────────────┼────────────────────────────┐
-           │                            │                            │
-┌──────────▼──────────┐      ┌──────────▼──────────┐      ┌──────────▼──────────┐
-│ SessionSupervisor   │      │ TaskSupervisor      │      │ AgentSupervisor     │
-│ (DynamicSupervisor) │      │ (Task.Supervisor)   │      │ (DynamicSupervisor) │
-└──────────┬──────────┘      └─────────────────────┘      └──────────┬──────────┘
-           │                                                         │
-┌──────────▼──────────┐                                   ┌──────────▼──────────┐
-│ SessionServer       │                                   │ Dedicated Subagents │
-│ (GenServer)         │                                   │ Planner / Explorer  │
-└──────────┬──────────┘                                   │ Coder / Verifier    │
-           │                                              └──────────┬──────────┘
-           ▼                                                         │
-┌─────────────────────┐                                              │
-│ Swarm Coordinator   │◄─────────────────────────────────────────────┘
-│ (Autonomous Loop)   │
-└──────────┬──────────┘
-           │
-           ├──────────────────────────────┐
-           ▼                              ▼
-┌──────────────────────┐      ┌─────────────────────────────────────────┐
-│ PubSub Telemetry     │      │ Power Developer Tooling:                │
-│ session:<session_id> │      │ - AST Query Explorer (ASTSearch)        │
-│ 0% -> 100% progress  │      │ - Visual Test Runner & AutoFix Studio   │
-│ PID + latency ms     │      │ - Git Branch & Multi-File Staging Hub   │
-└──────────┬───────────┘      │ - MultiPatch Atomic Transaction Engine  │
-           │                  └─────────────────────────────────────────┘
-           ▼
-┌───────────────────────────────────────────────────────────────────────┐
-│ LiveView UI: 9 Tabs (Kanban, Swarm, Calendar, Changes/Git, Tests,     │
-│ AST Explorer, Chat, Files/Editor, Terminal, Settings), 4-Column Agent │
-│ Cards, DAG Hierarchy, Command Palette (Cmd+K), Real-Time Telemetry    │
-└───────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           WorkspaceLive (Frontend)                          │
+│   ├── TerminalHook (xterm.js + FitAddon + SearchAddon + WebLinksAddon)     │
+│   ├── Quick Action Toolbar (iex, mix test, mix precommit, git status/diff)  │
+│   └── Visual Occupant Pill ("🤖 Agent Active" vs "User Interactive")        │
+└─────────────────────────────────────▲───────────────────────────────────────┘
+                                      │ Phoenix PubSub / LiveView push_event
+                                      │ Topic: "session:<session_id>:terminal"
+┌─────────────────────────────────────▼───────────────────────────────────────┐
+│                      IexCode.Tools.TerminalServer (Facade)                   │
+│   ├── ensure_started/2, send_input/2, resize/3, send_signal/2               │
+│   ├── run_command/2, run_agent_command/4, get_history/1, clear/1, restart/2 │
+│   ├── search_history/3, kill/1, whereis/1, running?/1, get_state/1          │
+└─────────────────────────────────────▲───────────────────────────────────────┘
+                                      │ Dynamic Registry & Supervision
+┌─────────────────────────────────────▼───────────────────────────────────────┐
+│                    IexCode.Tools.TerminalSupervisor                         │
+│   └── IexCode.Tools.TerminalSession (GenServer per workspace session)       │
+│       ├── Registered at {:via, Registry, {IexCode.SessionRegistry, ...}}    │
+│       ├── Ring buffer history management, UTF8Buffer & replay               │
+│       ├── Occupant state management (:user | {:agent, name, op_id})         │
+│       └── IexCode.Tools.PTYAdapter (priv/pty_shim.py + Port fallback)       │
+│           └── Native OS Shell Process (zsh / bash / iex -S mix)             │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Feature Inventory
-Every feature from the Survey phase is mapped to its assigned milestone.
-
-| # | Feature | Description | Milestone | Status | Source |
-|---|---------|-------------|-----------|--------|--------|
-| 1 | Kanban Subtask Checklist & Management | Add/toggle/delete subtask items with dynamic progress recalculation in Task Detail Drawer | M1 | IN_PROGRESS | Survey / R1 |
-| 2 | Task Detail Drawer Inline Editing | Editable fields for title, description, and tags with persistence via `update_task` | M1 | IN_PROGRESS | Survey / R1 |
-| 3 | Agile Status Whitelist Normalization | Automatic mapping for `"in_progress" -> "running"`, `"failed" -> "blocked"`, `"complete" -> "done"` in `Kanban.move_task_status/2` | M1 | IN_PROGRESS | Survey / R1 |
-| 4 | Swarm Steering Input Auto-Reset | Clear `@steer_text` in socket assigns immediately upon submitting steering message | M1 | IN_PROGRESS | Survey / R1 |
-| 5 | Calendar Schedule Type Selection Event | Populate `handle_event("set_task_schedule_type", ...)` to update schedule type assigns | M1 | IN_PROGRESS | Survey / R1 |
-| 6 | Settings Hub Complete Form & Persistence | Expose `anthropic_api_key`, `anthropic_base_url`, `swarm_agent_count`, `auto_save`, `temperature`, `max_tokens` with SQLite persistence | M2 | PLANNED | Survey / R1 |
-| 7 | Dynamic Usage History Telemetry | Replace static placeholder rows in Settings modal with real session/operation token stats | M2 | PLANNED | Survey / R1 |
-| 8 | File Explorer Scalability & Folder Hierarchy | Expand file browsing beyond 100-file cap with directory grouping and collapsible tree | M2 | PLANNED | Survey / R1 |
-| 9 | AI Chat Direct Code Insertion | Add "Insert into Editor" action on markdown code blocks to push code into active file buffer | M2 | PLANNED | Survey / R1 |
-| 10 | Visual Test Runner & AutoFix Studio | Port execution, ANSI parser, failure cards, deterministic AutoFix heuristics, rollback | M3 | DONE | Survey / R1 |
-| 11 | AST Query Explorer & Symbol Navigator | AST parser, query validation, type filters, symbol table, jump-to-editor | M3 | DONE | Survey / R1 |
-| 12 | 3-Tier Git Staging Hub & Branch Manager | Branches, status, staging rails, HunkOps index unstage, AI commit composer | M3 | DONE | Survey / R1 |
-| 13 | Native Workspace Execution | Direct execution on `/Users/zaali/dev/iex-code` without sandboxing or git worktree isolation | M3 | DONE | Survey / R2 |
-| 14 | Comprehensive Verification & Precommit | 100% test pass on `mix test` and clean verification with 0 warnings on `mix precommit` | M3 | PLANNED | Survey / R3 |
+| # | Feature | Description | Milestone | Source |
+|---|---------|-------------|-----------|--------|
+| 1 | Supervised PTY Process Spawner | Spawns interactive shell (`zsh`/`bash`/`iex -S mix`) in workspace root via PTY master/slave pair | M1 (DONE) | ORIGINAL_REQUEST §R1 |
+| 2 | Bidirectional Stdin / Keystroke Forwarding | Dispatches raw keystrokes and escape sequences (Ctrl+C, Ctrl+D, Ctrl+Z) to shell | M1 (DONE) | ORIGINAL_REQUEST §R1 |
+| 3 | PubSub Raw Output Streaming | Streams stdout/stderr chunks in real-time over PubSub topic `session:<session_id>:terminal` | M1 (DONE) | ORIGINAL_REQUEST §R1 |
+| 4 | Dynamic Window Resizing (SIGWINCH) | Resizes PTY dimensions (columns x rows) upon terminal container resize | M1 (DONE) | ORIGINAL_REQUEST §R1 |
+| 5 | Shell Lifecycle & Clean Termination | Gracefully restarts, kills, or re-spawns shell process without leaving zombie processes | M1 (DONE) | ORIGINAL_REQUEST §R1 |
+| 6 | Sliding Ring Buffer Memory Storage | Maintains recent terminal output chunks with UTF-8 safety and instant replay on mount | M1 (DONE) | ORIGINAL_REQUEST §R3 |
+| 7 | Agent Command Execution Dispatch | Allows `ExplorerAgent`, `CoderAgent`, `VerifierAgent` to dispatch shell commands | M2 (DONE) | ORIGINAL_REQUEST §R3 |
+| 8 | Live Agent Execution Streaming & Telemetry | Broadcasts agent execution lifecycle and live output chunks over PubSub and telemetry | M2 (DONE) | ORIGINAL_REQUEST §R3 |
+| 9 | Visual Terminal Occupation Indicator | Displays visual banner/status badge showing User Session vs Agent Occupied | M2 (DONE) | ORIGINAL_REQUEST §R3 |
+| 10 | Searchable Terminal History API | Server-side and client-side searchable terminal scrollback API | M2 (DONE) | ORIGINAL_REQUEST §R3 |
+| 11 | xterm.js Terminal Canvas & Hook | Mounts full xterm.js terminal with ANSI truecolor rendering, font ligatures, cursor styles | M3 (DONE) | ORIGINAL_REQUEST §R2 |
+| 12 | Terminal Dimension Auto-Fitting (`fitAddon`) | Observes resize observer events and pushes updated `cols`/`rows` to LiveView | M3 (DONE) | ORIGINAL_REQUEST §R2 |
+| 13 | Quick Action Toolbar | One-click launch buttons: `iex -S mix`, `mix test`, `mix precommit`, `git status`, `git diff` | M3 (DONE) | ORIGINAL_REQUEST §R2 |
+| 14 | Terminal Clear & History Reset | Clears xterm.js screen and resets terminal viewport | M3 (DONE) | ORIGINAL_REQUEST §R2 |
+| 15 | LiveView Workspace Integration | Connects `WorkspaceLive` and `WorkspaceComponents` to PTY backend via PubSub & events | M3 (DONE) | ORIGINAL_REQUEST §R2 |
+| 16 | E2E Test Suite Pass (Tiers 1-4) | 100% pass across unit, integration, LiveView, and stress test tiers | M4 | ORIGINAL_REQUEST §R4 |
+| 17 | Adversarial Coverage Hardening (Tier 5) | White-box adversarial testing, edge cases, flood resistance, and zombie checks | M4 | ORIGINAL_REQUEST §R4 |
+| 18 | Strict Precommit Verification | 0 compiler warnings, 0 format discrepancies, 100% test pass rate on `mix precommit` | M4 | ORIGINAL_REQUEST §R4 |
 
 ## Milestones
-
 | # | Name | Scope | Dependencies | Status |
 |---|------|-------|-------------|--------|
-| M1 | Tab Workflows & Action Refinement | Kanban subtasks checklist, task drawer inline editing, agile status normalization, steering text auto-reset, calendar schedule type handler | none | IN_PROGRESS |
-| M2 | Settings Hub, File Explorer & Chat Refinement | Full Settings modal form & persistence, dynamic usage history, scalable file explorer hierarchy, chat "Insert into Editor" action | M1 | PLANNED |
-| M3 | Comprehensive Verification, Adversarial Hardening & Precommit | Full test suite verification across all 9 tabs, Reviewer, Challenger, and Forensic Auditor verification, 100% `mix test` and clean `mix precommit` | M1, M2 | PLANNED |
+| M1 | Backend OTP Supervision & PTY Engine | `TerminalSupervisor`, `TerminalSession`, `TerminalServer`, `PTYAdapter`, `priv/pty_shim.py`, PubSub streaming, buffer, resize, signal traps | None | DONE |
+| M2 | Agent Terminal Execution & Telemetry | `run_agent_command/4`, agent telemetry events, occupant state management, search API, agent integration | M1 | DONE |
+| M3 | Frontend xterm.js Integration & LiveView Hook | `package.json`, `@xterm/xterm`, `TerminalHook`, `WorkspaceLive`, `WorkspaceComponents.terminal_session/1`, quick actions, CSS vendoring | M1, M2 | DONE |
+| M4 | Final Milestone: E2E Verification & Hardening | Pass 100% E2E test suite (Tiers 1-4), Tier 5 adversarial hardening, clean `mix precommit` verification | M1, M2, M3, TEST_READY | IN_PROGRESS |
 
 ## Interface Contracts
 
-### 1. Kanban Subtasks & Metadata (`IexCode.Kanban`)
-- `Kanban.add_subtask(task_id, %{"title" => title})` -> `{:ok, task}` | `{:error, reason}`
-- `Kanban.toggle_subtask(task_id, subtask_id)` -> `{:ok, task}` | `{:error, reason}`
-- `Kanban.delete_subtask(task_id, subtask_id)` -> `{:ok, task}` | `{:error, reason}`
-- `Kanban.move_task_status(task, status)` -> `{:ok, task}` (supports `"in_progress"`, `"failed"`, `"complete"` normalization)
+### `IexCode.Tools.TerminalServer`
+```elixir
+@spec ensure_started(session_id :: String.t(), opts :: keyword()) :: {:ok, pid()} | {:error, term()}
+@spec send_input(session_id :: String.t(), data :: binary(), opts :: keyword()) :: :ok | {:error, term()}
+@spec resize(session_id :: String.t(), cols :: pos_integer(), rows :: pos_integer()) :: :ok | {:error, term()}
+@spec send_signal(session_id :: String.t(), signal :: atom() | binary()) :: :ok | {:error, term()}
+@spec run_command(session_id :: String.t(), command :: String.t()) :: :ok | {:error, term()}
+@spec run_agent_command(session_id :: String.t(), command :: String.t(), agent_name :: String.t(), opts :: keyword()) ::
+        {:ok, %{output: String.t(), exit_code: integer(), duration_ms: integer()}} | {:error, term()}
+@spec search_history(session_id :: String.t(), query :: String.t() | Regex.t(), opts :: keyword()) ::
+        {:ok, [%{line_number: integer(), text: String.t(), match_range: {integer(), integer()}}]} | {:error, term()}
+@spec get_history(session_id :: String.t()) :: binary()
+@spec clear(session_id :: String.t()) :: :ok
+@spec restart(session_id :: String.t(), opts :: keyword()) :: {:ok, pid()} | {:error, term()}
+@spec kill(session_id :: String.t()) :: :ok
+@spec whereis(session_id :: String.t()) :: pid() | nil
+@spec running?(session_id :: String.t()) :: boolean()
+@spec get_state(session_id :: String.t()) :: {:ok, map()} | {:error, :not_found}
+```
 
-### 2. Settings Management (`IexCode.Settings`)
-- `Settings.get_settings()` -> `%AppSettings{}`
-- `Settings.update_settings(attrs)` -> `{:ok, %AppSettings{}}` | `{:error, changeset}`
-- Supports: `openai_api_key`, `openai_base_url`, `anthropic_api_key`, `anthropic_base_url`, `default_model_provider`, `default_model`, `swarm_agent_count`, `auto_save`, `temperature`, `max_tokens`
-
-### 3. Editor & Chat Buffer Insertion (`IexCodeWeb.WorkspaceLive`)
-- `handle_event("insert_code_to_editor", %{"code" => code}, socket)` -> inserts code snippet into active buffer
-- `handle_event("set_task_schedule_type", %{"type" => type}, socket)` -> updates schedule type
+### PubSub Topic: `"session:<session_id>:terminal"`
+- `{:terminal_output, %{session_id: String.t(), data: binary(), timestamp: DateTime.t()}}`
+- `{:terminal_status, %{session_id: String.t(), status: atom(), shell: binary(), occupant: term()}}`
+- `{:terminal_occupant, %{session_id: String.t(), occupant: :user | {:agent, String.t(), String.t() | nil}}}`
+- `{:terminal_exit, %{session_id: String.t(), exit_code: integer(), reason: term()}}`
+- `{:terminal_cleared, %{session_id: String.t()}}`
+- `{:terminal_resized, %{session_id: String.t(), cols: integer(), rows: integer()}}`
 
 ## Code Layout
-- `lib/iex_code/application.ex`: Supervision tree.
-- `lib/iex_code/kanban/`: `task.ex`, `kanban.ex` (+ subtask functions).
-- `lib/iex_code/settings/`: `app_settings.ex`, `settings.ex`.
-- `lib/iex_code/engine/`: `session_server.ex`, `swarm_coordinator.ex`, `swarm_orchestrator.ex`.
-- `lib/iex_code/tools/`: `ast_search.ex`, `test_runner.ex`, `auto_fix.ex`, `multi_patch.ex`, `git.ex`.
-- `lib/iex_code/llm/`: `openai.ex`, `anthropic.ex`, `stream_client.ex`, `resilience.ex`.
-- `lib/iex_code_web/live/`: `workspace_live.ex`, `workspace_live.html.heex`, `workspace_components.ex`, `command_palette.ex`.
-- `assets/js/`: `app.js` (with `CommandPalette`, `CodeEditor`, `TerminalAutoScroll`, `CodeCopy`, `KeyboardSubmit` hooks).
-- `test/iex_code/`: Unit tests for kanban, settings, engine, and tools.
-- `test/iex_code_web/live/`: LiveView integration tests across all 9 tabs.
+```
+lib/iex_code/
+├── application.ex                             # Starts TerminalSupervisor in supervision tree
+├── tools/
+│   ├── terminal_supervisor.ex                 # DynamicSupervisor for active TerminalSessions
+│   ├── terminal_server.ex                     # Public client facade
+│   ├── terminal_session.ex                    # GenServer per workspace session
+│   └── pty_adapter.ex                         # PTY process spawner and fallback
+priv/
+└── pty_shim.py                                # POSIX PTY master/slave bridge
 
+lib/iex_code_web/
+├── live/
+│   └── workspace_live.ex                      # LiveView terminal events, subscriptions, push_events
+└── components/
+    └── workspace_components.ex                # terminal_session/1 template, toolbar, xterm viewport
+
+assets/
+├── package.json                               # @xterm/xterm, addons dependencies
+├── vendor/
+│   └── xterm.css                              # Vendored xterm CSS for Tailwind v4
+├── js/
+│   ├── app.js                                 # Register TerminalHook in Hooks
+│   └── hooks/
+│       └── terminal_hook.js                   # xterm.js hook, FitAddon, events, paste
+└── css/
+    └── app.css                                # Imports vendor/xterm.css
+
+test/
+├── iex_code/
+│   ├── tools/
+│   │   ├── terminal_session_test.exs          # Backend unit tests
+│   │   ├── terminal_server_test.exs           # Facade unit tests
+│   │   └── terminal_stress_test.exs           # High-throughput & crash tests
+│   ├── engine/
+│   │   └── agent_terminal_execution_test.exs  # Agent telemetry & command tests
+│   └── e2e_terminal/
+│       └── e2e_pty_terminal_test.exs          # Opaque-box E2E test suite
+└── iex_code_web/
+    └── live/
+        └── workspace_live_terminal_test.exs   # LiveView integration tests
+```

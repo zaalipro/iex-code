@@ -5,7 +5,7 @@ defmodule IexCode.Tools do
   """
   require Logger
 
-  alias IexCode.Tools.{ASTSearch, MultiPatch, TestRunner, Git}
+  alias IexCode.Tools.{ASTSearch, Git, MultiPatch, TerminalServer, TestRunner}
 
   @max_command_output 256_000
   @excluded_dirs ["_build", "deps", "node_modules", ".git"]
@@ -671,59 +671,90 @@ defmodule IexCode.Tools do
     end
   end
 
-  defp do_execute("run_command", %{"command" => command} = args, root_path, on_progress) do
-    on_progress.(20, "Starting command: #{command} in #{root_path}")
-    timeout = Map.get(args, "timeout_ms", 30000)
+  defp do_execute("run_command", args, root_path, on_progress) do
+    command = Map.get(args, "command") || Map.get(args, :command)
+    session_id = Map.get(args, "session_id") || Map.get(args, :session_id)
+    timeout = Map.get(args, "timeout_ms") || Map.get(args, :timeout_ms) || 30_000
+    agent_name = Map.get(args, "agent_name") || Map.get(args, :agent_name) || "Agent"
+    op_id = Map.get(args, "op_id") || Map.get(args, :op_id)
 
-    port =
-      Port.open(
-        {:spawn_executable, "/bin/sh"},
-        [
-          :binary,
-          :exit_status,
-          :stderr_to_stdout,
-          args: ["-c", command],
-          cd: root_path
-        ]
-      )
+    if session_id && session_id != "" do
+      on_progress.(20, "Executing agent command in terminal: #{command}")
 
-    deadline = System.monotonic_time(:millisecond) + timeout
-
-    case collect_port_output(port, deadline, {"", false}) do
-      {:done, exit_code, {output, truncated?}} ->
-        suffix =
-          if truncated? do
-            "\n\n[output truncated at #{@max_command_output} bytes]"
-          else
-            ""
-          end
-
-        output = IexCode.Sessions.sanitize_utf8(output) <> suffix
-
-        if exit_code == 0 do
+      case TerminalServer.run_agent_command(session_id, command, agent_name,
+             timeout_ms: timeout,
+             op_id: op_id,
+             workspace_path: root_path
+           ) do
+        {:ok, %{exit_code: 0, output: output}} ->
           on_progress.(100, "Command exited successfully (0)")
           {:ok, output}
-        else
+
+        {:ok, %{exit_code: exit_code, output: output}} ->
           on_progress.(100, "Command failed (code #{exit_code})")
           {:ok, "Exit Code #{exit_code}:\n#{output}"}
-        end
 
-      {:timeout, {output, truncated?}} ->
-        # Closing the port terminates the connected /bin/sh. Best-effort only:
-        # orphaned grandchildren spawned by the command may survive since we do
-        # not track the full OS process tree.
-        Port.close(port)
-        on_progress.(100, "Command timed out after #{timeout}ms")
+        {:error, :timeout} ->
+          on_progress.(100, "Command timed out after #{timeout}ms")
+          {:error, "Command timed out after #{timeout}ms"}
 
-        suffix =
-          if truncated? do
-            "\n\n[output truncated at #{@max_command_output} bytes]"
+        {:error, reason} ->
+          on_progress.(100, "Command failed: #{inspect(reason)}")
+          {:error, "Command failed: #{inspect(reason)}"}
+      end
+    else
+      on_progress.(20, "Starting command: #{command} in #{root_path}")
+
+      port =
+        Port.open(
+          {:spawn_executable, "/bin/sh"},
+          [
+            :binary,
+            :exit_status,
+            :stderr_to_stdout,
+            args: ["-c", command],
+            cd: root_path
+          ]
+        )
+
+      deadline = System.monotonic_time(:millisecond) + timeout
+
+      case collect_port_output(port, deadline, {"", false}) do
+        {:done, exit_code, {output, truncated?}} ->
+          suffix =
+            if truncated? do
+              "\n\n[output truncated at #{@max_command_output} bytes]"
+            else
+              ""
+            end
+
+          output = IexCode.Sessions.sanitize_utf8(output) <> suffix
+
+          if exit_code == 0 do
+            on_progress.(100, "Command exited successfully (0)")
+            {:ok, output}
           else
-            ""
+            on_progress.(100, "Command failed (code #{exit_code})")
+            {:ok, "Exit Code #{exit_code}:\n#{output}"}
           end
 
-        {:error,
-         "Command timed out after #{timeout}ms. Partial output:\n#{IexCode.Sessions.sanitize_utf8(output)}#{suffix}"}
+        {:timeout, {output, truncated?}} ->
+          # Closing the port terminates the connected /bin/sh. Best-effort only:
+          # orphaned grandchildren spawned by the command may survive since we do
+          # not track the full OS process tree.
+          Port.close(port)
+          on_progress.(100, "Command timed out after #{timeout}ms")
+
+          suffix =
+            if truncated? do
+              "\n\n[output truncated at #{@max_command_output} bytes]"
+            else
+              ""
+            end
+
+          {:error,
+           "Command timed out after #{timeout}ms. Partial output:\n#{IexCode.Sessions.sanitize_utf8(output)}#{suffix}"}
+      end
     end
   end
 

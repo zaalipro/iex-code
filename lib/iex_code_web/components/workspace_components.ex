@@ -1228,140 +1228,279 @@ defmodule IexCodeWeb.WorkspaceComponents do
   end
 
   # ============================================================================
-  # F9: Terminal Session Integration & Async Runner
+  # F9: Interactive xterm.js Terminal Session (<.terminal_session>)
   # ============================================================================
 
   @doc """
-  Renders an integrated ANSI-formatted terminal runner with quick action buttons, shell input,
-  command replay, stop button, and auto-scrolling.
+  Renders an interactive PTY terminal session powered by xterm.js.
+  Includes a top toolbar with shell badges, dimensions, quick actions,
+  terminal lifecycle controls, visual active agent indicator, and xterm canvas viewport.
   """
+  attr :session, :any, default: nil
+  attr :running, :boolean, default: true
+  attr :status, :atom, default: :running
+  attr :shell, :string, default: "zsh"
+  attr :cols, :integer, default: 80
+  attr :rows, :integer, default: 24
+  attr :occupant, :any, default: :user
+  attr :active_cmd, :string, default: nil
   attr :output, :string, default: ""
-  attr :form, :any, required: true
-  attr :running, :boolean, default: false
+  attr :form, :any, default: nil
 
   def terminal_session(assigns) do
+    session_id =
+      case assigns[:session] do
+        %{id: id} -> id
+        id when is_binary(id) and id != "" -> id
+        _ -> "default"
+      end
+
+    assigns = assign(assigns, :session_id, session_id)
+
     ~H"""
     <div
       id="terminal-session-container"
-      class="flex-1 flex flex-col h-full bg-[#0a0d12] p-5 space-y-3"
+      class="flex-1 flex flex-col h-full bg-[#0a0d12] p-4 gap-3 select-none overflow-hidden"
     >
-      <!-- Quick Action Buttons & Terminal Toolbar -->
-      <div class="flex items-center justify-between shrink-0 font-mono text-xs">
+      <!-- Top Toolbar: Badges, Quick Actions, Controls -->
+      <div class="flex items-center justify-between shrink-0 font-mono text-xs flex-wrap gap-2">
+        <!-- Left: Shell Info, Dimensions, Quick Action Launchers -->
         <div class="flex items-center gap-2 flex-wrap">
-          <button
-            phx-click="run_terminal"
-            phx-value-command="mix test"
-            disabled={@running}
-            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] border border-[#30363d] rounded-lg text-gray-300 transition-smooth disabled:opacity-50 disabled:pointer-events-none"
+          <!-- Shell Info Badge -->
+          <div
+            id="terminal-shell-badge"
+            class="flex items-center gap-1.5 px-2.5 py-1 bg-[#161b22] border border-[#30363d] rounded-lg text-gray-300 font-mono text-xs shadow-sm"
           >
-            mix test
-          </button>
-          <button
-            phx-click="run_terminal"
-            phx-value-command="mix precommit"
-            disabled={@running}
-            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] border border-[#30363d] rounded-lg text-gray-300 transition-smooth disabled:opacity-50 disabled:pointer-events-none"
+            <span class={[
+              "w-2 h-2 rounded-full",
+              @status in [:running, :ready] &&
+                "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.6)] animate-pulse",
+              @status == :restarting &&
+                "bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.6)] animate-spin",
+              @status in [:stopped, :idle] && "bg-gray-500"
+            ]}></span>
+            <span class="font-semibold text-gray-200">{@shell || "zsh"}</span>
+            <span class="text-gray-500 text-[10px]">PTY</span>
+          </div>
+
+          <!-- Dimensions Badge -->
+          <div
+            id="terminal-dimensions-badge"
+            class="px-2 py-1 bg-[#161b22]/70 border border-[#30363d]/70 rounded-lg text-gray-400 font-mono text-[11px] shadow-sm"
           >
-            mix precommit
-          </button>
+            {@cols}x{@rows}
+          </div>
+
+          <div class="h-4 w-px bg-[#30363d] mx-1"></div>
+
+          <!-- Quick Action Buttons -->
           <button
-            phx-click="run_terminal"
-            phx-value-command="git status"
-            disabled={@running}
-            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] border border-[#30363d] rounded-lg text-gray-300 transition-smooth disabled:opacity-50 disabled:pointer-events-none"
+            id="btn-quick-iex"
+            phx-click="run_terminal_quick_action"
+            phx-value-cmd="iex -S mix"
+            disabled={!@running}
+            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] active:bg-[#30363d] border border-[#30363d] rounded-lg text-purple-300 hover:text-purple-200 transition-smooth font-mono text-xs flex items-center gap-1.5 disabled:opacity-50 disabled:pointer-events-none group shadow-sm"
+            title="Start Interactive Elixir Shell"
           >
-            git status
+            <.icon
+              name="hero-bolt"
+              class="w-3.5 h-3.5 text-purple-400 group-hover:scale-110 transition-transform"
+            />
+            <span>iex -S mix</span>
           </button>
+
           <button
-            phx-click="run_terminal"
-            phx-value-command="git diff"
-            disabled={@running}
-            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] border border-[#30363d] rounded-lg text-gray-300 transition-smooth disabled:opacity-50 disabled:pointer-events-none"
+            id="btn-quick-test"
+            phx-click="run_terminal_quick_action"
+            phx-value-cmd="mix test"
+            disabled={!@running}
+            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] active:bg-[#30363d] border border-[#30363d] rounded-lg text-emerald-300 hover:text-emerald-200 transition-smooth font-mono text-xs flex items-center gap-1.5 disabled:opacity-50 disabled:pointer-events-none group shadow-sm"
+            title="Run Mix Test Suite"
           >
-            git diff
+            <.icon
+              name="hero-play"
+              class="w-3.5 h-3.5 text-emerald-400 group-hover:scale-110 transition-transform"
+            />
+            <span>mix test</span>
           </button>
+
           <button
-            phx-click="replay_terminal_command"
-            disabled={@running}
-            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] border border-[#30363d] rounded-lg text-cyan-300 transition-smooth flex items-center gap-1 disabled:opacity-50 disabled:pointer-events-none"
-            title="Replay last shell command"
+            id="btn-quick-precommit"
+            phx-click="run_terminal_quick_action"
+            phx-value-cmd="mix precommit"
+            disabled={!@running}
+            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] active:bg-[#30363d] border border-[#30363d] rounded-lg text-cyan-300 hover:text-cyan-200 transition-smooth font-mono text-xs flex items-center gap-1.5 disabled:opacity-50 disabled:pointer-events-none group shadow-sm"
+            title="Run Precommit Quality Checks"
+          >
+            <.icon
+              name="hero-check-badge"
+              class="w-3.5 h-3.5 text-cyan-400 group-hover:scale-110 transition-transform"
+            />
+            <span>mix precommit</span>
+          </button>
+
+          <button
+            id="btn-quick-git-status"
+            phx-click="run_terminal_quick_action"
+            phx-value-cmd="git status"
+            disabled={!@running}
+            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] active:bg-[#30363d] border border-[#30363d] rounded-lg text-amber-300 hover:text-amber-200 transition-smooth font-mono text-xs flex items-center gap-1.5 disabled:opacity-50 disabled:pointer-events-none group shadow-sm"
+            title="Check Git Working Directory Status"
+          >
+            <.icon
+              name="hero-document-text"
+              class="w-3.5 h-3.5 text-amber-400 group-hover:scale-110 transition-transform"
+            />
+            <span>git status</span>
+          </button>
+
+          <button
+            id="btn-quick-git-diff"
+            phx-click="run_terminal_quick_action"
+            phx-value-cmd="git diff"
+            disabled={!@running}
+            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] active:bg-[#30363d] border border-[#30363d] rounded-lg text-amber-300 hover:text-amber-200 transition-smooth font-mono text-xs flex items-center gap-1.5 disabled:opacity-50 disabled:pointer-events-none group shadow-sm"
+            title="Show Git Diff of Unstaged Changes"
+          >
+            <.icon
+              name="hero-code-bracket"
+              class="w-3.5 h-3.5 text-amber-400 group-hover:scale-110 transition-transform"
+            />
+            <span>git diff</span>
+          </button>
+        </div>
+
+        <!-- Right: Terminal Controls (Clear, Restart, Kill) -->
+        <div class="flex items-center gap-2">
+          <button
+            id="btn-terminal-clear"
+            phx-click="clear_terminal"
+            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] active:bg-[#30363d] border border-[#30363d] rounded-lg text-gray-400 hover:text-gray-200 transition-smooth font-mono text-xs flex items-center gap-1.5 shadow-sm"
+            title="Clear Terminal Screen & Buffer"
+          >
+            <.icon name="hero-trash" class="w-3.5 h-3.5" />
+            <span>Clear</span>
+          </button>
+
+          <button
+            id="btn-terminal-restart"
+            phx-click="restart_terminal_session"
+            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] active:bg-[#30363d] border border-[#30363d] rounded-lg text-sky-400 hover:text-sky-300 transition-smooth font-mono text-xs flex items-center gap-1.5 shadow-sm"
+            title="Restart PTY Shell Process"
           >
             <.icon name="hero-arrow-path" class="w-3.5 h-3.5" />
-            <span>Replay</span>
+            <span>Restart</span>
           </button>
-        </div>
-
-        <div class="flex items-center gap-3">
-          <%= if @running do %>
-            <div class="flex items-center gap-1.5 text-amber-400 text-xs">
-              <span class="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span>
-              <span>Running...</span>
-              <button
-                phx-click="stop_terminal_command"
-                class="ml-2 px-2 py-0.5 bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 rounded text-[11px] font-semibold"
-              >
-                Stop
-              </button>
-            </div>
-          <% end %>
 
           <button
-            phx-click="clear_terminal"
-            class="text-gray-500 hover:text-gray-300 transition-smooth"
+            id="btn-terminal-kill"
+            phx-click="kill_terminal_session"
+            class="px-2.5 py-1 bg-rose-950/40 hover:bg-rose-900/50 active:bg-rose-800/60 border border-rose-800/60 rounded-lg text-rose-300 hover:text-rose-200 transition-smooth font-mono text-xs flex items-center gap-1.5 shadow-sm"
+            title="Send SIGINT / Interrupt Shell"
           >
-            Clear
+            <.icon name="hero-stop" class="w-3.5 h-3.5 text-rose-400" />
+            <span>Kill</span>
           </button>
         </div>
       </div>
 
-      <!-- Terminal Output Display with AutoScroll Hook -->
+      <!-- Visual Active Agent Banner -->
+      <%= if match?({:agent, _, _}, @occupant) or match?({:agent, _}, @occupant) do %>
+        <% {agent_name, op_id} =
+          case @occupant do
+            {:agent, name, id} -> {name, id}
+            {:agent, name} -> {name, nil}
+            _ -> {"Agent", nil}
+          end %>
+        <div
+          id="terminal-agent-banner"
+          class="flex items-center justify-between px-3.5 py-2 bg-gradient-to-r from-amber-500/15 via-purple-500/15 to-indigo-500/15 border border-amber-500/30 rounded-xl text-xs font-mono text-amber-200 shadow-lg animate-in fade-in slide-in-from-top-1 shrink-0"
+        >
+          <div class="flex items-center gap-2.5 flex-wrap">
+            <span class="flex h-2.5 w-2.5 relative">
+              <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+              <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-amber-500"></span>
+            </span>
+            <span class="font-bold text-amber-300">🤖 Agent Active:</span>
+            <span class="px-2 py-0.5 bg-amber-400/20 text-amber-200 rounded font-semibold text-[11px] border border-amber-400/30">
+              {agent_name}
+            </span>
+            <%= if @active_cmd do %>
+              <span class="text-gray-400 text-[11px]">Executing:</span>
+              <code class="px-2 py-0.5 bg-black/40 text-emerald-300 rounded font-mono text-[11px] border border-emerald-500/20">
+                {@active_cmd}
+              </code>
+            <% end %>
+            <%= if op_id do %>
+              <span class="text-gray-500 text-[10px]">({op_id})</span>
+            <% end %>
+          </div>
+
+          <div class="flex items-center gap-2 text-[11px] text-amber-300/80">
+            <svg
+              class="animate-spin h-3.5 w-3.5 text-amber-400"
+              xmlns="http://www.w3.org/2000/svg"
+              fill="none"
+              viewBox="0 0 24 24"
+            >
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4">
+              </circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+            </svg>
+            <span class="italic text-[10px]">User input locked during autonomous execution</span>
+          </div>
+        </div>
+      <% end %>
+
+      <!-- xterm Container Viewport -->
       <div
-        id="terminal-output-viewport"
-        phx-hook=".TerminalAutoScroll"
-        class="flex-1 bg-[#0d1117] border border-[#21262d] rounded-2xl p-4 font-mono text-xs text-gray-200 overflow-y-auto whitespace-pre-wrap leading-relaxed shadow-inner"
+        id="terminal-xterm-wrapper"
+        class="flex-1 min-h-0 bg-[#0d1117] border border-[#21262d] rounded-2xl overflow-hidden shadow-2xl relative flex flex-col"
       >
-        {ansi_to_html(@output)}
+        <div
+          id="terminal-xterm-container"
+          phx-hook="TerminalHook"
+          phx-update="ignore"
+          data-session-id={@session_id}
+          class="flex-1 w-full h-full p-2 bg-[#0d1117]"
+        >
+        </div>
+        <div id="terminal-rendered-output" class="hidden">
+          {@output}
+        </div>
       </div>
 
-      <!-- Terminal Command Input Form -->
-      <.form
-        for={@form}
-        id="terminal-form"
-        phx-submit="run_terminal_command"
-        class="flex gap-2 shrink-0"
-      >
-        <div class="relative flex-1">
-          <span class="absolute left-3 top-2.5 text-emerald-400 font-mono text-xs font-bold">$</span>
-          <input
-            type="text"
-            name="command"
-            placeholder="Enter shell command..."
-            disabled={@running}
-            class="w-full bg-[#11151c] border border-[#21262d] rounded-xl pl-7 pr-4 py-2 text-xs font-mono text-white focus:outline-none focus:border-emerald-500 disabled:opacity-50"
-          />
-        </div>
-        <button
-          type="submit"
-          disabled={@running}
-          class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-mono font-medium transition-smooth disabled:opacity-50 disabled:pointer-events-none"
+      <!-- Quick Command Input Form -->
+      <%= if @form do %>
+        <.form
+          for={@form}
+          id="terminal-form"
+          phx-submit="run_terminal_command"
+          class="flex gap-2 shrink-0"
         >
-          Run
-        </button>
-      </.form>
-
-      <script :type={Phoenix.LiveView.ColocatedHook} name=".TerminalAutoScroll">
-        export default {
-          mounted() {
-            this.scrollToBottom()
-          },
-          updated() {
-            this.scrollToBottom()
-          },
-          scrollToBottom() {
-            this.el.scrollTop = this.el.scrollHeight
-          }
-        }
-      </script>
+          <div class="relative flex-1">
+            <span class="absolute left-3 top-2.5 text-emerald-400 font-mono text-xs font-bold">$</span>
+            <input
+              type="text"
+              name="command"
+              value={Phoenix.HTML.Form.input_value(@form, :command)}
+              placeholder="Enter shell command..."
+              disabled={!@running}
+              class="w-full bg-[#11151c] border border-[#21262d] rounded-xl pl-7 pr-4 py-2 text-xs font-mono text-white focus:outline-none focus:border-emerald-500 disabled:opacity-50"
+            />
+            <%= if @active_cmd do %>
+              <span id="terminal-active-cmd" class="hidden">{@active_cmd}</span>
+            <% end %>
+          </div>
+          <button
+            type="submit"
+            disabled={!@running}
+            class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-mono font-medium transition-smooth disabled:opacity-50 disabled:pointer-events-none"
+          >
+            Run
+          </button>
+        </.form>
+      <% end %>
     </div>
     """
   end

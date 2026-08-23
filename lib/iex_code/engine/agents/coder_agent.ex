@@ -262,6 +262,20 @@ defmodule IexCode.Engine.Agents.CoderAgent do
   end
 
   defp execute_tool_call(tc, session_id, project_root, parent_op_id) do
+    args =
+      if is_map(tc.args) do
+        Map.merge(
+          %{
+            "session_id" => session_id,
+            "agent_name" => "CoderAgent",
+            "op_id" => parent_op_id
+          },
+          tc.args
+        )
+      else
+        tc.args
+      end
+
     res =
       OperationManager.run_sync_operation(
         session_id,
@@ -269,9 +283,9 @@ defmodule IexCode.Engine.Agents.CoderAgent do
         "CoderAgent",
         tc.name,
         "Coder: Executing #{tc.name}",
-        tc.args,
+        args,
         fn p ->
-          Tools.execute(tc.name, tc.args, project_root, p)
+          Tools.execute(tc.name, args, project_root, p)
         end
       )
 
