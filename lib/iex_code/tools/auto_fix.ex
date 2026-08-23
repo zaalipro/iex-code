@@ -219,22 +219,33 @@ defmodule IexCode.Tools.AutoFix do
        ) do
     # Find first stack frame in lib/
     lib_frame =
-      Enum.find(stack || [], fn frame ->
-        if is_binary(frame.file) do
-          norm = normalize_rel_path(frame.file, project_root)
-          String.starts_with?(norm, "lib/") or String.contains?(frame.file, "/lib/")
-        else
-          false
+      Enum.find_value(stack || [], fn frame ->
+        case extract_frame_file_and_line(frame) do
+          {f, l} when is_binary(f) and f != "" ->
+            norm = normalize_rel_path(f, project_root)
+
+            if String.starts_with?(norm, "lib/") or String.contains?(f, "/lib/") do
+              %{file: norm, line: l || 1, source: :stacktrace}
+            else
+              nil
+            end
+
+          _ ->
+            nil
         end
       end)
 
     case lib_frame do
-      %StackFrame{file: f, line: l} ->
-        %{file: normalize_rel_path(f, project_root), line: l, source: :stacktrace}
+      %{file: _, line: _} = resolved ->
+        resolved
 
       _ ->
-        %{file: normalize_rel_path(file, project_root), line: line, source: :test_file}
+        %{file: normalize_rel_path(file, project_root), line: line || 1, source: :test_file}
     end
+  end
+
+  defp resolve_target_file_and_line(%StackFrame{file: file, line: line}, project_root) do
+    %{file: normalize_rel_path(file, project_root), line: line || 1, source: :stacktrace}
   end
 
   defp resolve_target_file_and_line(%CompilationError{file: file, line: line}, project_root) do
@@ -242,6 +253,11 @@ defmodule IexCode.Tools.AutoFix do
   end
 
   defp resolve_target_file_and_line(%{file: file, line: line}, project_root)
+       when is_binary(file) do
+    %{file: normalize_rel_path(file, project_root), line: line || 1, source: :map}
+  end
+
+  defp resolve_target_file_and_line(%{"file" => file, "line" => line}, project_root)
        when is_binary(file) do
     %{file: normalize_rel_path(file, project_root), line: line || 1, source: :map}
   end
@@ -261,9 +277,40 @@ defmodule IexCode.Tools.AutoFix do
     end
   end
 
+  defp resolve_target_file_and_line(str, project_root) when is_binary(str) do
+    case Regex.run(~r/([a-zA-Z0-9_\/.-]+\.(?:ex|exs)):(\d+)/, str) do
+      [_, file, line_str] ->
+        %{
+          file: normalize_rel_path(file, project_root),
+          line: String.to_integer(line_str),
+          source: :regex
+        }
+
+      _ ->
+        %{file: "lib", line: 1, source: :unknown}
+    end
+  end
+
   defp resolve_target_file_and_line(_, _project_root) do
     %{file: "", line: 1, source: :unknown}
   end
+
+  defp extract_frame_file_and_line(%StackFrame{file: file, line: line}), do: {file, line}
+
+  defp extract_frame_file_and_line(%{file: file, line: line}) when is_binary(file),
+    do: {file, line}
+
+  defp extract_frame_file_and_line(%{"file" => file, "line" => line}) when is_binary(file),
+    do: {file, line}
+
+  defp extract_frame_file_and_line(str) when is_binary(str) do
+    case Regex.run(~r/([a-zA-Z0-9_\/.-]+\.(?:ex|exs)):(\d+)/, str) do
+      [_, file, line_str] -> {file, String.to_integer(line_str)}
+      _ -> nil
+    end
+  end
+
+  defp extract_frame_file_and_line(_), do: nil
 
   defp normalize_rel_path(nil, _), do: ""
 

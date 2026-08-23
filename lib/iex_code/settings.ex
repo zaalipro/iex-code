@@ -45,27 +45,34 @@ defmodule IexCode.Settings do
   Persists updates to the database; relies on `busy_timeout` for lock contention.
   """
   def update_settings(attrs) do
-    settings = get_settings()
-    changeset = AppSettings.changeset(settings, attrs)
-
-    if changeset.valid? do
-      result =
-        if settings.__meta__.state == :built do
-          Repo.insert(changeset)
-        else
-          Repo.update(changeset)
+    retry_on_busy(fn ->
+      settings =
+        case fetch_latest_settings() do
+          {:ok, %AppSettings{} = s} -> s
+          _ -> get_settings()
         end
 
-      case result do
-        {:ok, struct} ->
-          {:ok, ensure_default_endpoints(struct)}
+      changeset = AppSettings.changeset(settings, attrs)
 
-        {:error, %Ecto.Changeset{} = error_changeset} ->
-          {:error, error_changeset}
+      if changeset.valid? do
+        result =
+          if settings.__meta__.state == :built do
+            Repo.insert(changeset)
+          else
+            Repo.update(changeset)
+          end
+
+        case result do
+          {:ok, struct} ->
+            {:ok, ensure_default_endpoints(struct)}
+
+          {:error, %Ecto.Changeset{} = error_changeset} ->
+            {:error, error_changeset}
+        end
+      else
+        {:error, changeset}
       end
-    else
-      {:error, changeset}
-    end
+    end)
   rescue
     e in [Exqlite.Error, DBConnection.ConnectionError] ->
       Logger.error("Settings.update_settings failed: #{Exception.message(e)}")
@@ -97,23 +104,41 @@ defmodule IexCode.Settings do
     struct(AppSettings, default_settings_attrs())
   end
 
+  defp retry_on_busy(fun, attempts \\ 5, delay_ms \\ 50) do
+    fun.()
+  rescue
+    e in [Exqlite.Error, DBConnection.ConnectionError] ->
+      msg = Exception.message(e)
+
+      if attempts > 1 and
+           (String.contains?(String.downcase(msg), "busy") or
+              String.contains?(String.downcase(msg), "locked")) do
+        Process.sleep(delay_ms)
+        retry_on_busy(fun, attempts - 1, delay_ms * 2)
+      else
+        reraise e, __STACKTRACE__
+      end
+  end
+
   defp create_default_settings do
-    case %AppSettings{}
-         |> AppSettings.changeset(default_settings_attrs())
-         |> Repo.insert() do
-      {:ok, settings} ->
-        ensure_default_endpoints(settings)
+    retry_on_busy(fn ->
+      case %AppSettings{}
+           |> AppSettings.changeset(default_settings_attrs())
+           |> Repo.insert() do
+        {:ok, settings} ->
+          ensure_default_endpoints(settings)
 
-      {:error, _changeset} ->
-        case fetch_latest_settings() do
-          {:ok, %AppSettings{} = settings} ->
-            ensure_default_endpoints(settings)
+        {:error, _changeset} ->
+          case fetch_latest_settings() do
+            {:ok, %AppSettings{} = settings} ->
+              ensure_default_endpoints(settings)
 
-          _ ->
-            Logger.error("Settings.create_default_settings could not persist or fetch settings")
-            ensure_default_endpoints(volatile_defaults())
-        end
-    end
+            _ ->
+              Logger.error("Settings.create_default_settings could not persist or fetch settings")
+              ensure_default_endpoints(volatile_defaults())
+          end
+      end
+    end)
   rescue
     # Concurrent creation raced past the singleton unique index — refetch.
     _ in Ecto.ConstraintError ->
@@ -136,13 +161,17 @@ defmodule IexCode.Settings do
   end
 
   defp fetch_latest_settings do
-    {:ok,
-     Repo.one(
-       from(s in AppSettings,
-         order_by: [desc: s.updated_at, desc: s.inserted_at, desc: s.id],
-         limit: 1
-       )
-     )}
+    result =
+      retry_on_busy(fn ->
+        Repo.one(
+          from(s in AppSettings,
+            order_by: [desc: s.updated_at, desc: s.inserted_at, desc: s.id],
+            limit: 1
+          )
+        )
+      end)
+
+    {:ok, result}
   rescue
     e in [Exqlite.Error, DBConnection.ConnectionError] ->
       Logger.error("Settings.fetch_latest_settings failed: #{Exception.message(e)}")

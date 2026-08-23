@@ -1003,12 +1003,13 @@ defmodule IexCode.E2E.Tier2BoundaryTest do
     end
 
     test "T2_F15_05_llm_chat_without_api_key" do
-      # Test openai mock fallback when api key is empty
-      {:ok, res} =
-        IexCode.LLM.OpenAI.chat([%{role: "user", content: "hello"}], "system", api_key: "")
+      assert {:error, :no_api_key} =
+               IexCode.LLM.OpenAI.chat([%{role: "user", content: "hello"}], "system", api_key: "")
 
-      assert is_binary(res.text)
-      assert String.contains?(res.text, "local mode")
+      assert {:error, :no_api_key} =
+               IexCode.LLM.Anthropic.chat([%{role: "user", content: "hello"}], "system",
+                 api_key: ""
+               )
     end
   end
 

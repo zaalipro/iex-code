@@ -138,7 +138,8 @@ defmodule IexCode.Tools.TestRunner do
   defp kill_port_tree(port) do
     os_pid =
       case Port.info(port, :os_pid) do
-        {:os_pid, pid} -> List.to_string(pid)
+        {:os_pid, pid} when is_integer(pid) -> to_string(pid)
+        {:os_pid, pid} when is_binary(pid) -> pid
         _ -> nil
       end
 

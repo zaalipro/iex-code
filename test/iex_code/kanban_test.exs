@@ -68,4 +68,22 @@ defmodule IexCode.KanbanTest do
     assert {:ok, estimated} = Kanban.estimate_effort(task)
     assert estimated.estimate =~ "High effort"
   end
+
+  test "returns error for invalid task status or invalid task", %{
+    project: project,
+    session: session
+  } do
+    {:ok, task} =
+      Kanban.create_task(%{
+        project_id: project.id,
+        session_id: session.id,
+        title: "Invalid status test",
+        status: "ready"
+      })
+
+    assert {:error, :invalid_status} = Kanban.move_task_status(task, "custom_status_xyz")
+    assert {:error, :invalid_status} = Kanban.move_task_status(task, "")
+    assert {:error, :invalid_status} = Kanban.move_task_status(task, nil)
+    assert {:error, :invalid_task} = Kanban.move_task_status(nil, "done")
+  end
 end

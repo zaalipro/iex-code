@@ -158,6 +158,34 @@
           </button>
 
           <button
+            id="sidebar-tab-tests"
+            phx-click="switch_tab"
+            phx-value-sidebar_tab="tests"
+            class={[
+              "w-full flex items-center gap-2.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-smooth text-left",
+              @active_tab == "tests" && "bg-[#21262d] text-white shadow-sm font-semibold",
+              @active_tab != "tests" && "text-gray-400 hover:text-gray-200 hover:bg-[#161b22]"
+            ]}
+          >
+            <.icon name="hero-beaker" class="w-3.5 h-3.5 text-emerald-400" />
+            <span>Visual Test Runner</span>
+          </button>
+
+          <button
+            id="sidebar-tab-ast"
+            phx-click="switch_tab"
+            phx-value-sidebar_tab="ast"
+            class={[
+              "w-full flex items-center gap-2.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-smooth text-left",
+              @active_tab == "ast" && "bg-[#21262d] text-white shadow-sm font-semibold",
+              @active_tab != "ast" && "text-gray-400 hover:text-gray-200 hover:bg-[#161b22]"
+            ]}
+          >
+            <.icon name="hero-magnifying-glass" class="w-3.5 h-3.5 text-purple-400" />
+            <span>AST Symbol Explorer</span>
+          </button>
+
+          <button
             id="sidebar-tab-chat"
             phx-click="switch_tab"
             phx-value-sidebar_tab="chat"
@@ -352,6 +380,32 @@
               ]}
             >
               <.icon name="hero-code-bracket" class="w-3.5 h-3.5 text-cyan-400" /> Changes
+            </button>
+
+            <button
+              id="tab-btn-tests"
+              phx-click="switch_tab"
+              phx-value-tab="tests"
+              class={[
+                "px-3 py-1 rounded-lg text-xs font-mono font-medium flex items-center gap-1.5 transition-smooth",
+                @active_tab == "tests" && "bg-[#21262d] text-white shadow-sm",
+                @active_tab != "tests" && "text-gray-400 hover:text-gray-200"
+              ]}
+            >
+              <.icon name="hero-beaker" class="w-3.5 h-3.5 text-emerald-400" /> Tests
+            </button>
+
+            <button
+              id="tab-btn-ast"
+              phx-click="switch_tab"
+              phx-value-tab="ast"
+              class={[
+                "px-3 py-1 rounded-lg text-xs font-mono font-medium flex items-center gap-1.5 transition-smooth",
+                @active_tab == "ast" && "bg-[#21262d] text-white shadow-sm",
+                @active_tab != "ast" && "text-gray-400 hover:text-gray-200"
+              ]}
+            >
+              <.icon name="hero-magnifying-glass" class="w-3.5 h-3.5 text-purple-400" /> AST
             </button>
 
             <button
@@ -995,13 +1049,31 @@
                     CURRENT TASK · ITERATION {@swarm_iteration}/{@max_retries}
                   </div>
 
+                  <% total_ops = length(@operations)
+
+                  completed_ops =
+                    Enum.count(@operations, &(&1.status in ["completed", "success"]))
+
+                  coach_pct =
+                    cond do
+                      total_ops > 0 ->
+                        round(completed_ops / total_ops * 100)
+
+                      @swarm_iteration > 0 and @max_retries > 0 ->
+                        round(@swarm_iteration / @max_retries * 100)
+
+                      true ->
+                        0
+                    end
+
+                  coach_active_ticks = min(65, max(0, round(coach_pct * 0.65))) %>
                   <!-- Tally Hash Vertical Tick Bar -->
                   <div class="tally-tick-bar mb-2.5">
                     <%= for tick <- 1..65 do %>
                       <div class={[
                         "tally-tick",
-                        tick <= 36 && "tally-tick-active-orange",
-                        tick > 36 && "bg-[#21262d]"
+                        tick <= coach_active_ticks && "tally-tick-active-orange",
+                        tick > coach_active_ticks && "bg-[#21262d]"
                       ]}>
                       </div>
                     <% end %>
@@ -1342,128 +1414,428 @@
                   </div>
                 </div>
 
+                <% scheduled_count = length(@tasks)
+
+                active_count =
+                  Enum.count(@tasks, &(&1.status in ["in_progress", "running", "scheduled"]))
+
+                monthly_runs_count = max(scheduled_count * 12 + length(@operations), 1) %>
                 <div class="flex items-center gap-6">
-                  <span>9 SCHEDULED TASKS · 3 ACTIVE</span>
-                  <span class="text-white font-semibold">MONTHLY RUNS: 1,420</span>
+                  <span>{scheduled_count} SCHEDULED TASKS · {active_count} ACTIVE</span>
+                  <span class="text-white font-semibold">MONTHLY RUNS: {monthly_runs_count}</span>
                 </div>
               </div>
             </div>
           </div>
         <% end %>
 
-        <!-- TAB 4: CHANGES & INTERACTIVE DIFF VIEWER -->
+        <!-- TAB 4: CHANGES & 3-TIER GIT STAGING HUB -->
         <%= if @active_tab == "changes" do %>
-          <div class="flex-1 flex h-full overflow-hidden">
-            <!-- Left Changes Tree -->
-            <div class="w-80 border-r border-[#21262d] bg-[#11151c] flex flex-col h-full overflow-hidden shrink-0 font-mono text-xs">
-              <!-- Subtabs: Changes | All files | Desktop -->
-              <div class="p-3 border-b border-[#21262d] flex items-center justify-between">
-                <div class="flex items-center bg-[#161b22] p-1 rounded-lg border border-[#21262d] text-xs font-mono">
+          <div class="flex-1 flex flex-col h-full overflow-hidden">
+            <!-- Top Git Branch & Sync Toolbar -->
+            <div class="px-4 py-2 border-b border-[#21262d] bg-[#11151c] flex items-center justify-between shrink-0 font-mono text-xs">
+              <div class="flex items-center gap-3 relative">
+                <!-- Branch Selector Button -->
+                <div class="relative">
                   <button
-                    phx-click="switch_changes_subtab"
-                    phx-value-tab="changes"
-                    class={[
-                      "px-2.5 py-0.5 rounded font-medium",
-                      @changes_subtab == "changes" && "bg-[#21262d] text-white",
-                      @changes_subtab != "changes" && "text-gray-400"
-                    ]}
+                    type="button"
+                    phx-click="toggle_branch_menu"
+                    class="flex items-center gap-2 px-3 py-1.5 bg-[#161b22] hover:bg-[#21262d] border border-[#30363d] rounded-lg text-white font-medium transition-smooth"
                   >
-                    Changes
+                    <.icon name="hero-code-bracket-square" class="w-4 h-4 text-emerald-400" />
+                    <span>{@current_branch}</span>
+                    <.icon name="hero-chevron-down" class="w-3.5 h-3.5 text-gray-400" />
                   </button>
-                  <button
-                    phx-click="switch_changes_subtab"
-                    phx-value-tab="all"
-                    class={[
-                      "px-2.5 py-0.5 rounded font-medium",
-                      @changes_subtab == "all" && "bg-[#21262d] text-white",
-                      @changes_subtab != "all" && "text-gray-400"
-                    ]}
-                  >
-                    All files
-                  </button>
-                  <button
-                    phx-click="switch_changes_subtab"
-                    phx-value-tab="desktop"
-                    class={[
-                      "px-2.5 py-0.5 rounded font-medium",
-                      @changes_subtab == "desktop" && "bg-[#21262d] text-white",
-                      @changes_subtab != "desktop" && "text-gray-400"
-                    ]}
-                  >
-                    Desktop
-                  </button>
-                </div>
-              </div>
 
-              <!-- Changes File Hierarchy (Dynamic Git Status) -->
-              <div class="flex-1 overflow-y-auto p-3 space-y-1">
-                <div class="text-gray-400 font-semibold mb-2 flex items-center justify-between">
-                  <span>All Changes</span>
-                  <span class="text-[11px] text-gray-500">{length(@parsed_diffs)} files</span>
-                </div>
-
-                <div class="space-y-1">
-                  <%= for file_diff <- @parsed_diffs do %>
-                    <% path = file_diff.path || file_diff.new_path
-                    is_selected = @selected_diff_file == path %>
-                    <button
-                      type="button"
-                      phx-click="select_diff_file"
-                      phx-value-file={path}
-                      class={[
-                        "w-full flex items-center justify-between py-1.5 px-2 rounded-lg text-left transition-smooth group",
-                        is_selected &&
-                          "bg-[#21262d] text-white font-medium border border-[#30363d]",
-                        !is_selected && "hover:bg-[#161b22] text-gray-300"
-                      ]}
-                    >
-                      <div class="flex items-center gap-2 truncate">
-                        <.icon
-                          name="hero-document-text"
-                          class="w-3.5 h-3.5 text-cyan-400 shrink-0"
-                        />
-                        <span class="truncate">{path}</span>
+                  <%= if @show_branch_menu do %>
+                    <div class="absolute top-full left-0 mt-1.5 w-64 bg-[#161b22] border border-[#30363d] rounded-xl shadow-2xl p-2 z-50 space-y-2">
+                      <div class="text-[11px] font-bold text-gray-400 uppercase tracking-wider px-2 py-1">
+                        Branches ({length(@git_branches)})
                       </div>
-                      <div class="flex items-center gap-1.5 shrink-0 text-[10px] font-bold">
-                        <%= if file_diff.additions > 0 do %>
-                          <span class="text-emerald-400">+{file_diff.additions}</span>
-                        <% end %>
-                        <%= if file_diff.deletions > 0 do %>
-                          <span class="text-rose-400">-{file_diff.deletions}</span>
+                      <div class="max-h-48 overflow-y-auto space-y-0.5">
+                        <%= for b <- @git_branches do %>
+                          <button
+                            type="button"
+                            phx-click="switch_git_branch"
+                            phx-value-branch={b.name}
+                            class={[
+                              "w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-left text-xs transition-smooth",
+                              b.current? && "bg-[#21262d] text-emerald-400 font-bold",
+                              !b.current? && "text-gray-300 hover:bg-[#21262d] hover:text-white"
+                            ]}
+                          >
+                            <span class="truncate">{b.name}</span>
+                            <%= if b.current? do %>
+                              <.icon name="hero-check" class="w-3.5 h-3.5 text-emerald-400" />
+                            <% end %>
+                          </button>
                         <% end %>
                       </div>
-                    </button>
+
+                      <div class="pt-2 border-t border-[#21262d]">
+                        <form phx-submit="create_git_branch" class="flex gap-1.5">
+                          <input
+                            type="text"
+                            name="name"
+                            placeholder="New branch name..."
+                            class="flex-1 bg-[#0d1117] border border-[#30363d] rounded-lg px-2 py-1 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500 font-mono"
+                          />
+                          <button
+                            type="submit"
+                            class="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold"
+                          >
+                            Create
+                          </button>
+                        </form>
+                      </div>
+                    </div>
                   <% end %>
                 </div>
 
-                <div class="mt-4 pt-3 border-t border-[#21262d]">
-                  <div class="text-xs font-semibold text-gray-400 mb-2">Canvas · 4</div>
-                  <div class="space-y-1 text-[11px]">
-                    <div class="p-2 bg-[#161b22] rounded text-gray-300">
-                      pr-1781-walkthrough.html
-                    </div>
-                    <div class="p-2 bg-[#161b22] rounded text-gray-300">rt-412-march.html</div>
-                    <div class="p-2 bg-[#161b22] rounded text-gray-300">
-                      pr-5567-proof-of-history.html
-                    </div>
-                    <div class="p-2 bg-[#161b22] rounded text-gray-300">
-                      pr-22-toll-express.html
-                    </div>
-                  </div>
+                <!-- Sync Metrics & Actions -->
+                <div class="flex items-center gap-2 text-gray-400 text-[11px]">
+                  <span>Ahead:
+                  <strong class="text-white">{(@git_status && @git_status.ahead) || 0}</strong></span>
+                  <span>·</span>
+                  <span>Behind:
+                  <strong class="text-white">{(@git_status && @git_status.behind) || 0}</strong></span>
                 </div>
+              </div>
+
+              <div class="flex items-center gap-2">
+                <button
+                  type="button"
+                  phx-click="git_fetch"
+                  class="flex items-center gap-1.5 px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] border border-[#21262d] hover:border-[#30363d] text-gray-300 hover:text-white rounded-lg transition-smooth"
+                  title="Fetch latest remote commits"
+                >
+                  <.icon name="hero-arrow-down-tray" class="w-3.5 h-3.5 text-cyan-400" />
+                  <span>Fetch</span>
+                </button>
+                <button
+                  type="button"
+                  phx-click="git_pull"
+                  class="flex items-center gap-1.5 px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] border border-[#21262d] hover:border-[#30363d] text-gray-300 hover:text-white rounded-lg transition-smooth"
+                  title="Pull remote changes into local branch"
+                >
+                  <.icon name="hero-arrow-path" class="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Pull</span>
+                </button>
               </div>
             </div>
 
-            <!-- Right Interactive Diff Viewer -->
-            <div class="flex-1 flex flex-col h-full overflow-hidden p-3 bg-[#0a0d12]">
-              <.interactive_diff_viewer
-                diff_text={@diff_text}
-                diff_mode={@diff_mode}
-                file_path={@diff_file_path}
-                hunks={@diff_hunks}
-              />
+            <!-- Main Changes Body: 3-Tier Staging Hub + Interactive Diff Viewer -->
+            <div class="flex-1 flex h-full overflow-hidden">
+              <!-- Left Column: 3-Tier Staging Hub & Commit Composer -->
+              <div class="w-84 border-r border-[#21262d] bg-[#11151c] flex flex-col h-full overflow-hidden shrink-0 font-mono text-xs">
+                <!-- Staging Header -->
+                <div class="p-3 border-b border-[#21262d] flex items-center justify-between text-gray-400 font-semibold">
+                  <div class="flex items-center gap-1.5">
+                    <.icon name="hero-code-bracket" class="w-3.5 h-3.5 text-cyan-400" />
+                    <span>All Changes</span>
+                  </div>
+                  <span class="text-[11px] text-gray-500">{length(@parsed_diffs)} files</span>
+                </div>
+
+                <!-- Staging Lists -->
+                <div class="flex-1 overflow-y-auto p-3 space-y-4">
+                  <!-- Tier 1: Staged Changes -->
+                  <div class="space-y-1.5">
+                    <div class="flex items-center justify-between text-gray-300 font-semibold pb-1 border-b border-[#21262d]">
+                      <div class="flex items-center gap-1.5">
+                        <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+                        <span>Staged Changes</span>
+                        <span class="text-[10px] text-gray-500 font-normal">({length(
+                          @staged_diffs
+                        )})</span>
+                      </div>
+                      <%= if @staged_diffs != [] do %>
+                        <button
+                          type="button"
+                          phx-click="unstage_all"
+                          class="text-[10px] text-gray-400 hover:text-rose-400 transition-smooth"
+                        >
+                          Unstage All
+                        </button>
+                      <% end %>
+                    </div>
+
+                    <div class="space-y-0.5">
+                      <%= for file_diff <- @staged_diffs do %>
+                        <% path = file_diff.path || file_diff.new_path
+
+                        is_selected =
+                          @selected_diff_file == path and @active_diff_scope == :staged %>
+                        <div class={[
+                          "flex items-center justify-between py-1 px-2 rounded-lg group transition-smooth",
+                          is_selected &&
+                            "bg-[#21262d] text-white font-medium border border-[#30363d]",
+                          !is_selected && "hover:bg-[#161b22] text-gray-300"
+                        ]}>
+                          <button
+                            type="button"
+                            phx-click="select_diff_file"
+                            phx-value-file={path}
+                            phx-value-scope="staged"
+                            class="flex-1 flex items-center gap-2 truncate text-left"
+                          >
+                            <.icon
+                              name="hero-document-text"
+                              class="w-3.5 h-3.5 text-emerald-400 shrink-0"
+                            />
+                            <span class="truncate">{path}</span>
+                          </button>
+                          <div class="flex items-center gap-1 shrink-0">
+                            <button
+                              type="button"
+                              phx-click="unstage_file"
+                              phx-value-file={path}
+                              class="p-1 text-gray-500 hover:text-rose-400 hover:bg-[#21262d] rounded transition-smooth"
+                              title="Unstage file"
+                            >
+                              <.icon name="hero-minus" class="w-3 h-3" />
+                            </button>
+                          </div>
+                        </div>
+                      <% end %>
+                      <%= if @staged_diffs == [] do %>
+                        <div class="text-[11px] text-gray-500 italic py-1 px-2">
+                          No staged changes
+                        </div>
+                      <% end %>
+                    </div>
+                  </div>
+
+                  <!-- Tier 2: Unstaged Changes -->
+                  <div class="space-y-1.5">
+                    <div class="flex items-center justify-between text-gray-300 font-semibold pb-1 border-b border-[#21262d]">
+                      <div class="flex items-center gap-1.5">
+                        <span class="w-2 h-2 rounded-full bg-amber-400"></span>
+                        <span>Unstaged Changes</span>
+                        <span class="text-[10px] text-gray-500 font-normal">({length(
+                          @unstaged_diffs
+                        )})</span>
+                      </div>
+                      <%= if @unstaged_diffs != [] do %>
+                        <button
+                          type="button"
+                          phx-click="stage_all"
+                          class="text-[10px] text-gray-400 hover:text-emerald-400 transition-smooth"
+                        >
+                          Stage All
+                        </button>
+                      <% end %>
+                    </div>
+
+                    <div class="space-y-0.5">
+                      <%= for file_diff <- @unstaged_diffs do %>
+                        <% path = file_diff.path || file_diff.new_path
+
+                        is_selected =
+                          @selected_diff_file == path and @active_diff_scope == :unstaged %>
+                        <div class={[
+                          "flex items-center justify-between py-1 px-2 rounded-lg group transition-smooth",
+                          is_selected &&
+                            "bg-[#21262d] text-white font-medium border border-[#30363d]",
+                          !is_selected && "hover:bg-[#161b22] text-gray-300"
+                        ]}>
+                          <button
+                            type="button"
+                            phx-click="select_diff_file"
+                            phx-value-file={path}
+                            phx-value-scope="unstaged"
+                            class="flex-1 flex items-center gap-2 truncate text-left"
+                          >
+                            <.icon
+                              name="hero-document-text"
+                              class="w-3.5 h-3.5 text-amber-400 shrink-0"
+                            />
+                            <span class="truncate">{path}</span>
+                          </button>
+                          <div class="flex items-center gap-1 shrink-0">
+                            <button
+                              type="button"
+                              phx-click="stage_file"
+                              phx-value-file={path}
+                              class="p-1 text-gray-500 hover:text-emerald-400 hover:bg-[#21262d] rounded transition-smooth"
+                              title="Stage file"
+                            >
+                              <.icon name="hero-plus" class="w-3 h-3" />
+                            </button>
+                            <button
+                              type="button"
+                              phx-click="revert_file"
+                              phx-value-file={path}
+                              class="p-1 text-gray-500 hover:text-rose-400 hover:bg-[#21262d] rounded transition-smooth"
+                              title="Revert file changes"
+                            >
+                              <.icon name="hero-arrow-uturn-left" class="w-3 h-3" />
+                            </button>
+                          </div>
+                        </div>
+                      <% end %>
+                      <%= if @unstaged_diffs == [] do %>
+                        <div class="text-[11px] text-gray-500 italic py-1 px-2">
+                          No unstaged changes
+                        </div>
+                      <% end %>
+                    </div>
+                  </div>
+
+                  <!-- Tier 3: Untracked Files -->
+                  <% untracked = (@git_status && @git_status.untracked) || [] %>
+                  <%= if untracked != [] do %>
+                    <div class="space-y-1.5">
+                      <div class="flex items-center justify-between text-gray-300 font-semibold pb-1 border-b border-[#21262d]">
+                        <div class="flex items-center gap-1.5">
+                          <span class="w-2 h-2 rounded-full bg-gray-400"></span>
+                          <span>Untracked Files</span>
+                          <span class="text-[10px] text-gray-500 font-normal">({length(untracked)})</span>
+                        </div>
+                      </div>
+
+                      <div class="space-y-0.5">
+                        <%= for file <- untracked do %>
+                          <div class="flex items-center justify-between py-1 px-2 rounded-lg hover:bg-[#161b22] text-gray-400 group transition-smooth">
+                            <div class="flex items-center gap-2 truncate">
+                              <.icon
+                                name="hero-question-mark-circle"
+                                class="w-3.5 h-3.5 text-gray-500 shrink-0"
+                              />
+                              <span class="truncate">{file}</span>
+                            </div>
+                            <button
+                              type="button"
+                              phx-click="stage_file"
+                              phx-value-file={file}
+                              class="p-1 text-gray-500 hover:text-emerald-400 hover:bg-[#21262d] rounded transition-smooth"
+                              title="Stage untracked file"
+                            >
+                              <.icon name="hero-plus" class="w-3 h-3" />
+                            </button>
+                          </div>
+                        <% end %>
+                      </div>
+                    </div>
+                  <% end %>
+
+                  <% canvas_files =
+                    cond do
+                      @parsed_diffs != [] ->
+                        Enum.map(
+                          @parsed_diffs,
+                          &(Map.get(&1, :path) || Map.get(&1, :file_path) || to_string(&1))
+                        )
+
+                      @project_files != [] ->
+                        Enum.take(@project_files, 4)
+
+                      true ->
+                        []
+                    end %>
+                  <div class="mt-4 pt-3 border-t border-[#21262d]">
+                    <div class="text-xs font-semibold text-gray-400 mb-2">
+                      Canvas · {length(canvas_files)}
+                    </div>
+                    <div class="space-y-1 text-[11px]">
+                      <%= for file <- canvas_files do %>
+                        <div
+                          class="p-2 bg-[#161b22] rounded text-gray-300 truncate font-mono"
+                          title={file}
+                        >
+                          {file}
+                        </div>
+                      <% end %>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Commit Composer Card -->
+                <div class="p-3 border-t border-[#21262d] bg-[#0d1117] space-y-2 shrink-0">
+                  <div class="flex items-center justify-between">
+                    <span class="text-xs font-semibold text-gray-300">Commit Changes</span>
+                    <button
+                      type="button"
+                      phx-click="generate_commit_msg"
+                      class="flex items-center gap-1 text-[11px] text-purple-400 hover:text-purple-300 transition-smooth font-medium"
+                      title="AI Generate commit message from staged changes"
+                    >
+                      <.icon name="hero-sparkles" class="w-3 h-3" />
+                      <span>✨ AI Generate</span>
+                    </button>
+                  </div>
+
+                  <form
+                    id="commit-composer-form"
+                    phx-change="update_commit_message"
+                    phx-submit="git_commit"
+                    class="space-y-2"
+                  >
+                    <textarea
+                      name="message"
+                      rows="3"
+                      placeholder="Commit message (e.g. feat(editor): add jump to symbol)..."
+                      class="w-full bg-[#161b22] border border-[#21262d] rounded-lg p-2 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 font-mono resize-none"
+                    >{@commit_message}</textarea>
+
+                    <button
+                      type="submit"
+                      disabled={String.trim(@commit_message || "") == "" or @staged_diffs == []}
+                      class={[
+                        "w-full py-1.5 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-smooth",
+                        (String.trim(@commit_message || "") != "" and @staged_diffs != []) &&
+                          "bg-emerald-600 hover:bg-emerald-500 text-white shadow-sm cursor-pointer",
+                        (String.trim(@commit_message || "") == "" or @staged_diffs == []) &&
+                          "bg-[#21262d] text-gray-500 cursor-not-allowed"
+                      ]}
+                    >
+                      <.icon name="hero-check" class="w-3.5 h-3.5" />
+                      <span>Commit to {@current_branch} ({length(@staged_diffs)} staged)</span>
+                    </button>
+                  </form>
+                </div>
+              </div>
+
+              <!-- Right Interactive Diff Viewer -->
+              <div class="flex-1 flex flex-col h-full overflow-hidden p-3 bg-[#0a0d12]">
+                <.interactive_diff_viewer
+                  diff_text={@diff_text}
+                  diff_mode={@diff_mode}
+                  file_path={@diff_file_path}
+                  hunks={@diff_hunks}
+                  staged={@active_diff_scope == :staged}
+                />
+              </div>
             </div>
           </div>
+        <% end %>
+
+        <!-- TAB: VISUAL TEST RUNNER & AUTOFIX STUDIO -->
+        <%= if @active_tab == "tests" do %>
+          <.test_runner_panel
+            test_runner_status={@test_runner_status}
+            test_runner_progress_pct={@test_runner_progress_pct}
+            test_runner_progress_msg={@test_runner_progress_msg}
+            test_runner_result={@test_runner_result}
+            show_autofix_modal={@show_autofix_modal}
+            autofix_status={@autofix_status}
+            autofix_target_failure={@autofix_target_failure}
+            autofix_diff={@autofix_diff}
+            autofix_planned_patches={@autofix_planned_patches}
+            autofix_tx_id={@autofix_tx_id}
+          />
+        <% end %>
+
+        <!-- TAB: AST QUERY EXPLORER & SYMBOL NAVIGATOR -->
+        <%= if @active_tab == "ast" do %>
+          <.ast_explorer
+            ast_query={@ast_query}
+            ast_type_filter={@ast_type_filter}
+            ast_visibility={@ast_visibility}
+            ast_results={@ast_results}
+            ast_searching?={@ast_searching?}
+            ast_total_count={@ast_total_count}
+          />
         <% end %>
 
         <!-- TAB 5: CHAT WITH SCROLL ASSISTANT MINIMAP -->
@@ -2300,6 +2672,14 @@
         </div>
 
         <!-- Top Section: Credits Used & Tally Bar -->
+        <% used_credits =
+          if @session_tokens > 0,
+            do: @session_tokens,
+            else: length(@operations) * 1500 + length(@messages) * 800
+
+        used_pct = min(100.0, Float.round(used_credits / 1_000_000 * 100, 1))
+        remaining_credits = max(0, 100_000_000 - used_credits)
+        active_credit_ticks = min(65, max(1, round(used_pct * 0.65))) %>
         <div class="bg-[#161b22]/70 border border-[#21262d] rounded-2xl p-5 relative">
           <div class="flex items-start justify-between mb-2">
             <div>
@@ -2307,7 +2687,7 @@
                 CREDITS USED
               </div>
               <div class="text-3xl font-bold text-white tracking-tight">
-                56.4%
+                {used_pct}%
               </div>
             </div>
             <div class="text-[10px] font-mono text-gray-500 uppercase tracking-wider text-right">
@@ -2320,16 +2700,16 @@
             <%= for tick <- 1..65 do %>
               <div class={[
                 "tally-tick",
-                tick <= 37 && "tally-tick-active-orange",
-                tick > 37 && "bg-[#21262d]"
+                tick <= active_credit_ticks && "tally-tick-active-orange",
+                tick > active_credit_ticks && "bg-[#21262d]"
               ]}>
               </div>
             <% end %>
           </div>
 
           <div class="flex items-center justify-between font-mono text-xs text-gray-400 pt-1">
-            <span class="text-gray-300 font-medium">56.4M / 100M CREDITS</span>
-            <span>45.6M REMAINING</span>
+            <span class="text-gray-300 font-medium">{Float.round(used_credits / 1_000_000, 1)}M / 100M CREDITS</span>
+            <span>{Float.round(remaining_credits / 1_000_000, 1)}M REMAINING</span>
           </div>
         </div>
 
@@ -3366,4 +3746,12 @@
       </div>
     </div>
   <% end %>
+
+  <.command_palette
+    show={@show_command_palette}
+    query={@command_palette_query}
+    category={@command_palette_category}
+    results={@command_palette_results}
+    selected_index={@command_palette_selected_index}
+  />
 </Layouts.app>

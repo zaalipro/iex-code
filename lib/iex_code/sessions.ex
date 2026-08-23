@@ -28,19 +28,25 @@ defmodule IexCode.Sessions do
   end
 
   def create_session(attrs \\ %{}) do
-    %Session{}
-    |> Session.changeset(attrs)
-    |> Repo.insert()
+    Repo.retry_on_busy(fn ->
+      %Session{}
+      |> Session.changeset(attrs)
+      |> Repo.insert()
+    end)
   end
 
   def update_session(%Session{} = session, attrs) do
-    session
-    |> Session.changeset(attrs)
-    |> Repo.update()
+    Repo.retry_on_busy(fn ->
+      session
+      |> Session.changeset(attrs)
+      |> Repo.update()
+    end)
   end
 
   def delete_session(%Session{} = session) do
-    Repo.delete(session)
+    Repo.retry_on_busy(fn ->
+      Repo.delete(session)
+    end)
   end
 
   def list_messages(session_id) do
@@ -51,9 +57,11 @@ defmodule IexCode.Sessions do
   end
 
   def create_message(attrs \\ %{}) do
-    %Message{}
-    |> Message.changeset(sanitize_attrs(attrs))
-    |> Repo.insert()
+    Repo.retry_on_busy(fn ->
+      %Message{}
+      |> Message.changeset(sanitize_attrs(attrs))
+      |> Repo.insert()
+    end)
   end
 
   def list_operations(session_id) do
@@ -68,9 +76,11 @@ defmodule IexCode.Sessions do
   def get_operation(id), do: Repo.get(Operation, id)
 
   def create_operation(attrs \\ %{}) do
-    %Operation{}
-    |> Operation.changeset(sanitize_attrs(attrs))
-    |> Repo.insert()
+    Repo.retry_on_busy(fn ->
+      %Operation{}
+      |> Operation.changeset(sanitize_attrs(attrs))
+      |> Repo.insert()
+    end)
   rescue
     e in [Exqlite.Error, DBConnection.ConnectionError] ->
       Logger.error("Sessions.create_operation failed: #{Exception.message(e)}")

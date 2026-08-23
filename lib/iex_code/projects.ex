@@ -70,15 +70,19 @@ defmodule IexCode.Projects do
   end
 
   def create_project(attrs \\ %{}) do
-    %Project{}
-    |> Project.changeset(attrs)
-    |> Repo.insert()
+    Repo.retry_on_busy(fn ->
+      %Project{}
+      |> Project.changeset(attrs)
+      |> Repo.insert()
+    end)
   end
 
   def update_project(%Project{} = project, attrs) do
-    project
-    |> Project.changeset(attrs)
-    |> Repo.update()
+    Repo.retry_on_busy(fn ->
+      project
+      |> Project.changeset(attrs)
+      |> Repo.update()
+    end)
   end
 
   def touch_project(%Project{} = project) do
@@ -88,7 +92,9 @@ defmodule IexCode.Projects do
   end
 
   def delete_project(%Project{} = project) do
-    Repo.delete(project)
+    Repo.retry_on_busy(fn ->
+      Repo.delete(project)
+    end)
   end
 
   def change_project(%Project{} = project, attrs \\ %{}) do

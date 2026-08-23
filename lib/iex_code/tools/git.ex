@@ -75,19 +75,72 @@ defmodule IexCode.Tools.Git do
 
   @doc """
   Stages one or more files in the repository (`git add`).
-  Accepts `(files, repo_dir)` or `(repo_dir, files)`.
+  Accepts `(files, repo_dir)`, `(repo_dir, files)`, or `(files, opts)`.
   """
   def stage(arg1, arg2 \\ ".")
 
-  def stage(files, repo_dir)
-      when is_binary(repo_dir) and (is_list(files) or is_binary(files) or files == :all) do
+  def stage(files, opts) when is_list(opts) and opts != [] and is_tuple(hd(opts)) do
+    repo_dir = Keyword.get(opts, :repo_dir, Keyword.get(opts, :cd, "."))
     do_stage(repo_dir, files)
   end
 
-  def stage(repo_dir, files)
-      when is_binary(repo_dir) and (is_list(files) or is_binary(files) or files == :all) do
-    do_stage(repo_dir, files)
+  def stage(files, []) when is_list(files) and files != [] and not is_tuple(hd(files)) do
+    do_stage(".", files)
   end
+
+  def stage(arg1, arg2) do
+    cond do
+      arg1 == :all ->
+        do_stage(arg2, :all)
+
+      arg2 == :all ->
+        do_stage(arg1, :all)
+
+      is_list(arg1) and is_binary(arg2) ->
+        do_stage(arg2, arg1)
+
+      is_binary(arg1) and is_list(arg2) ->
+        if Keyword.keyword?(arg2) and arg2 != [] do
+          repo_dir = Keyword.get(arg2, :repo_dir, Keyword.get(arg2, :cd, "."))
+          do_stage(repo_dir, arg1)
+        else
+          do_stage(arg1, arg2)
+        end
+
+      is_binary(arg1) and is_binary(arg2) ->
+        cond do
+          File.dir?(arg1) and not File.dir?(arg2) ->
+            do_stage(arg1, arg2)
+
+          File.dir?(arg2) and not File.dir?(arg1) ->
+            do_stage(arg2, arg1)
+
+          arg2 == "." ->
+            do_stage(arg2, arg1)
+
+          true ->
+            do_stage(arg2, arg1)
+        end
+
+      is_binary(arg1) and arg2 == [] ->
+        if File.dir?(arg1) do
+          do_stage(arg1, [])
+        else
+          do_stage(".", arg1)
+        end
+
+      arg1 == [] and is_binary(arg2) ->
+        do_stage(arg2, [])
+
+      arg1 == [] and arg2 == [] ->
+        :ok
+
+      true ->
+        {:error, {:invalid_arguments, arg1, arg2}}
+    end
+  end
+
+  defp do_stage(_repo_dir, []), do: :ok
 
   defp do_stage(repo_dir, :all) do
     case run_git(repo_dir, ["add", "-A"]) do
@@ -113,19 +166,72 @@ defmodule IexCode.Tools.Git do
 
   @doc """
   Unstages one or more files from the index (`git restore --staged` or `git reset HEAD`).
-  Accepts `(files, repo_dir)` or `(repo_dir, files)`.
+  Accepts `(files, repo_dir)`, `(repo_dir, files)`, or `(files, opts)`.
   """
   def unstage(arg1, arg2 \\ ".")
 
-  def unstage(files, repo_dir)
-      when is_binary(repo_dir) and (is_list(files) or is_binary(files) or files == :all) do
+  def unstage(files, opts) when is_list(opts) and opts != [] and is_tuple(hd(opts)) do
+    repo_dir = Keyword.get(opts, :repo_dir, Keyword.get(opts, :cd, "."))
     do_unstage(repo_dir, files)
   end
 
-  def unstage(repo_dir, files)
-      when is_binary(repo_dir) and (is_list(files) or is_binary(files) or files == :all) do
-    do_unstage(repo_dir, files)
+  def unstage(files, []) when is_list(files) and files != [] and not is_tuple(hd(files)) do
+    do_unstage(".", files)
   end
+
+  def unstage(arg1, arg2) do
+    cond do
+      arg1 == :all ->
+        do_unstage(arg2, :all)
+
+      arg2 == :all ->
+        do_unstage(arg1, :all)
+
+      is_list(arg1) and is_binary(arg2) ->
+        do_unstage(arg2, arg1)
+
+      is_binary(arg1) and is_list(arg2) ->
+        if Keyword.keyword?(arg2) and arg2 != [] do
+          repo_dir = Keyword.get(arg2, :repo_dir, Keyword.get(arg2, :cd, "."))
+          do_unstage(repo_dir, arg1)
+        else
+          do_unstage(arg1, arg2)
+        end
+
+      is_binary(arg1) and is_binary(arg2) ->
+        cond do
+          File.dir?(arg1) and not File.dir?(arg2) ->
+            do_unstage(arg1, arg2)
+
+          File.dir?(arg2) and not File.dir?(arg1) ->
+            do_unstage(arg2, arg1)
+
+          arg2 == "." ->
+            do_unstage(arg2, arg1)
+
+          true ->
+            do_unstage(arg2, arg1)
+        end
+
+      is_binary(arg1) and arg2 == [] ->
+        if File.dir?(arg1) do
+          do_unstage(arg1, [])
+        else
+          do_unstage(".", arg1)
+        end
+
+      arg1 == [] and is_binary(arg2) ->
+        do_unstage(arg2, [])
+
+      arg1 == [] and arg2 == [] ->
+        :ok
+
+      true ->
+        {:error, {:invalid_arguments, arg1, arg2}}
+    end
+  end
+
+  defp do_unstage(_repo_dir, []), do: :ok
 
   defp do_unstage(repo_dir, :all) do
     case run_git(repo_dir, ["restore", "--staged", "."]) do
@@ -195,14 +301,17 @@ defmodule IexCode.Tools.Git do
   """
   def commit(arg1, arg2 \\ ".", opts \\ [])
 
-  def commit(message, repo_dir, opts)
-      when is_binary(message) and is_binary(repo_dir) and is_list(opts) do
-    do_commit(repo_dir, message, opts)
-  end
+  def commit(arg1, arg2, opts) when is_binary(arg1) and is_binary(arg2) and is_list(opts) do
+    cond do
+      File.dir?(arg2) and not File.dir?(arg1) ->
+        do_commit(arg2, arg1, opts)
 
-  def commit(repo_dir, message, opts)
-      when is_binary(repo_dir) and is_binary(message) and is_list(opts) do
-    do_commit(repo_dir, message, opts)
+      File.dir?(arg1) and not File.dir?(arg2) ->
+        do_commit(arg1, arg2, opts)
+
+      true ->
+        do_commit(arg2, arg1, opts)
+    end
   end
 
   defp do_commit(repo_dir, message, opts) do
@@ -430,6 +539,89 @@ defmodule IexCode.Tools.Git do
     end
   end
 
+  @doc """
+  Returns a list of local and remote branches for the repository.
+  """
+  @spec branches(Path.t()) ::
+          {:ok,
+           [
+             %{
+               name: String.t(),
+               current?: boolean(),
+               remote?: boolean(),
+               upstream: String.t() | nil
+             }
+           ]}
+          | {:error, term()}
+  def branches(repo_dir \\ ".") do
+    case run_git(repo_dir, ["branch", "-a", "--format=%(refname:short)|%(HEAD)|%(upstream:short)"]) do
+      {:ok, output} ->
+        branches =
+          output
+          |> String.split(~r/\r?\n/)
+          |> Enum.reject(&(String.trim(&1) == ""))
+          |> Enum.map(fn line ->
+            case String.split(line, "|") do
+              [name, head_star, upstream] ->
+                %{
+                  name: name,
+                  current?: head_star == "*",
+                  remote?: String.starts_with?(name, "origin/"),
+                  upstream: if(upstream != "", do: upstream, else: nil)
+                }
+
+              [name] ->
+                %{name: name, current?: false, remote?: false, upstream: nil}
+            end
+          end)
+
+        {:ok, branches}
+
+      err ->
+        err
+    end
+  end
+
+  @doc """
+  Switches the active Git branch (`git switch` or `git checkout`).
+  Options:
+    - `:create` (boolean): creates new branch if true (`git checkout -b <name>`)
+  """
+  @spec switch_branch(Path.t(), String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  def switch_branch(repo_dir \\ ".", branch_name, opts \\ []) do
+    create? = Keyword.get(opts, :create, false)
+    args = if create?, do: ["checkout", "-b", branch_name], else: ["checkout", branch_name]
+    run_git(repo_dir, args)
+  end
+
+  @doc """
+  Creates a new branch at the current commit and checks it out.
+  """
+  @spec create_branch(Path.t(), String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  def create_branch(repo_dir \\ ".", branch_name, opts \\ []) do
+    switch_branch(repo_dir, branch_name, Keyword.put(opts, :create, true))
+  end
+
+  @doc """
+  Fetches updates from remotes (`git fetch`).
+  """
+  @spec fetch(Path.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  def fetch(repo_dir \\ ".", opts \\ []) do
+    remote = Keyword.get(opts, :remote)
+    args = if remote && remote != "", do: ["fetch", remote], else: ["fetch", "--all"]
+    run_git(repo_dir, args)
+  end
+
+  @doc """
+  Pulls latest changes from upstream remote (`git pull`).
+  """
+  @spec pull(Path.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  def pull(repo_dir \\ ".", opts \\ []) do
+    args = ["pull"]
+    args = if Keyword.get(opts, :rebase, false), do: args ++ ["--rebase"], else: args
+    run_git(repo_dir, args)
+  end
+
   # --- Internal Git Invocation ---
 
   @git_timeout_ms 30_000
@@ -483,7 +675,11 @@ defmodule IexCode.Tools.Git do
       )
 
     # Capture stderr separately via the shell so stdout stays parseable.
-    cmd = "git #{Enum.map_join(args, " ", &shell_quote/1)} 2> #{shell_quote(stderr_file)}"
+    # Set GIT_CEILING_DIRECTORIES to repo_dir's parent so git does not traverse into parent project repo
+    parent_dir = Path.dirname(full_path)
+
+    cmd =
+      "GIT_CEILING_DIRECTORIES=#{shell_quote(parent_dir)} git #{Enum.map_join(args, " ", &shell_quote/1)} 2> #{shell_quote(stderr_file)}"
 
     try do
       case System.shell(cmd, cd: full_path) do

@@ -177,5 +177,36 @@ defmodule IexCode.Tools.GitTest do
       assert {:ok, status} = Git.status(tmp_dir)
       assert status.clean? == true
     end
+
+    test "stage/2 and unstage/2 handle (repo_dir, files), (files, repo_dir), (files, opts), and empty lists",
+         %{tmp_dir: tmp_dir, sample_file: sample_file} do
+      File.write!(sample_file, "changed 1\n")
+
+      # (repo_dir, files)
+      assert :ok = Git.stage(tmp_dir, ["lib/hello.ex"])
+      assert {:ok, status} = Git.status(tmp_dir)
+      assert Enum.any?(status.staged, &(&1.path == "lib/hello.ex"))
+
+      # (repo_dir, files) unstage
+      assert :ok = Git.unstage(tmp_dir, ["lib/hello.ex"])
+      assert {:ok, status2} = Git.status(tmp_dir)
+      assert status2.staged == []
+
+      # (files, opts)
+      assert :ok = Git.stage(["lib/hello.ex"], repo_dir: tmp_dir)
+      assert {:ok, status3} = Git.status(tmp_dir)
+      assert Enum.any?(status3.staged, &(&1.path == "lib/hello.ex"))
+
+      # (files, opts) unstage
+      assert :ok = Git.unstage(["lib/hello.ex"], repo_dir: tmp_dir)
+      assert {:ok, status4} = Git.status(tmp_dir)
+      assert status4.staged == []
+
+      # Empty list handling
+      assert :ok = Git.stage([], tmp_dir)
+      assert :ok = Git.stage(tmp_dir, [])
+      assert :ok = Git.unstage([], tmp_dir)
+      assert :ok = Git.unstage(tmp_dir, [])
+    end
   end
 end

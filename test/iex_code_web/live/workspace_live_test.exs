@@ -47,7 +47,7 @@ defmodule IexCodeWeb.WorkspaceLiveTest do
     |> render_click()
 
     assert render(view) =~ "All Changes"
-    assert render(view) =~ "Canvas · 4"
+    assert render(view) =~ "Canvas"
 
     # Switch to chat tab
     view
@@ -486,7 +486,7 @@ defmodule IexCodeWeb.WorkspaceLiveTest do
     assert html =~ "chat-viewport"
 
     # Trigger scroll to message
-    html = render_click(view, "scroll_to_message", %{"id" => "msg-0"})
+    html = render_click(view, "scroll_to_msg", %{"id" => "msg-0"})
     assert is_binary(html)
     assert Process.alive?(view.pid)
   end

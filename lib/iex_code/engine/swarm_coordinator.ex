@@ -290,6 +290,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
     Logger.error("[SwarmCoordinator] Swarm run crashed for session #{session_id}: #{reason_str}")
 
     AgentSupervisor.stop_all_agents(session_id)
+    perform_rollback(state.project_root, state)
     update_db_session_status(session_id, "failed")
 
     if state.root_op_id do
@@ -638,9 +639,9 @@ defmodule IexCode.Engine.SwarmCoordinator do
 
       {:error, {:verification_failed, diagnostics}} ->
         # Verification failed! Check retry condition & cycle detection
-        # Hash the full diagnostics (not just the summary) so recurring errors
-        # with changed content are treated as new, and identical errors as cycles.
-        err_signature = :erlang.phash2(diagnostics)
+        # Hash deterministic semantic fields so recurring errors with duration
+        # jitter are detected as cycles immediately.
+        err_signature = compute_error_signature(diagnostics)
 
         if MapSet.member?(state.error_signatures, err_signature) or iteration >= state.max_retries do
           # Terminate loop (cycle detected or exceeded max retries)
@@ -655,8 +656,10 @@ defmodule IexCode.Engine.SwarmCoordinator do
           %State{state | verifier_result: diagnostics, status: :failed, stage: :failed}
         else
           # Apply instant auto-fix heuristics if applicable
+          auto_fix_res = AutoFix.apply_auto_fix(project_root, diagnostics, session_id: session_id)
+
           auto_fix_summary =
-            case AutoFix.apply_auto_fix(project_root, diagnostics) do
+            case auto_fix_res do
               {:ok, summary} -> "AutoFix applied #{summary.applied} patch(es)"
               _ -> nil
             end
@@ -670,7 +673,93 @@ defmodule IexCode.Engine.SwarmCoordinator do
               history: [{iteration, diagnostics, auto_fix_summary} | state.history]
           }
 
-          do_coding_and_verification_loop(new_state, iteration + 1)
+          case auto_fix_res do
+            {:ok, %{applied: applied}} when applied > 0 ->
+              # Direct re-verification optimization: AutoFix applied candidate proposals directly,
+              # immediately verify to save latency if clean.
+              broadcast_stage(
+                new_state,
+                :verifying,
+                min(95, 75 + (iteration + 1) * 5),
+                "AutoFix applied #{applied} fix(es). Re-verifying directly..."
+              )
+
+              verify_res =
+                VerifierAgent.verify(
+                  session_id,
+                  parent_op_id: root_op_id,
+                  project_root: project_root
+                )
+
+              case verify_res do
+                {:ok, summary_map} ->
+                  broadcast_stage(
+                    new_state,
+                    :complete,
+                    100,
+                    "Verification passed: All tests and compilation clean."
+                  )
+
+                  %State{
+                    new_state
+                    | verifier_result: summary_map,
+                      status: :completed,
+                      stage: :complete,
+                      iteration: iteration + 1
+                  }
+
+                {:error, {:verification_failed, new_diagnostics}} ->
+                  new_err_sig = compute_error_signature(new_diagnostics)
+
+                  if MapSet.member?(new_state.error_signatures, new_err_sig) or
+                       iteration + 1 >= new_state.max_retries do
+                    term_msg =
+                      if iteration + 1 >= new_state.max_retries do
+                        "Verification failed after #{new_state.max_retries} self-healing retries."
+                      else
+                        "Self-healing cycle detected. Halting loop."
+                      end
+
+                    broadcast_stage(new_state, :failed, 100, term_msg)
+
+                    %State{
+                      new_state
+                      | verifier_result: new_diagnostics,
+                        status: :failed,
+                        stage: :failed,
+                        iteration: iteration + 1
+                    }
+                  else
+                    do_coding_and_verification_loop(
+                      %State{
+                        new_state
+                        | verifier_result: new_diagnostics,
+                          error_signatures: MapSet.put(new_state.error_signatures, new_err_sig)
+                      },
+                      iteration + 1
+                    )
+                  end
+
+                {:error, reason} ->
+                  broadcast_stage(
+                    new_state,
+                    :failed,
+                    100,
+                    "Verifier encountered unexpected error: #{inspect(reason)}"
+                  )
+
+                  %State{
+                    new_state
+                    | verifier_result: %{summary: inspect(reason)},
+                      status: :failed,
+                      stage: :failed,
+                      iteration: iteration + 1
+                  }
+              end
+
+            _ ->
+              do_coding_and_verification_loop(new_state, iteration + 1)
+          end
         end
 
       {:error, reason} ->
@@ -865,5 +954,34 @@ defmodule IexCode.Engine.SwarmCoordinator do
     PubSub.broadcast(IexCode.PubSub, "session:#{session_id}", event)
   rescue
     _ -> :ok
+  end
+
+  defp compute_error_signature(diagnostics) when is_map(diagnostics) do
+    # Extract deterministic semantic fields: status, failures, compilation_errors
+    status = Map.get(diagnostics, :status)
+    failures = Map.get(diagnostics, :failures, [])
+    compilation_errors = Map.get(diagnostics, :compilation_errors, [])
+
+    if failures != [] or compilation_errors != [] do
+      :erlang.phash2({status, failures, compilation_errors})
+    else
+      # If structured failures/compilation_errors are empty, fall back to normalized text
+      raw = Map.get(diagnostics, :summary) || Map.get(diagnostics, :raw_output)
+
+      clean_text =
+        case raw do
+          text when is_binary(text) ->
+            Regex.replace(~r/Finished in [0-9.]+ seconds.*?\n/, text, "")
+
+          other ->
+            other
+        end
+
+      :erlang.phash2({status, clean_text})
+    end
+  end
+
+  defp compute_error_signature(other) do
+    :erlang.phash2(other)
   end
 end

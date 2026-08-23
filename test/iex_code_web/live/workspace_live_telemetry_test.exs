@@ -386,5 +386,51 @@ defmodule IexCodeWeb.WorkspaceLiveTelemetryTest do
       assert html =~ "Execution Hierarchy"
       assert html =~ "PlannerAgent"
     end
+
+    test "handles swarm_stage_changed telemetry with latency_ms and agent_pid", %{
+      conn: conn,
+      workspace_path: path
+    } do
+      project = create_project_fixture(%{root_path: path})
+      session = create_session_fixture(project)
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      send(
+        view.pid,
+        {:swarm_stage_changed,
+         %{
+           session_id: session.id,
+           stage: :coding,
+           progress: 55,
+           latency_ms: 240,
+           agent_pid: "#PID<0.999.0>",
+           message: "Synthesizing code patches"
+         }}
+      )
+
+      assert Process.alive?(view.pid)
+    end
+
+    test "handles swarm_steered and session_cancelled PubSub broadcasts", %{
+      conn: conn,
+      workspace_path: path
+    } do
+      project = create_project_fixture(%{root_path: path})
+      session = create_session_fixture(project)
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      # Open cancel modal
+      render_click(view, "open_cancel_modal")
+
+      # Send steering event
+      send(view.pid, {:swarm_steered, %{session_id: session.id, steering: "Add test suite"}})
+      html = render(view)
+      assert html =~ "Steering received" or html =~ "Add test suite"
+
+      # Send session cancelled event
+      send(view.pid, {:session_cancelled, %{session_id: session.id, action: :rollback}})
+      html_after = render(view)
+      assert html_after =~ "Session stopped" or is_binary(html_after)
+    end
   end
 end

@@ -57,8 +57,7 @@ defmodule IexCode.LLM.Anthropic do
     url = String.trim_trailing(base_url, "/") <> "/v1/messages"
 
     if api_key == "" or api_key == nil do
-      # Mock response if no API key is provided
-      mock_response(messages, on_chunk)
+      {:error, :no_api_key}
     else
       if stream? do
         request_opts = [
@@ -246,32 +245,5 @@ defmodule IexCode.LLM.Anthropic do
       _ ->
         %{prompt_tokens: 0, completion_tokens: 0, total_tokens: 0}
     end
-  end
-
-  defp mock_response(messages, on_chunk) do
-    last_msg = List.last(messages)
-    content = if is_map(last_msg), do: Map.get(last_msg, :content, ""), else: to_string(last_msg)
-
-    response =
-      """
-      I am running in local mode (API key not configured in settings).
-
-      Received request:
-      > #{String.slice(content, 0, 120)}...
-
-      * OTP Asynchronous Actor Engine is active.
-      * Swarm Mode is ready.
-      * All file tools (`read_file`, `write_file`, `grep_search`, `run_command`) are available.
-      """
-
-    on_chunk.(response)
-
-    {:ok,
-     %{
-       text: response,
-       tool_calls: [],
-       raw: %{},
-       usage: %{prompt_tokens: 0, completion_tokens: 0, total_tokens: 0}
-     }}
   end
 end

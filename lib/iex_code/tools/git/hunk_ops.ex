@@ -87,6 +87,15 @@ defmodule IexCode.Tools.Git.HunkOps do
     as: :reject_hunk
 
   @doc """
+  Unstages a specific hunk from the Git index without modifying the working tree copy.
+  """
+  @spec unstage_hunk(Path.t(), Path.t(), String.t() | integer(), keyword()) ::
+          {:ok, String.t()} | {:error, term()}
+  def unstage_hunk(project_root, file_path, hunk_id, opts \\ []) do
+    reject_hunk(project_root, file_path, hunk_id, Keyword.put(opts, :staged, true))
+  end
+
+  @doc """
   Reverts all changes to a specific file (staged and unstaged), restoring the HEAD revision.
   If the file is untracked (newly created), it is safely removed from disk.
   In a non-Git workspace there is no HEAD to restore to, so the file is moved

@@ -99,5 +99,36 @@ defmodule IexCode.Engine.SwarmCoordinatorTest do
 
       AgentSupervisor.stop_all_agents(session.id)
     end
+
+    @tag :tmp_dir
+    test "direct re-verification optimization heals syntax error via AutoFix and completes",
+         %{session: session, tmp_dir: tmp_dir} do
+      lib_path = Path.join(tmp_dir, "lib")
+      File.mkdir_p!(lib_path)
+
+      file = Path.join(lib_path, "calc.ex")
+
+      File.write!(file, """
+      defmodule Calc do
+        def hello(name), do "world"
+      end
+      """)
+
+      {:ok, final_msg} =
+        SwarmCoordinator.run(
+          session.id,
+          "Fix syntax error in calc.ex",
+          project_root: tmp_dir,
+          max_retries: 3
+        )
+
+      assert final_msg.metadata.status == :completed
+      assert String.contains?(final_msg.content, "Swarm Execution Complete")
+
+      # Confirm AutoFix healed the syntax error
+      assert File.read!(file) =~ ~s(do: "world")
+
+      AgentSupervisor.stop_all_agents(session.id)
+    end
   end
 end

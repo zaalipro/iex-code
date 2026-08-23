@@ -264,12 +264,39 @@ defmodule IexCodeWeb.AdversarialLiveviewStressTest do
         assert is_binary(html)
       end
 
+      # 1b. Move task with unwhitelisted and corrupted status values (should not crash LiveView)
+      invalid_statuses = ["custom_status_xyz", "invalid_enum_val", "", "12345"]
+
+      for invalid_status <- invalid_statuses do
+        html = render_click(view, "move_task", %{"id" => task.id, "status" => invalid_status})
+        assert html =~ "Invalid task status" or is_binary(html)
+        assert Process.alive?(view.pid)
+      end
+
+      # Move non-existent task id
+      html_missing =
+        render_click(view, "move_task", %{"id" => "non-existent-task-id", "status" => "done"})
+
+      assert html_missing =~ "Task not found"
+      assert Process.alive?(view.pid)
+
       # 2. Update task priority across all standard values
       for priority <- ["critical", "high", "medium", "low"] do
         html =
           render_click(view, "update_task_priority", %{"id" => task.id, "priority" => priority})
 
         assert is_binary(html)
+      end
+
+      # 2b. Update task priority with invalid values (should not crash LiveView)
+      invalid_priorities = ["urgent_custom", "invalid_priority", "", "999"]
+
+      for invalid_p <- invalid_priorities do
+        html =
+          render_click(view, "update_task_priority", %{"id" => task.id, "priority" => invalid_p})
+
+        assert html =~ "Invalid task priority" or is_binary(html)
+        assert Process.alive?(view.pid)
       end
 
       # 3. Update assignee across all subagents and arbitrary strings

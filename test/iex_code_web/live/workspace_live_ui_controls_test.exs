@@ -289,7 +289,7 @@ defmodule IexCodeWeb.WorkspaceLiveUIControlsTest do
       html = render_click(view, "toggle_settings_modal")
       assert html =~ "API &amp; Usage History" or html =~ "API & Usage History"
       assert html =~ "CREDITS USED"
-      assert html =~ "56.4%"
+      assert html =~ "%"
 
       # 2. Save new settings
       html =

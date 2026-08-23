@@ -207,7 +207,7 @@ defmodule IexCode.E2E.Case do
     insert_with_retry(fn -> Sessions.create_session(params) end)
   end
 
-  defp insert_with_retry(fun, attempts \\ 50) do
+  defp insert_with_retry(fun, attempts \\ 100) do
     try do
       case fun.() do
         {:ok, struct} ->

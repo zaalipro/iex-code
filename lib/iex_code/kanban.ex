@@ -74,9 +74,11 @@ defmodule IexCode.Kanban do
   def get_task(id), do: Repo.get(Task, id)
 
   def create_task(attrs) do
-    %Task{}
-    |> Task.changeset(sanitize_attrs(attrs))
-    |> Repo.insert()
+    Repo.retry_on_busy(fn ->
+      %Task{}
+      |> Task.changeset(sanitize_attrs(attrs))
+      |> Repo.insert()
+    end)
     |> case do
       {:ok, task} ->
         broadcast(task.project_id, {:task_created, task})
@@ -88,9 +90,11 @@ defmodule IexCode.Kanban do
   end
 
   def update_task(%Task{} = task, attrs) do
-    task
-    |> Task.changeset(sanitize_attrs(attrs))
-    |> Repo.update()
+    Repo.retry_on_busy(fn ->
+      task
+      |> Task.changeset(sanitize_attrs(attrs))
+      |> Repo.update()
+    end)
     |> case do
       {:ok, updated_task} ->
         broadcast(updated_task.project_id, {:task_updated, updated_task})
@@ -106,10 +110,13 @@ defmodule IexCode.Kanban do
     update_task(task, %{status: new_status})
   end
 
+  def move_task_status(%Task{}, _invalid_status), do: {:error, :invalid_status}
+  def move_task_status(_invalid_task, _status), do: {:error, :invalid_task}
+
   def delete_task(%Task{} = task) do
     project_id = task.project_id
 
-    case Repo.delete(task) do
+    case Repo.retry_on_busy(fn -> Repo.delete(task) end) do
       {:ok, deleted_task} ->
         broadcast(project_id, {:task_deleted, deleted_task})
         {:ok, deleted_task}

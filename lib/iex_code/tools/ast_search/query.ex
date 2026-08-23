@@ -95,7 +95,10 @@ defmodule IexCode.Tools.ASTSearch.Query do
   defp valid_name_value?(v), do: is_binary(v) or is_atom(v) or is_struct(v, Regex)
 
   defp valid_arity_value?(v), do: is_integer(v) or (is_binary(v) and strict_integer?(v))
-  defp valid_visibility_value?(v), do: v in [:public, :private] or v in ["public", "private"]
+
+  defp valid_visibility_value?(v),
+    do: v in [:public, :private, :all] or v in ["public", "private", "all"]
+
   defp valid_line_value?(v), do: is_integer(v) or (is_binary(v) and strict_integer?(v))
 
   defp strict_integer?(v) do
@@ -201,7 +204,10 @@ defmodule IexCode.Tools.ASTSearch.Query do
   end
 
   defp matches_visibility?(_s, nil), do: true
-  defp matches_visibility?(s, vis) when is_atom(vis), do: s.visibility == vis
+  defp matches_visibility?(_s, :all), do: true
+  defp matches_visibility?(_s, "all"), do: true
+  defp matches_visibility?(s, :public), do: s.visibility == :public
+  defp matches_visibility?(s, :private), do: s.visibility == :private
   defp matches_visibility?(s, "public"), do: s.visibility == :public
   defp matches_visibility?(s, "private"), do: s.visibility == :private
   defp matches_visibility?(_s, _), do: false

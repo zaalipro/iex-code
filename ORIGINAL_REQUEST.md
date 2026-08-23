@@ -1,53 +1,55 @@
 # Original User Request
 
-## 2026-08-20T07:14:48Z
+## Initial Request — 2026-08-23T10:58:29Z
 
-<USER_REQUEST>
-# Next-Level IexCode: Desktop AI Coding Harness & Swarm Engine
-
-An advanced Elixir and Phoenix LiveView desktop AI coding harness (IexCode) featuring asynchronous multi-process agent swarm execution, live tool progress telemetry, interactive code diffs, terminal execution, and project workspace management.
+Review and harden all uncommitted changes across IexCode (M1–M6: dead code cleanup, Command Palette, Visual Test Runner & AutoFix, AST Query Explorer, Git Staging Hub), and elevate the desktop AI coding harness with a fully connected, self-correcting autonomous multi-agent swarm loop (Planner → Explorer → Coder → Verifier) with live PubSub telemetry and interactive controls.
 
 Working directory: /Users/zaali/dev/iex-code
 Integrity mode: development
 
 ## Requirements
 
-### R1. Autonomous Multi-Agent Swarm Intelligence & OTP Execution
-Implement robust autonomous feedback loops between PlannerAgent, ExplorerAgent, CoderAgent, and VerifierAgent. Each subagent runs as an isolated, supervised OTP process that executes tools, evaluates outputs, performs self-correcting iterations, and streams real-time progress events over Phoenix PubSub.
+### R1. Harden & Finalize Uncommitted Foundation (M1–M6)
+- Review and harden all uncommitted changes across `lib/iex_code/`, `lib/iex_code_web/`, and `test/`.
+- Ensure zero regressions in the Global Command Palette (`Cmd+K`), Visual Test Runner & 1-Click AutoFix Studio, AST Query Explorer, and 3-Tier Git Staging Hub.
+- Maintain strict code hygiene: 0 compiler warnings (`mix compile --warnings-as-errors`), 0 formatting issues (`mix format --check-formatted`), and 0 dead assigns or stale mocks.
 
-### R2. World-Class Desktop UI/UX & Live Telemetry
-Refine the 4-column subagent progress cards and hierarchical operation tree:
-- Real-time animated progress bars with live execution latency metrics (ms) and PID monitors.
-- Interactive side-by-side / inline syntax-highlighted code diff viewer for proposed and applied patches.
-- Integrated file tree explorer with instant search, syntax preview, and terminal session integration.
+### R2. End-to-End Autonomous Swarm Loop & Feedback Cycles
+- Wire `PlannerAgent`, `ExplorerAgent`, `CoderAgent`, and `VerifierAgent` into a fully autonomous, supervised multi-turn swarm execution loop within `IexCode.Engine.SwarmOrchestrator` / `SwarmCoordinator`:
+  - **Planner**: Decomposes user goals into structured subtasks with clear verification criteria.
+  - **Explorer**: Inspects project files, dependencies, and code symbols via `ASTSearch` to gather targeted context.
+  - **Coder**: Implements code modifications and atomic patch proposals via `MultiPatch` and `AutoFix`.
+  - **Verifier**: Runs ExUnit tests via `TestRunner` and verifies compilation/syntax integrity.
+  - **Self-Correction Feedback Loop**: If verification fails (failing tests, compiler errors), automatically pass structured failure diagnostics back to Coder for iterative repair (up to configurable max iterations) before declaring success or failure.
 
-### R3. Advanced Developer Tooling Suite
-Equip the coding harness with comprehensive developer tools:
-- AST-aware search and multi-file patching engine.
-- Automated test runner with stack trace parsing and instant auto-fix suggestions.
-- Git integration for workspace diffing, staging, and commit generation.
+### R3. Real-Time Swarm Telemetry & Interactive UI Controls
+- Stream real-time agent lifecycle events, tool executions, execution latencies (ms), and 0% -> 100% progress metrics over Phoenix PubSub (`session:<session_id>`).
+- Dynamically update the 4-column agent cards and hierarchical operation DAG in `WorkspaceLive`.
+- Provide interactive controls in the LiveView interface to start a swarm run, pause, resume, abort, and inspect intermediate agent thoughts and tool outputs.
 
-### R4. Multi-Provider Streaming & Resilience
-Seamless streaming and fallback support for OpenAI-compatible endpoints (https://cli.llmotions.com/v1), Gemini models, Anthropic Claude, and local LLMs with auto-retry, UTF-8 byte sanitization, and graceful failure recovery.
-
-## Verification Resources
-- Test suite: `mix test` and `mix precommit`
-- Endpoint integration: `https://cli.llmotions.com/v1` with model `gemini-3.7-flash-high`
-- Browser validation: LiveView reactive interaction across tabs, swarm cards, and modals
+### R4. Comprehensive Verification & Precommit Standards
+- Implement end-to-end integration and stress tests covering:
+  - Full multi-turn autonomous swarm convergence on sample tasks.
+  - Error feedback and self-correction when tests initially fail.
+  - Swarm cancellation, timeout handling, and process crash recovery.
+  - LiveView UI real-time telemetry rendering and user control dispatching.
+- Guarantee a 100% pass rate on `mix test` and clean verification under `mix precommit`.
 
 ## Acceptance Criteria
 
-### Swarm & Process Architecture
-- [ ] Swarm execution spawns dedicated OTP processes per agent and operation with live PubSub telemetry.
-- [ ] All operations stream progress (0% -> 100%) with millisecond timings and process PIDs displayed in the 4-column card grid.
-- [ ] Error feedback loops allow agents to auto-correct syntax and test failures autonomously.
+### Foundation & Cleanliness
+- [ ] All uncommitted changes compile cleanly with `mix compile --warnings-as-errors` and format with `mix format --check-formatted`.
+- [ ] No stale mocks or dead assigns remain in `lib/iex_code/` or `lib/iex_code_web/`.
 
-### UI/UX & Interactivity
-- [ ] All UI controls (new session `+`, swarm toggle, tab switches, file inspection, modals) connect immediately via WebSocket without timeouts.
-- [ ] Stored operations and messages render cleanly without UTF-8 encoding crashes.
-- [ ] Responsive dark-mode interface with monospace code views, progress indicators, and status badges.
+### Autonomous Swarm Loop
+- [ ] Swarm coordinator orchestrates Planner -> Explorer -> Coder -> Verifier sequentially and iteratively for a given task goal.
+- [ ] When a test failure occurs during verification, the failure diagnostic is fed back to Coder, a new patch is generated and applied, and verification re-runs until passing or max iterations reached.
+- [ ] Multi-patch transactions apply atomically and rollback cleanly on unrecoverable failure.
 
-### Quality & Tests
-- [ ] Automated test suite runs with 0 failures and 0 compiler warnings via `mix precommit`.
+### UI & Telemetry
+- [ ] 4-column agent cards and operation tree update in real-time via PubSub with accurate agent status, millisecond latencies, and progress percentages.
+- [ ] LiveView swarm controls (Start, Pause, Resume, Stop) dispatch reliably without WebSocket stalls.
 
-</USER_REQUEST>
+### Test & Precommit Quality
+- [ ] Full test suite (`mix test`) passes with 0 failures across all unit, integration, stress, and LiveView tests.
+- [ ] `mix precommit` passes cleanly with 0 warnings.

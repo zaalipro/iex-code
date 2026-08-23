@@ -50,6 +50,44 @@ defmodule IexCode.Tools.AutoFixTest do
       assert analyzed.right == "4"
     end
 
+    test "resolves map and string stack trace frames safely" do
+      failure_map_frame = %Failure{
+        index: 1,
+        test_name: "test map frame",
+        module: "CalcTest",
+        file: "test/calc_test.exs",
+        line: 10,
+        message: "Assertion failed",
+        stacktrace: [
+          %{file: "lib/calc.ex", line: 42},
+          "test/calc_test.exs:10"
+        ]
+      }
+
+      assert {:ok, [analyzed]} = AutoFix.analyze_failures("/tmp", failure_map_frame)
+      assert analyzed.file == "lib/calc.ex"
+      assert analyzed.line == 42
+      assert analyzed.source == :stacktrace
+
+      failure_str_frame = %Failure{
+        index: 2,
+        test_name: "test string frame",
+        module: "CalcTest",
+        file: "test/calc_test.exs",
+        line: 10,
+        message: "Assertion failed",
+        stacktrace: [
+          " (my_app 0.1.0) lib/calc_helper.ex:18: CalcHelper.run/1",
+          "test/calc_test.exs:10"
+        ]
+      }
+
+      assert {:ok, [analyzed2]} = AutoFix.analyze_failures("/tmp", failure_str_frame)
+      assert analyzed2.file == "lib/calc_helper.ex"
+      assert analyzed2.line == 18
+      assert analyzed2.source == :stacktrace
+    end
+
     test "classifies compilation errors and extracts target file" do
       comp_err = %CompilationError{
         error_type: "CompileError",

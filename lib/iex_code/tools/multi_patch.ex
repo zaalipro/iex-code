@@ -51,7 +51,7 @@ defmodule IexCode.Tools.MultiPatch do
       {:ok, planned_patches} ->
         # Phase 2: Transactional Disk Writes with Rollback Guard
         tx_id = "tx_" <> to_string(System.system_time(:microsecond))
-        execute_writes(project_root, planned_patches, tx_id)
+        execute_writes(project_root, planned_patches, tx_id, opts)
 
       {:error, _reason} = err ->
         err
@@ -277,10 +277,11 @@ defmodule IexCode.Tools.MultiPatch do
 
   # --- Phase 2: Transactional Execution ---
 
-  defp execute_writes(_project_root, planned_patches, tx_id) do
+  defp execute_writes(_project_root, planned_patches, tx_id, opts) do
     # Save the snapshot BEFORE the first write so a crash mid-write still
     # leaves a recoverable transaction record.
-    Snapshot.save_snapshot(tx_id, planned_patches)
+    session_id = Keyword.get(opts, :session_id)
+    Snapshot.save_snapshot(tx_id, planned_patches, session_id: session_id)
 
     case verify_targets_unchanged(planned_patches) do
       :ok ->

@@ -1245,7 +1245,14 @@ defmodule IexCode.E2E.Tier1FeatureTest do
     end
 
     @tag mock_llm: true
-    test "T1_F15_05_llm_chat_invokes_mock_server", %{mock_llm: _mock, workspace_path: path} do
+    test "T1_F15_05_llm_chat_invokes_mock_server", %{mock_llm: mock, workspace_path: path} do
+      {:ok, _} =
+        Settings.update_settings(%{
+          openai_base_url: "#{mock.url}/v1",
+          openai_api_key: "mock-test-key",
+          default_model_provider: "openai"
+        })
+
       project = create_project_fixture(%{root_path: path})
       session = create_session_fixture(project, %{model_provider: "openai"})
 

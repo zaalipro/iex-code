@@ -35,6 +35,57 @@ const Hooks = {
     destroyed() {
       clearTimeout(this.resetTimer)
     }
+  },
+  CommandPalette: {
+    mounted() {
+      this.handleKeyDown = (e) => {
+        // Cmd+K or Ctrl+K opens/toggles the palette
+        if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {
+          e.preventDefault()
+          this.pushEvent("toggle_command_palette", {})
+          return
+        }
+
+        const palette = document.getElementById("command-palette-modal")
+        if (!palette) return
+
+        if (e.key === "Escape") {
+          e.preventDefault()
+          this.pushEvent("close_command_palette", {})
+        } else if (e.key === "ArrowDown") {
+          e.preventDefault()
+          this.pushEvent("command_palette_navigate", {direction: "down"})
+        } else if (e.key === "ArrowUp") {
+          e.preventDefault()
+          this.pushEvent("command_palette_navigate", {direction: "up"})
+        } else if (e.key === "Enter") {
+          e.preventDefault()
+          this.pushEvent("command_palette_execute_selected", {})
+        }
+      }
+
+      window.addEventListener("keydown", this.handleKeyDown)
+
+      this.handleEvent("focus_palette_input", () => {
+        setTimeout(() => {
+          const input = document.getElementById("command-palette-input")
+          if (input) {
+            input.focus()
+            input.select()
+          }
+        }, 30)
+      })
+
+      this.handleEvent("scroll_to_palette_item", ({index}) => {
+        const el = document.getElementById(`palette-item-${index}`)
+        if (el) {
+          el.scrollIntoView({block: "nearest"})
+        }
+      })
+    },
+    destroyed() {
+      window.removeEventListener("keydown", this.handleKeyDown)
+    }
   }
 }
 

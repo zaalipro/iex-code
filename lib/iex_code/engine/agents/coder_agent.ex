@@ -7,7 +7,7 @@ defmodule IexCode.Engine.Agents.CoderAgent do
   require Logger
   alias IexCode.Engine.{AgentRegistry, OperationManager}
   alias IexCode.{Sessions, Tools, LLM}
-  alias IexCode.Tools.MultiPatch
+  alias IexCode.Tools.{MultiPatch, AutoFix}
 
   @outer_timeout 90_000
   @inner_timeout 60_000
@@ -125,9 +125,11 @@ defmodule IexCode.Engine.Agents.CoderAgent do
 
           base_content =
             if diagnostics do
+              diag_str = AutoFix.format_diagnostics(diagnostics)
+
               """
               ### ⚠️ Self-Correction Feedback
-              #{inspect(diagnostics)}
+              #{diag_str}
 
               Task: #{prompt}
               """
@@ -181,6 +183,7 @@ defmodule IexCode.Engine.Agents.CoderAgent do
 
   @impl true
   def handle_call({:apply_patches, patches, opts}, _from, %State{} = state) do
+    opts = Keyword.put_new(opts, :session_id, state.session_id)
     project_root = opts[:project_root] || state.project_root
     res = MultiPatch.apply_patches(project_root, patches, opts)
     {:reply, res, state}
@@ -199,7 +202,7 @@ defmodule IexCode.Engine.Agents.CoderAgent do
     if is_list(patches) and patches != [] do
       progress.(30, "Applying #{length(patches)} atomic patches...")
 
-      case MultiPatch.apply_patches(project_root, patches) do
+      case MultiPatch.apply_patches(project_root, patches, opts) do
         {:ok, _summary} -> :ok
         {:error, reason} -> {:error, {:patch_application_failed, reason}}
       end

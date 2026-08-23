@@ -55,7 +55,7 @@ defmodule IexCode.LLM.OpenAI do
     url = String.trim_trailing(base_url, "/") <> "/chat/completions"
 
     if api_key == "" or api_key == nil do
-      mock_response(messages, on_chunk)
+      {:error, :no_api_key}
     else
       if stream? do
         request_opts = [
@@ -207,28 +207,5 @@ defmodule IexCode.LLM.OpenAI do
       _ ->
         %{prompt_tokens: 0, completion_tokens: 0, total_tokens: 0}
     end
-  end
-
-  defp mock_response(messages, on_chunk) do
-    last_msg = List.last(messages)
-    content = if is_map(last_msg), do: Map.get(last_msg, :content, ""), else: to_string(last_msg)
-
-    response =
-      """
-      I am running in local mode (OpenAI API key not configured in settings).
-
-      Processing:
-      > #{String.slice(content, 0, 120)}...
-      """
-
-    on_chunk.(response)
-
-    {:ok,
-     %{
-       text: response,
-       tool_calls: [],
-       raw: %{},
-       usage: %{prompt_tokens: 0, completion_tokens: 0, total_tokens: 0}
-     }}
   end
 end
