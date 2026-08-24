@@ -1,6 +1,7 @@
 defmodule IexCode.Engine.FleetManager do
   @moduledoc "Run-scoped owner and control router for a bounded durable agent fleet."
   use GenServer
+  require Logger
 
   alias IexCode.Engine.{AgentRegistry, AgentSupervisor, FleetControlToken}
   alias IexCode.Runs
@@ -23,6 +24,11 @@ defmodule IexCode.Engine.FleetManager do
 
   def agent_pid(run_id, agent_id) do
     GenServer.call(AgentRegistry.via_fleet(run_id, :manager), {:agent_pid, agent_id})
+  end
+
+  @doc "Returns the current live incarnation of one durable agent identity."
+  def current_agent(run_id, agent_id) do
+    GenServer.call(AgentRegistry.via_fleet(run_id, :manager), {:current_agent, agent_id})
   end
 
   def role_pids(run_id, role) when role in @roles do
@@ -115,6 +121,7 @@ defmodule IexCode.Engine.FleetManager do
       workspace_lock_delegation: opts[:workspace_lock_delegation],
       supervisor: AgentRegistry.via_fleet(run.id, :agent_supervisor),
       agents: %{},
+      budget_callers: %{},
       activation_opts: opts
     }
 
@@ -180,6 +187,32 @@ defmodule IexCode.Engine.FleetManager do
     {:reply, reply, state}
   end
 
+  def handle_call({:current_agent, agent_id}, _from, state) do
+    {reply, state} =
+      case Map.get(state.agents, agent_id) do
+        %{pid: pid} = entry when is_pid(pid) ->
+          with true <- Process.alive?(pid),
+               %RunAgent{lease_generation: generation, status: status} = row <-
+                 Runs.get_run_agent(state.run.id, agent_id),
+               true <- generation == entry.generation,
+               true <- status in RunAgent.leased_statuses(),
+               {:ok, row} <- Runs.assert_run_agent_lease(row, lease_owner(), generation) do
+            refreshed = %{entry | row: row, status: String.to_existing_atom(status)}
+            {{:ok, public_entry(refreshed)}, put_in(state.agents[agent_id], refreshed)}
+          else
+            _ -> {{:error, :agent_not_active}, state}
+          end
+
+        nil ->
+          {{:error, :agent_not_found}, state}
+
+        _entry ->
+          {{:error, :agent_not_active}, state}
+      end
+
+    {:reply, reply, state}
+  end
+
   def handle_call({:drain_steering, agent_id}, _from, state) do
     case Map.get(state.agents, agent_id) do
       nil ->
@@ -232,8 +265,24 @@ defmodule IexCode.Engine.FleetManager do
     case Runs.get_run_agent_control(control_id) do
       %{run_id: run_id, run_agent_id: agent_id} = control when run_id == state.run.id ->
         case Map.get(state.agents, agent_id) do
-          nil -> {:reply, {:error, :agent_not_active}, state}
-          entry -> apply_control_queue(state, entry, control)
+          nil ->
+            {:reply, {:error, :agent_not_active}, state}
+
+          entry ->
+            case Runs.get_run_agent(state.run.id, agent_id) do
+              %RunAgent{} = row ->
+                fresh = %{
+                  entry
+                  | row: row,
+                    generation: row.lease_generation,
+                    status: String.to_existing_atom(row.status)
+                }
+
+                apply_control_queue(put_in(state.agents[agent_id], fresh), fresh, control)
+
+              nil ->
+                {:reply, {:error, :agent_not_found}, state}
+            end
         end
 
       nil ->
@@ -245,7 +294,8 @@ defmodule IexCode.Engine.FleetManager do
   end
 
   def handle_call({:runtime_begin, agent_id, generation, task}, _from, state) do
-    with {:ok, entry} <- runtime_entry(state, agent_id, generation),
+    with {:ok, state} <- require_parent_run_status(state, ["running"]),
+         {:ok, entry} <- runtime_entry(state, agent_id, generation),
          true <- entry.row.status == "idle" || {:error, :agent_not_available},
          {:ok, row} <-
            Runs.transition_run_agent(entry.row, "running", %{current_task: task, progress: 0},
@@ -260,7 +310,8 @@ defmodule IexCode.Engine.FleetManager do
   end
 
   def handle_call({:runtime_progress, agent_id, generation, percent, message}, _from, state) do
-    with {:ok, entry} <- runtime_entry(state, agent_id, generation),
+    with {:ok, state} <- require_parent_run_status(state, ["running", "paused"]),
+         {:ok, entry} <- runtime_entry(state, agent_id, generation),
          {:ok, row} <-
            Runs.heartbeat_run_agent(entry.row, lease_owner(), generation, @lease_ms, %{
              progress: min(max(percent, 0), 100),
@@ -273,7 +324,8 @@ defmodule IexCode.Engine.FleetManager do
   end
 
   def handle_call({:runtime_finish, agent_id, generation, result}, _from, state) do
-    with {:ok, entry} <- runtime_entry(state, agent_id, generation) do
+    with {:ok, state} <- require_parent_run_status(state, ["running", "paused"]),
+         {:ok, entry} <- runtime_entry(state, agent_id, generation) do
       if entry.row.status == "running" do
         status = if entry.row.desired_state == "paused", do: "paused", else: "idle"
 
@@ -302,8 +354,13 @@ defmodule IexCode.Engine.FleetManager do
     end
   end
 
-  def handle_call({:runtime_usage, agent_id, generation, usage, source}, _from, state) do
-    with {:ok, entry} <- runtime_entry(state, agent_id, generation),
+  def handle_call(
+        {:runtime_usage, agent_id, generation, usage, source},
+        {caller_pid, _tag},
+        state
+      ) do
+    with {:ok, state} <- require_parent_run_status(state, ["running", "paused"]),
+         {:ok, entry} <- runtime_entry(state, agent_id, generation),
          {:ok, row} <-
            Runs.record_run_agent_usage(entry.row, usage, source,
              lease_owner: lease_owner(),
@@ -311,8 +368,21 @@ defmodule IexCode.Engine.FleetManager do
            ) do
       {:reply, :ok, put_in(state.agents[agent_id], %{entry | row: row})}
     else
-      {:error, {:token_budget_exhausted, _run}} ->
-        {:reply, {:error, :token_budget_exhausted}, state}
+      {:error, {:token_budget_exhausted, failed_run}} ->
+        terminalize_budget_exhausted_fleet(
+          state,
+          failed_run,
+          :token_budget_exhausted,
+          caller_pid
+        )
+
+      {:error, {:cost_budget_exhausted, failed_run}} ->
+        terminalize_budget_exhausted_fleet(
+          state,
+          failed_run,
+          :cost_budget_exhausted,
+          caller_pid
+        )
 
       {:error, reason} ->
         {:reply, {:error, reason}, state}
@@ -370,17 +440,49 @@ defmodule IexCode.Engine.FleetManager do
     {:noreply, replay_controls(state, 64)}
   end
 
-  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
-    case Enum.find(state.agents, fn {_id, entry} -> entry.ref == ref end) do
-      nil ->
+  def handle_info({:terminate_budget_children, entries}, state) when is_list(entries) do
+    Enum.each(entries, fn entry ->
+      _ = AgentSupervisor.stop_run_agent(state.supervisor, state.run.id, entry.agent_id)
+    end)
+
+    {:noreply, state}
+  end
+
+  def handle_info({:terminate_budget_owner, ref}, state) when is_reference(ref) do
+    case Map.pop(state.budget_callers, ref) do
+      {nil, _callers} ->
         {:noreply, state}
 
-      {agent_id, entry} ->
-        FleetControlToken.cancel(entry.token)
+      {entry, callers} ->
+        Process.demonitor(ref, [:flush])
         _ = AgentSupervisor.stop_run_agent(state.supervisor, state.run.id, entry.agent_id)
-        _ = release(entry, state, "interrupted", %{error_message: inspect(reason)})
-        updated = %{entry | pid: nil, ref: nil, status: :interrupted, error: inspect(reason)}
-        {:noreply, put_in(state.agents[agent_id], updated)}
+        {:noreply, %{state | budget_callers: callers}}
+    end
+  end
+
+  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
+    case Map.pop(state.budget_callers, ref) do
+      {entry, callers} when not is_nil(entry) ->
+        # The usage caller has now received the structured budget result and
+        # completed its own unwind. Keep a bounded grace period so the owning
+        # GenServer can relay the operation result to its caller before it is
+        # terminated as well; the separate five-second timer remains the hard
+        # fallback when a linked caller never exits.
+        Process.send_after(self(), {:terminate_budget_children, [entry]}, 100)
+        {:noreply, %{state | budget_callers: callers}}
+
+      {nil, _callers} ->
+        case Enum.find(state.agents, fn {_id, entry} -> entry.ref == ref end) do
+          nil ->
+            {:noreply, state}
+
+          {agent_id, entry} ->
+            FleetControlToken.cancel(entry.token)
+            _ = AgentSupervisor.stop_run_agent(state.supervisor, state.run.id, entry.agent_id)
+            _ = release(entry, state, "interrupted", %{error_message: inspect(reason)})
+            updated = %{entry | pid: nil, ref: nil, status: :interrupted, error: inspect(reason)}
+            {:noreply, put_in(state.agents[agent_id], updated)}
+        end
     end
   end
 
@@ -687,8 +789,7 @@ defmodule IexCode.Engine.FleetManager do
     demonitor_entry(entry)
     _ = AgentSupervisor.stop_run_agent(state.supervisor, state.run.id, entry.agent_id)
 
-    with {:ok, interrupted} <-
-           release(entry, state, "interrupted", %{desired_state: "active"}),
+    with {:ok, interrupted} <- prepare_restart_claim(entry, state),
          {:ok, {claimed_agent, claimed_control}} <-
            Runs.claim_restart_run_agent_control(interrupted, lease_owner(), @lease_ms),
          {:ok, restarted, agents} <-
@@ -710,6 +811,18 @@ defmodule IexCode.Engine.FleetManager do
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
+  end
+
+  # An interrupted row has already surrendered its lease. Releasing it again is both
+  # unnecessary and an invalid interrupted -> interrupted lifecycle transition. Live
+  # incarnations must still be stopped and fenced into interrupted before the atomic
+  # restart-control claim advances their generation.
+  defp prepare_restart_claim(%{row: %RunAgent{status: "interrupted"}} = entry, _state) do
+    {:ok, entry.row}
+  end
+
+  defp prepare_restart_claim(entry, state) do
+    release(entry, state, "interrupted", %{desired_state: "active"})
   end
 
   defp control_result(:restart, %{generation: generation}) when is_integer(generation) do
@@ -787,6 +900,74 @@ defmodule IexCode.Engine.FleetManager do
       _stale -> {:error, :lease_lost}
     end
   end
+
+  defp require_parent_run_status(state, allowed_statuses) do
+    case Runs.get_run(state.run.id) do
+      %IexCode.Runs.Run{status: status} = run ->
+        if status in allowed_statuses,
+          do: {:ok, %{state | run: run}},
+          else: {:error, {:run_not_active, status}}
+
+      nil ->
+        {:error, :run_not_found}
+    end
+  end
+
+  defp terminalize_budget_exhausted_fleet(state, failed_run, budget_error, caller_pid) do
+    entries = Map.values(state.agents)
+
+    Enum.each(entries, fn entry ->
+      FleetControlToken.cancel(entry.token)
+    end)
+
+    attrs = %{
+      error_message: failed_run.error_message,
+      error_details: failed_run.error_details
+    }
+
+    case Runs.terminalize_run_agents(failed_run, "failed", attrs) do
+      {:ok, _terminalized} ->
+        Enum.each(entries, &demonitor_entry/1)
+
+        {deferred_owner, immediate_entries} =
+          Enum.split_with(entries, &usage_caller_linked_to_agent?(&1, caller_pid))
+
+        # GenServer sends the reply from this callback before processing this
+        # self-message. Siblings terminate immediately after the reply. An
+        # owning child stays alive until its linked usage task exits after
+        # observing the structured result.
+        send(self(), {:terminate_budget_children, immediate_entries})
+
+        {budget_callers, _refs} =
+          Enum.reduce(deferred_owner, {state.budget_callers, []}, fn entry, {callers, refs} ->
+            ref = Process.monitor(caller_pid)
+            Process.send_after(self(), {:terminate_budget_owner, ref}, 5_000)
+            {Map.put(callers, ref, entry), [ref | refs]}
+          end)
+
+        {:reply, {:error, budget_error},
+         %{state | run: failed_run, agents: %{}, budget_callers: budget_callers}}
+
+      {:error, reason} ->
+        Logger.error(
+          "Run #{failed_run.id} exhausted its budget but fleet terminalization failed: #{inspect(reason)}"
+        )
+
+        {:reply, {:error, {budget_error, {:fleet_terminalization_failed, reason}}},
+         %{state | run: failed_run}}
+    end
+  end
+
+  defp usage_caller_linked_to_agent?(%{pid: agent_pid}, caller_pid)
+       when is_pid(agent_pid) and is_pid(caller_pid) do
+    caller_pid == agent_pid or
+      case Process.info(agent_pid, :links) do
+        {:links, links} -> caller_pid in links
+        nil -> false
+      end
+  end
+
+  defp usage_caller_linked_to_agent?(_entry, _caller_pid), do: false
 
   defp runtime_error({:error, reason}) when is_atom(reason), do: Atom.to_string(reason)
   defp runtime_error({:error, _reason}), do: "agent_work_failed"

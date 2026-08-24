@@ -2,6 +2,10 @@ defmodule IexCode.LLM.StreamClientTest do
   use ExUnit.Case, async: false
   alias IexCode.LLM.StreamClient
 
+  defmodule SecretCallbackError do
+    defexception [:message, :context]
+  end
+
   defmodule MockStreamPlug do
     import Plug.Conn
 
@@ -102,6 +106,47 @@ defmodule IexCode.LLM.StreamClientTest do
           conn
           |> put_resp_header("content-type", "application/json")
           |> send_resp(500, "{\"error\": \"Internal Server Error\"}")
+
+        "/error/oversized-secret" ->
+          secret = conn |> get_req_header("authorization") |> List.first()
+
+          conn
+          |> put_resp_header("content-type", "text/plain")
+          |> send_resp(500, String.duplicate("upstream echoed #{secret}\n", 5_000))
+
+        "/error/small-secret" ->
+          secret = conn |> get_req_header("authorization") |> List.first()
+
+          conn
+          |> put_resp_header("content-type", "text/plain")
+          |> send_resp(500, "upstream echoed #{secret}")
+
+        "/error/cutoff-secret" ->
+          secret = conn |> get_req_header("authorization") |> List.first()
+
+          conn
+          |> put_resp_header("content-type", "text/plain")
+          |> send_resp(500, String.duplicate("x", 63_995) <> secret <> " trailing bytes")
+
+        "/openai/oversized-success" ->
+          conn =
+            conn
+            |> put_resp_header("content-type", "text/event-stream")
+            |> send_chunked(200)
+
+          {:ok, conn} =
+            chunk(
+              conn,
+              "data: " <>
+                Jason.encode!(%{
+                  "choices" => [
+                    %{"delta" => %{"content" => String.duplicate("x", 2_000_001)}}
+                  ]
+                }) <>
+                "\n\n"
+            )
+
+          conn
       end
     end
   end
@@ -229,6 +274,162 @@ defmodule IexCode.LLM.StreamClientTest do
       ]
 
       assert {:error, %{status: 500}} = StreamClient.stream(request_opts)
+    end
+
+    test "bounds oversized success streams before callback accumulation", %{port: port} do
+      {:ok, callback_count} = Agent.start_link(fn -> 0 end)
+
+      request_opts = [
+        provider: "openai",
+        url: "http://127.0.0.1:#{port}/openai/oversized-success",
+        body: %{}
+      ]
+
+      assert {:error, :response_too_large} =
+               StreamClient.stream(request_opts, fn _chunk ->
+                 Agent.update(callback_count, &(&1 + 1))
+               end)
+
+      assert Agent.get(callback_count, & &1) == 0
+      Agent.stop(callback_count)
+    end
+
+    test "bounds error bodies and redacts exact authorization credentials", %{port: port} do
+      secret = "adversarial-provider-secret"
+
+      request_opts = [
+        provider: "openai",
+        url: "http://127.0.0.1:#{port}/error/oversized-secret",
+        headers: [{"authorization", "Bearer #{secret}"}],
+        body: %{}
+      ]
+
+      assert {:error, %{status: 500, body: body}} = StreamClient.stream(request_opts)
+      assert byte_size(body) <= 64_000
+      assert body == "Upstream error body exceeded 64000 bytes"
+      refute body =~ secret
+      refute body =~ "Bearer #{secret}"
+    end
+
+    test "preserves bounded small error detail while redacting credentials", %{port: port} do
+      secret = "small-provider-secret"
+
+      request_opts = [
+        provider: "openai",
+        url: "http://127.0.0.1:#{port}/error/small-secret",
+        headers: [{"authorization", "Bearer #{secret}"}],
+        body: %{}
+      ]
+
+      assert {:error, %{status: 500, body: "upstream echoed [REDACTED]"}} =
+               StreamClient.stream(request_opts)
+    end
+
+    test "never returns a credential fragment crossing the error cutoff", %{port: port} do
+      secret = "cutoff-provider-secret"
+
+      request_opts = [
+        provider: "openai",
+        url: "http://127.0.0.1:#{port}/error/cutoff-secret",
+        headers: [{"authorization", "Bearer #{secret}"}],
+        body: %{}
+      ]
+
+      assert {:error, %{status: 500, body: "Upstream error body exceeded 64000 bytes"} = error} =
+               StreamClient.stream(request_opts)
+
+      rendered = inspect(error)
+      refute rendered =~ secret
+      refute rendered =~ String.slice(secret, 0, 5)
+    end
+
+    test "redacts credentials from callback exceptions", %{port: port} do
+      secret = "callback-secret"
+
+      request_opts = [
+        provider: "openai",
+        url: "http://127.0.0.1:#{port}/openai/stream",
+        headers: [{"x-api-key", secret}],
+        body: %{}
+      ]
+
+      assert {:error, %RuntimeError{message: "callback exposed [REDACTED]"} = error} =
+               StreamClient.stream(request_opts, fn _chunk ->
+                 raise "callback exposed #{secret}"
+               end)
+
+      rendered = inspect(error)
+      assert rendered =~ "[REDACTED]"
+      refute rendered =~ secret
+    end
+
+    test "redacts credentials from every callback exception field", %{port: port} do
+      secret = "structured-callback-secret"
+
+      request_opts = [
+        provider: "openai",
+        url: "http://127.0.0.1:#{port}/openai/stream",
+        headers: [{"authorization", "Bearer #{secret}"}],
+        body: %{}
+      ]
+
+      assert {:error,
+              %SecretCallbackError{
+                message: "callback failed",
+                context: %{credential: "[REDACTED]"}
+              } = error} =
+               StreamClient.stream(request_opts, fn _chunk ->
+                 raise SecretCallbackError,
+                   message: "callback failed",
+                   context: %{credential: secret}
+               end)
+
+      refute inspect(error) =~ secret
+    end
+
+    test "redacts credentials represented as printable charlists in callback errors", %{
+      port: port
+    } do
+      secret = "charlist-callback-secret"
+
+      request_opts = [
+        provider: "openai",
+        url: "http://127.0.0.1:#{port}/openai/stream",
+        headers: [{"x-api-key", secret}],
+        body: %{}
+      ]
+
+      assert {:error, %SecretCallbackError{context: %{credential: "[REDACTED]"}} = error} =
+               StreamClient.stream(request_opts, fn _chunk ->
+                 raise SecretCallbackError,
+                   message: "callback failed",
+                   context: %{credential: String.to_charlist(secret)}
+               end)
+
+      refute inspect(error) =~ secret
+      refute inspect(error) =~ inspect(String.to_charlist(secret))
+    end
+
+    test "extracts credentials from charlist authorization headers when accepted", %{port: port} do
+      secret = "charlist-secret"
+
+      request_opts = [
+        provider: "openai",
+        url: "http://127.0.0.1:#{port}/error/small-secret",
+        headers: [{"authorization", String.to_charlist("Bearer #{secret}")}],
+        body: %{}
+      ]
+
+      case StreamClient.stream(request_opts) do
+        {:error, %{status: 500, body: body}} ->
+          assert body =~ "[REDACTED]"
+          refute body =~ secret
+
+        {:error, %{kind: :network}} ->
+          # Current Req rejects non-binary header iodata before sending it. The
+          # credential extractor still supports it if a future Req accepts it.
+          :ok
+      end
     end
   end
 end

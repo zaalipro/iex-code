@@ -53,6 +53,15 @@ defmodule IexCode.Runs.ExecutionEngine do
     |> Enum.sort_by(& &1.id)
   end
 
+  @doc "Lists the persisted engine identifiers that are currently safe to dispatch."
+  @spec available_ids() :: [String.t()]
+  def available_ids do
+    @engines
+    |> Enum.filter(fn {_id, module} -> module.available?() end)
+    |> Enum.map(fn {id, _module} -> id end)
+    |> Enum.sort()
+  end
+
   defp engine_id(%Run{execution_engine: engine}), do: engine || "legacy_v1"
 
   defp engine_id(attrs) when is_map(attrs) do

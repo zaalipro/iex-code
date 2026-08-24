@@ -461,12 +461,13 @@ defmodule IexCode.Runs.RunDispatcher do
     if active_count(state) < state.max_concurrency do
       opts = [
         lease_ms: state.lease_ms,
-        exclude_project_ids: active_project_ids(state)
+        exclude_project_ids: active_project_ids(state),
+        execution_engines: ExecutionEngine.available_ids()
       ]
 
       case Runs.claim_next_run(state.worker_id, opts) do
         {:ok, %Run{} = run} ->
-          state |> start_claimed_run(run) |> drain_capacity()
+          state |> start_validated_claimed_run(run) |> drain_capacity()
 
         :none ->
           state
@@ -477,6 +478,16 @@ defmodule IexCode.Runs.RunDispatcher do
       end
     else
       state
+    end
+  end
+
+  defp start_validated_claimed_run(state, %Run{} = run) do
+    case ExecutionEngine.validate_manifest(run, Runs.list_steps(run)) do
+      :ok ->
+        start_claimed_run(state, run)
+
+      {:error, reason} ->
+        fail_claimed_run(state, run, {:invalid_execution_manifest, reason})
     end
   end
 

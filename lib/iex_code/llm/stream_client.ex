@@ -21,6 +21,11 @@ defmodule IexCode.LLM.StreamClient do
   ]
 
   @stream_state_key :iex_code_llm_stream_state
+  @max_success_stream_bytes 2_000_000
+  @max_error_body_bytes 64_000
+  @max_error_collection_items 50
+  @max_error_depth 8
+  @auth_header_names ~w(authorization proxy-authorization x-api-key api-key x-goog-api-key ocp-apim-subscription-key)
 
   @type tool_call :: %{
           id: String.t(),
@@ -59,7 +64,8 @@ defmodule IexCode.LLM.StreamClient do
 
     provider = Map.get(opts_map, :provider, "openai")
     url = Map.fetch!(opts_map, :url)
-    headers = Map.get(opts_map, :headers, [])
+    headers = opts_map |> Map.get(:headers, []) |> normalize_headers()
+    auth_secrets = auth_secrets(headers)
 
     body =
       opts_map
@@ -83,56 +89,81 @@ defmodule IexCode.LLM.StreamClient do
             {:halt, {req, put_stream_state(resp, %{state | cancelled?: true})}}
 
           resp.status != 200 ->
-            # accumulate the error body (it is not collected into resp.body
-            # when streaming with an :into fun)
-            error_io = [raw_chunk | state.error_io]
-            {:cont, {req, put_stream_state(resp, %{state | error_io: error_io})}}
+            {next_state, directive} = append_error_chunk(state, raw_chunk)
+            {directive, {req, put_stream_state(resp, next_state)}}
 
           true ->
-            case consume_chunk(state, raw_chunk, on_chunk) do
-              {:ok, next_state} ->
-                {:cont, {req, put_stream_state(resp, next_state)}}
+            case account_success_chunk(state, raw_chunk) do
+              {:ok, bounded_state} ->
+                case consume_chunk(bounded_state, raw_chunk, on_chunk) do
+                  {:ok, next_state} ->
+                    {:cont, {req, put_stream_state(resp, next_state)}}
+
+                  {:error, error_state} ->
+                    # a raising on_chunk kills the stream instead of deadlocking it
+                    {:halt, {req, put_stream_state(resp, error_state)}}
+                end
 
               {:error, error_state} ->
-                # a raising on_chunk kills the stream instead of deadlocking it
                 {:halt, {req, put_stream_state(resp, error_state)}}
             end
         end
     end
 
     http_result =
-      Req.post(
-        url,
-        json: body,
-        headers: headers,
-        into: into_fun,
-        receive_timeout: receive_timeout,
-        retry: false
-      )
+      try do
+        Req.post(
+          url,
+          json: body,
+          headers: headers,
+          into: into_fun,
+          receive_timeout: receive_timeout,
+          retry: false
+        )
+      rescue
+        exception -> {:request_exception, exception}
+      catch
+        kind, reason -> {:request_failure, kind, reason}
+      end
 
     case http_result do
       {:ok, %{status: 200} = resp} ->
         state = get_stream_state(resp, initial_state)
 
         state =
-          try do
-            flush_tail(state, on_chunk)
-          rescue
-            e -> %{state | error: e}
+          if state.error do
+            state
+          else
+            try do
+              flush_tail(state, on_chunk)
+            rescue
+              e -> %{state | error: e}
+            end
           end
 
         if state.error do
-          {:error, state.error}
+          {:error, sanitize_error(state.error, auth_secrets)}
         else
           {:ok, assemble_final_response(state)}
         end
 
       {:ok, %{status: status} = resp} ->
         state = get_stream_state(resp, initial_state)
-        error_body = state.error_io |> Enum.reverse() |> IO.iodata_to_binary()
 
         error_body =
-          if(error_body == "" and is_binary(resp.body), do: resp.body, else: error_body)
+          if state.error_truncated? do
+            "Upstream error body exceeded #{@max_error_body_bytes} bytes"
+          else
+            captured = state.error_io |> Enum.reverse() |> IO.iodata_to_binary()
+
+            if captured == "" and is_binary(resp.body) do
+              bounded_binary(resp.body, @max_error_body_bytes)
+            else
+              captured
+            end
+          end
+
+        error_body = sanitize_error(error_body, auth_secrets)
 
         {:error,
          %{
@@ -143,8 +174,17 @@ defmodule IexCode.LLM.StreamClient do
          }}
 
       {:error, exception} ->
-        message = Exception.message(exception)
+        message = exception |> request_error_message() |> sanitize_error(auth_secrets)
         {:error, %{status: 0, body: message, kind: :network, message: message}}
+
+      {:request_exception, exception} ->
+        message = exception |> request_error_message() |> sanitize_error(auth_secrets)
+        {:error, %{status: 0, body: message, kind: :network, message: message}}
+
+      {:request_failure, kind, reason} ->
+        safe_reason = sanitize_error(reason, auth_secrets)
+        message = "HTTP request #{kind}"
+        {:error, %{status: 0, body: safe_reason, kind: :network, message: message}}
     end
   end
 
@@ -162,6 +202,9 @@ defmodule IexCode.LLM.StreamClient do
       stop_reason: nil,
       error: nil,
       error_io: [],
+      error_bytes: 0,
+      error_truncated?: false,
+      success_bytes: 0,
       cancelled?: false
     }
   end
@@ -344,6 +387,181 @@ defmodule IexCode.LLM.StreamClient do
   defp error_kind(status) when status >= 400 and status < 500, do: :bad_request
   defp error_kind(status) when status >= 500, do: :server
   defp error_kind(_), do: :bad_request
+
+  defp account_success_chunk(state, chunk) when is_binary(chunk) do
+    received = state.success_bytes + byte_size(chunk)
+
+    if received <= @max_success_stream_bytes do
+      {:ok, %{state | success_bytes: received}}
+    else
+      {:error, %{state | error: :response_too_large, success_bytes: received}}
+    end
+  end
+
+  defp append_error_chunk(state, chunk) when is_binary(chunk) do
+    remaining = max(@max_error_body_bytes - state.error_bytes, 0)
+
+    cond do
+      byte_size(chunk) <= remaining ->
+        {%{
+           state
+           | error_io: [chunk | state.error_io],
+             error_bytes: state.error_bytes + byte_size(chunk)
+         }, :cont}
+
+      remaining > 0 ->
+        prefix = binary_part(chunk, 0, remaining)
+
+        {%{
+           state
+           | error_io: [prefix | state.error_io],
+             error_bytes: @max_error_body_bytes,
+             error_truncated?: true
+         }, :halt}
+
+      true ->
+        {%{state | error_truncated?: true}, :halt}
+    end
+  end
+
+  defp bounded_binary(value, limit) when byte_size(value) <= limit, do: value
+  defp bounded_binary(value, limit), do: binary_part(value, 0, limit)
+
+  defp request_error_message(error) when is_exception(error), do: Exception.message(error)
+
+  defp request_error_message(error),
+    do: inspect(error, limit: 20, printable_limit: @max_error_body_bytes)
+
+  defp auth_secrets(headers) when is_map(headers), do: auth_secrets(Map.to_list(headers))
+
+  defp auth_secrets(headers) when is_list(headers) do
+    headers
+    |> Enum.flat_map(fn
+      {name, value} ->
+        if auth_header?(name), do: credential_values(value), else: []
+
+      _other ->
+        []
+    end)
+    |> Enum.filter(&(is_binary(&1) and &1 != ""))
+    |> Enum.uniq()
+    |> Enum.sort_by(&byte_size/1, :desc)
+  end
+
+  defp auth_secrets(_headers), do: []
+
+  defp normalize_headers(headers) when is_map(headers),
+    do: headers |> Map.to_list() |> normalize_headers()
+
+  defp normalize_headers(headers) when is_list(headers) do
+    Enum.map(headers, fn
+      {name, value} -> {normalize_header_string(name), normalize_header_string(value)}
+      other -> other
+    end)
+  end
+
+  defp normalize_headers(headers), do: headers
+
+  defp normalize_header_string(value) when is_list(value) do
+    if Enum.all?(value, &is_integer/1) and List.ascii_printable?(value),
+      do: List.to_string(value),
+      else: value
+  end
+
+  defp normalize_header_string(value), do: value
+
+  defp auth_header?(name) do
+    name = name |> normalize_header_string() |> to_string() |> String.downcase()
+    name in @auth_header_names or String.ends_with?(name, "-api-key")
+  end
+
+  defp credential_values(value) when is_list(value) do
+    if Enum.all?(value, &is_integer/1) and List.ascii_printable?(value) do
+      credential_values(List.to_string(value))
+    else
+      Enum.flat_map(value, &credential_values/1)
+    end
+  end
+
+  defp credential_values(value) when is_binary(value) do
+    case String.split(value, ~r/\s+/, parts: 2, trim: true) do
+      [_scheme, credential] -> [value, credential]
+      _ -> [value]
+    end
+  end
+
+  defp credential_values(_value), do: []
+
+  defp sanitize_error(value, secrets),
+    do: sanitize_error(value, secrets, @max_error_depth)
+
+  defp sanitize_error(_value, _secrets, 0), do: :truncated
+
+  defp sanitize_error(value, secrets, _depth) when is_binary(value) do
+    secrets
+    |> Enum.reduce(value, fn secret, redacted ->
+      :binary.replace(redacted, secret, "[REDACTED]", [:global])
+    end)
+    |> bounded_binary(@max_error_body_bytes)
+  end
+
+  defp sanitize_error(value, secrets, depth) when is_exception(value) do
+    module = value.__struct__
+
+    sanitized_fields =
+      value
+      |> Map.from_struct()
+      |> sanitize_error(secrets, depth - 1)
+
+    try do
+      struct(module, sanitized_fields)
+    rescue
+      _exception ->
+        %{
+          kind: :exception,
+          module: module,
+          message: sanitize_error(Exception.message(value), secrets, depth - 1)
+        }
+    end
+  end
+
+  defp sanitize_error(value, secrets, depth) when is_map(value) do
+    value
+    |> Enum.take(@max_error_collection_items)
+    |> Map.new(fn {key, nested} ->
+      {sanitize_error(key, secrets, depth - 1), sanitize_error(nested, secrets, depth - 1)}
+    end)
+  end
+
+  defp sanitize_error(value, secrets, depth) when is_list(value) do
+    if Enum.all?(value, &is_integer/1) and List.ascii_printable?(value) do
+      value
+      |> List.to_string()
+      |> sanitize_error(secrets, depth - 1)
+    else
+      value
+      |> Enum.take(@max_error_collection_items)
+      |> Enum.map(&sanitize_error(&1, secrets, depth - 1))
+    end
+  end
+
+  defp sanitize_error(value, secrets, depth) when is_tuple(value) do
+    value
+    |> Tuple.to_list()
+    |> Enum.take(@max_error_collection_items)
+    |> Enum.map(&sanitize_error(&1, secrets, depth - 1))
+    |> List.to_tuple()
+  end
+
+  defp sanitize_error(value, _secrets, _depth)
+       when is_atom(value) or is_number(value) or is_boolean(value) or is_nil(value),
+       do: value
+
+  defp sanitize_error(value, secrets, _depth) do
+    value
+    |> inspect(limit: 20, printable_limit: @max_error_body_bytes)
+    |> sanitize_error(secrets)
+  end
 
   # --- Stream State (threaded through Req's response accumulator) ---
 

@@ -125,8 +125,12 @@ defmodule IexCode.Adversarial.Challenger2M1AdversarialTest do
 
             :ok = TerminalServer.run_command(sid, cmd)
 
-            # Wait for marker file in execution output
-            case receive_terminal_output(sid, "marker_#{i}.txt", 15_000) do
+            # The PTY may split one command's output across multiple packets. Wait for
+            # the command's final sentinel rather than returning as soon as the first
+            # `ls` line arrives, otherwise later env/token assertions race the shell.
+            final_line = ~r/(?:^|\r?\n)FIN_#{Regex.escape(token)}\r?(?:\n|$)/
+
+            case receive_terminal_output(sid, final_line, 15_000) do
               {:ok, output} ->
                 {:ok, sid, i, var_val, token, output}
 
@@ -144,9 +148,14 @@ defmodule IexCode.Adversarial.Challenger2M1AdversarialTest do
       # Verify each session's output and cross-check history for ZERO cross-talk
       Enum.each(exec_results, fn
         {:ok, sid, i, var_val, token, output} ->
-          assert String.contains?(output, token), "Session #{sid} missing token"
-          assert String.contains?(output, var_val), "Session #{sid} missing env value"
-          assert String.contains?(output, "marker_#{i}.txt"), "Session #{sid} wrong directory"
+          assert String.contains?(output, token),
+                 "Session #{sid} missing token in #{inspect(output)}"
+
+          assert String.contains?(output, var_val),
+                 "Session #{sid} missing env value in #{inspect(output)}"
+
+          assert String.contains?(output, "marker_#{i}.txt"),
+                 "Session #{sid} wrong directory in #{inspect(output)}"
 
           # Verify history buffer strictly contains its own token and NO OTHER session's token
           history = TerminalServer.get_history(sid)

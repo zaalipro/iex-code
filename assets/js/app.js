@@ -23,6 +23,16 @@ const setTheme = (theme) => {
 setTheme(localStorage.getItem("phx:theme") || "system")
 window.addEventListener("storage", (event) => event.key === "phx:theme" && setTheme(event.newValue || "system"))
 window.addEventListener("phx:set-theme", (event) => setTheme(event.target.dataset.phxTheme))
+window.addEventListener("phx:reset_run_agent_guidance", (event) => {
+  const agentId = event.detail?.agent_id
+  if (!agentId) return
+
+  const input = document.getElementById(`run-agent-steering-input-${agentId}`)
+  if (input) {
+    input.value = ""
+    input.dispatchEvent(new Event("input", {bubbles: true}))
+  }
+})
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
   if (document.documentElement.dataset.themeSource === "system") setTheme("system")
 })

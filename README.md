@@ -16,7 +16,7 @@ The main LiveView exposes nine connected tools:
 | Area | Current capability |
 | --- | --- |
 | Kanban | Task CRUD, eight workflow states, priorities, assignees, filters, schedules, and subtasks |
-| Swarm | Durable Mission Control for coding and deep-research runs, with persisted dynamic fleets, per-agent controls, budgets, provider manifests, and cited artifacts |
+| Swarm | Durable Mission Control for coding and deep-research runs; coding adds persisted dynamic fleets and per-agent controls, while research adds provider manifests and cited artifacts |
 | Calendar | Monthly task view, task inspection/editing, manual “run now,” and supervised UTC schedule dispatch |
 | Changes | Staged, unstaged, and untracked rails; inline/split diffs; hunk actions; branches and commits |
 | Tests | Asynchronous ExUnit runs, parsed failures, AutoFix proposals, preview, apply, and rollback |
@@ -120,8 +120,23 @@ Every fleet member has a stable run-local identity, lifecycle, desired state, he
 generation-fenced lease, task/progress, usage, and ordered targeted controls in SQLite.
 Mission Control renders those records through a LiveView stream and can pause, resume,
 cancel, restart, or steer one exact worker without enumerating every agent in the session.
-The older interactive-session cards remain clearly labeled role templates and are not
-used as durable fleet truth.
+Each card also shows the latest bounded durable control receipt. Steering distinguishes a
+request that is persisted and queued from guidance that the current worker generation has
+consumed, instead of treating dispatch as proof of consumption.
+
+The persisted objective, run kind/mode, and execution-engine identifier form an execution
+manifest that application changesets do not permit later lifecycle updates to rewrite.
+Creation and retry validate the supplied manifest through its selected engine, claims select
+only engines that are currently available, and the dispatcher revalidates a claimed manifest
+before preparation or execution. `dag_v1` therefore remains durable but unclaimable and
+fail-closed; existing `legacy_v1` rows are never silently reinterpreted as a DAG. Within a
+live legacy run, agent calls resolve the current PID and lease generation from the run fleet
+immediately before invocation. An operator restart after an agent crash can advance the
+generation and let a later phase bind to the replacement, while the abandoned generation
+remains unable to report state or usage.
+
+The older interactive-session cards remain clearly labeled role templates and are not used
+as durable fleet truth.
 
 ## Verification
 
@@ -172,10 +187,12 @@ substitute for running the gate on the current checkout.
 - Wall-clock budgets are enforced by the dispatcher. Token budgets accumulate and stop
   covered planner/coder/research boundaries when providers report usage. Durable fleet
   cost thresholds likewise fail a run after reported `cost_cents` crosses the configured
-  limit. Neither is a pre-use reservation, and providers that omit usage or cost cannot be
-  measured without the still-planned versioned pricing ledger. Forced cancellation stops
-  the supervised BEAM worker; a tool-spawned external descendant may still require
-  OS-level cleanup.
+  limit. When either reported fleet threshold is crossed, the manager cancels and stops the
+  run's sibling agents and terminalizes their durable rows rather than leaving a partially
+  live fleet behind. Neither threshold is a pre-use reservation, and providers that omit
+  usage or cost cannot be measured without the still-planned versioned pricing ledger.
+  Forced cancellation stops the supervised BEAM worker; a tool-spawned external descendant
+  may still require OS-level cleanup.
 - Pause, resume, cancel, restart, and steer have ordered, idempotent per-agent records in
   addition to run-wide controls. Fleet work is run-scoped, generation-fenced, and uses a
   run-local supervised task group. Checkpoint-safe pause/cancellation is covered in the
@@ -185,6 +202,11 @@ substitute for running the gate on the current checkout.
 - Rollback ownership is durable and run-scoped for MultiPatch/AutoFix mutations. Direct
   file, Git, test, and terminal effects are coordinated while they execute but are not
   made transactional or added to the rollback manifest.
+- The shared model streaming client bounds successful streamed responses to 2 MB and
+  collected error bodies to 64 KB. Structured error collections/depth are bounded, and
+  exact credentials supplied through recognized authentication headers are redacted from
+  HTTP, network, request, and callback-error results. These transport limits do not replace
+  provider/tool authorization or make model output trusted.
 - API keys still need OS-keychain/envelope-encrypted storage.
 
 These are the focus of the next phases in [`PROJECT.md`](PROJECT.md).

@@ -572,6 +572,93 @@ defmodule IexCode.Runs.RunAgentTest do
     assert Enum.count(Runs.list_events(run, type: "run.agent_steering_consumed")) == 2
   end
 
+  test "lists a bounded newest-first run-scoped agent control window", %{
+    project: project,
+    session: session,
+    run: run
+  } do
+    {:ok, [first_agent, second_agent]} =
+      Runs.create_run_agents(run, [%{key: "first"}, %{key: "second"}])
+
+    {:ok, first} =
+      Runs.enqueue_run_agent_control(first_agent, "receipt:first", %{
+        kind: "pause",
+        payload: %{}
+      })
+
+    {:ok, second} =
+      Runs.enqueue_run_agent_control(first_agent, "receipt:second", %{
+        kind: "steer",
+        payload: %{"guidance" => "Keep the scope narrow"}
+      })
+
+    {:ok, third} =
+      Runs.enqueue_run_agent_control(second_agent, "receipt:third", %{
+        kind: "cancel",
+        payload: %{}
+      })
+
+    {:ok, other_run} =
+      Runs.create_run(%{
+        project_id: project.id,
+        session_id: session.id,
+        objective: "Keep receipt scopes isolated",
+        status: "running"
+      })
+
+    {:ok, [other_agent]} = Runs.create_run_agents(other_run, [%{key: "other"}])
+
+    {:ok, other_control} =
+      Runs.enqueue_run_agent_control(other_agent, "receipt:other", %{
+        kind: "pause",
+        payload: %{}
+      })
+
+    controls = Runs.list_run_agent_controls_for_run(run)
+    control_ids = Enum.map(controls, & &1.id)
+
+    assert MapSet.new(control_ids) == MapSet.new([first.id, second.id, third.id])
+
+    assert controls
+           |> Enum.filter(&(&1.run_agent_id == first_agent.id))
+           |> Enum.map(& &1.id) == [second.id, first.id]
+
+    assert Enum.any?(controls, &(&1.id == third.id and &1.run_agent_id == second_agent.id))
+    refute other_control.id in control_ids
+
+    noisy_controls =
+      for index <- 1..25 do
+        assert {:ok, control} =
+                 Runs.enqueue_run_agent_control(first_agent, "receipt:noisy:#{index}", %{
+                   kind: "steer",
+                   payload: %{"guidance" => "Directive #{index}"}
+                 })
+
+        control
+      end
+
+    latest_noisy = List.last(noisy_controls)
+    bounded = Runs.list_run_agent_controls_for_run(run, limit: 1)
+
+    assert Enum.any?(bounded, &(&1.id == first.id))
+    assert Enum.any?(bounded, &(&1.id == latest_noisy.id))
+    assert Enum.any?(bounded, &(&1.id == third.id))
+    refute Enum.any?(bounded, &(&1.id == second.id))
+
+    assert bounded
+           |> Enum.map(&{&1.run_agent_id, &1.kind})
+           |> Enum.frequencies()
+           |> Map.values()
+           |> Enum.all?(&(&1 == 1))
+
+    assert Enum.all?(
+             Runs.list_run_agent_controls_for_run(run, status: "pending"),
+             &(&1.status == "pending")
+           )
+
+    assert [] = Runs.list_run_agent_controls_for_run(Ecto.UUID.generate())
+  end
+
   test "ensure rejects immutable manifest drift and migration checks enforce hashed owners", %{
     run: run
   } do
@@ -617,5 +704,50 @@ defmodule IexCode.Runs.RunAgentTest do
     assert failed_run.status == "failed"
     assert failed_run.cost_cents == 5
     assert failed_run.error_details["budget"] == "cost_cents"
+  end
+
+  test "durable agent mutations fail closed after the parent run terminalizes", %{run: run} do
+    owner = "fleet:terminal-parent"
+    {:ok, [agent]} = Runs.create_run_agents(run, [%{key: "terminal-parent"}])
+    {:ok, claimed} = Runs.claim_run_agent(agent, owner, 60_000)
+
+    {:ok, idle} =
+      Runs.transition_run_agent(claimed, "idle", %{},
+        lease_owner: owner,
+        lease_generation: claimed.lease_generation
+      )
+
+    assert {:ok, failed_run} = Runs.transition_run(run, "failed")
+    assert failed_run.status == "failed"
+
+    assert {:error, :lease_lost} =
+             Runs.heartbeat_run_agent(idle, owner, idle.lease_generation, 60_000, %{
+               progress: 40
+             })
+
+    assert {:error, {:run_not_active, "failed"}} =
+             Runs.transition_run_agent(idle, "running", %{current_task: "must not start"},
+               lease_owner: owner,
+               lease_generation: idle.lease_generation
+             )
+
+    assert {:error, {:run_not_active, "failed"}} =
+             Runs.record_run_agent_usage(
+               idle,
+               %{prompt_tokens: 9, completion_tokens: 4, cost_cents: 3},
+               "late.provider",
+               lease_owner: owner,
+               lease_generation: idle.lease_generation
+             )
+
+    persisted_agent = Runs.get_run_agent(idle.id)
+    persisted_run = Runs.get_run!(run.id)
+    assert persisted_agent.status == "idle"
+    assert persisted_agent.progress == 0
+    assert persisted_agent.input_tokens == 0
+    assert persisted_agent.output_tokens == 0
+    assert persisted_run.input_tokens == 0
+    assert persisted_run.output_tokens == 0
+    assert persisted_run.cost_cents == 0
   end
 end

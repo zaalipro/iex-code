@@ -1,8 +1,8 @@
 defmodule IexCode.Engine.DurableFleetTest do
   use IexCode.DataCase, async: false
 
-  alias IexCode.{Projects, Runs, Sessions}
-  alias IexCode.Runs.Executor
+  alias IexCode.{Projects, Repo, Runs, Sessions}
+  alias IexCode.Runs.{Executor, Run}
 
   alias IexCode.Engine.{
     AgentRegistry,
@@ -102,6 +102,8 @@ defmodule IexCode.Engine.DurableFleetTest do
              })
 
     before = Runs.get_run_agent(planner.agent_id)
+    old_planner_pid = planner.pid
+    old_planner_ref = Process.monitor(old_planner_pid)
 
     assert {:ok, restarted} =
              RunFleetSupervisor.control_agent(run, planner.agent_id, :restart, %{
@@ -109,6 +111,10 @@ defmodule IexCode.Engine.DurableFleetTest do
              })
 
     assert restarted.generation == before.lease_generation + 1
+    refute restarted.pid == old_planner_pid
+    assert_receive {:DOWN, ^old_planner_ref, :process, ^old_planner_pid, _reason}, 2_000
+    assert {:ok, %{pid: replacement_pid}} = FleetManager.current_agent(run.id, planner.agent_id)
+    assert replacement_pid == restarted.pid
     assert Process.alive?(explorer_pid)
 
     stale =
@@ -204,11 +210,14 @@ defmodule IexCode.Engine.DurableFleetTest do
     assert FleetManager.drain_steering(run.id, recovered.agent_id) == []
   end
 
-  test "abnormal fleet-agent exit cannot transiently restart a stale generation", ctx do
+  test "interrupted agent restart advances generation and later invocation resolves replacement",
+       ctx do
     run = running_run(ctx, "agent crash")
     on_exit(fn -> FleetSupervisor.stop(run.id) end)
     assert {:ok, agents} = FleetSupervisor.attach(run, agent_count: 4, project_root: ctx.root)
     explorer = Enum.find(agents, &(&1.role == :explorer))
+    sibling = Enum.find(agents, &(&1.role == :planner))
+    sibling_ref = Process.monitor(sibling.pid)
     explorer_pid = explorer.pid
     ref = Process.monitor(explorer_pid)
 
@@ -218,7 +227,35 @@ defmodule IexCode.Engine.DurableFleetTest do
     _ = :sys.get_state(manager)
 
     assert AgentRegistry.whereis_agent(run.id, explorer.agent_id) == nil
-    assert Runs.get_run_agent(explorer.agent_id).status == "interrupted"
+    interrupted = Runs.get_run_agent(explorer.agent_id)
+    assert interrupted.status == "interrupted"
+
+    assert {:ok, restarted} =
+             RunFleetSupervisor.control_agent(run, explorer.agent_id, :restart, %{
+               idempotency_key: "restart-interrupted-agent"
+             })
+
+    assert restarted.agent_id == explorer.agent_id
+    assert restarted.generation == interrupted.lease_generation + 1
+    refute restarted.pid == explorer_pid
+    refute_receive {:DOWN, ^sibling_ref, :process, _, _}, 50
+    Process.demonitor(sibling_ref, [:flush])
+
+    assert {:ok, current} = FleetManager.current_agent(run.id, explorer.agent_id)
+    assert current.pid == restarted.pid
+    assert current.generation == restarted.generation
+
+    assert %IexCode.Engine.Agents.ExplorerAgent.State{session_id: session_id} =
+             FleetRuntime.invoke_agent(run.id, explorer.agent_id, fn replacement ->
+               IexCode.Engine.Agents.ExplorerAgent.get_state(replacement.pid)
+             end)
+
+    assert session_id == ctx.session.id
+
+    assert {:error, :agent_invocation_interrupted} =
+             FleetRuntime.invoke_agent(run.id, explorer.agent_id, fn _replacement ->
+               exit(:simulated_agent_call_exit)
+             end)
   end
 
   test "strict allowlist fails closed on a spoofed registry occupant", ctx do
@@ -276,17 +313,23 @@ defmodule IexCode.Engine.DurableFleetTest do
 
   test "direct dag_v1 ledger rows never fall through to the legacy executor", ctx do
     {:ok, run} =
-      Runs.create_run(%{
-        project_id: ctx.project.id,
-        session_id: ctx.session.id,
+      %Run{project_id: ctx.project.id, session_id: ctx.session.id}
+      |> Run.create_changeset(%{
         objective: "unavailable dag",
         kind: "coding_swarm",
         mode: "swarm",
         execution_engine: "dag_v1"
       })
+      |> Repo.insert()
 
     assert {:error, {:execution_engine_unavailable, "dag_v1"}} =
              Executor.execute(run, fn _, _ -> :ok end)
+
+    assert {:error, {:execution_engine_unavailable, "dag_v1"}} =
+             FleetSupervisor.attach(run, agent_count: 4, project_root: ctx.root)
+
+    assert {:error, {:execution_engine_unavailable, "dag_v1"}} =
+             FleetSupervisor.ensure_started(run, project_root: ctx.root)
 
     assert AgentRegistry.whereis_fleet(run.id, :manager) == nil
   end
@@ -352,6 +395,181 @@ defmodule IexCode.Engine.DurableFleetTest do
     send(task, :finish)
     assert_receive {:DOWN, ^ref, :process, ^task, :normal}, 2_000
     assert Runs.get_run_agent(selected.agent_id).status == "idle"
+  end
+
+  test "one agent exhausting the run budget promptly gates and terminalizes its siblings", ctx do
+    run = running_run(ctx, "budget exhaustion")
+    {:ok, paused} = Runs.transition_run(run, "paused")
+    {:ok, run} = Runs.transition_run(paused, "running", %{token_budget: 3})
+    on_exit(fn -> FleetSupervisor.stop(run.id) end)
+
+    assert {:ok, agents} = FleetSupervisor.attach(run, agent_count: 4, project_root: ctx.root)
+    exhausting = Enum.find(agents, &(&1.role == :planner))
+    sibling = Enum.find(agents, &(&1.role == :explorer))
+
+    exhausting_owner = %{
+      run_id: run.id,
+      agent_id: exhausting.agent_id,
+      generation: exhausting.generation
+    }
+
+    sibling_owner = %{
+      run_id: run.id,
+      agent_id: sibling.agent_id,
+      generation: sibling.generation
+    }
+
+    assert :ok = FleetRuntime.begin_work(exhausting_owner, "budgeted provider call")
+    assert :ok = FleetRuntime.begin_work(sibling_owner, "concurrent sibling call")
+
+    exhausting_state = IexCode.Engine.Agents.PlannerAgent.get_state(exhausting.pid)
+    sibling_state = IexCode.Engine.Agents.ExplorerAgent.get_state(sibling.pid)
+    exhausting_ref = Process.monitor(exhausting.pid)
+    sibling_ref = Process.monitor(sibling.pid)
+    receiver = self()
+
+    exhaust_task =
+      start_supervised!(
+        Supervisor.child_spec(
+          {Task,
+           fn ->
+             send(receiver, {:budget_caller_ready, self()})
+             receive do: (:go -> :ok)
+
+             result =
+               FleetRuntime.record_usage(exhausting_owner, %{input_tokens: 5}, "planner.llm")
+
+             send(receiver, {:budget_result, result})
+           end},
+          id: :budget_exhaustion_caller
+        )
+      )
+
+    sibling_task =
+      start_supervised!(
+        Supervisor.child_spec(
+          {Task,
+           fn ->
+             send(receiver, {:budget_caller_ready, self()})
+             receive do: (:go -> :ok)
+
+             result =
+               FleetRuntime.record_usage(sibling_owner, %{input_tokens: 1}, "explorer.llm")
+
+             send(receiver, {:sibling_usage_result, result})
+           end},
+          id: :budget_sibling_caller
+        )
+      )
+
+    assert_receive {:budget_caller_ready, ^exhaust_task}, 2_000
+    assert_receive {:budget_caller_ready, ^sibling_task}, 2_000
+    send(exhaust_task, :go)
+
+    assert_receive {:budget_result, {:error, :token_budget_exhausted}}, 2_000
+    send(sibling_task, :go)
+
+    assert_receive {:sibling_usage_result, {:error, {:run_not_active, "failed"}}}, 2_000
+
+    assert FleetControlToken.cancelled?(exhausting_state.control_token)
+    assert FleetControlToken.cancelled?(sibling_state.control_token)
+    assert_receive {:DOWN, ^exhausting_ref, :process, _, _}, 2_000
+    assert_receive {:DOWN, ^sibling_ref, :process, _, _}, 2_000
+
+    failed_run = Runs.get_run!(run.id)
+    assert failed_run.status == "failed"
+    assert failed_run.error_details["reason"] == "budget_exhausted"
+    assert failed_run.error_details["budget"] == "tokens"
+
+    assert Enum.all?(Runs.list_run_agents(run.id), &(&1.status == "failed"))
+
+    assert {:error, {:run_not_active, "failed"}} =
+             FleetRuntime.begin_work(sibling_owner, "must remain gated")
+
+    assert {:error, {:run_not_active, "failed"}} =
+             FleetRuntime.progress(sibling_owner, 99, "must not advance")
+
+    assert {:error, {:run_not_active, "failed"}} =
+             FleetRuntime.finish_work(sibling_owner, {:ok, :too_late})
+
+    assert {:error, {:run_not_active, "failed"}} =
+             FleetRuntime.record_usage(sibling_owner, %{input_tokens: 1}, "explorer.llm")
+  end
+
+  test "cost exhaustion returns a structured fleet error and terminalizes the fleet", ctx do
+    run = running_run(ctx, "cost exhaustion")
+    {:ok, paused} = Runs.transition_run(run, "paused")
+    {:ok, run} = Runs.transition_run(paused, "running", %{cost_budget_cents: 2})
+    on_exit(fn -> FleetSupervisor.stop(run.id) end)
+
+    assert {:ok, agents} = FleetSupervisor.attach(run, agent_count: 4, project_root: ctx.root)
+    selected = Enum.find(agents, &(&1.role == :planner))
+
+    owner = %{
+      run_id: run.id,
+      agent_id: selected.agent_id,
+      generation: selected.generation
+    }
+
+    assert {:error, :cost_budget_exhausted} =
+             FleetRuntime.record_usage(owner, %{cost_cents: 3}, "planner.llm")
+
+    assert %{status: "failed", error_details: %{"budget" => "cost_cents"}} =
+             Runs.get_run!(run.id)
+
+    assert Enum.all?(Runs.list_run_agents(run.id), &(&1.status == "failed"))
+  end
+
+  test "agent-owned usage caller observes budget error before its owner is terminated", ctx do
+    run = running_run(ctx, "agent owned budget caller")
+    {:ok, paused} = Runs.transition_run(run, "paused")
+    {:ok, run} = Runs.transition_run(paused, "running", %{token_budget: 3})
+    on_exit(fn -> FleetSupervisor.stop(run.id) end)
+
+    assert {:ok, agents} =
+             FleetSupervisor.attach(run,
+               agent_count: 4,
+               project_root: ctx.root,
+               allowed_tools: []
+             )
+
+    coder = Enum.find(agents, &(&1.role == :coder))
+    sibling = Enum.find(agents, &(&1.role == :explorer))
+    coder_ref = Process.monitor(coder.pid)
+    sibling_ref = Process.monitor(sibling.pid)
+    receiver = self()
+
+    owner = %{
+      run_id: run.id,
+      agent_id: coder.agent_id,
+      generation: coder.generation
+    }
+
+    usage_caller =
+      start_supervised!(
+        Supervisor.child_spec(
+          {Task,
+           fn ->
+             Process.link(coder.pid)
+             send(receiver, {:agent_usage_caller_ready, self()})
+             receive do: (:record_usage -> :ok)
+
+             result = FleetRuntime.record_usage(owner, %{input_tokens: 5}, "coder.llm")
+             send(receiver, {:agent_usage_result, result})
+           end},
+          id: :agent_owned_budget_usage_caller
+        )
+      )
+
+    assert_receive {:agent_usage_caller_ready, ^usage_caller}, 2_000
+    send(usage_caller, :record_usage)
+
+    assert_receive {:agent_usage_result, {:error, :token_budget_exhausted}}, 2_000
+
+    assert_receive {:DOWN, ^coder_ref, :process, _, _}, 2_000
+    assert_receive {:DOWN, ^sibling_ref, :process, _, _}, 2_000
+    assert Runs.get_run!(run.id).status == "failed"
+    assert Enum.all?(Runs.list_run_agents(run.id), &(&1.status == "failed"))
   end
 
   test "control token gates new work until resume and cancels without invoking it" do

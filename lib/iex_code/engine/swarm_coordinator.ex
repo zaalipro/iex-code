@@ -6,7 +6,15 @@ defmodule IexCode.Engine.SwarmCoordinator do
   and autonomous self-healing error feedback loop (up to 3 retries) with cycle detection.
   """
   require Logger
-  alias IexCode.Engine.{AgentRegistry, AgentSupervisor, FleetManager, FleetSupervisor}
+
+  alias IexCode.Engine.{
+    AgentRegistry,
+    AgentSupervisor,
+    FleetManager,
+    FleetRuntime,
+    FleetSupervisor
+  }
+
   alias IexCode.Engine.Agents.{PlannerAgent, ExplorerAgent, CoderAgent, VerifierAgent}
   alias IexCode.Tools
   alias IexCode.Tools.{AutoFix, MultiPatch}
@@ -309,6 +317,9 @@ defmodule IexCode.Engine.SwarmCoordinator do
       # 5. Final Synthesis & Assistant Message
       finish_swarm(state)
     catch
+      {:swarm_agent_phase_interrupted, role, reason, final_state} ->
+        {:error, {:agent_phase_interrupted, role, reason, final_state.stage}}
+
       {:swarm_cancelled, action, final_state} ->
         {:ok, %{status: :stopped, action: action, cancelled: true, state: final_state}}
 
@@ -703,33 +714,41 @@ defmodule IexCode.Engine.SwarmCoordinator do
   defp fleet_size(%State{fleet_agents: []}), do: 4
   defp fleet_size(%State{fleet_agents: agents}), do: length(agents)
 
-  defp agent_target(%State{fleet_agents: []} = state, _role), do: state.session_id
+  defp invoke_role(state, role, fun), do: invoke_role(state, role, fun, true)
 
-  defp agent_target(%State{fleet_agents: agents}, role) do
+  defp invoke_role(%State{run_id: run_id, fleet_agents: agents}, role, fun, drain_steering?)
+       when is_binary(run_id) and is_function(fun, 2) and is_boolean(drain_steering?) do
     case Enum.find(agents, &(&1.role == role)) do
-      %{pid: pid} when is_pid(pid) -> pid
-      _ -> raise "durable fleet is missing #{role}"
+      %{agent_id: agent_id} ->
+        FleetRuntime.invoke_agent(run_id, agent_id, fn current ->
+          directives =
+            if drain_steering?, do: FleetManager.drain_steering(run_id, agent_id), else: []
+
+          fun.(current.pid, directives)
+        end)
+
+      nil ->
+        {:error, {:agent_missing, role}}
     end
   end
 
-  defp target_with_steering(%State{run_id: run_id} = state, role) when is_binary(run_id) do
-    entry = Enum.find(state.fleet_agents, &(&1.role == role))
-
-    if entry do
-      {entry.pid, FleetManager.drain_steering(run_id, entry.agent_id)}
-    else
-      raise "durable fleet is missing #{role}"
-    end
+  defp invoke_role(%State{session_id: session_id}, _role, fun, _drain_steering?)
+       when is_function(fun, 2) do
+    safe_agent_invocation(fn -> fun.(session_id, []) end)
   end
 
-  defp target_with_steering(state, role), do: {agent_target(state, role), []}
+  defp safe_agent_invocation(fun) do
+    fun.()
+  catch
+    :exit, _reason -> {:error, :agent_invocation_interrupted}
+  end
 
   defp explorer_targets(%State{fleet_agents: []} = state),
     do: [%{pid: state.session_id, agent_id: nil, position: 0}]
 
   defp explorer_targets(%State{fleet_agents: agents}) do
     agents
-    |> Enum.filter(&(&1.role == :explorer and is_pid(&1.pid)))
+    |> Enum.filter(&(&1.role == :explorer))
     |> Enum.sort_by(& &1.position)
   end
 
@@ -822,24 +841,24 @@ defmodule IexCode.Engine.SwarmCoordinator do
   defp run_planning_phase(%State{user_prompt: prompt, root_op_id: root_op_id} = state) do
     broadcast_stage(state, :planning, 15, "Planner: Decomposing architecture & execution plan...")
 
-    {target, targeted_steering} = target_with_steering(state, :planner)
-
     plan_res =
-      PlannerAgent.plan(
-        target,
-        prompt,
-        parent_op_id: root_op_id,
-        project_root: state.project_root,
-        run_id: state.run_id,
-        steer_directives: state.steer_directives ++ targeted_steering,
-        allowed_tools: state.allowed_tools,
-        workspace_lock_delegation: state.workspace_lock_delegation
-      )
+      invoke_role(state, :planner, fn target, targeted_steering ->
+        PlannerAgent.plan(
+          target,
+          prompt,
+          parent_op_id: root_op_id,
+          project_root: state.project_root,
+          run_id: state.run_id,
+          steer_directives: state.steer_directives ++ targeted_steering,
+          allowed_tools: state.allowed_tools,
+          workspace_lock_delegation: state.workspace_lock_delegation
+        )
+      end)
 
     plan_text =
       case plan_res do
         {:ok, text} -> text
-        {:error, reason} -> "Planner note: #{inspect(reason)}"
+        {:error, reason} -> abort_durable_agent_phase!(state, :planner, reason)
       end
 
     broadcast_stage(state, :planning, 25, "Planner: Execution plan formulated.")
@@ -864,26 +883,21 @@ defmodule IexCode.Engine.SwarmCoordinator do
           focus =
             "Explorer shard #{index + 1}/#{length(targets)}: inspect a distinct relevant area."
 
-          targeted_steering =
-            if entry.agent_id do
-              FleetManager.drain_steering(state.run_id, entry.agent_id)
-            else
-              []
-            end
+          invoke_explorer(state, entry, fn target, targeted_steering ->
+            guidance =
+              (state.steer_directives ++ targeted_steering)
+              |> Enum.map_join("\n", &"- #{&1}")
 
-          guidance =
-            (state.steer_directives ++ targeted_steering)
-            |> Enum.map_join("\n", &"- #{&1}")
-
-          ExplorerAgent.explore(
-            entry.pid,
-            prompt <> "\n\n" <> focus <> "\n" <> guidance,
-            parent_op_id: root_op_id,
-            project_root: state.project_root,
-            run_id: state.run_id,
-            allowed_tools: state.allowed_tools,
-            workspace_lock_delegation: state.workspace_lock_delegation
-          )
+            ExplorerAgent.explore(
+              target,
+              prompt <> "\n\n" <> focus <> "\n" <> guidance,
+              parent_op_id: root_op_id,
+              project_root: state.project_root,
+              run_id: state.run_id,
+              allowed_tools: state.allowed_tools,
+              workspace_lock_delegation: state.workspace_lock_delegation
+            )
+          end)
         end,
         max_concurrency: max(length(targets), 1),
         ordered: true,
@@ -891,13 +905,29 @@ defmodule IexCode.Engine.SwarmCoordinator do
       )
       |> Enum.with_index()
       |> Enum.map_join("\n\n", fn
-        {{:ok, {:ok, text}}, index} -> "Explorer #{index + 1}:\n#{text}"
-        {{:ok, {:error, reason}}, index} -> "Explorer #{index + 1} note: #{inspect(reason)}"
-        {{:exit, reason}, index} -> "Explorer #{index + 1} crashed: #{inspect(reason)}"
+        {{:ok, {:ok, text}}, index} ->
+          "Explorer #{index + 1}:\n#{text}"
+
+        {{:ok, {:error, reason}}, _index} ->
+          abort_durable_agent_phase!(state, :explorer, reason)
+
+        {{:exit, reason}, _index} ->
+          abort_durable_agent_phase!(state, :explorer, reason)
       end)
 
     broadcast_stage(state, :exploring, 45, "Explorer: Codebase context synthesized.")
     %State{state | explorer_context: summary_text, stage: :exploring}
+  end
+
+  defp invoke_explorer(%State{run_id: run_id}, %{agent_id: agent_id}, fun)
+       when is_binary(run_id) do
+    FleetRuntime.invoke_agent(run_id, agent_id, fn current ->
+      fun.(current.pid, FleetManager.drain_steering(run_id, agent_id))
+    end)
+  end
+
+  defp invoke_explorer(_state, %{pid: target}, fun) do
+    safe_agent_invocation(fn -> fun.(target, []) end)
   end
 
   defp run_coding_and_verification_loop(%State{} = state) do
@@ -923,8 +953,6 @@ defmodule IexCode.Engine.SwarmCoordinator do
 
     broadcast_stage(%State{state | iteration: iteration}, :coding, progress_pct, msg)
 
-    {coder_target, coder_steering} = target_with_steering(state, :coder)
-
     coder_opts = [
       session_id: session_id,
       run_id: state.run_id,
@@ -933,17 +961,24 @@ defmodule IexCode.Engine.SwarmCoordinator do
       plan: state.plan,
       context: state.explorer_context,
       diagnostics: state.verifier_result,
-      steer_directives: state.steer_directives ++ coder_steering,
+      steer_directives: state.steer_directives,
       allowed_tools: state.allowed_tools,
       workspace_lock_delegation: state.workspace_lock_delegation
     ]
 
-    coder_res = CoderAgent.code(coder_target, prompt, coder_opts)
+    coder_res =
+      invoke_role(state, :coder, fn coder_target, coder_steering ->
+        CoderAgent.code(
+          coder_target,
+          prompt,
+          Keyword.update!(coder_opts, :steer_directives, &(&1 ++ coder_steering))
+        )
+      end)
 
     coder_text =
       case coder_res do
         {:ok, text} -> text
-        {:error, reason} -> "Coder note: #{inspect(reason)}"
+        {:error, reason} -> abort_durable_agent_phase!(state, :coder, reason)
       end
 
     state = %State{state | coder_result: coder_text, iteration: iteration}
@@ -959,15 +994,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
       "Verifier: Checking compilation and test suite..."
     )
 
-    verify_res =
-      VerifierAgent.verify(
-        agent_target(state, :verifier),
-        parent_op_id: root_op_id,
-        project_root: project_root,
-        run_id: state.run_id,
-        allowed_tools: state.allowed_tools,
-        workspace_lock_delegation: state.workspace_lock_delegation
-      )
+    verify_res = invoke_verifier(state, root_op_id, project_root)
 
     state = check_steering_and_control(state)
 
@@ -1036,15 +1063,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
                 "AutoFix applied #{applied} fix(es). Re-verifying directly..."
               )
 
-              verify_res =
-                VerifierAgent.verify(
-                  agent_target(state, :verifier),
-                  parent_op_id: root_op_id,
-                  project_root: project_root,
-                  run_id: state.run_id,
-                  allowed_tools: state.allowed_tools,
-                  workspace_lock_delegation: state.workspace_lock_delegation
-                )
+              verify_res = invoke_verifier(state, root_op_id, project_root)
 
               case verify_res do
                 {:ok, summary_map} ->
@@ -1133,6 +1152,47 @@ defmodule IexCode.Engine.SwarmCoordinator do
         }
     end
   end
+
+  defp invoke_verifier(state, root_op_id, project_root) do
+    invoke_role(
+      state,
+      :verifier,
+      fn target, _targeted_steering ->
+        VerifierAgent.verify(
+          target,
+          parent_op_id: root_op_id,
+          project_root: project_root,
+          run_id: state.run_id,
+          allowed_tools: state.allowed_tools,
+          workspace_lock_delegation: state.workspace_lock_delegation
+        )
+      end,
+      false
+    )
+  end
+
+  # Interactive legacy sessions historically degrade missing agent responses into notes.
+  # Durable runs must instead stop at the phase boundary: continuing after an agent lease
+  # or invocation was interrupted could let a later mutating phase run without its declared
+  # prerequisite. An explicit targeted restart can service a later invocation, but this
+  # interrupted call is never replayed implicitly.
+  defp abort_durable_agent_phase!(%State{run_id: run_id} = state, role, reason)
+       when is_binary(run_id) do
+    stop_state_agents(state, "interrupted")
+    _ = perform_rollback(state.project_root, state)
+
+    broadcast_stage(
+      %State{state | stage: :failed, status: :failed},
+      :failed,
+      100,
+      "#{String.capitalize(to_string(role))} invocation was interrupted; explicit retry is required."
+    )
+
+    throw({:swarm_agent_phase_interrupted, role, reason, state})
+  end
+
+  defp abort_durable_agent_phase!(_state, role, reason),
+    do: "#{String.capitalize(to_string(role))} note: #{inspect(reason)}"
 
   defp finish_swarm(%State{session_id: session_id} = state) do
     # Cleanup subagent processes for this session

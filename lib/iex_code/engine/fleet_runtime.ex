@@ -1,6 +1,8 @@
 defmodule IexCode.Engine.FleetRuntime do
   @moduledoc false
 
+  alias IexCode.Engine.FleetManager
+
   def owner(opts) do
     case {opts[:run_id], opts[:run_agent_id], opts[:lease_owner], opts[:generation]} do
       {run_id, agent_id, _lease_owner, generation}
@@ -80,5 +82,17 @@ defmodule IexCode.Engine.FleetRuntime do
       usage,
       source
     )
+  end
+
+  @doc false
+  def invoke_agent(run_id, agent_id, fun)
+      when is_binary(run_id) and is_binary(agent_id) and is_function(fun, 1) do
+    try do
+      with {:ok, entry} <- FleetManager.current_agent(run_id, agent_id) do
+        fun.(entry)
+      end
+    catch
+      :exit, _reason -> {:error, :agent_invocation_interrupted}
+    end
   end
 end

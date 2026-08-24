@@ -12,6 +12,21 @@ defmodule IexCode.Engine.FleetSupervisor do
   def init(_opts), do: DynamicSupervisor.init(strategy: :one_for_one)
 
   def ensure_started(run, opts \\ []) do
+    persisted = IexCode.Runs.get_run(run.id)
+
+    with %IexCode.Runs.Run{} = persisted <- persisted,
+         true <-
+           persisted.session_id == run.session_id and persisted.project_id == run.project_id,
+         :ok <- validate_execution_engine(persisted) do
+      do_ensure_started(persisted, opts)
+    else
+      nil -> {:error, :run_not_found}
+      false -> {:error, :run_scope_mismatch}
+      {:error, {:execution_engine_unavailable, _engine}} = error -> error
+    end
+  end
+
+  defp do_ensure_started(run, opts) do
     case AgentRegistry.whereis_fleet(run.id, :supervisor) do
       nil ->
         case DynamicSupervisor.start_child(__MODULE__, {RunFleetSupervisor, [run: run] ++ opts}) do
@@ -38,6 +53,7 @@ defmodule IexCode.Engine.FleetSupervisor do
     with %IexCode.Runs.Run{} = persisted <- persisted,
          true <-
            persisted.session_id == run.session_id and persisted.project_id == run.project_id,
+         :ok <- validate_execution_engine(persisted),
          :ok <- validate_delegation(persisted, opts[:workspace_lock_delegation]),
          %IexCode.Sessions.Session{} = session <-
            IexCode.Sessions.get_session(persisted.session_id),
@@ -58,9 +74,15 @@ defmodule IexCode.Engine.FleetSupervisor do
     else
       nil -> {:error, :run_not_found}
       false -> {:error, :run_scope_mismatch}
+      {:error, {:execution_engine_unavailable, _engine}} = error -> error
       _ -> {:error, :run_scope_mismatch}
     end
   end
+
+  defp validate_execution_engine(%IexCode.Runs.Run{execution_engine: "legacy_v1"}), do: :ok
+
+  defp validate_execution_engine(%IexCode.Runs.Run{execution_engine: engine}),
+    do: {:error, {:execution_engine_unavailable, engine}}
 
   defp validate_delegation(_run, nil), do: :ok
 

@@ -29,6 +29,7 @@ defmodule IexCodeWeb.RunComponents do
 
   attr :fleet_loading, :boolean, default: false
   attr :agent_guidance, :map, default: %{}
+  attr :agent_receipts, :map, default: %{}
 
   def run_control_plane(assigns) do
     active_workspace_locks =
@@ -582,6 +583,7 @@ defmodule IexCodeWeb.RunComponents do
                 summary={@fleet_summary}
                 loading={@fleet_loading}
                 guidance={@agent_guidance}
+                receipts={@agent_receipts}
               />
             </div>
 
@@ -882,6 +884,7 @@ defmodule IexCodeWeb.RunComponents do
   attr :summary, :map, required: true
   attr :loading, :boolean, default: false
   attr :guidance, :map, default: %{}
+  attr :receipts, :map, default: %{}
 
   def agent_fleet(assigns) do
     ~H"""
@@ -984,6 +987,7 @@ defmodule IexCodeWeb.RunComponents do
           data-agent-health={agent_health(agent)}
           class="group min-w-0 bg-[#10151b] p-4 transition-colors hover:bg-[#121820] sm:p-5"
         >
+          <% receipt = latest_agent_receipt(@receipts, agent) %>
           <div class="flex items-start justify-between gap-3">
             <div class="flex min-w-0 items-start gap-3">
               <span class={[
@@ -1095,6 +1099,40 @@ defmodule IexCodeWeb.RunComponents do
             {agent_value(agent, :error_message)}
           </div>
 
+          <div
+            :if={receipt}
+            id={"run-agent-control-receipt-#{agent_value(agent, :id)}"}
+            role="status"
+            data-control-status={agent_receipt_value(receipt, :status, "pending")}
+            data-control-result-status={agent_receipt_result_status(receipt)}
+            class={[
+              "mt-3 border px-3 py-2.5",
+              agent_receipt_tone(receipt)
+            ]}
+          >
+            <div class="flex items-start justify-between gap-3 font-mono text-[9px] uppercase tracking-wider">
+              <span class="font-semibold">
+                #{agent_receipt_value(receipt, :sequence, 0)} · {agent_receipt_value(
+                  receipt,
+                  :kind,
+                  "control"
+                )}
+              </span>
+              <span class="shrink-0">
+                {agent_receipt_lifecycle(receipt)}
+              </span>
+            </div>
+            <p class="mt-1 text-[10px] leading-5 text-gray-400">
+              {agent_receipt_summary(receipt)}
+            </p>
+            <p
+              class="mt-1 font-mono text-[8px] text-gray-600"
+              title={agent_receipt_timestamp_title(receipt)}
+            >
+              {agent_receipt_timestamp_label(receipt)}
+            </p>
+          </div>
+
           <div class="mt-4 border-t border-[#252c35] pt-3">
             <div class="flex flex-wrap gap-1.5">
               <button
@@ -1105,8 +1143,9 @@ defmodule IexCodeWeb.RunComponents do
                 phx-value-id={agent_value(agent, :id)}
                 phx-value-action="pause"
                 phx-disable-with="Pausing…"
+                disabled={agent_control_pending?(@receipts, agent, "pause")}
                 aria-label={"Pause #{agent_display_name(agent)}"}
-                class="min-h-9 flex-1 border border-amber-500/25 bg-amber-500/[0.05] px-2.5 font-mono text-[9px] font-semibold uppercase tracking-wider text-amber-300 transition-colors hover:bg-amber-500/10 sm:flex-none"
+                class="min-h-9 flex-1 border border-amber-500/25 bg-amber-500/[0.05] px-2.5 font-mono text-[9px] font-semibold uppercase tracking-wider text-amber-300 transition-colors hover:bg-amber-500/10 disabled:cursor-wait disabled:opacity-45 sm:flex-none"
               >
                 Pause
               </button>
@@ -1118,8 +1157,9 @@ defmodule IexCodeWeb.RunComponents do
                 phx-value-id={agent_value(agent, :id)}
                 phx-value-action="resume"
                 phx-disable-with="Resuming…"
+                disabled={agent_control_pending?(@receipts, agent, "resume")}
                 aria-label={"Resume #{agent_display_name(agent)}"}
-                class="min-h-9 flex-1 border border-emerald-500/25 bg-emerald-500/[0.05] px-2.5 font-mono text-[9px] font-semibold uppercase tracking-wider text-emerald-300 transition-colors hover:bg-emerald-500/10 sm:flex-none"
+                class="min-h-9 flex-1 border border-emerald-500/25 bg-emerald-500/[0.05] px-2.5 font-mono text-[9px] font-semibold uppercase tracking-wider text-emerald-300 transition-colors hover:bg-emerald-500/10 disabled:cursor-wait disabled:opacity-45 sm:flex-none"
               >
                 Resume
               </button>
@@ -1131,8 +1171,9 @@ defmodule IexCodeWeb.RunComponents do
                 phx-value-id={agent_value(agent, :id)}
                 phx-value-action="restart"
                 phx-disable-with="Restarting…"
+                disabled={agent_control_pending?(@receipts, agent, "restart")}
                 aria-label={"Restart #{agent_display_name(agent)}"}
-                class="min-h-9 flex-1 border border-cyan-500/25 bg-cyan-500/[0.05] px-2.5 font-mono text-[9px] font-semibold uppercase tracking-wider text-cyan-300 transition-colors hover:bg-cyan-500/10 sm:flex-none"
+                class="min-h-9 flex-1 border border-cyan-500/25 bg-cyan-500/[0.05] px-2.5 font-mono text-[9px] font-semibold uppercase tracking-wider text-cyan-300 transition-colors hover:bg-cyan-500/10 disabled:cursor-wait disabled:opacity-45 sm:flex-none"
               >
                 Restart
               </button>
@@ -1144,9 +1185,10 @@ defmodule IexCodeWeb.RunComponents do
                 phx-value-id={agent_value(agent, :id)}
                 phx-value-action="cancel"
                 phx-disable-with="Stopping…"
+                disabled={agent_control_pending?(@receipts, agent, "cancel")}
                 aria-label={"Stop #{agent_display_name(agent)}"}
                 data-confirm="Stop only this agent? Dependent work may wait for recovery or operator action."
-                class="min-h-9 flex-1 border border-rose-500/25 bg-rose-500/[0.05] px-2.5 font-mono text-[9px] font-semibold uppercase tracking-wider text-rose-300 transition-colors hover:bg-rose-500/10 sm:flex-none"
+                class="min-h-9 flex-1 border border-rose-500/25 bg-rose-500/[0.05] px-2.5 font-mono text-[9px] font-semibold uppercase tracking-wider text-rose-300 transition-colors hover:bg-rose-500/10 disabled:cursor-wait disabled:opacity-45 sm:flex-none"
               >
                 Stop
               </button>
@@ -1180,8 +1222,9 @@ defmodule IexCodeWeb.RunComponents do
                 id={"run-agent-steering-submit-#{agent_value(agent, :id)}"}
                 type="submit"
                 phx-disable-with="Queueing…"
+                disabled={agent_control_pending?(@receipts, agent, "steer")}
                 aria-label={"Send guidance to #{agent_display_name(agent)}"}
-                class="mb-0.5 min-h-9 shrink-0 bg-cyan-400 px-3 font-mono text-[9px] font-semibold uppercase tracking-wider text-[#071014] transition-colors hover:bg-cyan-300"
+                class="mb-0.5 min-h-9 shrink-0 bg-cyan-400 px-3 font-mono text-[9px] font-semibold uppercase tracking-wider text-[#071014] transition-colors hover:bg-cyan-300 disabled:cursor-wait disabled:bg-gray-700 disabled:text-gray-500"
               >
                 Steer
               </button>
@@ -1858,6 +1901,179 @@ defmodule IexCodeWeb.RunComponents do
     value = Map.get(guidance, agent_value(agent, :id), "")
     to_form(%{"guidance" => value}, as: :agent_control)
   end
+
+  defp latest_agent_receipt(receipts, agent) when is_map(receipts) do
+    receipts
+    |> Map.get(agent_value(agent, :id), [])
+    |> List.first()
+  end
+
+  defp latest_agent_receipt(_receipts, _agent), do: nil
+
+  defp agent_control_pending?(receipts, agent, kind) do
+    receipts
+    |> Map.get(agent_value(agent, :id), [])
+    |> Enum.any?(fn receipt ->
+      agent_receipt_value(receipt, :kind, nil) == kind and
+        agent_receipt_value(receipt, :status, nil) in ["pending", "claimed"]
+    end)
+  end
+
+  defp agent_receipt_lifecycle(receipt) do
+    case {agent_receipt_value(receipt, :status, "pending"), agent_receipt_result_status(receipt)} do
+      {"applied", result_status} when result_status in ["queued", "consumed"] -> result_status
+      {status, _result_status} -> status
+    end
+  end
+
+  defp agent_receipt_result_status(receipt) do
+    status =
+      receipt
+      |> agent_receipt_value(:result, %{})
+      |> agent_receipt_map_value(:status)
+      |> safe_agent_receipt_value()
+
+    if status in ~w(queued consumed applied completed paused resumed stopped cancelled restarted steered),
+      do: status,
+      else: nil
+  end
+
+  defp agent_receipt_summary(receipt) do
+    status = agent_receipt_value(receipt, :status, "pending")
+    kind = agent_receipt_value(receipt, :kind, "control")
+    result = agent_receipt_value(receipt, :result, %{})
+    result_status = agent_receipt_result_status(receipt)
+    error = result |> agent_receipt_map_value(:error) |> safe_agent_receipt_error()
+
+    case {status, kind, result_status, error} do
+      {"pending", _kind, _result_status, _error} ->
+        "Persisted and waiting for the worker lease."
+
+      {"claimed", _kind, _result_status, _error} ->
+        "Claimed by the current worker generation."
+
+      {"applied", "steer", "queued", _error} ->
+        "Guidance is durable and waiting for worker consumption."
+
+      {"applied", "steer", "consumed", _error} ->
+        "Guidance was consumed by the worker."
+
+      {"applied", _kind, result_status, _error} when is_binary(result_status) ->
+        "Worker reported #{String.replace(result_status, "_", " ")}."
+
+      {"applied", _kind, _result_status, _error} ->
+        "The worker applied this control."
+
+      {"rejected", _kind, _result_status, error} when is_binary(error) ->
+        "Rejected · #{String.slice(error, 0, 180)}"
+
+      {"rejected", _kind, _result_status, _error} ->
+        "The worker rejected this control."
+
+      {"superseded", _kind, _result_status, _error} ->
+        "Replaced by a newer control or worker generation."
+
+      {_status, _kind, _result_status, _error} ->
+        "Recorded in the durable agent control log."
+    end
+  end
+
+  defp agent_receipt_tone(receipt) do
+    case {agent_receipt_value(receipt, :status, "pending"), agent_receipt_result_status(receipt)} do
+      {"applied", "queued"} ->
+        "border-blue-500/20 bg-blue-500/[0.04] text-blue-300"
+
+      {"applied", _result_status} ->
+        "border-emerald-500/20 bg-emerald-500/[0.04] text-emerald-300"
+
+      {status, _result_status} when status in ["rejected"] ->
+        "border-rose-500/20 bg-rose-500/[0.04] text-rose-300"
+
+      {"superseded", _result_status} ->
+        "border-[#303844] bg-[#151b22] text-gray-400"
+
+      {_status, _result_status} ->
+        "border-amber-500/20 bg-amber-500/[0.04] text-amber-300"
+    end
+  end
+
+  defp agent_receipt_timestamp_label(receipt) do
+    requested =
+      receipt_timestamp_part("Requested", agent_receipt_value(receipt, :inserted_at, nil))
+
+    lifecycle =
+      cond do
+        agent_receipt_value(receipt, :resolved_at, nil) ->
+          receipt_timestamp_part("Resolved", agent_receipt_value(receipt, :resolved_at, nil))
+
+        agent_receipt_value(receipt, :claimed_at, nil) ->
+          receipt_timestamp_part("Claimed", agent_receipt_value(receipt, :claimed_at, nil))
+
+        true ->
+          nil
+      end
+
+    [requested, lifecycle]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" · ")
+  end
+
+  defp agent_receipt_timestamp_title(receipt) do
+    [
+      receipt_timestamp_title_part("Requested", agent_receipt_value(receipt, :inserted_at, nil)),
+      receipt_timestamp_title_part("Claimed", agent_receipt_value(receipt, :claimed_at, nil)),
+      receipt_timestamp_title_part("Resolved", agent_receipt_value(receipt, :resolved_at, nil))
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> case do
+      [] -> "No control timestamp has been persisted"
+      parts -> Enum.join(parts, " · ")
+    end
+  end
+
+  defp receipt_timestamp_part(prefix, %DateTime{} = value),
+    do: "#{prefix} #{relative_time(value)}"
+
+  defp receipt_timestamp_part(prefix, %NaiveDateTime{} = value),
+    do: "#{prefix} #{value |> DateTime.from_naive!("Etc/UTC") |> relative_time()}"
+
+  defp receipt_timestamp_part("Requested", _value), do: "Requested time not reported"
+  defp receipt_timestamp_part(_prefix, _value), do: nil
+
+  defp receipt_timestamp_title_part(prefix, %DateTime{} = value),
+    do: "#{prefix} #{DateTime.to_iso8601(value)}"
+
+  defp receipt_timestamp_title_part(prefix, %NaiveDateTime{} = value),
+    do: "#{prefix} #{NaiveDateTime.to_iso8601(value)}"
+
+  defp receipt_timestamp_title_part(_prefix, _value), do: nil
+
+  defp agent_receipt_value(nil, _key, fallback), do: fallback
+
+  defp agent_receipt_value(receipt, key, fallback) when is_map(receipt) do
+    Map.get(receipt, key, Map.get(receipt, Atom.to_string(key), fallback))
+  end
+
+  defp agent_receipt_value(_receipt, _key, fallback), do: fallback
+
+  defp agent_receipt_map_value(value, key) when is_map(value) do
+    Map.get(value, key) || Map.get(value, Atom.to_string(key))
+  end
+
+  defp agent_receipt_map_value(_value, _key), do: nil
+
+  defp safe_agent_receipt_value(value) when is_binary(value), do: value
+  defp safe_agent_receipt_value(value) when is_atom(value), do: Atom.to_string(value)
+  defp safe_agent_receipt_value(value) when is_integer(value), do: Integer.to_string(value)
+  defp safe_agent_receipt_value(_value), do: nil
+
+  defp safe_agent_receipt_error(value) when is_atom(value), do: Atom.to_string(value)
+
+  defp safe_agent_receipt_error(value) when is_binary(value) do
+    if Regex.match?(~r/^[a-zA-Z0-9_.:-]{1,80}$/, value), do: value, else: "worker_error"
+  end
+
+  defp safe_agent_receipt_error(_value), do: nil
 
   defp present_value?(value), do: not is_nil(value) and value != ""
 

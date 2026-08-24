@@ -4,7 +4,7 @@ defmodule IexCode.Runs.RunDispatcherTest do
   import Ecto.Query
 
   alias IexCode.{Projects, Repo, Runs, Sessions, WorkspaceLocks}
-  alias IexCode.Runs.{Run, RunDispatcher}
+  alias IexCode.Runs.{Run, RunDispatcher, RunStep}
 
   @dispatcher IexCode.RunDispatcherUnderTest
 
@@ -431,6 +431,41 @@ defmodule IexCode.Runs.RunDispatcherTest do
     attrs = run_attrs(context, "invalid run") |> Map.delete(:kind)
     assert {:error, :invalid_typed_run} = RunDispatcher.enqueue(attrs, @dispatcher)
     assert Runs.list_runs(session_id: context.session.id) == []
+  end
+
+  test "claimed manifests are revalidated before legacy preparation or execution", context do
+    stop_supervised!(RunDispatcher)
+
+    assert {:ok, run} =
+             Runs.create_run_with_steps(run_attrs(context, "corrupt persisted manifest"), [
+               %{
+                 key: "prepare",
+                 kind: "prepare",
+                 title: "Validate durable run inputs",
+                 status: "ready"
+               },
+               %{
+                 key: "execute",
+                 kind: "execute",
+                 title: "Execute analysis",
+                 status: "pending",
+                 depends_on: ["prepare"]
+               }
+             ])
+
+    {1, _} =
+      from(step in RunStep, where: step.run_id == ^run.id and step.key == "execute")
+      |> Repo.update_all(set: [kind: ""])
+
+    start_supervised!({RunDispatcher, dispatcher_options()})
+
+    assert_receive {:async_run_updated, %Run{id: run_id, status: "failed"}}, 2_000
+    assert run_id == run.id
+    refute_receive {:test_run_started, ^run_id, _pid}, 100
+
+    failed = Runs.get_run!(run.id)
+    assert failed.error_details["reason"] =~ "invalid_execution_manifest"
+    assert is_nil(failed.lease_owner)
   end
 
   test "startup reconciliation interrupts expired work and never executes it", context do

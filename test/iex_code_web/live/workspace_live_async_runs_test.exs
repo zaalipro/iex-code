@@ -509,7 +509,127 @@ defmodule IexCodeWeb.WorkspaceLiveAsyncRunsTest do
     })
     |> render_submit()
 
+    assert_push_event(view, "reset_run_agent_guidance", %{agent_id: ^target_id})
+
     assert Enum.map(Runs.list_run_agent_controls(target_id), & &1.kind) == ["pause", "steer"]
     assert Runs.list_run_agent_controls(untouched_id) == []
+
+    assert has_element?(
+             view,
+             "#run-agent-control-receipt-#{target_id}[data-control-status='applied'][data-control-result-status='queued']"
+           )
+
+    assert ["Audit only the authorization boundary"] =
+             IexCode.Engine.FleetManager.drain_steering(run.id, target_id)
+
+    _ = :sys.get_state(view.pid)
+
+    assert has_element?(
+             view,
+             "#run-agent-control-receipt-#{target_id}[data-control-result-status='consumed']"
+           )
+  end
+
+  test "preserves agent guidance and does not push a client reset when dispatch fails", %{
+    conn: conn,
+    workspace_path: path
+  } do
+    project = create_project_fixture(%{root_path: path})
+    session = create_session_fixture(project)
+
+    {:ok, run} =
+      Runs.create_run(%{
+        project_id: project.id,
+        session_id: session.id,
+        objective: "Preserve operator guidance on failure",
+        kind: "coding_swarm",
+        mode: "swarm",
+        status: "running"
+      })
+
+    {:ok, [agent]} = Runs.create_run_agents(run, [%{key: "coder", role: "coder"}])
+    {:ok, agent} = Runs.claim_run_agent(agent, "fleet:unavailable-ui-test", 60_000)
+
+    {:ok, agent} =
+      Runs.transition_run_agent(agent, "idle", %{},
+        lease_owner: "fleet:unavailable-ui-test",
+        lease_generation: agent.lease_generation
+      )
+
+    {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+    view |> element("#tab-btn-swarm") |> render_click()
+
+    guidance = "Keep this exact guidance after the dispatcher error"
+
+    form =
+      form(view, "#run-agent-steering-form-#{agent.id}", %{
+        "agent_id" => agent.id,
+        "agent_control" => %{"guidance" => guidance}
+      })
+
+    render_change(form)
+    html = render_submit(form)
+    agent_id = agent.id
+
+    assert html =~ "Agent steering failed"
+    refute_push_event(view, "reset_run_agent_guidance", %{agent_id: ^agent_id})
+
+    assert has_element?(
+             view,
+             "#run-agent-steering-input-#{agent.id}[value='#{guidance}']"
+           )
+  end
+
+  test "restarts an interrupted durable worker from Mission Control without disturbing siblings",
+       %{conn: conn, workspace_path: path} do
+    project = create_project_fixture(%{root_path: path})
+    session = create_session_fixture(project)
+
+    {:ok, run} =
+      Runs.create_run(%{
+        project_id: project.id,
+        session_id: session.id,
+        objective: "Recover one durable worker",
+        kind: "coding_swarm",
+        mode: "swarm",
+        status: "running"
+      })
+
+    on_exit(fn -> FleetSupervisor.stop(run.id) end)
+
+    assert {:ok, entries} =
+             FleetSupervisor.attach(run,
+               agent_count: 4,
+               session: session,
+               project_root: path,
+               allowed_tools: []
+             )
+
+    interrupted = Enum.find(entries, &(&1.role == :explorer))
+    sibling = Enum.find(entries, &(&1.role == :planner))
+    sibling_ref = Process.monitor(sibling.pid)
+    old_pid = interrupted.pid
+    old_generation = interrupted.generation
+    ref = Process.monitor(old_pid)
+    Process.exit(old_pid, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^old_pid, :killed}, 2_000
+
+    manager = IexCode.Engine.AgentRegistry.whereis_fleet(run.id, :manager)
+    _ = :sys.get_state(manager)
+    assert Runs.get_run_agent(interrupted.agent_id).status == "interrupted"
+
+    {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+    view |> element("#tab-btn-swarm") |> render_click()
+
+    assert has_element?(view, "#restart-run-agent-#{interrupted.agent_id}")
+    view |> element("#restart-run-agent-#{interrupted.agent_id}") |> render_click()
+
+    assert {:ok, replacement} =
+             IexCode.Engine.FleetManager.current_agent(run.id, interrupted.agent_id)
+
+    assert replacement.generation == old_generation + 1
+    refute replacement.pid == old_pid
+    refute_receive {:DOWN, ^sibling_ref, :process, _, _}, 50
+    Process.demonitor(sibling_ref, [:flush])
   end
 end

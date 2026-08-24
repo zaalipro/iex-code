@@ -93,8 +93,8 @@ background run per project.
 | Operation | Parent, agent, type, progress, result/error, PID string, timings |
 | Kanban task | Workflow state, priority, assignee, subtasks, schedule, metadata |
 | App settings | Model endpoints/keys plus twelve ranked-search adapters, provider order, fleet size, and research defaults |
-| Run | Objective, explicit execution engine, typed executor, lifecycle, priority, progress, budgets, attempts, lease, timings |
-| Run agent/control | Run-attempt identity, role/ordinal, lifecycle, desired state, fenced lease generation, task/progress/usage, and ordered targeted controls |
+| Run | Changeset-immutable objective/kind/mode/engine manifest, typed executor, lifecycle, priority, progress, budgets, attempts, lease, timings |
+| Run agent/control | Run-attempt identity, role/ordinal, lifecycle, desired state, fenced lease generation, task/progress/usage, ordered targeted controls, and bounded UI receipts |
 | Run step | Typed coding nodes plus research plan/search/fetch/synthesis nodes, dependencies, attempts, result/error |
 | Run event | Per-run monotonic sequence, type, source, bounded payload, occurrence time |
 | Run command/control/approval/artifact | Tool command idempotency, ordered run controls, review decisions, cited reports, and artifact metadata |
@@ -110,7 +110,7 @@ work.
 | Surface | Implemented today |
 | --- | --- |
 | Kanban | CRUD, eight states, drag/move actions, filters, assignees, priorities, subtasks, and scheduling fields |
-| Swarm | Mission Control with coding/deep-research manifests, dynamic persisted fleet cards and targeted controls, budgets, evidence, and report preview |
+| Swarm | Mission Control for coding/deep-research runs; coding adds dynamic persisted fleet cards and targeted controls, while research adds provider manifests, evidence, and report preview |
 | Calendar | Month navigation, task editing/run-now, plus a supervised UTC cron scheduler with atomic claims, stable occurrence keys, recurrence, and stale recovery |
 | Changes/Git | Status rails, inline/split diffs, stage/unstage, hunk operations, branches, fetch/pull, commit generation and commit |
 | Tests/AutoFix | Async test subprocess, ANSI cleanup, structured failures, heuristic proposals, preview/apply/rollback and re-verification |
@@ -130,7 +130,8 @@ work.
 - `IexCode.Tools.Git`: native status, diff, staging, branches, pull/fetch, and commit.
 - `IexCode.Tools.TerminalServer`: supervised native interactive terminal facade.
 - `IexCode.LLM`: OpenAI-compatible and Anthropic streaming, retry, fallback,
-  circuit breaking, SSE parsing, and UTF-8 boundary handling.
+  circuit breaking, SSE parsing, UTF-8 boundary handling, bounded response/error
+  collection, and authentication-header credential redaction on error paths.
 - `IexCode.Research`: normalized Tavily/Brave/Exa/Perplexity/Firecrawl/Linkup/Serper/
   SerpApi/Google/Bing/SearxNG/DuckDuckGo federation, provider lifecycle descriptors,
   rank-interleaved results, duplicate-source provenance, hardened public fetching,
@@ -170,16 +171,16 @@ workspace effects from being replayed blindly.
 | Durable messages and operation summaries | Current | Rehydrated by LiveView |
 | Native PTY and developer tools | Current | Execute in the real project root |
 | Atomic MultiPatch rollback | Current | Applies only to writes performed through MultiPatch |
-| Pause/resume/cancel/restart/steer | Current/partial | Durable targeted agent controls plus run controls; checkpointed delivery is current, arbitrary effect replay remains conservative |
-| Dynamic durable coding fleet | Current | One planner/coder/verifier plus bounded concurrent explorers, run-scoped identity, leases, heartbeats, recovery, and Mission Control projection |
+| Pause/resume/cancel/restart/steer | Current/partial | Durable targeted controls expose persisted receipts and queued-versus-consumed steering; arbitrary effect replay remains conservative |
+| Dynamic durable coding fleet | Current | One planner/coder/verifier plus bounded concurrent explorers, run-scoped identity, leases, heartbeats, generation-aware invocation rebinding, recovery, and Mission Control projection |
 | Fixed role correction loop | Current | Role phases and mutation order remain typed legacy workflow, not a general scheduler |
-| LLM streaming transport | Current | Parser/callback support exists |
+| LLM streaming transport | Current | Parser/callback support plus bounded success/error collection and credential-redacted error paths |
 | Token-by-token durable chat events | Partial | Normal session flow currently publishes the completed message |
 | Calendar recurrence | Current | Supervised UTC polling, due claims, recurrence, stale recovery, and durable run enqueue |
 | Model/search providers | Current/partial | OpenAI-compatible and Anthropic chat; twelve ranked-search adapters; three model-native grounded-search transports; direct general Gemini chat/local transports planned |
 | Configurable swarm-agent count | Current | Drives the durable legacy coding fleet, bounded to 4–32 with extra capacity assigned to explorers |
 | Durable run/event model | Current | Transactional run/step/event/command/approval/artifact records; checkpoints remain planned |
-| Run budgets | Partial | Wall time and provider-reported tokens are enforced at covered boundaries; durable fleets also enforce reported-cost thresholds after use, while pre-use reservation and universal versioned pricing remain planned |
+| Run budgets | Partial | Wall time and provider-reported tokens are enforced at covered boundaries; token/cost exhaustion terminalizes the whole durable fleet after reported use, while pre-use reservation and universal versioned pricing remain planned |
 | Dependency-aware parallel DAG | Partial | Research has typed plan/search/fetch/synthesis nodes and provider fan-out; arbitrary DAG scheduling/locks remain planned |
 | Native workspace coordination | Current cooperative baseline | Durable batched project/file/Git resources, FIFO-oriented waits, capability checks, heartbeats, fencing, dispatcher ownership, guarded UI/tools/terminal, and Mission Control; native bypass/physical-alias hardening remain |
 | Approval and durable command records | Partial | Command idempotency keys and approval records exist; policy enforcement/inbox UX remain planned |
@@ -234,6 +235,11 @@ the target scheduler. Items explicitly marked planned are not current behavior.
   and `interrupted`; a distinct review-waiting state is planned.
 - Stores priority, token/cost/time budgets, attempts, worker lease, and the latest event
   sequence. General execution policy and checkpoint cursors are planned.
+- Application changesets do not permit lifecycle updates to rewrite its objective, kind, mode,
+  or execution-engine identifier after creation. The durable create/retry boundaries validate
+  the supplied manifest through that engine, claim queries select only engines advertised as
+  available, and the dispatcher revalidates a claimed manifest before executing it. Reserved
+  `dag_v1` rows remain unclaimable instead of falling through to `legacy_v1`.
 
 #### Run step
 
@@ -254,6 +260,13 @@ the target scheduler. Items explicitly marked planned are not current behavior.
 - Targeted pause, resume, cancel, restart, and steering requests have per-agent sequences
   and idempotency keys. Mission Control is projected from these rows, not inferred from
   session operation names or PIDs.
+- Agent phases resolve the current PID and generation from `FleetManager` immediately before
+  invocation. A crashed agent is durably interrupted; after an explicit fenced restart
+  advances its generation, a later phase can bind to the replacement rather than retaining
+  the stale PID. This is invocation rebinding, not replay of the interrupted call.
+- Mission Control reads a bounded newest-first receipt window per agent and control kind.
+  Steering first records a durable `queued` result, then changes that receipt to `consumed`
+  only at the fenced worker drain checkpoint.
 
 #### Run event
 
@@ -275,6 +288,10 @@ the target scheduler. Items explicitly marked planned are not current behavior.
 - Run controls have per-run monotonic sequences and idempotency keys, are claimed and
   resolved durably, and are delivered over run-isolated PubSub topics. A general replaying
   consumer for pending controls after dispatcher restart is not yet implemented.
+- Reusing a command or control idempotency key succeeds only for the same semantic request;
+  conflicting reuse fails closed. Run controls also reject terminal targets and recursively
+  secret-shaped payloads. Orphan reconciliation and retry supersede open run controls
+  transactionally so an abandoned claimant cannot leave authoritative work pending.
 
 #### Workspace coordination ledger
 
@@ -309,8 +326,10 @@ the target scheduler. Items explicitly marked planned are not current behavior.
    running.
 6. **Cancellation is cooperative, then forceful.** Stop new dispatch, signal active
    work, terminate after a deadline, and record the final outcome.
-7. **Recovery is deterministic.** Current expired run leases become `interrupted` and
-   require explicit retry; future checkpoints may resume only where a tool contract permits.
+7. **Recovery is deterministic.** Current expired run leases become `interrupted`, their
+   open run controls are superseded, and they require explicit retry. A restarted agent can
+   rebind later invocations to its new generation, but future checkpoints may resume an
+   interrupted effect only where a tool contract permits.
 8. **History is bounded in memory, complete on disk.** The database journal is durable;
    cursor pagination and a windowed LiveView stream remain planned.
 
@@ -343,12 +362,13 @@ storage replay is implemented; cursor-driven LiveView pagination remains in A5.
 **State: leasing/reconciliation and ordered run controls implemented; checkpoint resume planned**
 
 - Claim queued runs with renewable leases.
-- Reconcile expired run/step claims on boot.
+- Reconcile expired run/step claims on boot and supersede orphaned run controls.
 - Replay pending pause/resume/cancel/steer controls safely after dispatcher restart and
   add acknowledgement checkpoints inside every long provider/tool call.
 - The current executor passes the run id into the run-scoped fleet coordinator, records
-  agent progress/usage, and isolates targeted controls; extend the same contracts to
-  checkpoint-safe recovery of explicitly idempotent work.
+  agent progress/usage, resolves the live generation before phase invocation, isolates
+  targeted controls, and terminalizes the fleet on reported token/cost exhaustion; extend
+  the same contracts to checkpoint-safe recovery of explicitly idempotent work.
 
 **Exit:** disconnecting the browser has no effect on execution, and restarting the app
 recovers a run according to its checkpoint and tool capabilities.

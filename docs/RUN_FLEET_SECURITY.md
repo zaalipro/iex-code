@@ -48,6 +48,15 @@ validated against the expected PID, role, and generation after startup. A confli
 occupant fails closed. PIDs are runtime routing values only and are not persisted in fleet
 control results.
 
+The run's objective, kind, mode, and execution-engine identifier are accepted through the
+create changeset only. Application lifecycle changesets reject later changes to those fields.
+Durable creation and retry validate the supplied manifest through its selected engine; claim
+queries filter to engine identifiers whose adapters are currently available, and the dispatcher
+revalidates the persisted manifest after claim but before preparation. The reserved `dag_v1`
+identifier therefore remains stored as an explicit boundary without becoming eligible for
+dispatch or silently executing through `legacy_v1`. Generic post-creation step insertion cannot
+mutate a persisted `dag_v1` manifest.
+
 ### Hashed lease credentials and generation fencing
 
 Each run fleet receives a cryptographically random bearer credential. The raw value remains in
@@ -91,6 +100,15 @@ The manager replays open controls after rehydration and after heartbeats. Reject
 reconcile the desired state to the actual agent state. PubSub is not used to authorize or order
 these actions.
 
+Run-wide controls and durable tool commands also treat idempotency keys as semantic identities,
+not aliases for arbitrary later requests. Reuse returns the canonical row only when the
+requested kind/tool, payload or arguments, target step, retry policy, scheduling value, and
+requester fields covered by that record agree; conflicting reuse returns an idempotency error.
+Run-wide control payloads reject recursively secret-shaped keys; completed, failed, and cancelled
+runs reject new controls. When an orphaned run is reconciled, or a terminal run is explicitly
+retried, its open run controls are superseded in the same durable transaction as the lifecycle
+change.
+
 ### Durable, exactly-once steering consumption
 
 A steering control is durably resolved as queued after validation. Consumption is a separate,
@@ -98,6 +116,13 @@ fenced database transaction. It selects queued steering in sequence order, chang
 result to `consumed`, and appends one `run.agent_steering_consumed` event. Later consumers no
 longer match that row, so each control performs that durable queued-to-consumed transition
 exactly once. Limits bound each drain, and consumption requires the live target generation.
+
+Mission Control reads a bounded newest-first receipt window partitioned per agent and control
+kind, so a noisy worker cannot starve other workers out of receipt retrieval. Each card renders
+its newest receipt overall; that lifecycle distinguishes pending, claimed, rejected,
+superseded, steering `queued`, and steering `consumed`. Submission or PubSub delivery alone is
+never displayed as consumption. Duplicate open actions are disabled from the bounded receipt
+projection, but the database rules above remain the authority.
 
 This guarantee ends at the durable consumption checkpoint. A crash after that commit can stop
 the coordinator before a downstream model observes the directive. It does not make downstream
@@ -116,6 +141,13 @@ Operation tasks inherit the fleet owner/control context, use the run-local task 
 checkpoint the control token before the callback and progress effects, and are linked to their
 owning agent. Run-wide stop enumerates only that run's fleet. Targeted pause, resume, restart,
 and cancel do not enumerate other runs sharing the session.
+
+Role-phase invocations retain the durable agent id rather than treating the PID captured during
+initial attachment as permanent. Immediately before a call, `FleetManager` refetches the live
+row and accepts only a PID whose stored generation matches the active leased generation. If an
+agent crashes it becomes interrupted; an explicit restart fences the old incarnation, advances
+the generation, and permits a later phase to resolve the replacement. The interrupted call is
+not automatically replayed.
 
 ### Recovery policy
 
@@ -142,13 +174,24 @@ PubSub is a notification/projection channel, never authority. Consumers use dura
 sequences, and must tolerate dropped, duplicated, reordered, or stale messages. A PubSub tuple,
 Registry entry, or live PID alone cannot authorize a fleet mutation.
 
+The shared LLM `StreamClient` bounds a successful streamed response at 2 MB and collected HTTP
+error bodies at 64 KB. Structured error collections and nesting are also bounded. Values from
+recognized authentication headers—including bearer authorization and common API-key headers—
+are extracted as redaction secrets and removed from HTTP, network, request-exception, catch,
+and callback-exception results before they are returned. This protects exact supplied
+credentials on those transport error paths; it is not a general sensitive-data classifier for
+arbitrary model content or repository data.
+
 ### Usage accounting
 
 Agent token, reported cost, latency, and request counts are recorded under the live generation
 fence. Agent and parent-run totals update in one transaction. Provider-reported token usage can
 fail the run and append budget/status events when the run token limit is exceeded; reported
 cost does the same when `cost_budget_cents` is exceeded. The run dispatcher separately
-enforces its configured worker wall-time limit.
+enforces its configured worker wall-time limit. When a fleet usage settlement crosses either
+reported threshold, the manager cancels the sibling control tokens, stops the run-local agent
+children, and terminalizes every remaining fleet row as failed so the durable projection does
+not show a live sibling after its parent run has failed.
 
 ## Remaining limitations
 
@@ -214,6 +257,16 @@ authorization policy before exposing fleet controls.
 - [x] Abnormal fleet-agent exits do not auto-restart stale generations.
 - [x] Manager-tree restart tears down old children and rehydrates higher generations.
 - [x] Crafted run/session/project attachment scope is rejected.
+- [x] Application changesets reject execution-engine changes, unavailable engines cannot be
+      claimed, and claimed manifests are revalidated before execution.
+- [x] Later phase invocation resolves the live fenced generation after explicit agent restart.
+- [x] Mission Control receipts distinguish persisted/claimed/queued/consumed outcomes without
+      using PubSub as authority.
+- [x] Conflicting command/control idempotency reuse fails closed and orphaned controls are
+      superseded with their run lifecycle transition.
+- [x] Reported token or cost exhaustion gates new runtime work and terminalizes the run fleet.
+- [x] Streaming success/error collection is bounded and supplied auth-header credentials are
+      redacted from returned transport errors.
 - [ ] Add agent-generation-bound workspace subdelegation and revocation.
 - [ ] Prove or quarantine uncertain native descendants before declaring cleanup complete.
 - [ ] Add atomic hierarchical token/cost/time reservations before provider/tool dispatch.

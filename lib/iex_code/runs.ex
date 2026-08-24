@@ -22,6 +22,7 @@ defmodule IexCode.Runs do
     RunCommand,
     RunControl,
     RunEvent,
+    ExecutionEngine,
     RunStep,
     WorkspaceLock
   }
@@ -103,6 +104,7 @@ defmodule IexCode.Runs do
     with {:ok, project_id} <- required_id(attrs, :project_id),
          {:ok, session_id} <- required_id(attrs, :session_id),
          :ok <- validate_session_project(session_id, project_id),
+         :ok <- ExecutionEngine.validate_manifest(attrs, steps),
          {:ok, payload} <-
            bounded_payload(%{
              "objective" => attr(attrs, :objective),
@@ -115,7 +117,7 @@ defmodule IexCode.Runs do
           Repo.transaction(fn ->
             run =
               case %Run{project_id: project_id, session_id: session_id}
-                   |> Run.changeset(attrs)
+                   |> Run.create_changeset(attrs)
                    |> Repo.insert() do
                 {:ok, run} -> run
                 {:error, changeset} -> Repo.rollback(changeset)
@@ -348,9 +350,32 @@ defmodule IexCode.Runs do
   def claim_next_run(lease_owner, opts) when is_binary(lease_owner) and is_list(opts) do
     lease_ms = positive_integer(opts[:lease_ms], 30_000)
     excluded_project_ids = Enum.filter(opts[:exclude_project_ids] || [], &is_binary/1)
+    execution_engines = dispatchable_execution_engines(opts[:execution_engines])
     now = now()
     lease_expires_at = DateTime.add(now, lease_ms, :millisecond)
 
+    if execution_engines == [] do
+      :none
+    else
+      do_claim_next_run(
+        lease_owner,
+        lease_expires_at,
+        now,
+        excluded_project_ids,
+        execution_engines
+      )
+    end
+  end
+
+  def claim_next_run(_lease_owner, _opts), do: {:error, :invalid_lease_owner}
+
+  defp do_claim_next_run(
+         lease_owner,
+         lease_expires_at,
+         now,
+         excluded_project_ids,
+         execution_engines
+       ) do
     result =
       Repo.retry_on_busy(fn ->
         Repo.transaction(fn ->
@@ -366,6 +391,7 @@ defmodule IexCode.Runs do
           candidate_query =
             from(run in Run,
               where: run.status == "queued",
+              where: run.execution_engine in ^execution_engines,
               where: run.attempt < run.max_attempts,
               where: is_nil(run.cancellation_requested_at),
               where: is_nil(run.not_before) or run.not_before <= ^now,
@@ -400,6 +426,7 @@ defmodule IexCode.Runs do
                 from(run in Run,
                   where: run.id == ^candidate.id,
                   where: run.status == "queued",
+                  where: run.execution_engine in ^execution_engines,
                   where: run.attempt < run.max_attempts,
                   where: is_nil(run.cancellation_requested_at),
                   where: run.project_id not in subquery(active_projects)
@@ -446,8 +473,6 @@ defmodule IexCode.Runs do
         {:error, reason}
     end
   end
-
-  def claim_next_run(_lease_owner, _opts), do: {:error, :invalid_lease_owner}
 
   @doc "Renews a live run lease only when the caller still owns it."
   def renew_lease(run_id, lease_owner, lease_ms \\ 30_000)
@@ -537,67 +562,74 @@ defmodule IexCode.Runs do
     with %Run{} = run <- resolve_run(run_or_id) do
       steps = opts[:steps] || []
 
-      result =
-        Repo.retry_on_busy(fn ->
-          Repo.transaction(fn ->
-            current = Repo.get!(Run, run.id)
+      with :ok <- ExecutionEngine.validate_manifest(run, steps) do
+        result =
+          Repo.retry_on_busy(fn ->
+            Repo.transaction(fn ->
+              current = Repo.get!(Run, run.id)
 
-            cond do
-              active_lease?(current, now()) ->
-                Repo.rollback(:run_still_leased)
+              case ExecutionEngine.validate_manifest(current, steps) do
+                :ok -> :ok
+                {:error, reason} -> Repo.rollback(reason)
+              end
 
-              current.status not in ["failed", "cancelled", "interrupted"] ->
-                Repo.rollback({:invalid_transition, current.status, "queued"})
+              cond do
+                active_lease?(current, now()) ->
+                  Repo.rollback(:run_still_leased)
 
-              current.attempt >= current.max_attempts ->
-                Repo.rollback(:attempts_exhausted)
+                current.status not in ["failed", "cancelled", "interrupted"] ->
+                  Repo.rollback({:invalid_transition, current.status, "queued"})
 
-              true ->
-                {superseded_controls, control_events} =
-                  supersede_controls_in_transaction!(current.id, %{}, "run_retried")
+                current.attempt >= current.max_attempts ->
+                  Repo.rollback(:attempts_exhausted)
 
-                retry_attrs = %{
-                  status: "queued",
-                  progress: 0,
-                  lease_owner: nil,
-                  lease_expires_at: nil,
-                  heartbeat_at: nil,
-                  completed_at: nil,
-                  cancellation_requested_at: nil,
-                  error_message: nil,
-                  error_details: nil
-                }
+                true ->
+                  {superseded_controls, control_events} =
+                    supersede_controls_in_transaction!(current.id, %{}, "run_retried")
 
-                updated =
-                  case current |> Run.changeset(retry_attrs) |> Repo.update() do
-                    {:ok, updated} -> updated
-                    {:error, changeset} -> Repo.rollback(changeset)
-                  end
+                  retry_attrs = %{
+                    status: "queued",
+                    progress: 0,
+                    lease_owner: nil,
+                    lease_expires_at: nil,
+                    heartbeat_at: nil,
+                    completed_at: nil,
+                    cancellation_requested_at: nil,
+                    error_message: nil,
+                    error_details: nil
+                  }
 
-                retry_event =
-                  insert_event_in_transaction!(updated.id, "run.retried", "system", %{
-                    "attempt" => updated.attempt,
-                    "max_attempts" => updated.max_attempts
-                  })
+                  updated =
+                    case current |> Run.changeset(retry_attrs) |> Repo.update() do
+                      {:ok, updated} -> updated
+                      {:error, changeset} -> Repo.rollback(changeset)
+                    end
 
-                {initial_steps, step_events} = insert_initial_steps!(updated.id, steps)
+                  retry_event =
+                    insert_event_in_transaction!(updated.id, "run.retried", "system", %{
+                      "attempt" => updated.attempt,
+                      "max_attempts" => updated.max_attempts
+                    })
 
-                {Repo.get!(Run, updated.id), initial_steps, superseded_controls,
-                 control_events ++ [retry_event | step_events]}
-            end
+                  {initial_steps, step_events} = insert_initial_steps!(updated.id, steps)
+
+                  {Repo.get!(Run, updated.id), initial_steps, superseded_controls,
+                   control_events ++ [retry_event | step_events]}
+              end
+            end)
           end)
-        end)
 
-      case result do
-        {:ok, {updated, initial_steps, superseded_controls, events}} ->
-          broadcast(updated.id, {:run_updated, updated})
-          Enum.each(initial_steps, &broadcast(updated.id, {:run_step_created, &1}))
-          Enum.each(superseded_controls, &broadcast(updated.id, {:run_control_updated, &1}))
-          Enum.each(events, &broadcast(updated.id, {:run_event, &1}))
-          {:ok, updated}
+        case result do
+          {:ok, {updated, initial_steps, superseded_controls, events}} ->
+            broadcast(updated.id, {:run_updated, updated})
+            Enum.each(initial_steps, &broadcast(updated.id, {:run_step_created, &1}))
+            Enum.each(superseded_controls, &broadcast(updated.id, {:run_control_updated, &1}))
+            Enum.each(events, &broadcast(updated.id, {:run_event, &1}))
+            {:ok, updated}
 
-        {:error, reason} ->
-          {:error, reason}
+          {:error, reason} ->
+            {:error, reason}
+        end
       end
     else
       nil -> {:error, :not_found}
@@ -636,20 +668,33 @@ defmodule IexCode.Runs do
       result =
         Repo.retry_on_busy(fn ->
           Repo.transaction(fn ->
-            step =
-              case %RunStep{run_id: run.id} |> RunStep.changeset(attrs) |> Repo.insert() do
-                {:ok, step} -> step
-                {:error, changeset} -> Repo.rollback(changeset)
-              end
+            current_run = Repo.get(Run, run.id)
 
-            event =
-              insert_event_in_transaction!(run.id, "run.step_created", "system", %{
-                "step_id" => step.id,
-                "key" => step.key,
-                "status" => step.status
-              })
+            cond do
+              is_nil(current_run) ->
+                Repo.rollback(:not_found)
 
-            {step, event}
+              current_run.execution_engine == "dag_v1" ->
+                Repo.rollback(:dag_manifest_immutable)
+
+              true ->
+                step =
+                  case %RunStep{run_id: current_run.id}
+                       |> RunStep.changeset(attrs)
+                       |> Repo.insert() do
+                    {:ok, step} -> step
+                    {:error, changeset} -> Repo.rollback(changeset)
+                  end
+
+                event =
+                  insert_event_in_transaction!(current_run.id, "run.step_created", "system", %{
+                    "step_id" => step.id,
+                    "key" => step.key,
+                    "status" => step.status
+                  })
+
+                {step, event}
+            end
           end)
         end)
 
@@ -827,27 +872,40 @@ defmodule IexCode.Runs do
   @doc "Enqueues a run-scoped control exactly once and appends its journal event atomically."
   def enqueue_control(run_or_id, idempotency_key, attrs) when is_map(attrs) do
     with %Run{} = run <- resolve_run(run_or_id),
-         {:ok, payload} <- bounded_payload(attr(attrs, :payload) || %{}) do
+         :ok <- validate_run_control_target(run),
+         {:ok, payload} <- bounded_payload(attr(attrs, :payload) || %{}),
+         :ok <- reject_secret_shaped_control_payload(payload) do
       idempotency_key = to_string(idempotency_key)
 
       result =
         Repo.retry_on_busy(fn ->
           Repo.transaction(fn ->
+            current_run = Repo.get!(Run, run.id)
+
+            case validate_run_control_target(current_run) do
+              :ok -> :ok
+              {:error, reason} -> Repo.rollback(reason)
+            end
+
             case Repo.get_by(RunControl,
-                   run_id: run.id,
+                   run_id: current_run.id,
                    idempotency_key: idempotency_key
                  ) do
               %RunControl{} = existing ->
-                {existing, nil}
+                if run_control_semantically_equal?(existing, attrs, payload) do
+                  {existing, nil}
+                else
+                  Repo.rollback(:idempotency_conflict)
+                end
 
               nil ->
                 {1, _} =
-                  from(current in Run, where: current.id == ^run.id)
+                  from(current in Run, where: current.id == ^current_run.id)
                   |> Repo.update_all(inc: [control_sequence: 1])
 
                 sequence =
                   from(current in Run,
-                    where: current.id == ^run.id,
+                    where: current.id == ^current_run.id,
                     select: current.control_sequence
                   )
                   |> Repo.one!()
@@ -861,7 +919,7 @@ defmodule IexCode.Runs do
                   |> put_attr(:payload, payload)
 
                 control =
-                  case %RunControl{run_id: run.id}
+                  case %RunControl{run_id: current_run.id}
                        |> RunControl.changeset(control_attrs)
                        |> Repo.insert() do
                     {:ok, control} -> control
@@ -869,12 +927,17 @@ defmodule IexCode.Runs do
                   end
 
                 event =
-                  insert_event_in_transaction!(run.id, "run.control_enqueued", "control", %{
-                    "control_id" => control.id,
-                    "control_sequence" => control.sequence,
-                    "kind" => control.kind,
-                    "requested_by" => control.requested_by
-                  })
+                  insert_event_in_transaction!(
+                    current_run.id,
+                    "run.control_enqueued",
+                    "control",
+                    %{
+                      "control_id" => control.id,
+                      "control_sequence" => control.sequence,
+                      "kind" => control.kind,
+                      "requested_by" => control.requested_by
+                    }
+                  )
 
                 {control, event}
             end
@@ -1244,8 +1307,21 @@ defmodule IexCode.Runs do
     with %Run{} = run <- resolve_run(run_or_id) do
       attrs =
         attrs
-        |> drop_keys([:run_id, :idempotency_key])
+        |> drop_keys([
+          :run_id,
+          :idempotency_key,
+          :status,
+          :output,
+          :error_message,
+          :error_details,
+          :attempt,
+          :claimed_at,
+          :heartbeat_at,
+          :completed_at
+        ])
         |> put_attr(:idempotency_key, idempotency_key)
+        |> put_attr(:status, "queued")
+        |> put_attr(:attempt, 0)
 
       candidate = %RunCommand{run_id: run.id}
       changeset = RunCommand.changeset(candidate, attrs)
@@ -1259,7 +1335,11 @@ defmodule IexCode.Runs do
                      idempotency_key: to_string(idempotency_key)
                    ) do
                 %RunCommand{} = existing ->
-                  {existing, false, nil}
+                  if run_command_semantically_equal?(existing, Changeset.apply_changes(changeset)) do
+                    {existing, false, nil}
+                  else
+                    Repo.rollback(:idempotency_conflict)
+                  end
 
                 nil ->
                   case Repo.insert(changeset,
@@ -1274,6 +1354,14 @@ defmodule IexCode.Runs do
                         )
 
                       created? = canonical.id == inserted.id
+
+                      if not created? and
+                           not run_command_semantically_equal?(
+                             canonical,
+                             Changeset.apply_changes(changeset)
+                           ) do
+                        Repo.rollback(:idempotency_conflict)
+                      end
 
                       event =
                         if created? do
@@ -1747,9 +1835,16 @@ defmodule IexCode.Runs do
       timestamp = agent_now()
       lease_owner_hash = fleet_owner_hash(lease_owner)
 
+      active_runs =
+        from(run in Run,
+          where: run.status in ["running", "paused"],
+          select: run.id
+        )
+
       {count, _} =
         from(current in RunAgent,
           where: current.id == ^agent.id,
+          where: current.run_id in subquery(active_runs),
           where: current.status in ["starting", "idle", "running", "paused", "stopping"],
           where: current.lease_owner == ^lease_owner_hash,
           where: current.lease_generation == ^lease_generation,
@@ -1931,6 +2026,11 @@ defmodule IexCode.Runs do
             end
 
             run = Repo.get!(Run, current.run_id)
+
+            if run.status not in ["running", "paused"] do
+              Repo.rollback({:run_not_active, run.status})
+            end
+
             request_count = current.request_count + 1
             total_latency = current.latency_ms + latency
 
@@ -2225,6 +2325,48 @@ defmodule IexCode.Runs do
       |> maybe_where(:kind, opts[:kind])
       |> order_by([control], asc: control.sequence)
       |> limit(^bounded_limit(opts[:limit], 200, 1_000))
+      |> Repo.all()
+    else
+      nil -> []
+    end
+  end
+
+  @doc """
+  Returns a bounded newest-first control window for every agent and control kind
+  in one run.
+
+  The limit is applied per `{run_agent_id, kind}` partition so a noisy worker
+  cannot starve quieter workers out of Mission Control receipts.
+  """
+  def list_run_agent_controls_for_run(run_or_id, opts \\ []) when is_list(opts) do
+    with %Run{} = run <- resolve_run(run_or_id) do
+      per_kind_limit = bounded_limit(opts[:limit], 1, 20)
+
+      ranked =
+        RunAgentControl
+        |> where([control], control.run_id == ^run.id)
+        |> join(:inner, [control], agent in RunAgent,
+          on: agent.id == control.run_agent_id and agent.run_attempt == ^run.attempt
+        )
+        |> maybe_where(:status, opts[:status])
+        |> maybe_where(:kind, opts[:kind])
+        |> select([control, _agent], %{
+          id: control.id,
+          receipt_rank:
+            over(row_number(),
+              partition_by: [control.run_agent_id, control.kind],
+              order_by: [desc: control.sequence, desc: control.id]
+            )
+        })
+
+      receipt_ids =
+        from receipt in subquery(ranked),
+          where: receipt.receipt_rank <= ^per_kind_limit,
+          select: receipt.id
+
+      RunAgentControl
+      |> where([control], control.id in subquery(receipt_ids))
+      |> order_by([control], desc: control.sequence, desc: control.inserted_at, desc: control.id)
       |> Repo.all()
     else
       nil -> []
@@ -3838,6 +3980,13 @@ defmodule IexCode.Runs do
         Repo.transaction(fn ->
           current = Repo.get!(RunAgent, agent.id)
 
+          run = Repo.get!(Run, current.run_id)
+
+          if new_status in RunAgent.leased_statuses() and
+               run.status not in ["running", "paused"] do
+            Repo.rollback({:run_not_active, run.status})
+          end
+
           unless transition_allowed?(@run_agent_transitions, current.status, new_status) do
             Repo.rollback({:invalid_transition, current.status, new_status})
           end
@@ -4387,8 +4536,12 @@ defmodule IexCode.Runs do
 
           if count == 1 do
             updated = Repo.get!(Run, run_id)
+
+            {controls, control_events} =
+              supersede_controls_in_transaction!(run_id, %{}, "run_interrupted")
+
             event = insert_event_in_transaction!(run_id, "run.interrupted", "reconciler", %{})
-            {updated, event}
+            {updated, controls, control_events ++ [event]}
           else
             Repo.rollback(:not_orphaned)
           end
@@ -4396,9 +4549,10 @@ defmodule IexCode.Runs do
       end)
 
     case result do
-      {:ok, {run, event}} ->
+      {:ok, {run, controls, events}} ->
         broadcast(run.id, {:run_updated, run})
-        broadcast(run.id, {:run_event, event})
+        Enum.each(controls, &broadcast(run.id, {:run_control_updated, &1}))
+        Enum.each(events, &broadcast(run.id, {:run_event, &1}))
         {:ok, run}
 
       {:error, reason} ->
@@ -4453,7 +4607,12 @@ defmodule IexCode.Runs do
       result =
         Repo.retry_on_busy(fn ->
           Repo.transaction(fn ->
-            updated = run |> Run.changeset(attrs) |> Repo.update!()
+            updated =
+              case run |> Run.changeset(attrs) |> Repo.update() do
+                {:ok, updated} -> updated
+                {:error, changeset} -> Repo.rollback(changeset)
+              end
+
             event = insert_event_in_transaction!(updated.id, event_type, source, payload)
             {updated, event}
           end)
@@ -4656,6 +4815,31 @@ defmodule IexCode.Runs do
 
   defp bounded_payload(_payload), do: {:error, :invalid_payload}
 
+  defp validate_run_control_target(%Run{status: status})
+       when status in ["completed", "failed", "cancelled"],
+       do: {:error, {:run_not_controllable, status}}
+
+  defp validate_run_control_target(%Run{}), do: :ok
+
+  defp reject_secret_shaped_control_payload(payload) do
+    if secret_shaped_agent_payload?(payload),
+      do: {:error, :secret_payload_forbidden},
+      else: :ok
+  end
+
+  defp run_control_semantically_equal?(%RunControl{} = existing, attrs, payload) do
+    requested_kind = attr(attrs, :kind) && to_string(attr(attrs, :kind))
+    requested_by = attr(attrs, :requested_by) || "local-user"
+
+    is_binary(requested_kind) and existing.kind == requested_kind and
+      existing.payload == payload and existing.requested_by == requested_by
+  end
+
+  defp run_command_semantically_equal?(%RunCommand{} = existing, %RunCommand{} = requested) do
+    fields = [:run_step_id, :tool_name, :arguments, :max_attempts, :not_before]
+    Enum.all?(fields, &(Map.get(existing, &1) == Map.get(requested, &1)))
+  end
+
   defp validate_event_label(type, source) when is_atom(type) or is_binary(type) do
     type = to_string(type)
     source = to_string(source)
@@ -4772,6 +4956,18 @@ defmodule IexCode.Runs do
     do: value |> max(1) |> min(maximum)
 
   defp bounded_limit(_value, default, _maximum), do: default
+
+  defp dispatchable_execution_engines(nil), do: ExecutionEngine.available_ids()
+
+  defp dispatchable_execution_engines(requested) when is_list(requested) do
+    available = MapSet.new(ExecutionEngine.available_ids())
+
+    requested
+    |> Enum.filter(&(is_binary(&1) and MapSet.member?(available, &1)))
+    |> Enum.uniq()
+  end
+
+  defp dispatchable_execution_engines(_requested), do: []
 
   defp positive_integer(value, _default) when is_integer(value) and value > 0, do: value
   defp positive_integer(_value, default), do: default

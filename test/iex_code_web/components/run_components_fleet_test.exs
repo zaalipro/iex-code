@@ -3,7 +3,7 @@ defmodule IexCodeWeb.RunComponentsFleetTest do
 
   import Phoenix.LiveViewTest
 
-  alias IexCode.Runs.{Run, RunAgent}
+  alias IexCode.Runs.{Run, RunAgent, RunAgentControl}
   alias IexCodeWeb.RunComponents
 
   test "renders an arbitrary persisted fleet with truthful metrics and stable controls" do
@@ -166,5 +166,171 @@ defmodule IexCodeWeb.RunComponentsFleetTest do
     assert LazyHTML.query(document, "#restart-run-agent-agent-failed-02")
     assert LazyHTML.query(document, "#run-agent-error-agent-failed-02[role='alert']")
     assert LazyHTML.text(document) =~ "Heartbeat · not reported"
+  end
+
+  test "renders safe durable command receipts and disables only duplicate open actions" do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    pausing = %RunAgent{
+      id: "agent-pausing",
+      run_id: "run-receipts",
+      key: "coder:01",
+      role: "coder",
+      display_name: "Pausing coder",
+      status: "running",
+      desired_state: "paused",
+      attempt: 1,
+      max_attempts: 3
+    }
+
+    steered = %RunAgent{
+      id: "agent-steered",
+      run_id: "run-receipts",
+      key: "explorer:01",
+      role: "explorer",
+      display_name: "Steered explorer",
+      status: "running",
+      desired_state: "active",
+      attempt: 1,
+      max_attempts: 3
+    }
+
+    rejected = %RunAgent{
+      id: "agent-rejected",
+      run_id: "run-receipts",
+      key: "planner:01",
+      role: "planner",
+      display_name: "Rejected planner",
+      status: "running",
+      desired_state: "active",
+      attempt: 1,
+      max_attempts: 3
+    }
+
+    receipts = %{
+      pausing.id => [
+        %RunAgentControl{
+          id: "control-pause",
+          run_id: "run-receipts",
+          run_agent_id: pausing.id,
+          sequence: 4,
+          kind: "pause",
+          status: "pending",
+          payload: %{},
+          inserted_at: now
+        }
+      ],
+      steered.id => [
+        %RunAgentControl{
+          id: "control-steer",
+          run_id: "run-receipts",
+          run_agent_id: steered.id,
+          sequence: 8,
+          kind: "steer",
+          status: "applied",
+          payload: %{"guidance" => "private operator instruction"},
+          result: %{"status" => "consumed", "private_trace" => "must-not-render"},
+          inserted_at: now,
+          resolved_at: now
+        }
+      ],
+      rejected.id => [
+        %RunAgentControl{
+          id: "control-rejected",
+          run_id: "run-receipts",
+          run_agent_id: rejected.id,
+          sequence: 2,
+          kind: "restart",
+          status: "rejected",
+          payload: %{},
+          result: %{"error" => "lease_lost", "token" => "must-not-render"},
+          inserted_at: now,
+          resolved_at: now
+        }
+      ]
+    }
+
+    html =
+      render_component(&RunComponents.agent_fleet/1,
+        run: %Run{id: "run-receipts", status: "running"},
+        agents: [
+          {"run-agent-agent-pausing", pausing},
+          {"run-agent-agent-steered", steered},
+          {"run-agent-agent-rejected", rejected}
+        ],
+        agent_count: 3,
+        summary: %{active: 3, paused: 0, attention: 0, recovering: 0, tokens: 0},
+        loading: false,
+        guidance: %{},
+        receipts: receipts
+      )
+
+    document = LazyHTML.from_fragment(html)
+
+    assert LazyHTML.query(
+             document,
+             "#run-agent-control-receipt-agent-pausing[data-control-status='pending']"
+           )
+
+    assert LazyHTML.query(document, "#pause-run-agent-agent-pausing[disabled]")
+    assert LazyHTML.query(document, "#cancel-run-agent-agent-pausing:not([disabled])")
+
+    assert LazyHTML.query(
+             document,
+             "#run-agent-control-receipt-agent-steered[data-control-result-status='consumed']"
+           )
+
+    assert LazyHTML.query(
+             document,
+             "#run-agent-control-receipt-agent-rejected[data-control-status='rejected']"
+           )
+
+    text = LazyHTML.text(document)
+    assert text =~ "#8 · steer"
+    assert text =~ "Guidance was consumed by the worker"
+    assert text =~ "Rejected · lease_lost"
+    refute text =~ "private operator instruction"
+    refute text =~ "must-not-render"
+
+    for {status, result, expected_lifecycle} <- [
+          {"claimed", nil, "claimed"},
+          {"applied", %{"status" => "queued"}, "queued"},
+          {"applied", %{"status" => "applied"}, "applied"},
+          {"superseded", %{"reason" => "new_generation"}, "superseded"}
+        ] do
+      receipt = %RunAgentControl{
+        id: "control-#{status}-#{expected_lifecycle}",
+        run_id: "run-receipts",
+        run_agent_id: steered.id,
+        sequence: 9,
+        kind: "steer",
+        status: status,
+        payload: %{},
+        result: result,
+        inserted_at: now,
+        claimed_at: if(status == "claimed", do: now),
+        resolved_at: if(status in ["applied", "superseded"], do: now)
+      }
+
+      lifecycle_html =
+        render_component(&RunComponents.agent_fleet/1,
+          run: %Run{id: "run-receipts", status: "running"},
+          agents: [{"run-agent-agent-steered", steered}],
+          agent_count: 1,
+          summary: %{active: 1, paused: 0, attention: 0, recovering: 0, tokens: 0},
+          loading: false,
+          guidance: %{},
+          receipts: %{steered.id => [receipt]}
+        )
+
+      lifecycle_document = LazyHTML.from_fragment(lifecycle_html)
+
+      assert LazyHTML.query(
+               lifecycle_document,
+               "#run-agent-control-receipt-agent-steered[data-control-status='#{status}']"
+             )
+
+      assert LazyHTML.text(lifecycle_document) =~ expected_lifecycle
+    end
   end
 end

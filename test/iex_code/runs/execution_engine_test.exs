@@ -32,5 +32,6 @@ defmodule IexCode.Runs.ExecutionEngineTest do
   test "descriptors truthfully expose availability" do
     assert %{id: "legacy_v1", available: true} in ExecutionEngine.descriptors()
     assert %{id: "dag_v1", available: false} in ExecutionEngine.descriptors()
+    assert ExecutionEngine.available_ids() == ["legacy_v1"]
   end
 end

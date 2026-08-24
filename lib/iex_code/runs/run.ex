@@ -13,6 +13,37 @@ defmodule IexCode.Runs.Run do
   @priorities ~w(low normal high critical)
   @execution_engines ~w(legacy_v1 dag_v1)
 
+  @manifest_fields [
+    :objective,
+    :kind,
+    :mode,
+    :execution_engine
+  ]
+
+  @mutable_fields [
+    :status,
+    :priority,
+    :progress,
+    :token_budget,
+    :cost_budget_cents,
+    :time_budget_ms,
+    :input_tokens,
+    :output_tokens,
+    :cost_cents,
+    :metadata,
+    :error_message,
+    :error_details,
+    :started_at,
+    :heartbeat_at,
+    :completed_at,
+    :lease_owner,
+    :lease_expires_at,
+    :cancellation_requested_at,
+    :not_before,
+    :attempt,
+    :max_attempts
+  ]
+
   schema "runs" do
     field :objective, :string
     field :kind, :string, default: "coding_swarm"
@@ -56,35 +87,26 @@ defmodule IexCode.Runs.Run do
     timestamps(type: :utc_datetime)
   end
 
+  @doc false
+  def create_changeset(%__MODULE__{id: nil} = run, attrs) do
+    run
+    |> cast(attrs, @manifest_fields ++ @mutable_fields)
+    |> validate_changeset()
+  end
+
+  def create_changeset(%__MODULE__{} = run, attrs), do: changeset(run, attrs)
+
+  def changeset(%__MODULE__{id: nil} = run, attrs), do: create_changeset(run, attrs)
+
   def changeset(run, attrs) do
     run
-    |> cast(attrs, [
-      :objective,
-      :kind,
-      :status,
-      :mode,
-      :priority,
-      :execution_engine,
-      :progress,
-      :token_budget,
-      :cost_budget_cents,
-      :time_budget_ms,
-      :input_tokens,
-      :output_tokens,
-      :cost_cents,
-      :metadata,
-      :error_message,
-      :error_details,
-      :started_at,
-      :heartbeat_at,
-      :completed_at,
-      :lease_owner,
-      :lease_expires_at,
-      :cancellation_requested_at,
-      :not_before,
-      :attempt,
-      :max_attempts
-    ])
+    |> cast(attrs, @mutable_fields)
+    |> reject_manifest_changes(run, attrs)
+    |> validate_changeset()
+  end
+
+  defp validate_changeset(changeset) do
+    changeset
     |> validate_required([
       :project_id,
       :session_id,
@@ -123,6 +145,21 @@ defmodule IexCode.Runs.Run do
   def kinds, do: @kinds
   def priorities, do: @priorities
   def execution_engines, do: @execution_engines
+
+  defp reject_manifest_changes(changeset, %__MODULE__{id: id} = run, attrs)
+       when not is_nil(id) and is_map(attrs) do
+    Enum.reduce(@manifest_fields, changeset, fn field, current ->
+      requested = Map.get(attrs, field, Map.get(attrs, Atom.to_string(field)))
+
+      if is_nil(requested) or requested == Map.get(run, field) do
+        current
+      else
+        add_error(current, field, "cannot be changed after creation")
+      end
+    end)
+  end
+
+  defp reject_manifest_changes(changeset, _run, _attrs), do: changeset
 
   defp validate_attempts(changeset) do
     attempt = get_field(changeset, :attempt)

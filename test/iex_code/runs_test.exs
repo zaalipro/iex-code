@@ -1,7 +1,10 @@
 defmodule IexCode.RunsTest do
   use IexCode.DataCase, async: false
 
-  alias IexCode.{Projects, Runs, Sessions}
+  import Ecto.Query
+
+  alias IexCode.{Projects, Repo, Runs, Sessions}
+  alias IexCode.Runs.Run
 
   setup do
     root = Path.join(System.tmp_dir!(), "iex-code-runs-#{System.unique_integer([:positive])}")
@@ -19,6 +22,17 @@ defmodule IexCode.RunsTest do
     }
 
     Runs.create_run(Map.merge(base, attrs))
+  end
+
+  defp insert_unavailable_dag(project, session, objective) do
+    %Run{project_id: project.id, session_id: session.id}
+    |> Run.create_changeset(%{
+      objective: objective,
+      kind: "analysis",
+      mode: "single",
+      execution_engine: "dag_v1"
+    })
+    |> Repo.insert()
   end
 
   test "creation commits a sequence-one event before broadcasting on run and session topics", %{
@@ -66,6 +80,156 @@ defmodule IexCode.RunsTest do
            ]
 
     assert Runs.get_run!(run.id).event_sequence == 3
+  end
+
+  test "durable creation rejects unavailable engines before inserting a run", %{
+    project: project,
+    session: session
+  } do
+    assert {:error, {:execution_engine_unavailable, "dag_v1"}} =
+             create_run(project, session, %{execution_engine: "dag_v1"})
+
+    assert Runs.list_runs(session_id: session.id) == []
+  end
+
+  test "durable creation validates the legacy manifest before any insert", %{
+    project: project,
+    session: session
+  } do
+    attrs = %{
+      project_id: project.id,
+      session_id: session.id,
+      objective: "Duplicate graph"
+    }
+
+    assert {:error, :duplicate_step_key} =
+             Runs.create_run_with_steps(attrs, [
+               %{key: "duplicate", kind: "prepare", title: "First"},
+               %{key: "duplicate", kind: "execute", title: "Second"}
+             ])
+
+    assert Runs.list_runs(session_id: session.id) == []
+  end
+
+  test "run execution manifest is immutable through lifecycle and heartbeat updates", %{
+    project: project,
+    session: session
+  } do
+    {:ok, run} = create_run(project, session)
+
+    assert {:error, %Ecto.Changeset{} = transition_changeset} =
+             Runs.transition_run(run, "running", %{execution_engine: "dag_v1"})
+
+    assert {"cannot be changed after creation", _} =
+             transition_changeset.errors[:execution_engine]
+
+    assert {:error, %Ecto.Changeset{} = heartbeat_changeset} =
+             Runs.heartbeat_run(run, %{"execution_engine" => "dag_v1"})
+
+    assert {"cannot be changed after creation", _} =
+             heartbeat_changeset.errors[:execution_engine]
+
+    assert {:error, %Ecto.Changeset{} = direct_changeset} =
+             run
+             |> Run.create_changeset(%{execution_engine: "dag_v1"})
+             |> Repo.update()
+
+    assert {"cannot be changed after creation", _} = direct_changeset.errors[:execution_engine]
+
+    for {field, changed} <- [
+          {:objective, "Reinterpreted objective"},
+          {:kind, "deep_research"},
+          {:mode, "research"}
+        ] do
+      assert {:error, %Ecto.Changeset{} = changeset} =
+               Runs.heartbeat_run(run, %{field => changed})
+
+      assert {"cannot be changed after creation", _} = changeset.errors[field]
+    end
+
+    persisted = Runs.get_run!(run.id)
+    assert persisted.status == "queued"
+    assert persisted.objective == run.objective
+    assert persisted.kind == run.kind
+    assert persisted.mode == run.mode
+    assert persisted.execution_engine == "legacy_v1"
+    assert persisted.event_sequence == 1
+  end
+
+  test "generic step creation cannot mutate a persisted dag manifest", %{
+    project: project,
+    session: session
+  } do
+    {:ok, run} = insert_unavailable_dag(project, session, "immutable graph")
+
+    assert {:error, :dag_manifest_immutable} =
+             Runs.create_step(run, %{key: "late", kind: "analysis", title: "Late node"})
+
+    forged_legacy = %{run | execution_engine: "legacy_v1"}
+
+    assert {:error, :dag_manifest_immutable} =
+             Runs.create_step(forged_legacy, %{
+               key: "forged",
+               kind: "analysis",
+               title: "Forged node"
+             })
+
+    assert Runs.list_steps(run) == []
+  end
+
+  test "run claims skip unavailable engines without blocking dispatchable work", %{
+    project: project,
+    session: session
+  } do
+    {:ok, unavailable} = insert_unavailable_dag(project, session, "higher priority dag")
+
+    {:ok, legacy} =
+      create_run(project, session, %{objective: "dispatchable legacy", priority: "low"})
+
+    assert {:ok, claimed} = Runs.claim_next_run("engine-aware-dispatcher")
+    assert claimed.id == legacy.id
+    assert claimed.execution_engine == "legacy_v1"
+    assert Runs.get_run!(unavailable.id).status == "queued"
+
+    assert :none =
+             Runs.claim_next_run("unsupported-dispatcher", execution_engines: ["dag_v1"])
+  end
+
+  test "retry validates the persisted engine at the durable boundary", %{
+    project: project,
+    session: session
+  } do
+    {:ok, unavailable} = insert_unavailable_dag(project, session, "unavailable retry")
+
+    {1, _} =
+      from(run in Run, where: run.id == ^unavailable.id)
+      |> Repo.update_all(set: [status: "failed", completed_at: DateTime.utc_now()])
+
+    assert {:error, {:execution_engine_unavailable, "dag_v1"}} =
+             Runs.retry_run(unavailable)
+
+    assert Runs.get_run!(unavailable.id).status == "failed"
+  end
+
+  test "retry rejects an invalid next-attempt manifest before changing the run", %{
+    project: project,
+    session: session
+  } do
+    {:ok, run} = create_run(project, session)
+    {:ok, failed} = Runs.transition_run(run, "failed")
+
+    assert {:error, :duplicate_step_key} =
+             Runs.retry_run(failed,
+               steps: [
+                 %{key: "retry", kind: "prepare", title: "First"},
+                 %{key: "retry", kind: "execute", title: "Second"}
+               ]
+             )
+
+    persisted = Runs.get_run!(run.id)
+    assert persisted.status == "failed"
+    assert persisted.event_sequence == 2
+    assert Runs.list_steps(run) == []
   end
 
   test "strict changesets reject malformed runs and invalid transitions", %{
@@ -264,17 +428,43 @@ defmodule IexCode.RunsTest do
     assert {:ok, command} =
              Runs.enqueue_command(run, "write:lib/example.ex", %{
                tool_name: "write_file",
-               arguments: %{"path" => "lib/example.ex"}
+               arguments: %{"path" => "lib/example.ex"},
+               status: "completed",
+               attempt: 9,
+               output: "forged output",
+               error_message: "forged error",
+               error_details: %{"credential" => "must not persist"},
+               claimed_at: DateTime.utc_now(),
+               heartbeat_at: DateTime.utc_now(),
+               completed_at: DateTime.utc_now()
              })
 
+    assert command.status == "queued"
+    assert command.attempt == 0
+    assert is_nil(command.output)
+    assert is_nil(command.error_message)
+    assert is_nil(command.error_details)
+    assert is_nil(command.claimed_at)
+    assert is_nil(command.heartbeat_at)
+    assert is_nil(command.completed_at)
+
     assert {:ok, same_command} =
+             Runs.enqueue_command(run, "write:lib/example.ex", %{
+               tool_name: "write_file",
+               arguments: %{"path" => "lib/example.ex"},
+               status: "failed",
+               attempt: 100,
+               error_message: "different ignored lifecycle"
+             })
+
+    assert same_command.id == command.id
+
+    assert {:error, :idempotency_conflict} =
              Runs.enqueue_command(run, "write:lib/example.ex", %{
                tool_name: "run_command",
                arguments: %{"command" => "rm -rf /"}
              })
 
-    assert same_command.id == command.id
-    assert same_command.tool_name == "write_file"
     assert Runs.get_command_by_idempotency_key(run, "write:lib/example.ex").id == command.id
 
     assert {:ok, approval} =
@@ -321,14 +511,15 @@ defmodule IexCode.RunsTest do
     assert pending.sequence == 1
     assert pending.status == "pending"
 
-    assert {:ok, duplicate} =
+    assert {:ok, duplicate} = Runs.enqueue_control(run, "ui:steer:one", attrs)
+    assert duplicate.id == pending.id
+
+    assert {:error, :idempotency_conflict} =
              Runs.enqueue_control(run, "ui:steer:one", %{
                kind: "cancel",
                payload: %{"unsafe" => true}
              })
 
-    assert duplicate.id == pending.id
-    assert duplicate.kind == "steer"
     assert_receive {:run_control_enqueued, %{id: control_id}}
     assert control_id == pending.id
 
@@ -355,6 +546,25 @@ defmodule IexCode.RunsTest do
              "run.control_claimed",
              "run.control_applied"
            ]
+  end
+
+  test "run controls reject secret payloads and terminal targets", %{
+    project: project,
+    session: session
+  } do
+    {:ok, run} = create_run(project, session)
+
+    assert {:error, :secret_payload_forbidden} =
+             Runs.enqueue_control(run, "secret-steer", %{
+               kind: "steer",
+               payload: %{"nested" => [%{"access_token" => "do-not-store"}]}
+             })
+
+    assert Runs.list_controls(run) == []
+    assert {:ok, completed} = Runs.transition_run(run, "completed")
+
+    assert {:error, {:run_not_controllable, "completed"}} =
+             Runs.enqueue_control(completed, "late-pause", %{kind: "pause"})
   end
 
   test "cancelled run keeps project lease until its worker exits", %{
@@ -466,6 +676,17 @@ defmodule IexCode.RunsTest do
     assert {:ok, renewed} = Runs.renew_lease(claimed.id, "dispatcher-a", 30_000)
     assert renewed.lease_expires_at
 
+    assert {:ok, first_control} =
+             Runs.enqueue_control(claimed, "orphan:pause", %{kind: "pause"})
+
+    assert {:ok, claimed_control} = Runs.claim_control(first_control, "dispatcher-a")
+
+    assert {:ok, pending_control} =
+             Runs.enqueue_control(claimed, "orphan:steer", %{
+               kind: "steer",
+               payload: %{"guidance" => "still pending"}
+             })
+
     expired = DateTime.add(DateTime.utc_now(), -1, :second) |> DateTime.truncate(:second)
 
     Repo.update_all(from(r in IexCode.Runs.Run, where: r.id == ^claimed.id),
@@ -474,6 +695,9 @@ defmodule IexCode.RunsTest do
 
     assert [%{id: id, status: "interrupted"}] = Runs.reconcile_orphaned_runs()
     assert id == claimed.id
+    assert Runs.get_control(claimed_control.id).status == "superseded"
+    assert Runs.get_control(pending_control.id).status == "superseded"
+    assert Runs.get_control(pending_control.id).result == %{"reason" => "run_interrupted"}
     assert {:ok, retried} = Runs.retry_run(claimed.id)
     assert retried.status == "queued"
     assert is_nil(retried.lease_owner)

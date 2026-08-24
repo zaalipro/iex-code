@@ -56,6 +56,7 @@ defmodule IexCodeWeb.WorkspaceLive do
     pending_approval_count = Runs.count_pending_approvals(session.id)
     run_artifacts = if selected_run, do: Runs.list_artifacts(selected_run), else: []
     run_agents = if selected_run, do: Runs.list_run_agents(selected_run, limit: 100), else: []
+    run_agent_receipts = run_agent_control_receipts(selected_run)
     workspace_locks = Runs.list_workspace_locks(project_id: project.id, active: true)
     settings = Settings.get_settings()
     files = list_project_files(project.root_path)
@@ -104,6 +105,7 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:run_fleet_summary, run_fleet_summary(run_agents))
       |> assign(:run_fleet_loading?, false)
       |> assign(:run_agent_guidance, %{})
+      |> assign(:run_agent_receipts, run_agent_receipts)
       |> assign(:workspace_locks, workspace_locks)
       |> assign(:run_rows, durable_runs)
       |> assign(:run_event_rows, run_events)
@@ -2554,7 +2556,9 @@ defmodule IexCodeWeb.WorkspaceLive do
             {:noreply,
              socket
              |> update(:run_agent_guidance, &Map.delete(&1, agent_id))
-             |> put_flash(:info, "Agent guidance persisted and dispatched")}
+             |> refresh_run_fleet()
+             |> push_event("reset_run_agent_guidance", %{agent_id: agent_id})
+             |> put_flash(:info, "Agent guidance queued for this worker")}
 
           {:error, reason} ->
             {:noreply,
@@ -2586,7 +2590,10 @@ defmodule IexCodeWeb.WorkspaceLive do
     if selected_run_agent?(socket, agent_id) do
       case control_selected_run_agent(socket, agent_id, kind, %{}) do
         {:ok, _result} ->
-          {:noreply, put_flash(socket, :info, "Agent #{action} request persisted")}
+          {:noreply,
+           socket
+           |> refresh_run_fleet()
+           |> put_flash(:info, "Agent #{action} request persisted")}
 
         {:error, reason} ->
           {:noreply,
@@ -3735,6 +3742,16 @@ defmodule IexCodeWeb.WorkspaceLive do
   end
 
   @impl true
+  def handle_info({event_name, control}, socket)
+      when event_name in [:run_agent_control_enqueued, :run_agent_control_updated] do
+    if socket.assigns.selected_run && control.run_id == socket.assigns.selected_run.id do
+      {:noreply, refresh_run_fleet(socket)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
   def handle_info({:async_run_started, run, _pid}, socket) do
     {:noreply, select_run_projection(socket, Runs.get_run(run.id) || run)}
   end
@@ -4611,6 +4628,7 @@ defmodule IexCodeWeb.WorkspaceLive do
     |> assign(:run_fleet_summary, run_fleet_summary(agents))
     |> assign(:run_fleet_loading?, false)
     |> assign(:run_agent_guidance, %{})
+    |> assign(:run_agent_receipts, run_agent_control_receipts(selected))
     |> stream(:run_agents, agents, reset: true, dom_id: &"run-agent-#{&1.id}")
     |> assign(:run_rows, runs)
     |> assign(
@@ -4645,6 +4663,7 @@ defmodule IexCodeWeb.WorkspaceLive do
     |> assign(:run_fleet_summary, run_fleet_summary(agents))
     |> assign(:run_fleet_loading?, false)
     |> assign(:run_agent_guidance, agent_guidance)
+    |> assign(:run_agent_receipts, run_agent_control_receipts(run))
     |> stream(:run_agents, agents, reset: true, dom_id: &"run-agent-#{&1.id}")
     |> assign(:run_rows, session_runs)
     |> assign(:run_event_rows, Runs.list_latest_events(run, limit: 500))
@@ -4671,7 +4690,16 @@ defmodule IexCodeWeb.WorkspaceLive do
     |> assign(:run_agent_count, length(agents))
     |> assign(:run_fleet_summary, run_fleet_summary(agents))
     |> assign(:run_fleet_loading?, false)
+    |> assign(:run_agent_receipts, run_agent_control_receipts(socket.assigns.selected_run))
     |> stream(:run_agents, agents, reset: true, dom_id: &"run-agent-#{&1.id}")
+  end
+
+  defp run_agent_control_receipts(nil), do: %{}
+
+  defp run_agent_control_receipts(run) do
+    run
+    |> Runs.list_run_agent_controls_for_run(limit: 1)
+    |> Enum.group_by(& &1.run_agent_id)
   end
 
   defp run_fleet_summary(agents) do
