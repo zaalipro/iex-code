@@ -1064,6 +1064,11 @@
               run_manifest={@run_manifest}
               stats={@run_dispatcher_stats}
               workspace_locks={@workspace_locks}
+              agents={@streams.run_agents}
+              agent_count={@run_agent_count}
+              fleet_summary={@run_fleet_summary}
+              fleet_loading={@run_fleet_loading?}
+              agent_guidance={@run_agent_guidance}
             />
 
             <!-- Swarm Coach Hero Card -->
@@ -1345,12 +1350,40 @@
               </div>
             <% end %>
 
-            <.subagent_cards
-              operations={@operations}
-              active_agent={@active_agent}
-              active_stage={@active_stage}
-              swarm_mode={@session.swarm_mode}
-            />
+            <div id="interactive-operation-history-note" class="border-l border-[#303844] pl-3">
+              <p class="text-xs font-semibold text-gray-300">Interactive operation history</p>
+              <p class="mt-1 text-[10px] leading-5 text-gray-600">
+                Session-scoped tool activity is kept separate from the selected run's persisted fleet.
+              </p>
+            </div>
+            <section
+              id="interactive-role-templates"
+              aria-labelledby="interactive-role-templates-heading"
+            >
+              <div class="mb-3 flex items-start gap-2 border border-blue-500/15 bg-blue-500/[0.03] px-3 py-2.5">
+                <.icon
+                  name="hero-information-circle"
+                  class="mt-0.5 h-3.5 w-3.5 shrink-0 text-blue-300"
+                />
+                <div>
+                  <h3
+                    id="interactive-role-templates-heading"
+                    class="text-[10px] font-semibold uppercase tracking-wider text-blue-200"
+                  >
+                    Interactive role templates
+                  </h3>
+                  <p class="mt-1 text-[10px] leading-5 text-gray-600">
+                    Fixed session role templates show legacy operation telemetry only. Idle cards do not represent live or persisted workers.
+                  </p>
+                </div>
+              </div>
+              <.subagent_cards
+                operations={@operations}
+                active_agent={@active_agent}
+                active_stage={@active_stage}
+                swarm_mode={@session.swarm_mode}
+              />
+            </section>
             <.operation_tree
               operations={@operations}
               expanded_ops={@expanded_ops}
@@ -3415,7 +3448,7 @@
 
             <!-- Federated Research Providers -->
             <div id="settings-search-providers" class="space-y-3 border-t border-[#21262d] pt-3">
-              <div class="flex items-start justify-between gap-4">
+              <div class="flex flex-col items-start justify-between gap-3 sm:flex-row sm:gap-4">
                 <div>
                   <div class="text-[11px] font-bold uppercase tracking-wider text-gray-300">
                     Federated Search & Deep Research
@@ -3425,91 +3458,145 @@
                     DuckDuckGo works without a key; private provider credentials stay in the local SQLite settings row.
                   </p>
                 </div>
-                <span class="shrink-0 border border-violet-500/20 bg-violet-500/[0.06] px-2 py-1 text-[9px] uppercase tracking-wider text-violet-300">
-                  8 adapters
+                <span
+                  id="settings-search-provider-count"
+                  class="shrink-0 border border-violet-500/20 bg-violet-500/[0.06] px-2 py-1 text-[9px] uppercase tracking-wider text-violet-300"
+                >
+                  {length(@search_provider_descriptors)} ranked adapters
                 </span>
               </div>
 
               <div class="grid gap-2 sm:grid-cols-2">
-                <div
-                  :for={provider <- @settings.search_provider_order || ["duckduckgo"]}
-                  id={"settings-search-provider-#{provider}"}
-                  class="border border-[#2a313a] bg-[#0d1117] p-3"
-                >
-                  <% config = search_provider_config(@settings, provider) %>
-                  <div class="mb-2 flex items-center justify-between gap-2">
-                    <span class="font-mono text-[10px] font-semibold uppercase tracking-wider text-gray-300">
-                      {provider |> String.replace("_", " ")}
-                    </span>
-                    <label class="inline-flex cursor-pointer items-center gap-1.5 text-[9px] uppercase tracking-wider text-gray-500">
+                <%= for descriptor <- @search_provider_descriptors do %>
+                  <% provider = Atom.to_string(descriptor.id) %>
+                  <div
+                    id={"settings-search-provider-#{provider}"}
+                    data-provider-lifecycle={descriptor.lifecycle}
+                    class={[
+                      "min-w-0 border bg-[#0d1117] p-3",
+                      descriptor.lifecycle == :retired && "border-rose-500/20 opacity-75",
+                      descriptor.lifecycle == :sunsetting && "border-amber-500/25",
+                      descriptor.lifecycle not in [:retired, :sunsetting] && "border-[#2a313a]"
+                    ]}
+                  >
+                    <% config = search_provider_config(@settings, provider) %>
+                    <div class="mb-2 flex items-center justify-between gap-2">
+                      <div class="flex min-w-0 items-center gap-2">
+                        <span class="truncate font-mono text-[10px] font-semibold uppercase tracking-wider text-gray-300">
+                          {provider |> String.replace("_", " ")}
+                        </span>
+                        <span
+                          id={"settings-provider-lifecycle-#{provider}"}
+                          class={[
+                            "shrink-0 border px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-wider",
+                            search_lifecycle_tone(descriptor.lifecycle)
+                          ]}
+                        >
+                          {descriptor.lifecycle}
+                        </span>
+                      </div>
+                      <label class="inline-flex cursor-pointer items-center gap-1.5 text-[9px] uppercase tracking-wider text-gray-500">
+                        <input
+                          type="hidden"
+                          name={"settings[search_providers][#{provider}][enabled]"}
+                          value="false"
+                        />
+                        <input
+                          id={"settings-provider-enabled-#{provider}"}
+                          type="checkbox"
+                          name={"settings[search_providers][#{provider}][enabled]"}
+                          value="true"
+                          checked={
+                            descriptor.lifecycle != :retired && Map.get(config, "enabled", false)
+                          }
+                          disabled={descriptor.lifecycle == :retired}
+                          aria-describedby={"settings-provider-lifecycle-note-#{provider}"}
+                          class="h-3.5 w-3.5 border-[#3a424c] bg-[#11161d] accent-violet-400"
+                        /> Enabled
+                      </label>
+                    </div>
+                    <p
+                      id={"settings-provider-lifecycle-note-#{provider}"}
+                      class={[
+                        "mb-2 text-[9px] leading-4",
+                        descriptor.lifecycle == :retired && "text-rose-300/80",
+                        descriptor.lifecycle == :sunsetting && "text-amber-300/80",
+                        descriptor.lifecycle == :unofficial && "text-blue-300/70",
+                        descriptor.lifecycle == :active && "text-gray-600"
+                      ]}
+                    >
+                      {search_lifecycle_note(descriptor)}
+                    </p>
+                    <div :if={:api_key in descriptor.config_fields} class="mb-2">
+                      <label
+                        for={"settings-provider-key-#{provider}"}
+                        class="mb-1 block text-[9px] uppercase tracking-wider text-gray-600"
+                      >
+                        {descriptor.auth_label}
+                      </label>
                       <input
-                        type="hidden"
-                        name={"settings[search_providers][#{provider}][enabled]"}
-                        value="false"
+                        id={"settings-provider-key-#{provider}"}
+                        type="password"
+                        name={"settings[search_providers][#{provider}][api_key]"}
+                        value=""
+                        placeholder={masked_secret(Map.get(config, "api_key"))}
+                        autocomplete="off"
+                        class="w-full border border-[#30363d] bg-[#090d12] px-2.5 py-1.5 font-mono text-[10px] text-white outline-none focus:border-violet-500/60"
                       />
+                    </div>
+                    <div :if={:base_url in descriptor.config_fields}>
+                      <label
+                        for={"settings-provider-url-#{provider}"}
+                        class="mb-1 block text-[9px] uppercase tracking-wider text-gray-600"
+                      >
+                        {if provider == "searxng", do: "Instance URL", else: "Base URL"}
+                      </label>
                       <input
-                        id={"settings-provider-enabled-#{provider}"}
-                        type="checkbox"
-                        name={"settings[search_providers][#{provider}][enabled]"}
-                        value="true"
-                        checked={Map.get(config, "enabled", false)}
-                        class="h-3.5 w-3.5 border-[#3a424c] bg-[#11161d] accent-violet-400"
-                      /> Enabled
-                    </label>
+                        id={"settings-provider-url-#{provider}"}
+                        type="url"
+                        name={"settings[search_providers][#{provider}][base_url]"}
+                        value={Map.get(config, "base_url", "")}
+                        placeholder={
+                          if provider == "searxng",
+                            do: "https://search.example",
+                            else: "Provider default"
+                        }
+                        class="w-full border border-[#30363d] bg-[#090d12] px-2.5 py-1.5 font-mono text-[10px] text-white outline-none focus:border-violet-500/60"
+                      />
+                    </div>
+                    <div :if={provider == "google"} class="mt-2">
+                      <label
+                        for="settings-provider-engine-google"
+                        class="mb-1 block text-[9px] uppercase tracking-wider text-gray-600"
+                      >
+                        Search engine ID
+                      </label>
+                      <input
+                        id="settings-provider-engine-google"
+                        type="text"
+                        name="settings[search_providers][google][engine_id]"
+                        value={Map.get(config, "engine_id", "")}
+                        class="w-full border border-[#30363d] bg-[#090d12] px-2.5 py-1.5 font-mono text-[10px] text-white outline-none focus:border-violet-500/60"
+                      />
+                    </div>
+                    <div :if={provider == "serpapi"} class="mt-2">
+                      <label
+                        for="settings-provider-engine-serpapi"
+                        class="mb-1 block text-[9px] uppercase tracking-wider text-gray-600"
+                      >
+                        Search engine
+                      </label>
+                      <input
+                        id="settings-provider-engine-serpapi"
+                        type="text"
+                        name="settings[search_providers][serpapi][engine]"
+                        value={Map.get(config, "engine", "google")}
+                        placeholder="google"
+                        class="w-full border border-[#30363d] bg-[#090d12] px-2.5 py-1.5 font-mono text-[10px] text-white outline-none focus:border-violet-500/60"
+                      />
+                    </div>
                   </div>
-                  <div :if={provider not in ["duckduckgo", "searxng"]} class="mb-2">
-                    <label
-                      for={"settings-provider-key-#{provider}"}
-                      class="mb-1 block text-[9px] uppercase tracking-wider text-gray-600"
-                    >
-                      API key
-                    </label>
-                    <input
-                      id={"settings-provider-key-#{provider}"}
-                      type="password"
-                      name={"settings[search_providers][#{provider}][api_key]"}
-                      value=""
-                      placeholder={masked_secret(Map.get(config, "api_key"))}
-                      autocomplete="off"
-                      class="w-full border border-[#30363d] bg-[#090d12] px-2.5 py-1.5 font-mono text-[10px] text-white outline-none focus:border-violet-500/60"
-                    />
-                  </div>
-                  <div>
-                    <label
-                      for={"settings-provider-url-#{provider}"}
-                      class="mb-1 block text-[9px] uppercase tracking-wider text-gray-600"
-                    >
-                      {if provider == "searxng", do: "Instance URL", else: "Base URL"}
-                    </label>
-                    <input
-                      id={"settings-provider-url-#{provider}"}
-                      type="url"
-                      name={"settings[search_providers][#{provider}][base_url]"}
-                      value={Map.get(config, "base_url", "")}
-                      placeholder={
-                        if provider == "searxng",
-                          do: "https://search.example",
-                          else: "Provider default"
-                      }
-                      class="w-full border border-[#30363d] bg-[#090d12] px-2.5 py-1.5 font-mono text-[10px] text-white outline-none focus:border-violet-500/60"
-                    />
-                  </div>
-                  <div :if={provider == "google"} class="mt-2">
-                    <label
-                      for="settings-provider-engine-google"
-                      class="mb-1 block text-[9px] uppercase tracking-wider text-gray-600"
-                    >
-                      Search engine ID
-                    </label>
-                    <input
-                      id="settings-provider-engine-google"
-                      type="text"
-                      name="settings[search_providers][google][engine_id]"
-                      value={Map.get(config, "engine_id", "")}
-                      class="w-full border border-[#30363d] bg-[#090d12] px-2.5 py-1.5 font-mono text-[10px] text-white outline-none focus:border-violet-500/60"
-                    />
-                  </div>
-                </div>
+                <% end %>
               </div>
 
               <div class="grid gap-2 sm:grid-cols-3">

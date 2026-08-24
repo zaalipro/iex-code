@@ -35,6 +35,9 @@ defmodule IexCode.Runs.Executor do
     kind, reason -> {:error, {kind, reason}}
   end
 
+  defp supported_run?(%Run{execution_engine: engine}) when engine != "legacy_v1",
+    do: {:error, {:execution_engine_unavailable, engine}}
+
   defp supported_run?(%Run{kind: "coding_swarm", mode: mode})
        when mode in ["swarm", "workflow"],
        do: :ok

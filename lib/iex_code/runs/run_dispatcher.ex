@@ -14,8 +14,9 @@ defmodule IexCode.Runs.RunDispatcher do
   require Logger
 
   alias IexCode.{Kanban, Projects, Runs, Sessions, WorkspaceLocks}
-  alias IexCode.Engine.AgentSupervisor
+  alias IexCode.Engine.{AgentRegistry, FleetManager, FleetSupervisor}
   alias IexCode.Runs.Run
+  alias IexCode.Runs.ExecutionEngine
 
   @default_poll_interval 1_000
   @default_heartbeat_interval 5_000
@@ -51,8 +52,11 @@ defmodule IexCode.Runs.RunDispatcher do
 
   @doc "Persists and schedules a typed run."
   def enqueue(attrs, server \\ __MODULE__) when is_map(attrs) do
+    steps = initial_steps(attrs)
+
     with :ok <- validate_typed_attrs(attrs),
-         {:ok, run} <- Runs.create_run_with_steps(attrs, initial_steps(attrs)) do
+         :ok <- ExecutionEngine.validate_manifest(attrs, steps),
+         {:ok, run} <- Runs.create_run_with_steps(attrs, steps) do
       dispatch(server)
       {:ok, run}
     end
@@ -212,7 +216,7 @@ defmodule IexCode.Runs.RunDispatcher do
           {:ok, control} ->
             case apply_cancellation(run, active?, control) do
               {:ok, cancelled} ->
-                if active?, do: AgentSupervisor.cancel_session_activity(cancelled.session_id)
+                if active?, do: stop_durable_fleet(cancelled.id, "cancelled")
                 cancel_open_steps(cancelled)
                 project_terminal_task(cancelled)
 
@@ -225,7 +229,7 @@ defmodule IexCode.Runs.RunDispatcher do
                 {:reply, {:ok, cancelled}, new_state}
 
               {:error, reason} = error ->
-                _ = Runs.resolve_control(control, "rejected", %{"reason" => inspect(reason)})
+                _ = resolve_owned_control(control, "rejected", %{"reason" => inspect(reason)})
                 {:reply, error, state}
             end
 
@@ -240,7 +244,11 @@ defmodule IexCode.Runs.RunDispatcher do
   def handle_call({:retry, run_id}, _from, state) do
     result =
       with %Run{} = run <- Runs.get_run(run_id) do
-        Runs.retry_run(run, steps: retry_attempt_steps(run))
+        steps = retry_attempt_steps(run)
+
+        with :ok <- ExecutionEngine.validate_manifest(run, steps) do
+          Runs.retry_run(run, steps: steps)
+        end
       else
         nil -> {:error, :not_found}
       end
@@ -298,7 +306,10 @@ defmodule IexCode.Runs.RunDispatcher do
 
     Enum.each(state.workers, fn {_ref, worker} ->
       unless MapSet.member?(state.cancelling, worker.run_id) do
-        _ = Runs.renew_lease(worker.run_id, state.worker_id, state.lease_ms)
+        case Runs.renew_lease(worker.run_id, state.worker_id, state.lease_ms) do
+          {:ok, _run} -> :ok
+          {:error, reason} -> send(self(), {:run_lease_heartbeat_failed, worker.run_id, reason})
+        end
       end
     end)
 
@@ -386,6 +397,23 @@ defmodule IexCode.Runs.RunDispatcher do
     end
   end
 
+  def handle_info({:run_lease_heartbeat_failed, run_id, reason}, state) do
+    case Map.get(state.run_refs, run_id) do
+      nil ->
+        {:noreply, state}
+
+      ref ->
+        worker = Map.fetch!(state.workers, ref)
+
+        if Process.alive?(worker.pid) do
+          _ = Task.Supervisor.terminate_child(state.task_supervisor, worker.pid)
+        end
+
+        {:noreply,
+         put_in(state.workers[ref], Map.put(worker, :lock_failure, {:run_lease_lost, reason}))}
+    end
+  end
+
   def handle_info({:run_time_budget_exceeded, run_id, pid}, state) do
     ref = Map.get(state.run_refs, run_id)
 
@@ -410,7 +438,7 @@ defmodule IexCode.Runs.RunDispatcher do
                lease_expires_at: run.lease_expires_at
              }) do
           {:ok, failed} ->
-            AgentSupervisor.cancel_session_activity(failed.session_id)
+            stop_durable_fleet(failed.id, "failed")
             fail_open_steps(failed)
             project_terminal_task(failed)
             broadcast_run_control(failed, :cancel, %{"reason" => "time_budget_exhausted"})
@@ -666,6 +694,7 @@ defmodule IexCode.Runs.RunDispatcher do
     end
 
     if run, do: reject_unapplied_controls(run)
+    if run, do: stop_durable_fleet(run.id, status_for_fleet(run, result))
     release_workspace_lock(worker.lock_handle)
 
     %{
@@ -675,6 +704,39 @@ defmodule IexCode.Runs.RunDispatcher do
         cancelling: MapSet.delete(state.cancelling, worker.run_id)
     }
   end
+
+  defp status_for_fleet(%Run{status: status}, _result)
+       when status in ["completed", "failed", "cancelled", "interrupted"],
+       do: status
+
+  defp status_for_fleet(_run, {:ok, _}), do: "completed"
+  defp status_for_fleet(_run, _result), do: "interrupted"
+
+  defp stop_durable_fleet(run_id, status) do
+    if AgentRegistry.whereis_fleet(run_id, :manager) do
+      _ = FleetManager.stop(run_id, status)
+    end
+
+    FleetSupervisor.stop(run_id)
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  defp signal_fleet_control(run_id, kind) when kind in [:pause, :resume] do
+    if AgentRegistry.whereis_fleet(run_id, :manager) do
+      _ = FleetManager.control_all(run_id, kind)
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  defp signal_fleet_control(_run_id, _kind), do: :ok
 
   defp terminal_result({:ok, result}),
     do: {"completed", %{metadata: %{"result" => inspect(result)}}}
@@ -721,12 +783,13 @@ defmodule IexCode.Runs.RunDispatcher do
       case Runs.transition_run(run, status) do
         {:ok, updated} ->
           :ok = broadcast_run_control(updated, control, kind, %{})
+          signal_fleet_control(updated.id, kind)
           transition_active_step(updated, status)
           broadcast_session(updated, {:async_run_updated, updated})
           {:ok, updated}
 
         {:error, reason} = error ->
-          _ = Runs.resolve_control(control, "rejected", %{"reason" => inspect(reason)})
+          _ = resolve_owned_control(control, "rejected", %{"reason" => inspect(reason)})
           error
       end
     else
@@ -861,7 +924,7 @@ defmodule IexCode.Runs.RunDispatcher do
          :ok <- maybe_broadcast_cancel(active?, requested),
          {:ok, cancelled} <- Runs.transition_run(requested, "cancelled"),
          {:ok, _control} <-
-           Runs.resolve_control(control, "applied", %{
+           resolve_owned_control(control, "applied", %{
              "run_status" => "cancelled",
              "worker_active" => active?
            }) do
@@ -904,8 +967,19 @@ defmodule IexCode.Runs.RunDispatcher do
     run
     |> Runs.list_controls(status: "claimed")
     |> Enum.each(fn control ->
-      _ = Runs.resolve_control(control, "rejected", %{"reason" => "run_terminated_before_ack"})
+      _ =
+        resolve_owned_control(control, "rejected", %{
+          "reason" => "run_terminated_before_ack"
+        })
     end)
+  end
+
+  defp resolve_owned_control(control, status, result) do
+    Runs.resolve_control(control, status, result,
+      run_id: control.run_id,
+      worker_id: control.worker_id,
+      kind: control.kind
+    )
   end
 
   defp broadcast_session(%Run{} = run, event) do
@@ -929,7 +1003,8 @@ defmodule IexCode.Runs.RunDispatcher do
   defp positive(_value, default), do: default
 
   defp default_worker_id do
-    "#{node()}:run-dispatcher"
+    incarnation = Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
+    "#{node()}:run-dispatcher:#{incarnation}"
   end
 
   defp project_terminal_task(%Run{status: status} = run)

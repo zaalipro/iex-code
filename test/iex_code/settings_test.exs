@@ -21,6 +21,60 @@ defmodule IexCode.SettingsTest do
       assert settings.openai_api_key in [nil, "", System.get_env("OPENAI_API_KEY")]
     end
 
+    test "redacts model and search credentials from inspected settings" do
+      settings = %AppSettings{
+        openai_api_key: "openai-inspect-secret",
+        anthropic_api_key: "anthropic-inspect-secret",
+        search_providers: %{
+          "perplexity" => %{"enabled" => true, "api_key" => "search-inspect-secret"}
+        }
+      }
+
+      inspected = inspect(settings)
+
+      refute inspected =~ "openai-inspect-secret"
+      refute inspected =~ "anthropic-inspect-secret"
+      refute inspected =~ "search-inspect-secret"
+    end
+
+    test "does not emit credentials in SQL logs during settings insert or update" do
+      sentinel = "sentinel-search-key-that-must-never-be-logged"
+
+      captured =
+        ExUnit.CaptureLog.capture_log([level: :debug], fn ->
+          assert {:ok, updated} =
+                   Settings.update_settings(%{
+                     search_providers: %{
+                       "perplexity" => %{
+                         "enabled" => true,
+                         "api_key" => sentinel,
+                         "base_url" => "https://api.perplexity.ai"
+                       }
+                     },
+                     search_provider_order: ["perplexity"]
+                   })
+
+          assert updated.search_providers["perplexity"]["api_key"] == sentinel
+
+          assert {:ok, updated_again} =
+                   Settings.update_settings(%{
+                     search_providers: %{
+                       "perplexity" => %{
+                         "enabled" => false,
+                         "api_key" => sentinel,
+                         "base_url" => "https://api.perplexity.ai"
+                       }
+                     },
+                     search_provider_order: ["perplexity"]
+                   })
+
+          assert updated_again.search_providers["perplexity"]["api_key"] == sentinel
+          refute updated_again.search_providers["perplexity"]["enabled"]
+        end)
+
+      refute captured =~ sentinel
+    end
+
     test "safely handles multiple AppSettings rows without raising MultipleResultsError" do
       Repo.delete_all(AppSettings)
       # The singleton index (app_settings_singleton_index) now forbids a second row.
@@ -135,6 +189,30 @@ defmodule IexCode.SettingsTest do
                })
 
       assert Settings.search_config(updated).order == ["duckduckgo"]
+    end
+
+    test "hydrates modern ranked provider defaults and validates SerpApi engines" do
+      settings = Settings.get_settings()
+
+      for {provider, host} <- [
+            {"perplexity", "api.perplexity.ai"},
+            {"firecrawl", "api.firecrawl.dev"},
+            {"linkup", "api.linkup.so"},
+            {"serpapi", "serpapi.com"}
+          ] do
+        assert provider in settings.search_provider_order
+        assert URI.parse(settings.search_providers[provider]["base_url"]).host == host
+      end
+
+      assert settings.search_providers["serpapi"]["engine"] == "google"
+
+      invalid =
+        Settings.change_settings(settings, %{
+          search_providers: put_in(settings.search_providers, ["serpapi", "engine"], "arbitrary")
+        })
+
+      refute invalid.valid?
+      assert %{search_providers: _} = errors_on(invalid)
     end
 
     test "validates temperature and max_tokens ranges in changeset" do

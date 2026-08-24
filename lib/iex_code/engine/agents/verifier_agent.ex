@@ -23,6 +23,7 @@ defmodule IexCode.Engine.Agents.VerifierAgent do
       :session_id,
       :session,
       :project_root,
+      :control_token,
       status: :idle,
       current_op_id: nil,
       last_result: nil,
@@ -34,7 +35,17 @@ defmodule IexCode.Engine.Agents.VerifierAgent do
 
   def start_link(opts) do
     session_id = Keyword.fetch!(opts, :session_id)
-    GenServer.start_link(__MODULE__, opts, name: AgentRegistry.via_tuple(session_id, :verifier))
+
+    name =
+      case {opts[:run_id], opts[:agent_id]} do
+        {run_id, agent_id} when is_binary(run_id) and is_binary(agent_id) ->
+          AgentRegistry.via_agent(run_id, agent_id)
+
+        _ ->
+          AgentRegistry.via_tuple(session_id, :verifier)
+      end
+
+    GenServer.start_link(__MODULE__, opts, name: name)
   end
 
   @doc """
@@ -79,6 +90,7 @@ defmodule IexCode.Engine.Agents.VerifierAgent do
 
   @impl true
   def init(opts) do
+    mark_fleet_owner(opts)
     session_id = Keyword.fetch!(opts, :session_id)
     session = opts[:session]
 
@@ -90,13 +102,28 @@ defmodule IexCode.Engine.Agents.VerifierAgent do
       session_id: session_id,
       session: session,
       project_root: project_root,
+      control_token: opts[:control_token],
       status: :idle
     }
 
-    set_cancelled?(session_id, false)
-    subscribe_steering(session_id)
+    unless is_binary(opts[:run_id]) do
+      set_cancelled?(session_id, false)
+      subscribe_steering(session_id)
+    end
 
     {:ok, state}
+  end
+
+  defp mark_fleet_owner(opts) do
+    if is_binary(opts[:run_id]) and is_binary(opts[:agent_id]) do
+      Process.put(:iex_code_fleet_owner, IexCode.Engine.FleetRuntime.owner(opts))
+      Process.put(:iex_code_fleet_control_token, opts[:control_token])
+
+      AgentRegistry.put_agent_metadata(opts[:run_id], opts[:agent_id], %{
+        role: :verifier,
+        generation: opts[:generation]
+      })
+    end
   end
 
   @impl true
@@ -110,94 +137,98 @@ defmodule IexCode.Engine.Agents.VerifierAgent do
     allowed_tools = Keyword.get(opts, :allowed_tools, :all)
     mix_exs_exists = File.exists?(Path.join(project_root, "mix.exs"))
 
+    runtime_owner = Process.get(:iex_code_fleet_owner)
+
     verify_res =
-      OperationManager.run_sync_operation(
-        session_id,
-        parent_op_id,
-        "VerifierAgent",
-        "run_command",
-        "Verifier: Checking compilation and test suite",
-        %{command: if(mix_exs_exists, do: "mix compile", else: "standalone syntax validation")},
-        fn progress ->
-          if not tool_allowed?("run_command", allowed_tools) or
-               not tool_allowed?("run_tests", allowed_tools) do
-            verification_error(
-              :tool_not_allowed,
-              "Verification tools are disabled by the run manifest"
-            )
-          else
-            if cancelled_fun(session_id).() do
-              progress.(100, "Verification cancelled")
-              verification_error(:cancelled, "Verification cancelled before it started")
+      IexCode.Engine.FleetRuntime.run(runtime_owner, state.control_token, "verifying", fn ->
+        OperationManager.run_sync_operation(
+          session_id,
+          parent_op_id,
+          "VerifierAgent",
+          "run_command",
+          "Verifier: Checking compilation and test suite",
+          %{command: if(mix_exs_exists, do: "mix compile", else: "standalone syntax validation")},
+          fn progress ->
+            if not tool_allowed?("run_command", allowed_tools) or
+                 not tool_allowed?("run_tests", allowed_tools) do
+              verification_error(
+                :tool_not_allowed,
+                "Verification tools are disabled by the run manifest"
+              )
             else
-              if mix_exs_exists do
-                progress.(20, "Running compilation check...")
-
-                compile_res =
-                  OperationManager.run_sync_operation(
-                    session_id,
-                    parent_op_id,
-                    "VerifierAgent",
-                    "run_command",
-                    "Verifier: mix compile check",
-                    %{command: "mix compile"},
-                    fn p ->
-                      with_workspace_delegation(workspace_lock_delegation, fn ->
-                        Tools.execute(
-                          "run_command",
-                          %{
-                            "command" => "mix compile",
-                            "timeout_ms" => 20_000,
-                            "project_id" => project_id,
-                            "run_id" => run_id,
-                            "session_id" => session_id,
-                            "agent_name" => "VerifierAgent",
-                            "op_id" => parent_op_id
-                          },
-                          project_root,
-                          p
-                        )
-                      end)
-                    end
-                  )
-
-                if cancelled_fun(session_id).() do
-                  progress.(100, "Verification cancelled")
-                  verification_error(:cancelled, "Verification cancelled before test run")
-                else
-                  progress.(60, "Running test suite...")
-
-                  test_runner_opts = [
-                    project_root: project_root,
-                    project_id: project_id,
-                    run_id: run_id,
-                    session_id: session_id,
-                    timeout_ms: Keyword.get(opts, :test_timeout_ms, 30_000)
-                  ]
-
-                  test_runner_opts =
-                    if opts[:test_file],
-                      do: Keyword.put(test_runner_opts, :file, opts[:test_file]),
-                      else: test_runner_opts
-
-                  test_res =
-                    with_workspace_delegation(workspace_lock_delegation, fn ->
-                      Tools.run_tests(test_runner_opts)
-                    end)
-
-                  progress.(90, "Evaluating verification verdict...")
-
-                  evaluate_mix_verdict(compile_res, test_res, progress)
-                end
+              if cancelled_fun(state).() do
+                progress.(100, "Verification cancelled")
+                verification_error(:cancelled, "Verification cancelled before it started")
               else
-                progress.(40, "Validating Elixir files syntax in workspace...")
-                validate_standalone_workspace(project_root, progress)
+                if mix_exs_exists do
+                  progress.(20, "Running compilation check...")
+
+                  compile_res =
+                    OperationManager.run_sync_operation(
+                      session_id,
+                      parent_op_id,
+                      "VerifierAgent",
+                      "run_command",
+                      "Verifier: mix compile check",
+                      %{command: "mix compile"},
+                      fn p ->
+                        with_workspace_delegation(workspace_lock_delegation, fn ->
+                          Tools.execute(
+                            "run_command",
+                            %{
+                              "command" => "mix compile",
+                              "timeout_ms" => 20_000,
+                              "project_id" => project_id,
+                              "run_id" => run_id,
+                              "session_id" => session_id,
+                              "agent_name" => "VerifierAgent",
+                              "op_id" => parent_op_id
+                            },
+                            project_root,
+                            p
+                          )
+                        end)
+                      end
+                    )
+
+                  if cancelled_fun(state).() do
+                    progress.(100, "Verification cancelled")
+                    verification_error(:cancelled, "Verification cancelled before test run")
+                  else
+                    progress.(60, "Running test suite...")
+
+                    test_runner_opts = [
+                      project_root: project_root,
+                      project_id: project_id,
+                      run_id: run_id,
+                      session_id: session_id,
+                      timeout_ms: Keyword.get(opts, :test_timeout_ms, 30_000)
+                    ]
+
+                    test_runner_opts =
+                      if opts[:test_file],
+                        do: Keyword.put(test_runner_opts, :file, opts[:test_file]),
+                        else: test_runner_opts
+
+                    test_res =
+                      with_workspace_delegation(workspace_lock_delegation, fn ->
+                        Tools.run_tests(test_runner_opts)
+                      end)
+
+                    progress.(90, "Evaluating verification verdict...")
+
+                    evaluate_mix_verdict(compile_res, test_res, progress)
+                  end
+                else
+                  progress.(40, "Validating Elixir files syntax in workspace...")
+                  validate_standalone_workspace(project_root, progress)
+                end
               end
             end
-          end
-        end,
-        Keyword.get(opts, :inner_timeout, @inner_timeout)
-      )
+          end,
+          Keyword.get(opts, :inner_timeout, @inner_timeout)
+        )
+      end)
 
     case verify_res do
       {:ok, summary_map} ->
@@ -339,8 +370,12 @@ defmodule IexCode.Engine.Agents.VerifierAgent do
     :persistent_term.put({__MODULE__, :cancelled?, session_id}, value)
   end
 
-  defp cancelled_fun(session_id) do
+  defp cancelled_fun(%State{control_token: nil, session_id: session_id}) do
     fn -> :persistent_term.get({__MODULE__, :cancelled?, session_id}, false) end
+  end
+
+  defp cancelled_fun(%State{control_token: token}) do
+    fn -> IexCode.Engine.FleetControlToken.checkpoint(token) == :cancelled end
   end
 
   defp format_reason(reason) when is_binary(reason), do: reason

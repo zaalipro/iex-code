@@ -21,6 +21,16 @@ defmodule IexCode.Engine.AgentRegistry do
     {:via, Registry, {__MODULE__, {session_id, normalize_type(agent_type)}}}
   end
 
+  @doc "Returns the run-scoped registration name for one durable fleet agent."
+  def via_agent(run_id, agent_id) when is_binary(run_id) and is_binary(agent_id) do
+    {:via, Registry, {__MODULE__, {:run_agent, run_id, agent_id}}}
+  end
+
+  @doc "Returns the registration name for a component owned by one durable run fleet."
+  def via_fleet(run_id, component) when is_binary(run_id) and is_atom(component) do
+    {:via, Registry, {__MODULE__, {:run_fleet, run_id, component}}}
+  end
+
   @doc """
   Looks up the PID of a registered subagent by session ID and agent type.
   Returns `pid` or `nil` if not found.
@@ -32,6 +42,41 @@ defmodule IexCode.Engine.AgentRegistry do
 
       [] ->
         nil
+    end
+  end
+
+  @doc "Looks up a durable agent without falling back to a session-scoped process."
+  def whereis_agent(run_id, agent_id) when is_binary(run_id) and is_binary(agent_id) do
+    lookup({:run_agent, run_id, agent_id})
+  end
+
+  def agent_registration(run_id, agent_id) when is_binary(run_id) and is_binary(agent_id) do
+    case Registry.lookup(__MODULE__, {:run_agent, run_id, agent_id}) do
+      [{pid, metadata}] when is_pid(pid) -> {:ok, pid, metadata}
+      [] -> {:error, :not_registered}
+    end
+  end
+
+  @doc "Looks up a component in a durable run's supervision tree."
+  def whereis_fleet(run_id, component) when is_binary(run_id) and is_atom(component) do
+    lookup({:run_fleet, run_id, component})
+  end
+
+  @doc "Lists live durable agents as `{agent_id, pid, metadata}` tuples."
+  def list_run_agents(run_id) when is_binary(run_id) do
+    __MODULE__
+    |> Registry.select([
+      {{{:run_agent, run_id, :"$1"}, :"$2", :"$3"}, [], [{{:"$1", :"$2", :"$3"}}]}
+    ])
+    |> Enum.filter(fn {_agent_id, pid, _metadata} -> Process.alive?(pid) end)
+  end
+
+  @doc false
+  def put_agent_metadata(run_id, agent_id, metadata)
+      when is_binary(run_id) and is_binary(agent_id) and is_map(metadata) do
+    case Registry.update_value(__MODULE__, {:run_agent, run_id, agent_id}, fn _ -> metadata end) do
+      {new_value, old_value} -> {:ok, new_value, old_value}
+      :error -> {:error, :not_registered}
     end
   end
 
@@ -70,5 +115,12 @@ defmodule IexCode.Engine.AgentRegistry do
     # Unknown agent type: keep the binary so we never create atoms dynamically.
     # Registration and lookup both go through this function, so keys stay consistent.
     _ -> type
+  end
+
+  defp lookup(key) do
+    case Registry.lookup(__MODULE__, key) do
+      [{pid, _value}] -> if Process.alive?(pid), do: pid, else: nil
+      [] -> nil
+    end
   end
 end

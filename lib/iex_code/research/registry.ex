@@ -8,12 +8,15 @@ defmodule IexCode.Research.Registry do
   but are excluded from configuration-driven automatic selection.
   """
 
-  @descriptor_order ~w(tavily brave exa serper google bing searxng duckduckgo)a
+  @descriptor_order ~w(tavily brave exa perplexity firecrawl linkup serper serpapi google bing searxng duckduckgo)a
 
   @descriptors %{
     tavily: %{
       id: :tavily,
       module: IexCode.Research.Providers.Tavily,
+      result_contract: :ranked_results,
+      official_host: "api.tavily.com",
+      config_fields: [:enabled, :api_key, :base_url],
       lifecycle: :active,
       capabilities: [:web_search, :content],
       auth_label: "API key"
@@ -21,6 +24,9 @@ defmodule IexCode.Research.Registry do
     brave: %{
       id: :brave,
       module: IexCode.Research.Providers.Brave,
+      result_contract: :ranked_results,
+      official_host: "api.search.brave.com",
+      config_fields: [:enabled, :api_key, :base_url],
       lifecycle: :active,
       capabilities: [:web_search],
       auth_label: "Subscription token"
@@ -28,27 +34,81 @@ defmodule IexCode.Research.Registry do
     exa: %{
       id: :exa,
       module: IexCode.Research.Providers.Exa,
+      result_contract: :ranked_results,
+      official_host: "api.exa.ai",
+      config_fields: [:enabled, :api_key, :base_url],
       lifecycle: :active,
       capabilities: [:web_search, :semantic_search, :content],
+      auth_label: "API key"
+    },
+    perplexity: %{
+      id: :perplexity,
+      module: IexCode.Research.Providers.Perplexity,
+      result_contract: :ranked_results,
+      official_host: "api.perplexity.ai",
+      config_fields: [:enabled, :api_key, :base_url],
+      lifecycle: :active,
+      capabilities: [:web_search, :content, :domain_filter, :date_filter, :recency_filter],
+      auth_label: "API key"
+    },
+    firecrawl: %{
+      id: :firecrawl,
+      module: IexCode.Research.Providers.Firecrawl,
+      result_contract: :ranked_results,
+      official_host: "api.firecrawl.dev",
+      config_fields: [:enabled, :api_key, :base_url],
+      lifecycle: :active,
+      capabilities: [:web_search, :content, :domain_filter],
+      auth_label: "API key"
+    },
+    linkup: %{
+      id: :linkup,
+      module: IexCode.Research.Providers.Linkup,
+      result_contract: :ranked_results,
+      official_host: "api.linkup.so",
+      config_fields: [:enabled, :api_key, :base_url],
+      lifecycle: :active,
+      capabilities: [:web_search, :content, :agentic_search, :domain_filter, :date_filter],
       auth_label: "API key"
     },
     serper: %{
       id: :serper,
       module: IexCode.Research.Providers.Serper,
+      result_contract: :ranked_results,
+      official_host: "google.serper.dev",
+      config_fields: [:enabled, :api_key, :base_url],
       lifecycle: :active,
       capabilities: [:web_search],
+      auth_label: "API key"
+    },
+    serpapi: %{
+      id: :serpapi,
+      module: IexCode.Research.Providers.SerpApi,
+      result_contract: :ranked_results,
+      official_host: "serpapi.com",
+      config_fields: [:enabled, :api_key, :base_url, :engine],
+      lifecycle: :active,
+      capabilities: [:web_search, :multi_engine, :localization, :structured_serp],
       auth_label: "API key"
     },
     google: %{
       id: :google,
       module: IexCode.Research.Providers.GoogleCSE,
-      lifecycle: :legacy,
+      result_contract: :ranked_results,
+      official_host: "customsearch.googleapis.com",
+      config_fields: [:enabled, :api_key, :base_url, :engine_id],
+      lifecycle: :sunsetting,
       capabilities: [:web_search],
-      auth_label: "API key + search engine ID"
+      auth_label: "API key + search engine ID",
+      new_customers: false,
+      retires_at: ~D[2027-01-01]
     },
     bing: %{
       id: :bing,
       module: IexCode.Research.Providers.Bing,
+      result_contract: :ranked_results,
+      official_host: "api.bing.microsoft.com",
+      config_fields: [:enabled, :api_key, :base_url],
       lifecycle: :retired,
       capabilities: [:web_search],
       auth_label: "Subscription key"
@@ -56,6 +116,9 @@ defmodule IexCode.Research.Registry do
     searxng: %{
       id: :searxng,
       module: IexCode.Research.Providers.SearxNG,
+      result_contract: :ranked_results,
+      official_host: nil,
+      config_fields: [:enabled, :base_url],
       lifecycle: :active,
       capabilities: [:web_search, :metasearch, :self_hosted],
       auth_label: "Instance URL"
@@ -63,6 +126,9 @@ defmodule IexCode.Research.Registry do
     duckduckgo: %{
       id: :duckduckgo,
       module: IexCode.Research.Providers.DuckDuckGo,
+      result_contract: :ranked_results,
+      official_host: "html.duckduckgo.com",
+      config_fields: [:enabled, :base_url],
       lifecycle: :unofficial,
       capabilities: [:web_search, :credential_free],
       auth_label: "No credentials"
@@ -71,10 +137,15 @@ defmodule IexCode.Research.Registry do
 
   @providers Map.new(@descriptors, fn {id, descriptor} -> {id, descriptor.module} end)
 
-  @type lifecycle :: :active | :legacy | :retired | :unofficial
+  @type lifecycle :: :active | :legacy | :sunsetting | :retired | :unofficial
   @type descriptor :: %{
+          optional(:new_customers) => boolean(),
+          optional(:retires_at) => Date.t(),
           id: atom(),
           module: module(),
+          result_contract: :ranked_results,
+          official_host: String.t() | nil,
+          config_fields: [atom()],
           lifecycle: lifecycle(),
           capabilities: [atom()],
           auth_label: String.t()
@@ -95,6 +166,15 @@ defmodule IexCode.Research.Registry do
   def descriptor(name) do
     with {:ok, id} <- normalize_name(name) do
       Map.fetch(@descriptors, id)
+    end
+  end
+
+  @doc "Returns the pinned official API host, or nil for a self-hosted provider."
+  @spec official_host(atom() | String.t()) :: String.t() | nil
+  def official_host(name) do
+    case descriptor(name) do
+      {:ok, descriptor} -> descriptor.official_host
+      :error -> nil
     end
   end
 

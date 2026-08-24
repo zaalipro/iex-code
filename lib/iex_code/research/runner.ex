@@ -649,11 +649,18 @@ defmodule IexCode.Research.Runner do
 
       if resolution do
         _ =
-          Runs.resolve_control(control, resolution, %{
-            "action" => control.kind,
-            "observed_run_status" => current.status,
-            "acknowledged_by" => "research_runner"
-          })
+          Runs.resolve_control(
+            control,
+            resolution,
+            %{
+              "action" => control.kind,
+              "observed_run_status" => current.status,
+              "acknowledged_by" => "research_runner"
+            },
+            run_id: run.id,
+            worker_id: control.worker_id,
+            kind: control.kind
+          )
       end
     end)
   end

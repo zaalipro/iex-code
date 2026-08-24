@@ -16,7 +16,7 @@ The main LiveView exposes nine connected tools:
 | Area | Current capability |
 | --- | --- |
 | Kanban | Task CRUD, eight workflow states, priorities, assignees, filters, schedules, and subtasks |
-| Swarm | Durable Mission Control for coding and deep-research runs, with budgets, provider manifests, cited artifacts, and run-scoped pause/resume/steer/cancel |
+| Swarm | Durable Mission Control for coding and deep-research runs, with persisted dynamic fleets, per-agent controls, budgets, provider manifests, and cited artifacts |
 | Calendar | Monthly task view, task inspection/editing, manual “run now,” and supervised UTC schedule dispatch |
 | Changes | Staged, unstaged, and untracked rails; inline/split diffs; hunk actions; branches and commits |
 | Tests | Asynchronous ExUnit runs, parsed failures, AutoFix proposals, preview, apply, and rollback |
@@ -78,15 +78,23 @@ installs npm dependencies, and builds the assets.
 Open **Settings** to configure an OpenAI-compatible or Anthropic endpoint, API key,
 default model, temperature, and token limit. The model gateway has first-class
 OpenAI-compatible and Anthropic adapters. A Gemini model may be used when exposed
-through a compatible endpoint; direct Gemini and local-model transports remain roadmap work.
+through a compatible endpoint; a direct general-purpose Gemini chat transport and local-model
+transports remain roadmap work. This is distinct from the grounded Gemini search transport below.
 
 The research gateway is independent of the model transport. It includes normalized
-adapters for **Tavily, Brave, Exa, Serper, Google Programmable Search, Bing, SearxNG,
-and DuckDuckGo**, descriptor metadata, deterministic round-robin result interleaving,
+adapters for **Tavily, Brave, Exa, Perplexity Search, Firecrawl Search, Linkup Search,
+Serper, SerpApi, Google Programmable Search, Bing, SearxNG, and DuckDuckGo**, descriptor
+metadata, deterministic round-robin result interleaving,
 URL deduplication with cross-provider provenance, partial failure reporting, and bounded
 concurrency. Bing is a retired compatibility adapter and is used only when explicitly
-requested; Google Programmable Search is marked legacy, and the credential-free
-DuckDuckGo HTML adapter is marked unofficial. Public source fetches reject local/private/
+requested; Google Programmable Search is closed to new customers and marked sunsetting
+on January 1, 2027, and the credential-free DuckDuckGo HTML adapter is marked unofficial.
+Perplexity uses its structured Search API rather than Sonar, and Linkup requests ranked
+`searchResults` rather than its synthesized `sourcedAnswer`. A separate programmatic
+grounded-answer plane implements OpenAI Responses `web_search`, Anthropic Messages
+`web_search_20260318`, and Gemini Interactions `google_search`; Azure Foundry remains an
+explicitly unsupported descriptor until its project-specific authentication and connection
+contract can be represented safely. Public source fetches reject local/private/
 link-local/reserved destinations, validate every DNS answer and redirect, pin the
 validated address against DNS rebinding, restrict content types, and cap time and bytes.
 
@@ -97,7 +105,23 @@ all-provider failure is reported honestly; the harness does not invent a report.
 
 API keys are currently persisted in the local SQLite settings row. They are not stored
 in an operating-system keychain or encrypted vault. Protect the database file and do
-not share it.
+not share it. Settings structs redact credentials when inspected, and settings writes
+disable SQL query logging so credentials are not emitted as bind parameters.
+
+### Durable coding fleets
+
+When the dispatcher claims a durable coding run, it materializes a persisted run-scoped
+fleet. The topology always contains one planner, one coder, one verifier, and a bounded
+number of explorers; explorers run concurrently and are merged in stable ordinal order.
+The configured agent count is now an execution policy (bounded to 4–32 for the current
+legacy coding engine), rather than display-only state.
+
+Every fleet member has a stable run-local identity, lifecycle, desired state, heartbeat,
+generation-fenced lease, task/progress, usage, and ordered targeted controls in SQLite.
+Mission Control renders those records through a LiveView stream and can pause, resume,
+cancel, restart, or steer one exact worker without enumerating every agent in the session.
+The older interactive-session cards remain clearly labeled role templates and are not
+used as durable fleet truth.
 
 ## Verification
 
@@ -127,9 +151,10 @@ substitute for running the gate on the current checkout.
 - Durable background runs survive LiveView disconnects and preserve their journal across
   application restarts. An orphaned active run becomes `interrupted`; automatic
   checkpoint resume is intentionally not implemented yet.
-- Coding runs retain a fixed `prepare → execute` shell and the four-agent swarm remains
-  sequential. Deep-research runs add persisted plan/search/fetch/synthesis nodes, but the
-  harness is not yet a general arbitrary parallel DAG scheduler.
+- Coding runs retain a fixed `prepare → execute` shell and fixed role phases. Their fleet
+  topology is durable and dynamic, with bounded parallel explorers, but this is not yet a
+  general arbitrary parallel DAG scheduler. Existing dependency labels remain descriptive
+  under the explicit `legacy_v1` engine; reserved `dag_v1` runs fail closed.
 - Calendar work now has a supervised UTC cron scheduler with atomic claims, stable
   occurrence keys, recurrence, existing-run recovery, and stale-claim recovery. Rich
   notification and dead-letter workflows remain future work.
@@ -145,14 +170,18 @@ substitute for running the gate on the current checkout.
   modules, external editors/processes, filesystem aliases not represented by canonical
   paths, and orphaned command descendants can bypass or outlive it.
 - Wall-clock budgets are enforced by the dispatcher. Token budgets accumulate and stop
-  covered planner/coder/research boundaries when providers report usage; providers that
-  omit streaming usage cannot be measured. Cost limits remain display-only until a
-  versioned pricing ledger exists. Forced cancellation stops the supervised BEAM worker;
-  a tool-spawned external descendant may still require OS-level cleanup.
-- Pause, resume, cancel, and steer are now ordered run-scoped control records with journal
-  outcomes and a Mission Control timeline. They are delivered on a run-only channel, but
-  a general restart-replayed control consumer and immediate interruption of every
-  in-flight provider/tool call are not complete yet.
+  covered planner/coder/research boundaries when providers report usage. Durable fleet
+  cost thresholds likewise fail a run after reported `cost_cents` crosses the configured
+  limit. Neither is a pre-use reservation, and providers that omit usage or cost cannot be
+  measured without the still-planned versioned pricing ledger. Forced cancellation stops
+  the supervised BEAM worker; a tool-spawned external descendant may still require
+  OS-level cleanup.
+- Pause, resume, cancel, restart, and steer have ordered, idempotent per-agent records in
+  addition to run-wide controls. Fleet work is run-scoped, generation-fenced, and uses a
+  run-local supervised task group. Checkpoint-safe pause/cancellation is covered in the
+  integrated agent/provider/tool paths; OS-native descendants and replay of a control
+  interrupted between an uncheckpointed effect and acknowledgement still require the
+  conservative recovery rules documented in `docs/RUN_FLEET_SECURITY.md`.
 - Rollback ownership is durable and run-scoped for MultiPatch/AutoFix mutations. Direct
   file, Git, test, and terminal effects are coordinated while they execute but are not
   made transactional or added to the rollback manifest.

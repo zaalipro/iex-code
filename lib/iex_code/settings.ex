@@ -16,7 +16,8 @@ defmodule IexCode.Settings do
   @default_openai_base "https://cli.llmotions.com/v1"
   @default_provider "openai"
   @default_model "gemini-3.7-flash-high"
-  @search_provider_order ~w(tavily brave exa serper google bing searxng duckduckgo)
+  @previous_search_provider_order ~w(tavily brave exa serper google bing searxng duckduckgo)
+  @search_provider_order ~w(tavily brave exa perplexity firecrawl linkup serper serpapi google bing searxng duckduckgo)
 
   @doc """
   Returns the active application settings.
@@ -59,9 +60,9 @@ defmodule IexCode.Settings do
       if changeset.valid? do
         result =
           if settings.__meta__.state == :built do
-            Repo.insert(changeset)
+            Repo.insert(changeset, log: false)
           else
-            Repo.update(changeset)
+            Repo.update(changeset, log: false)
           end
 
         case result do
@@ -135,7 +136,13 @@ defmodule IexCode.Settings do
       "tavily" => provider_config("TAVILY_API_KEY", "https://api.tavily.com"),
       "brave" => provider_config("BRAVE_SEARCH_API_KEY", "https://api.search.brave.com/res/v1"),
       "exa" => provider_config("EXA_API_KEY", "https://api.exa.ai"),
+      "perplexity" => provider_config("PERPLEXITY_API_KEY", "https://api.perplexity.ai"),
+      "firecrawl" => provider_config("FIRECRAWL_API_KEY", "https://api.firecrawl.dev"),
+      "linkup" => provider_config("LINKUP_API_KEY", "https://api.linkup.so"),
       "serper" => provider_config("SERPER_API_KEY", "https://google.serper.dev"),
+      "serpapi" =>
+        provider_config("SERPAPI_API_KEY", "https://serpapi.com")
+        |> Map.put("engine", "google"),
       "google" =>
         provider_config("GOOGLE_SEARCH_API_KEY", "https://customsearch.googleapis.com")
         |> Map.put("engine_id", System.get_env("GOOGLE_SEARCH_ENGINE_ID") || ""),
@@ -186,7 +193,7 @@ defmodule IexCode.Settings do
     retry_on_busy(fn ->
       case %AppSettings{}
            |> AppSettings.changeset(default_settings_attrs())
-           |> Repo.insert() do
+           |> Repo.insert(log: false) do
         {:ok, settings} ->
           ensure_default_endpoints(settings)
 
@@ -277,7 +284,12 @@ defmodule IexCode.Settings do
   defp normalize_search_provider_order(order, providers) do
     existing = if is_list(order), do: order, else: []
     known = Enum.filter(@search_provider_order, &Map.has_key?(providers, &1))
-    Enum.uniq(existing ++ known)
+
+    if existing == @previous_search_provider_order do
+      @search_provider_order
+    else
+      Enum.uniq(existing ++ known)
+    end
   end
 
   defp hydrate_search_providers(stored) do

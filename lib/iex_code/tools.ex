@@ -247,7 +247,7 @@ defmodule IexCode.Tools do
               type: "array",
               items: %{type: "string"},
               description:
-                "Optional configured providers (Tavily, Brave, Exa, Serper, Google, Bing, SearxNG, DuckDuckGo)"
+                "Optional configured ranked-search providers (Tavily, Brave, Exa, Perplexity, Firecrawl, Linkup, Serper, SerpApi, Google, Bing, SearxNG, DuckDuckGo)"
             },
             max_results: %{
               type: "integer",

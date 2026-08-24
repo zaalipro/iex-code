@@ -6,7 +6,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
   and autonomous self-healing error feedback loop (up to 3 retries) with cycle detection.
   """
   require Logger
-  alias IexCode.Engine.AgentSupervisor
+  alias IexCode.Engine.{AgentRegistry, AgentSupervisor, FleetManager, FleetSupervisor}
   alias IexCode.Engine.Agents.{PlannerAgent, ExplorerAgent, CoderAgent, VerifierAgent}
   alias IexCode.Tools
   alias IexCode.Tools.{AutoFix, MultiPatch}
@@ -23,6 +23,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
       :root_op_id,
       :allowed_tools,
       :workspace_lock_delegation,
+      fleet_agents: [],
       stage: :init,
       iteration: 0,
       max_retries: 3,
@@ -219,7 +220,9 @@ defmodule IexCode.Engine.SwarmCoordinator do
     max_retries = Keyword.get(opts, :max_retries, 3)
 
     # Subscribe to steering topic for mid-flight steering/control
-    PubSub.subscribe(IexCode.PubSub, "session:#{session_id}:steer")
+    unless is_binary(opts[:run_id]) do
+      PubSub.subscribe(IexCode.PubSub, "session:#{session_id}:steer")
+    end
 
     if is_binary(opts[:run_id]) do
       PubSub.subscribe(IexCode.PubSub, "run:#{opts[:run_id]}:control")
@@ -264,38 +267,23 @@ defmodule IexCode.Engine.SwarmCoordinator do
       status: if(pre_paused?, do: :paused, else: :running)
     }
 
+    state = attach_durable_fleet(state)
+
     # 1. Root Swarm Operation — created before the guarded region below so the
     # crash handler can still mark it failed (try-body bindings don't leak to catch).
     {:ok, root_op} = create_root_operation(session_id, user_prompt)
     state = %State{state | root_op_id: root_op.id}
 
     try do
-      # Start or ensure all subagent GenServers are running under AgentSupervisor
-      {:ok, _} =
-        AgentSupervisor.start_agent(session_id, :planner,
-          session: session,
-          project_root: project_root
-        )
+      state = ensure_legacy_agents(state)
 
-      {:ok, _} =
-        AgentSupervisor.start_agent(session_id, :explorer,
-          session: session,
-          project_root: project_root
-        )
+      broadcast_stage(
+        state,
+        :init,
+        5,
+        "Swarm initialized with #{fleet_size(state)} isolated OTP subagents."
+      )
 
-      {:ok, _} =
-        AgentSupervisor.start_agent(session_id, :coder,
-          session: session,
-          project_root: project_root
-        )
-
-      {:ok, _} =
-        AgentSupervisor.start_agent(session_id, :verifier,
-          session: session,
-          project_root: project_root
-        )
-
-      broadcast_stage(state, :init, 5, "Swarm initialized with 4 specialized OTP subagents.")
       # A pause that landed before subscribe: block until resumed (or cancelled;
       # cancellation throws {:swarm_cancelled, _, _} from inside the wait).
       state = state |> replay_claimed_controls() |> align_durable_control_state()
@@ -342,7 +330,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
 
     Logger.error("[SwarmCoordinator] Swarm run crashed for session #{session_id}: #{reason_str}")
 
-    AgentSupervisor.stop_all_agents(session_id)
+    stop_state_agents(state, "failed")
     perform_rollback(state.project_root, state)
     update_db_session_status(session_id, "failed")
 
@@ -591,13 +579,27 @@ defmodule IexCode.Engine.SwarmCoordinator do
   end
 
   defp acknowledge_control(control_id, state, action) do
-    case Runs.resolve_control(control_id, "applied", %{
-           "action" => action,
-           "stage" => to_string(state.stage),
-           "acknowledged_by" => "swarm_coordinator"
-         }) do
-      {:ok, _control} -> :ok
-      {:error, _reason} -> :stale
+    with %{run_id: run_id, kind: kind, worker_id: worker_id} = control <-
+           Runs.get_control(control_id),
+         true <- run_id == state.run_id and kind == action,
+         %{lease_owner: lease_owner} when is_binary(lease_owner) <- Runs.get_run(run_id),
+         true <- worker_id == lease_owner,
+         {:ok, _resolved} <-
+           Runs.resolve_control(
+             control,
+             "applied",
+             %{
+               "action" => action,
+               "stage" => to_string(state.stage),
+               "acknowledged_by" => "swarm_coordinator"
+             },
+             run_id: run_id,
+             worker_id: worker_id,
+             kind: kind
+           ) do
+      :ok
+    else
+      _ -> :stale
     end
   end
 
@@ -650,7 +652,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
   defp ensure_durable_run_active!(%State{run_id: run_id} = state) when is_binary(run_id) do
     case Runs.get_run(run_id) do
       %IexCode.Runs.Run{status: status} when status in ["failed", "cancelled", "interrupted"] ->
-        AgentSupervisor.stop_all_agents(state.session_id)
+        stop_state_agents(state, status)
         _ = perform_rollback(state.project_root, state)
         throw({:swarm_cancelled, :durable_run_terminal, state})
 
@@ -663,12 +665,94 @@ defmodule IexCode.Engine.SwarmCoordinator do
 
   defp value(map, key), do: Map.get(map || %{}, key) || Map.get(map || %{}, to_string(key))
 
+  defp attach_durable_fleet(%State{run_id: run_id} = state) when is_binary(run_id) do
+    run = Runs.get_run!(run_id)
+
+    case FleetSupervisor.attach(run,
+           session: state.session,
+           project_root: state.project_root,
+           allowed_tools: state.allowed_tools,
+           workspace_lock_delegation: state.workspace_lock_delegation
+         ) do
+      {:ok, agents} -> %State{state | fleet_agents: agents}
+      {:error, reason} -> raise "durable fleet failed to attach: #{inspect(reason)}"
+    end
+  end
+
+  defp attach_durable_fleet(state), do: state
+
+  defp ensure_legacy_agents(%State{run_id: run_id, fleet_agents: agents} = state)
+       when is_binary(run_id) and agents != [],
+       do: state
+
+  defp ensure_legacy_agents(%State{run_id: run_id}) when is_binary(run_id),
+    do: raise("durable run has no active fleet")
+
+  defp ensure_legacy_agents(%State{} = state) do
+    for role <- [:planner, :explorer, :coder, :verifier] do
+      {:ok, _pid} =
+        AgentSupervisor.start_agent(state.session_id, role,
+          session: state.session,
+          project_root: state.project_root
+        )
+    end
+
+    state
+  end
+
+  defp fleet_size(%State{fleet_agents: []}), do: 4
+  defp fleet_size(%State{fleet_agents: agents}), do: length(agents)
+
+  defp agent_target(%State{fleet_agents: []} = state, _role), do: state.session_id
+
+  defp agent_target(%State{fleet_agents: agents}, role) do
+    case Enum.find(agents, &(&1.role == role)) do
+      %{pid: pid} when is_pid(pid) -> pid
+      _ -> raise "durable fleet is missing #{role}"
+    end
+  end
+
+  defp target_with_steering(%State{run_id: run_id} = state, role) when is_binary(run_id) do
+    entry = Enum.find(state.fleet_agents, &(&1.role == role))
+
+    if entry do
+      {entry.pid, FleetManager.drain_steering(run_id, entry.agent_id)}
+    else
+      raise "durable fleet is missing #{role}"
+    end
+  end
+
+  defp target_with_steering(state, role), do: {agent_target(state, role), []}
+
+  defp explorer_targets(%State{fleet_agents: []} = state),
+    do: [%{pid: state.session_id, agent_id: nil, position: 0}]
+
+  defp explorer_targets(%State{fleet_agents: agents}) do
+    agents
+    |> Enum.filter(&(&1.role == :explorer and is_pid(&1.pid)))
+    |> Enum.sort_by(& &1.position)
+  end
+
+  defp stop_state_agents(%State{run_id: run_id}, status) when is_binary(run_id) do
+    case AgentRegistry.whereis_fleet(run_id, :manager) do
+      nil -> :ok
+      _pid -> FleetManager.stop(run_id, status)
+    end
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  defp stop_state_agents(%State{session_id: session_id}, _status),
+    do: AgentSupervisor.stop_all_agents(session_id)
+
   defp handle_cancel_and_terminate(%State{session_id: session_id} = state, opts) do
     action = Keyword.get(opts, :action, :rollback)
     project_root = state.project_root
 
     # Cleanly stop all subagents
-    AgentSupervisor.stop_all_agents(session_id)
+    stop_state_agents(state, "cancelled")
 
     case action do
       :rollback ->
@@ -735,19 +819,19 @@ defmodule IexCode.Engine.SwarmCoordinator do
   # Swarm Stages
   # ============================================================================
 
-  defp run_planning_phase(
-         %State{session_id: session_id, user_prompt: prompt, root_op_id: root_op_id} = state
-       ) do
+  defp run_planning_phase(%State{user_prompt: prompt, root_op_id: root_op_id} = state) do
     broadcast_stage(state, :planning, 15, "Planner: Decomposing architecture & execution plan...")
+
+    {target, targeted_steering} = target_with_steering(state, :planner)
 
     plan_res =
       PlannerAgent.plan(
-        session_id,
+        target,
         prompt,
         parent_op_id: root_op_id,
         project_root: state.project_root,
         run_id: state.run_id,
-        steer_directives: state.steer_directives,
+        steer_directives: state.steer_directives ++ targeted_steering,
         allowed_tools: state.allowed_tools,
         workspace_lock_delegation: state.workspace_lock_delegation
       )
@@ -762,9 +846,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
     %State{state | plan: plan_text, stage: :planning}
   end
 
-  defp run_exploration_phase(
-         %State{session_id: session_id, user_prompt: prompt, root_op_id: root_op_id} = state
-       ) do
+  defp run_exploration_phase(%State{user_prompt: prompt, root_op_id: root_op_id} = state) do
     broadcast_stage(
       state,
       :exploring,
@@ -772,21 +854,47 @@ defmodule IexCode.Engine.SwarmCoordinator do
       "Explorer: Scanning codebase for relevant files & AST symbols..."
     )
 
-    explore_res =
-      ExplorerAgent.explore(
-        session_id,
-        prompt,
-        parent_op_id: root_op_id,
-        project_root: state.project_root,
-        allowed_tools: state.allowed_tools,
-        workspace_lock_delegation: state.workspace_lock_delegation
-      )
+    targets = explorer_targets(state)
 
     summary_text =
-      case explore_res do
-        {:ok, text} -> text
-        {:error, reason} -> "Explorer note: #{inspect(reason)}"
-      end
+      targets
+      |> Enum.with_index()
+      |> Task.async_stream(
+        fn {entry, index} ->
+          focus =
+            "Explorer shard #{index + 1}/#{length(targets)}: inspect a distinct relevant area."
+
+          targeted_steering =
+            if entry.agent_id do
+              FleetManager.drain_steering(state.run_id, entry.agent_id)
+            else
+              []
+            end
+
+          guidance =
+            (state.steer_directives ++ targeted_steering)
+            |> Enum.map_join("\n", &"- #{&1}")
+
+          ExplorerAgent.explore(
+            entry.pid,
+            prompt <> "\n\n" <> focus <> "\n" <> guidance,
+            parent_op_id: root_op_id,
+            project_root: state.project_root,
+            run_id: state.run_id,
+            allowed_tools: state.allowed_tools,
+            workspace_lock_delegation: state.workspace_lock_delegation
+          )
+        end,
+        max_concurrency: max(length(targets), 1),
+        ordered: true,
+        timeout: :infinity
+      )
+      |> Enum.with_index()
+      |> Enum.map_join("\n\n", fn
+        {{:ok, {:ok, text}}, index} -> "Explorer #{index + 1}:\n#{text}"
+        {{:ok, {:error, reason}}, index} -> "Explorer #{index + 1} note: #{inspect(reason)}"
+        {{:exit, reason}, index} -> "Explorer #{index + 1} crashed: #{inspect(reason)}"
+      end)
 
     broadcast_stage(state, :exploring, 45, "Explorer: Codebase context synthesized.")
     %State{state | explorer_context: summary_text, stage: :exploring}
@@ -815,6 +923,8 @@ defmodule IexCode.Engine.SwarmCoordinator do
 
     broadcast_stage(%State{state | iteration: iteration}, :coding, progress_pct, msg)
 
+    {coder_target, coder_steering} = target_with_steering(state, :coder)
+
     coder_opts = [
       session_id: session_id,
       run_id: state.run_id,
@@ -823,12 +933,12 @@ defmodule IexCode.Engine.SwarmCoordinator do
       plan: state.plan,
       context: state.explorer_context,
       diagnostics: state.verifier_result,
-      steer_directives: state.steer_directives,
+      steer_directives: state.steer_directives ++ coder_steering,
       allowed_tools: state.allowed_tools,
       workspace_lock_delegation: state.workspace_lock_delegation
     ]
 
-    coder_res = CoderAgent.code(session_id, prompt, coder_opts)
+    coder_res = CoderAgent.code(coder_target, prompt, coder_opts)
 
     coder_text =
       case coder_res do
@@ -851,7 +961,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
 
     verify_res =
       VerifierAgent.verify(
-        session_id,
+        agent_target(state, :verifier),
         parent_op_id: root_op_id,
         project_root: project_root,
         run_id: state.run_id,
@@ -928,7 +1038,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
 
               verify_res =
                 VerifierAgent.verify(
-                  session_id,
+                  agent_target(state, :verifier),
                   parent_op_id: root_op_id,
                   project_root: project_root,
                   run_id: state.run_id,
@@ -1026,7 +1136,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
 
   defp finish_swarm(%State{session_id: session_id} = state) do
     # Cleanup subagent processes for this session
-    AgentSupervisor.stop_all_agents(session_id)
+    stop_state_agents(state, if(state.status == :completed, do: "completed", else: "failed"))
 
     verifier_summary =
       case state.verifier_result do

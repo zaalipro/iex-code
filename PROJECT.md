@@ -59,6 +59,11 @@ IexCode.Application
 │   ├── ExplorerAgent
 │   ├── CoderAgent
 │   └── VerifierAgent
+├── FleetSupervisor (DynamicSupervisor)
+│   └── RunFleetSupervisor per active durable coding run
+│       ├── run-local Task.Supervisor
+│       ├── run-local AgentSupervisor
+│       └── FleetManager
 ├── TerminalSupervisor (DynamicSupervisor)
 │   └── TerminalSession per active terminal
 ├── RunDispatcher (leased durable background workers)
@@ -68,9 +73,11 @@ IexCode.Application
     └── WorkspaceLive
 ```
 
-`SessionServer` owns the live lifecycle of a coding session. `SwarmCoordinator` runs
-the fixed Planner → Explorer → Coder → Verifier workflow and can iterate after failed
-verification. `OperationManager` executes supervised tasks, persists operation status,
+`SessionServer` owns the live lifecycle of an interactive coding session. Durable coding
+runs additionally receive an isolated, persisted fleet with one planner, one coder, one
+verifier, and bounded parallel explorers. `SwarmCoordinator` retains fixed role phases
+and can iterate after failed verification; this is not an arbitrary DAG scheduler.
+`OperationManager` executes supervised tasks, persists operation status,
 monitors crashes, and broadcasts telemetry. LiveView subscribes to session and terminal
 topics and rehydrates messages, operations, durable runs, steps, and sequenced events
 when it mounts. `RunDispatcher` is independent of the socket and allows only one active
@@ -85,8 +92,9 @@ background run per project.
 | Message | Role, content, tool-call metadata, token/cost fields |
 | Operation | Parent, agent, type, progress, result/error, PID string, timings |
 | Kanban task | Workflow state, priority, assignee, subtasks, schedule, metadata |
-| App settings | Model endpoints/keys plus eight search adapters, provider order, and research defaults |
-| Run | Objective, typed executor, lifecycle, priority, progress, budgets, attempts, lease, timings |
+| App settings | Model endpoints/keys plus twelve ranked-search adapters, provider order, fleet size, and research defaults |
+| Run | Objective, explicit execution engine, typed executor, lifecycle, priority, progress, budgets, attempts, lease, timings |
+| Run agent/control | Run-attempt identity, role/ordinal, lifecycle, desired state, fenced lease generation, task/progress/usage, and ordered targeted controls |
 | Run step | Typed coding nodes plus research plan/search/fetch/synthesis nodes, dependencies, attempts, result/error |
 | Run event | Per-run monotonic sequence, type, source, bounded payload, occurrence time |
 | Run command/control/approval/artifact | Tool command idempotency, ordered run controls, review decisions, cited reports, and artifact metadata |
@@ -102,7 +110,7 @@ work.
 | Surface | Implemented today |
 | --- | --- |
 | Kanban | CRUD, eight states, drag/move actions, filters, assignees, priorities, subtasks, and scheduling fields |
-| Swarm | Mission Control with coding/deep-research manifests, budgets, ordered controls, evidence/report preview, plus the fixed four-agent coding swarm |
+| Swarm | Mission Control with coding/deep-research manifests, dynamic persisted fleet cards and targeted controls, budgets, evidence, and report preview |
 | Calendar | Month navigation, task editing/run-now, plus a supervised UTC cron scheduler with atomic claims, stable occurrence keys, recurrence, and stale recovery |
 | Changes/Git | Status rails, inline/split diffs, stage/unstage, hunk operations, branches, fetch/pull, commit generation and commit |
 | Tests/AutoFix | Async test subprocess, ANSI cleanup, structured failures, heuristic proposals, preview/apply/rollback and re-verification |
@@ -123,9 +131,14 @@ work.
 - `IexCode.Tools.TerminalServer`: supervised native interactive terminal facade.
 - `IexCode.LLM`: OpenAI-compatible and Anthropic streaming, retry, fallback,
   circuit breaking, SSE parsing, and UTF-8 boundary handling.
-- `IexCode.Research`: normalized Tavily/Brave/Exa/Serper/Google/Bing/SearxNG/
-  DuckDuckGo federation, provider lifecycle descriptors, rank-interleaved results,
-  duplicate-source provenance, hardened public fetching, evidence retention, and cited synthesis.
+- `IexCode.Research`: normalized Tavily/Brave/Exa/Perplexity/Firecrawl/Linkup/Serper/
+  SerpApi/Google/Bing/SearxNG/DuckDuckGo federation, provider lifecycle descriptors,
+  rank-interleaved results, duplicate-source provenance, hardened public fetching,
+  evidence retention, and cited synthesis.
+- `IexCode.Research.GroundedSearch`: a separate model-native grounded-answer contract for
+  OpenAI Responses, Anthropic Messages, and Gemini Interactions, with citations, hosted
+  search-call evidence, bounded transport, cooperative cancellation checkpoints, and explicit
+  provider provenance. It is a programmatic plane, not the ranked federation used by research runs.
 
 ### Current lifecycle
 
@@ -157,15 +170,16 @@ workspace effects from being replayed blindly.
 | Durable messages and operation summaries | Current | Rehydrated by LiveView |
 | Native PTY and developer tools | Current | Execute in the real project root |
 | Atomic MultiPatch rollback | Current | Applies only to writes performed through MultiPatch |
-| Pause/resume/cancel/steer | Current | Ordered run-scoped control records and isolated delivery; restart replay/in-flight interruption remain partial |
-| Fixed four-agent correction loop | Current | Sequential domain workflow, not a general scheduler |
+| Pause/resume/cancel/restart/steer | Current/partial | Durable targeted agent controls plus run controls; checkpointed delivery is current, arbitrary effect replay remains conservative |
+| Dynamic durable coding fleet | Current | One planner/coder/verifier plus bounded concurrent explorers, run-scoped identity, leases, heartbeats, recovery, and Mission Control projection |
+| Fixed role correction loop | Current | Role phases and mutation order remain typed legacy workflow, not a general scheduler |
 | LLM streaming transport | Current | Parser/callback support exists |
 | Token-by-token durable chat events | Partial | Normal session flow currently publishes the completed message |
 | Calendar recurrence | Current | Supervised UTC polling, due claims, recurrence, stale recovery, and durable run enqueue |
-| Model providers | Partial | OpenAI-compatible and Anthropic model transports; eight first-class web-search adapters are separate and current |
-| Configurable swarm-agent count | Partial | Setting persists, but engine topology remains four canonical roles |
+| Model/search providers | Current/partial | OpenAI-compatible and Anthropic chat; twelve ranked-search adapters; three model-native grounded-search transports; direct general Gemini chat/local transports planned |
+| Configurable swarm-agent count | Current | Drives the durable legacy coding fleet, bounded to 4–32 with extra capacity assigned to explorers |
 | Durable run/event model | Current | Transactional run/step/event/command/approval/artifact records; checkpoints remain planned |
-| Run budgets | Partial | Wall time and provider-reported tokens enforced at covered boundaries; cost/pricing enforcement remains planned |
+| Run budgets | Partial | Wall time and provider-reported tokens are enforced at covered boundaries; durable fleets also enforce reported-cost thresholds after use, while pre-use reservation and universal versioned pricing remain planned |
 | Dependency-aware parallel DAG | Partial | Research has typed plan/search/fetch/synthesis nodes and provider fan-out; arbitrary DAG scheduling/locks remain planned |
 | Native workspace coordination | Current cooperative baseline | Durable batched project/file/Git resources, FIFO-oriented waits, capability checks, heartbeats, fencing, dispatcher ownership, guarded UI/tools/terminal, and Mission Control; native bypass/physical-alias hardening remain |
 | Approval and durable command records | Partial | Command idempotency keys and approval records exist; policy enforcement/inbox UX remain planned |
@@ -229,6 +243,17 @@ the target scheduler. Items explicitly marked planned are not current behavior.
 - Coding dispatch currently executes a fixed `prepare → execute` graph. Research adds
   durable plan/search/fetch/synthesis nodes and concurrent provider fan-out, but the
   dispatcher does not yet schedule an arbitrary dependency DAG.
+
+#### Run agent and targeted control
+
+- A durable coding fleet member is identified by run, run attempt, and stable key. Multiple
+  explorers and two runs in one session therefore do not collide in the Registry.
+- Active workers use owner/generation/expiry fencing. Heartbeats, lifecycle transitions,
+  usage, and targeted-control outcomes reject stale generations; abandoned generations
+  become interrupted rather than replaying native mutations.
+- Targeted pause, resume, cancel, restart, and steering requests have per-agent sequences
+  and idempotency keys. Mission Control is projected from these rows, not inferred from
+  session operation names or PIDs.
 
 #### Run event
 
@@ -321,8 +346,9 @@ storage replay is implemented; cursor-driven LiveView pagination remains in A5.
 - Reconcile expired run/step claims on boot.
 - Replay pending pause/resume/cancel/steer controls safely after dispatcher restart and
   add acknowledgement checkpoints inside every long provider/tool call.
-- The current executor passes the run id into the four-agent coordinator and records
-  progress; extend that integration for durable controls and checkpoint recovery.
+- The current executor passes the run id into the run-scoped fleet coordinator, records
+  agent progress/usage, and isolates targeted controls; extend the same contracts to
+  checkpoint-safe recovery of explicitly idempotent work.
 
 **Exit:** disconnecting the browser has no effect on execution, and restarting the app
 recovers a run according to its checkpoint and tool capabilities.
@@ -347,13 +373,14 @@ cannot occur until an expired native holder is confirmed stopped or quarantined.
 
 ### A4 — Dependency-aware execution
 
-**State: planned; depends on A1–A3**
+**State: durable dynamic fleet current; generic DAG planned and fail-closed**
 
 - Replace the fixed pipeline as the only orchestration option with a persisted DAG.
 - Dispatch independent ready steps concurrently within run/workspace/provider budgets.
 - Support fan-out/fan-in, typed outputs, retry policies, deadlines, cycle validation,
   and manual gates.
-- Make agent count and role topology an engine policy rather than a display-only value.
+- Extend the current persisted fleet policy beyond the legacy role workflow only after
+  typed step attempts, scheduler leases, checkpoints, and resource declarations exist.
 
 **Exit:** a run can prove parallel execution of independent read/analysis steps while
 serializing conflicting mutations and verification prerequisites.
@@ -373,16 +400,20 @@ lost deltas.
 
 ### A6 — Scheduled and provider-complete operation
 
-**State: core scheduler and eight-provider research federation implemented; model transport expansion planned**
+**State: core scheduler and twelve-provider ranked-search federation implemented; model transport expansion planned**
 
 - Supervised due-task claims, recurrence, stale recovery, and durable run creation are implemented.
 - Add explicit retry policy, notification, and dead-letter workflows.
-- Maintain shared conformance tests for Tavily, Brave, Exa, Serper, Google, Bing,
-  SearxNG, and DuckDuckGo; add more providers through the registry contract.
+- Maintain shared conformance tests for Tavily, Brave, Exa, Perplexity Search,
+  Firecrawl Search, Linkup Search, Serper, SerpApi, Google, Bing, SearxNG, and
+  DuckDuckGo; add more providers through the registry contract.
   Bing is retained as an explicitly requested retired compatibility adapter;
-  Google is labeled legacy and the DuckDuckGo HTML adapter unofficial.
-- Add first-class direct Gemini and local-model adapters only when their transport,
-  cancellation, usage, and error behavior meet the same contracts.
+  Google is closed to new customers and sunsets on January 1, 2027; the
+  DuckDuckGo HTML adapter is unofficial. Ranked-result APIs and model-native
+  grounded-answer tools intentionally use separate contracts.
+- Add first-class general-purpose Gemini chat and local-model adapters only when their
+  transport, cancellation, usage, and error behavior meet the same contracts; this is
+  separate from the implemented Gemini grounded-search transport.
 - Add encrypted/keychain-backed secret storage before shared or remote deployment.
 
 **Exit:** due-task outcomes are observable through retry/dead-letter UX, and each

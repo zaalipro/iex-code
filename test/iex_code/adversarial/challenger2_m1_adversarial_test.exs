@@ -447,6 +447,11 @@ defmodule IexCode.Adversarial.Challenger2M1AdversarialTest do
       assert is_binary(history)
       assert String.valid?(history), "History buffer must be valid UTF-8 after binary bursts"
 
+      # Invalid bytes can leave an interactive shell's line editor holding an
+      # intentionally incomplete command. Reset that editor state through the
+      # same raw-input path, then prove the PTY remains responsive.
+      assert :ok = TerminalServer.send_input(session_id, <<3>>)
+
       # Shell must remain fully responsive to standard commands
       recovery_token = "RECOVERED_AFTER_BINARY_BURST_#{System.unique_integer([:positive])}"
       subscribe_terminal(session_id)

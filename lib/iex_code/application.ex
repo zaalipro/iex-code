@@ -20,6 +20,7 @@ defmodule IexCode.Application do
         IexCode.WorkspaceLocks,
         IexCode.Engine.SessionSupervisor,
         IexCode.Engine.AgentSupervisor,
+        IexCode.Engine.FleetSupervisor,
         IexCode.Tools.TerminalSupervisor,
         {IexCode.Tools.MultiPatch.Snapshot.Owner, []},
         run_dispatcher_child(),

@@ -21,6 +21,7 @@ defmodule IexCode.Engine.Agents.ExplorerAgent do
       :session_id,
       :session,
       :project_root,
+      :control_token,
       status: :idle,
       current_op_id: nil,
       last_result: nil,
@@ -32,7 +33,17 @@ defmodule IexCode.Engine.Agents.ExplorerAgent do
 
   def start_link(opts) do
     session_id = Keyword.fetch!(opts, :session_id)
-    GenServer.start_link(__MODULE__, opts, name: AgentRegistry.via_tuple(session_id, :explorer))
+
+    name =
+      case {opts[:run_id], opts[:agent_id]} do
+        {run_id, agent_id} when is_binary(run_id) and is_binary(agent_id) ->
+          AgentRegistry.via_agent(run_id, agent_id)
+
+        _ ->
+          AgentRegistry.via_tuple(session_id, :explorer)
+      end
+
+    GenServer.start_link(__MODULE__, opts, name: name)
   end
 
   @doc """
@@ -84,6 +95,7 @@ defmodule IexCode.Engine.Agents.ExplorerAgent do
 
   @impl true
   def init(opts) do
+    mark_fleet_owner(opts)
     session_id = Keyword.fetch!(opts, :session_id)
     session = opts[:session]
 
@@ -95,13 +107,28 @@ defmodule IexCode.Engine.Agents.ExplorerAgent do
       session_id: session_id,
       session: session,
       project_root: project_root,
+      control_token: opts[:control_token],
       status: :idle
     }
 
-    set_cancelled?(session_id, false)
-    subscribe_steering(session_id)
+    unless is_binary(opts[:run_id]) do
+      set_cancelled?(session_id, false)
+      subscribe_steering(session_id)
+    end
 
     {:ok, state}
+  end
+
+  defp mark_fleet_owner(opts) do
+    if is_binary(opts[:run_id]) and is_binary(opts[:agent_id]) do
+      Process.put(:iex_code_fleet_owner, IexCode.Engine.FleetRuntime.owner(opts))
+      Process.put(:iex_code_fleet_control_token, opts[:control_token])
+
+      AgentRegistry.put_agent_metadata(opts[:run_id], opts[:agent_id], %{
+        role: :explorer,
+        generation: opts[:generation]
+      })
+    end
   end
 
   @impl true
@@ -111,90 +138,97 @@ defmodule IexCode.Engine.Agents.ExplorerAgent do
     parent_op_id = opts[:parent_op_id]
     allowed_tools = Keyword.get(opts, :allowed_tools, :all)
 
+    runtime_owner = Process.get(:iex_code_fleet_owner)
+
     explore_res =
-      OperationManager.run_sync_operation(
-        session_id,
-        parent_op_id,
-        "ExplorerAgent",
-        "grep_search",
-        "Explorer: Scanning codebase for relevant files & symbols",
-        %{prompt: prompt},
-        fn progress ->
-          if cancelled_fun(session_id).() do
-            {:error, :cancelled}
-          else
-            progress.(20, "Searching project files...")
-
-            # Derive the grep query from the prompt (plus any steering directives)
-            search_text =
-              Enum.join([prompt | Keyword.get(opts, :steer_directives, [])], "\n")
-
-            query = derive_search_query(search_text)
-
-            # Run grep operation for the derived query
-            grep_res =
-              if tool_allowed?("grep_search", allowed_tools) do
-                OperationManager.run_sync_operation(
-                  session_id,
-                  parent_op_id,
-                  "ExplorerAgent",
-                  "grep_search",
-                  "Explorer: Grepping for modules and definitions",
-                  %{query: query},
-                  fn p ->
-                    Tools.execute("grep_search", %{"query" => query}, project_root, p)
-                  end,
-                  Keyword.get(opts, :inner_timeout, @inner_timeout)
-                )
-              else
-                {:error, {:tool_not_allowed, "grep_search"}}
-              end
-
-            if cancelled_fun(session_id).() do
+      IexCode.Engine.FleetRuntime.run(runtime_owner, state.control_token, "exploring", fn ->
+        OperationManager.run_sync_operation(
+          session_id,
+          parent_op_id,
+          "ExplorerAgent",
+          "grep_search",
+          "Explorer: Scanning codebase for relevant files & symbols",
+          %{prompt: prompt},
+          fn progress ->
+            if cancelled_fun(state).() do
               {:error, :cancelled}
             else
-              progress.(60, "Scanning AST symbols...")
+              progress.(20, "Searching project files...")
 
-              # Run AST search for key symbols if specified
-              ast_symbols =
-                if tool_allowed?("ast_search", allowed_tools) do
-                  case ASTSearch.search(project_root, %{type: "module"}) do
-                    {:ok, syms} -> syms
-                    _ -> []
-                  end
+              # Derive the grep query from the prompt (plus any steering directives)
+              search_text =
+                Enum.join([prompt | Keyword.get(opts, :steer_directives, [])], "\n")
+
+              query = derive_search_query(search_text)
+
+              # Run grep operation for the derived query
+              grep_res =
+                if tool_allowed?("grep_search", allowed_tools) do
+                  OperationManager.run_sync_operation(
+                    session_id,
+                    parent_op_id,
+                    "ExplorerAgent",
+                    "grep_search",
+                    "Explorer: Grepping for modules and definitions",
+                    %{query: query},
+                    fn p ->
+                      Tools.execute("grep_search", %{"query" => query}, project_root, p)
+                    end,
+                    Keyword.get(opts, :inner_timeout, @inner_timeout)
+                  )
                 else
-                  []
+                  {:error, {:tool_not_allowed, "grep_search"}}
                 end
 
-              progress.(80, "Synthesizing codebase context...")
+              if cancelled_fun(state).() do
+                {:error, :cancelled}
+              else
+                progress.(60, "Scanning AST symbols...")
 
-              context_summary =
-                cond do
-                  match?({:ok, output} when is_binary(output) and byte_size(output) > 0, grep_res) ->
-                    {:ok, output} = grep_res
-                    "Found key modules in workspace:\n#{String.slice(output, 0, 1500)}"
+                # Run AST search for key symbols if specified
+                ast_symbols =
+                  if tool_allowed?("ast_search", allowed_tools) do
+                    case ASTSearch.search(project_root, %{type: "module"}) do
+                      {:ok, syms} -> syms
+                      _ -> []
+                    end
+                  else
+                    []
+                  end
 
-                  ast_symbols != [] ->
-                    sym_list =
-                      Enum.map_join(
-                        Enum.take(ast_symbols, 10),
-                        "\n",
-                        &"- #{&1.name} (#{Path.relative_to(&1.file, project_root)}:#{&1.line})"
-                      )
+                progress.(80, "Synthesizing codebase context...")
 
-                    "Discovered AST modules:\n#{sym_list}"
+                context_summary =
+                  cond do
+                    match?(
+                      {:ok, output} when is_binary(output) and byte_size(output) > 0,
+                      grep_res
+                    ) ->
+                      {:ok, output} = grep_res
+                      "Found key modules in workspace:\n#{String.slice(output, 0, 1500)}"
 
-                  true ->
-                    "Workspace exploration complete. Ready for implementation."
-                end
+                    ast_symbols != [] ->
+                      sym_list =
+                        Enum.map_join(
+                          Enum.take(ast_symbols, 10),
+                          "\n",
+                          &"- #{&1.name} (#{Path.relative_to(&1.file, project_root)}:#{&1.line})"
+                        )
 
-              progress.(100, "Exploration complete")
-              {:ok, context_summary}
+                      "Discovered AST modules:\n#{sym_list}"
+
+                    true ->
+                      "Workspace exploration complete. Ready for implementation."
+                  end
+
+                progress.(100, "Exploration complete")
+                {:ok, context_summary}
+              end
             end
-          end
-        end,
-        Keyword.get(opts, :inner_timeout, @inner_timeout)
-      )
+          end,
+          Keyword.get(opts, :inner_timeout, @inner_timeout)
+        )
+      end)
 
     case explore_res do
       {:ok, summary} ->
@@ -305,8 +339,12 @@ defmodule IexCode.Engine.Agents.ExplorerAgent do
     :persistent_term.put({__MODULE__, :cancelled?, session_id}, value)
   end
 
-  defp cancelled_fun(session_id) do
+  defp cancelled_fun(%State{control_token: nil, session_id: session_id}) do
     fn -> :persistent_term.get({__MODULE__, :cancelled?, session_id}, false) end
+  end
+
+  defp cancelled_fun(%State{control_token: token}) do
+    fn -> IexCode.Engine.FleetControlToken.checkpoint(token) == :cancelled end
   end
 
   @impl true

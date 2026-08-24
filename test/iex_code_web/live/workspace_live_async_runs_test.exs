@@ -2,6 +2,7 @@ defmodule IexCodeWeb.WorkspaceLiveAsyncRunsTest do
   use IexCode.E2E.Case, async: false
 
   alias IexCode.Runs
+  alias IexCode.Engine.FleetSupervisor
 
   setup %{conn: conn} do
     {:ok, conn: %{conn | host: "localhost"}}
@@ -280,6 +281,58 @@ defmodule IexCodeWeb.WorkspaceLiveAsyncRunsTest do
              "Dispatcher offline"
   end
 
+  test "renders the ranked search registry with honest lifecycle controls", %{
+    conn: conn,
+    workspace_path: path
+  } do
+    project = create_project_fixture(%{root_path: path})
+    session = create_session_fixture(project)
+    {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+    view |> render_hook("toggle_settings_modal", %{})
+
+    assert has_element?(view, "#settings-search-provider-count", "12 ranked adapters")
+
+    assert has_element?(
+             view,
+             "#settings-search-provider-perplexity[data-provider-lifecycle='active']"
+           )
+
+    assert has_element?(
+             view,
+             "#settings-search-provider-firecrawl[data-provider-lifecycle='active']"
+           )
+
+    assert has_element?(
+             view,
+             "#settings-search-provider-linkup[data-provider-lifecycle='active']"
+           )
+
+    assert has_element?(
+             view,
+             "#settings-search-provider-serpapi[data-provider-lifecycle='active']"
+           )
+
+    assert has_element?(view, "#settings-provider-engine-serpapi")
+
+    assert has_element?(
+             view,
+             "#settings-search-provider-bing[data-provider-lifecycle='retired'] #settings-provider-enabled-bing[disabled]"
+           )
+
+    assert has_element?(
+             view,
+             "#settings-search-provider-google[data-provider-lifecycle='sunsetting']"
+           )
+
+    assert has_element?(view, "#settings-provider-lifecycle-note-google", "sunsets 2027-01-01")
+
+    assert has_element?(
+             view,
+             "#settings-search-provider-duckduckgo[data-provider-lifecycle='unofficial']"
+           )
+  end
+
   test "renders durable workspace lock ownership and wait state in Mission Control", %{
     conn: conn,
     workspace_path: path
@@ -351,5 +404,112 @@ defmodule IexCodeWeb.WorkspaceLiveAsyncRunsTest do
              view,
              "#async-run-#{waiting_run.id}[data-workspace-lock-state='waiting']"
            )
+  end
+
+  test "streams the selected run fleet and resets it when selection changes", %{
+    conn: conn,
+    workspace_path: path
+  } do
+    project = create_project_fixture(%{root_path: path})
+    session = create_session_fixture(project)
+
+    {:ok, first_run} =
+      Runs.create_run(%{
+        project_id: project.id,
+        session_id: session.id,
+        objective: "Materialize a dynamic fleet",
+        kind: "coding_swarm",
+        mode: "swarm"
+      })
+
+    {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+    view |> element("#tab-btn-swarm") |> render_click()
+
+    assert has_element?(view, "#run-agent-fleet[data-fleet-state='empty']")
+
+    assert {:ok, [agent]} =
+             Runs.create_run_agents(first_run, [
+               %{
+                 key: "security-reviewer:01",
+                 role: "security-reviewer",
+                 adapter: "durable-worker",
+                 display_name: "Security reviewer"
+               }
+             ])
+
+    _ = :sys.get_state(view.pid)
+    assert has_element?(view, "#run-agent-#{agent.id}[data-agent-status='pending']")
+    assert has_element?(view, "#run-agent-fleet-summary", "1")
+
+    {:ok, second_run} =
+      Runs.create_run(%{
+        project_id: project.id,
+        session_id: session.id,
+        objective: "A different selected run",
+        kind: "analysis",
+        mode: "single"
+      })
+
+    _ = :sys.get_state(view.pid)
+    view |> element("#async-run-#{second_run.id}") |> render_click()
+    assert has_element?(view, "#async-run-#{second_run.id}")
+    assert has_element?(view, "#run-agent-fleet[data-fleet-state='empty']")
+    refute has_element?(view, "#run-agent-#{agent.id}")
+
+    html = render_click(view, "control_run_agent", %{"id" => agent.id, "action" => "cancel"})
+    assert html =~ "Agent not found in the selected run"
+  end
+
+  test "targets pause and steering controls to exactly one selected-run agent", %{
+    conn: conn,
+    workspace_path: path
+  } do
+    project = create_project_fixture(%{root_path: path})
+    session = create_session_fixture(project)
+
+    {:ok, run} =
+      Runs.create_run(%{
+        project_id: project.id,
+        session_id: session.id,
+        objective: "Control one durable worker",
+        kind: "coding_swarm",
+        mode: "swarm",
+        status: "running"
+      })
+
+    on_exit(fn -> FleetSupervisor.stop(run.id) end)
+
+    assert {:ok, entries} =
+             FleetSupervisor.attach(run,
+               agent_count: 4,
+               session: session,
+               project_root: path,
+               allowed_tools: []
+             )
+
+    [target, untouched | _rest] = entries
+    target_id = target.agent_id
+    untouched_id = untouched.agent_id
+
+    {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+    view |> element("#tab-btn-swarm") |> render_click()
+
+    assert has_element?(view, "#pause-run-agent-#{target_id}")
+    view |> element("#pause-run-agent-#{target_id}") |> render_click()
+
+    assert Runs.get_run_agent(target_id).status == "paused"
+    assert Runs.get_run_agent(untouched_id).status == "idle"
+    assert Enum.map(Runs.list_run_agent_controls(target_id), & &1.kind) == ["pause"]
+    assert Runs.list_run_agent_controls(untouched_id) == []
+
+    view
+    |> form("#run-agent-steering-form-#{target_id}", %{
+      "agent_id" => target_id,
+      "agent_control" => %{"guidance" => "Audit only the authorization boundary"}
+    })
+    |> render_submit()
+
+    assert Enum.map(Runs.list_run_agent_controls(target_id), & &1.kind) == ["pause", "steer"]
+    assert Runs.list_run_agent_controls(untouched_id) == []
   end
 end

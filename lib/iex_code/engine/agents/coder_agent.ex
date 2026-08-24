@@ -18,6 +18,7 @@ defmodule IexCode.Engine.Agents.CoderAgent do
       :session_id,
       :session,
       :project_root,
+      :control_token,
       status: :idle,
       current_op_id: nil,
       last_result: nil,
@@ -30,7 +31,17 @@ defmodule IexCode.Engine.Agents.CoderAgent do
 
   def start_link(opts) do
     session_id = Keyword.fetch!(opts, :session_id)
-    GenServer.start_link(__MODULE__, opts, name: AgentRegistry.via_tuple(session_id, :coder))
+
+    name =
+      case {opts[:run_id], opts[:agent_id]} do
+        {run_id, agent_id} when is_binary(run_id) and is_binary(agent_id) ->
+          AgentRegistry.via_agent(run_id, agent_id)
+
+        _ ->
+          AgentRegistry.via_tuple(session_id, :coder)
+      end
+
+    GenServer.start_link(__MODULE__, opts, name: name)
   end
 
   @doc """
@@ -66,6 +77,7 @@ defmodule IexCode.Engine.Agents.CoderAgent do
 
   @impl true
   def init(opts) do
+    mark_fleet_owner(opts)
     session_id = Keyword.fetch!(opts, :session_id)
     session = opts[:session]
 
@@ -77,13 +89,28 @@ defmodule IexCode.Engine.Agents.CoderAgent do
       session_id: session_id,
       session: session,
       project_root: project_root,
+      control_token: opts[:control_token],
       status: :idle
     }
 
-    set_cancelled?(session_id, false)
-    subscribe_steering(session_id)
+    unless is_binary(opts[:run_id]) do
+      set_cancelled?(session_id, false)
+      subscribe_steering(session_id)
+    end
 
     {:ok, state}
+  end
+
+  defp mark_fleet_owner(opts) do
+    if is_binary(opts[:run_id]) and is_binary(opts[:agent_id]) do
+      Process.put(:iex_code_fleet_owner, IexCode.Engine.FleetRuntime.owner(opts))
+      Process.put(:iex_code_fleet_control_token, opts[:control_token])
+
+      AgentRegistry.put_agent_metadata(opts[:run_id], opts[:agent_id], %{
+        role: :coder,
+        generation: opts[:generation]
+      })
+    end
   end
 
   @impl true
@@ -105,69 +132,75 @@ defmodule IexCode.Engine.Agents.CoderAgent do
     explorer_context = opts[:context] || ""
     diagnostics = opts[:diagnostics]
 
+    runtime_owner = Process.get(:iex_code_fleet_owner)
+
     code_res =
-      OperationManager.run_sync_operation(
-        session_id,
-        parent_op_id,
-        "CoderAgent",
-        "llm_stream",
-        "Coder: Generating implementation and code patches",
-        %{prompt: prompt},
-        fn progress ->
-          progress.(15, "Generating code solution with LLM...")
+      IexCode.Engine.FleetRuntime.run(runtime_owner, state.control_token, "coding", fn ->
+        OperationManager.run_sync_operation(
+          session_id,
+          parent_op_id,
+          "CoderAgent",
+          "llm_stream",
+          "Coder: Generating implementation and code patches",
+          %{prompt: prompt},
+          fn progress ->
+            progress.(15, "Generating code solution with LLM...")
 
-          steer_directives = Keyword.get(opts, :steer_directives, [])
+            steer_directives = Keyword.get(opts, :steer_directives, [])
 
-          system_prompt = """
-          You are the Coder Agent in an Elixir coding swarm.
-          Based on the plan and exploration context, implement the required code.
-          If code edits or new files are needed, describe the files and changes clearly.
-          """
+            system_prompt = """
+            You are the Coder Agent in an Elixir coding swarm.
+            Based on the plan and exploration context, implement the required code.
+            If code edits or new files are needed, describe the files and changes clearly.
+            """
 
-          base_content =
-            if diagnostics do
-              diag_str = AutoFix.format_diagnostics(diagnostics)
+            base_content =
+              if diagnostics do
+                diag_str = AutoFix.format_diagnostics(diagnostics)
 
-              """
-              ### ⚠️ Self-Correction Feedback
-              #{diag_str}
+                """
+                ### ⚠️ Self-Correction Feedback
+                #{diag_str}
 
-              Task: #{prompt}
-              """
+                Task: #{prompt}
+                """
+              else
+                "Plan:\n#{plan}\n\nContext:\n#{explorer_context}\n\nTask:\n#{prompt}"
+              end
+
+            messages = [
+              %{role: "user", content: append_steer_directives(base_content, steer_directives)}
+            ]
+
+            with :ok <- apply_explicit_patches(opts, project_root, progress),
+                 {:ok, code_text} <-
+                   run_tool_loop(
+                     session_id,
+                     messages,
+                     system_prompt,
+                     session,
+                     project_root,
+                     parent_op_id,
+                     opts[:run_id],
+                     trusted_project_id(opts, state),
+                     opts[:workspace_lock_delegation],
+                     Keyword.get(opts, :allowed_tools, :all),
+                     cancelled_fun(state),
+                     runtime_owner,
+                     progress,
+                     0
+                   ) do
+              progress.(100, "Implementation complete")
+              {:ok, code_text}
             else
-              "Plan:\n#{plan}\n\nContext:\n#{explorer_context}\n\nTask:\n#{prompt}"
+              {:error, reason} = err ->
+                progress.(100, "Implementation failed: #{format_reason(reason)}")
+                err
             end
-
-          messages = [
-            %{role: "user", content: append_steer_directives(base_content, steer_directives)}
-          ]
-
-          with :ok <- apply_explicit_patches(opts, project_root, progress),
-               {:ok, code_text} <-
-                 run_tool_loop(
-                   session_id,
-                   messages,
-                   system_prompt,
-                   session,
-                   project_root,
-                   parent_op_id,
-                   opts[:run_id],
-                   trusted_project_id(opts, state),
-                   opts[:workspace_lock_delegation],
-                   Keyword.get(opts, :allowed_tools, :all),
-                   progress,
-                   0
-                 ) do
-            progress.(100, "Implementation complete")
-            {:ok, code_text}
-          else
-            {:error, reason} = err ->
-              progress.(100, "Implementation failed: #{format_reason(reason)}")
-              err
-          end
-        end,
-        Keyword.get(opts, :inner_timeout, @inner_timeout)
-      )
+          end,
+          Keyword.get(opts, :inner_timeout, @inner_timeout)
+        )
+      end)
 
     case code_res do
       {:ok, code_result} ->
@@ -238,6 +271,8 @@ defmodule IexCode.Engine.Agents.CoderAgent do
          project_id,
          workspace_lock_delegation,
          allowed_tools,
+         cancelled?,
+         usage_context,
          progress,
          iteration
        ) do
@@ -250,11 +285,11 @@ defmodule IexCode.Engine.Agents.CoderAgent do
       )
 
       case LLM.chat(messages, system_prompt, session, fn _c -> :ok end,
-             cancelled?: cancelled_fun(session_id),
+             cancelled?: cancelled?,
              allowed_tools: allowed_tools
            ) do
         {:ok, %{text: text, tool_calls: tool_calls} = response} when tool_calls != [] ->
-          with :ok <- persist_run_usage(run_id, response) do
+          with :ok <- persist_run_usage(run_id, response, usage_context) do
             progress.(60, "Executing #{length(tool_calls)} tool call(s)...")
 
             tool_messages =
@@ -283,13 +318,15 @@ defmodule IexCode.Engine.Agents.CoderAgent do
               project_id,
               workspace_lock_delegation,
               allowed_tools,
+              cancelled?,
+              usage_context,
               progress,
               iteration + 1
             )
           end
 
         {:ok, %{text: text} = response} ->
-          with :ok <- persist_run_usage(run_id, response), do: {:ok, text || ""}
+          with :ok <- persist_run_usage(run_id, response, usage_context), do: {:ok, text || ""}
 
         {:ok, other} ->
           {:error, {:unexpected_llm_response, other}}
@@ -394,13 +431,21 @@ defmodule IexCode.Engine.Agents.CoderAgent do
 
   defp tool_allowed?(_tool_name, _allowed_tools), do: false
 
-  defp persist_run_usage(nil, _response), do: :ok
+  defp persist_run_usage(nil, _response, _state), do: :ok
 
-  defp persist_run_usage(run_id, response) do
+  defp persist_run_usage(run_id, response, runtime_owner) do
     usage = Map.get(response, :usage) || Map.get(response, "usage")
 
     if is_map(usage) do
-      case IexCode.Runs.record_usage(run_id, usage, "coder.llm") do
+      result =
+        if runtime_owner do
+          IexCode.Engine.FleetRuntime.record_usage(runtime_owner, usage, "coder.llm")
+        else
+          IexCode.Runs.record_usage(run_id, usage, "coder.llm")
+        end
+
+      case result do
+        :ok -> :ok
         {:ok, _run} -> :ok
         {:error, {:token_budget_exhausted, _run}} -> {:error, :token_budget_exhausted}
         {:error, reason} -> {:error, reason}
@@ -420,8 +465,12 @@ defmodule IexCode.Engine.Agents.CoderAgent do
     :persistent_term.put({__MODULE__, :cancelled?, session_id}, value)
   end
 
-  defp cancelled_fun(session_id) do
+  defp cancelled_fun(%State{control_token: nil, session_id: session_id}) do
     fn -> :persistent_term.get({__MODULE__, :cancelled?, session_id}, false) end
+  end
+
+  defp cancelled_fun(%State{control_token: token}) do
+    fn -> IexCode.Engine.FleetControlToken.checkpoint(token) == :cancelled end
   end
 
   defp append_steer_directives(content, []), do: content

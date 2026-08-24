@@ -21,6 +21,14 @@ defmodule IexCodeWeb.RunComponents do
   attr :events, :any, required: true
   attr :stats, :map, default: %{}
   attr :workspace_locks, :list, default: []
+  attr :agents, :any, default: []
+  attr :agent_count, :integer, default: 0
+
+  attr :fleet_summary, :map,
+    default: %{active: 0, paused: 0, attention: 0, recovering: 0, tokens: 0}
+
+  attr :fleet_loading, :boolean, default: false
+  attr :agent_guidance, :map, default: %{}
 
   def run_control_plane(assigns) do
     active_workspace_locks =
@@ -566,6 +574,15 @@ defmodule IexCodeWeb.RunComponents do
                 <.run_fact label="Events" value={to_string(@selected_run.event_sequence || 0)} />
                 <.run_fact label="Cost" value={format_cost(@selected_run.cost_cents)} />
               </div>
+
+              <.agent_fleet
+                run={@selected_run}
+                agents={@agents}
+                agent_count={@agent_count}
+                summary={@fleet_summary}
+                loading={@fleet_loading}
+                guidance={@agent_guidance}
+              />
             </div>
 
             <div class="grid min-w-0 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
@@ -856,6 +873,348 @@ defmodule IexCodeWeb.RunComponents do
         </div>
       </div>
     </section>
+    """
+  end
+
+  attr :run, :any, required: true
+  attr :agents, :any, required: true
+  attr :agent_count, :integer, required: true
+  attr :summary, :map, required: true
+  attr :loading, :boolean, default: false
+  attr :guidance, :map, default: %{}
+
+  def agent_fleet(assigns) do
+    ~H"""
+    <section
+      id="run-agent-fleet"
+      aria-labelledby="run-agent-fleet-heading"
+      aria-busy={to_string(@loading)}
+      data-fleet-state={fleet_state(@run, @agent_count, @summary, @loading)}
+      class="mt-5 overflow-hidden border border-[#29313a] bg-[#0b0f14]"
+    >
+      <header class="flex flex-col gap-4 border-b border-[#252c35] px-4 py-4 sm:px-5 lg:flex-row lg:items-end lg:justify-between">
+        <div class="min-w-0">
+          <div class="mb-1.5 flex items-center gap-2 font-mono text-[9px] font-semibold uppercase tracking-[0.2em] text-cyan-400">
+            <span class="h-1.5 w-1.5 bg-cyan-400"></span> Persisted run topology
+          </div>
+          <h4 id="run-agent-fleet-heading" class="text-sm font-semibold tracking-tight text-white">
+            Agent fleet
+          </h4>
+          <p class="mt-1 max-w-2xl text-[11px] leading-5 text-gray-500">
+            Actual worker instances attached to this run. Health and usage survive reconnects;
+            controls are isolated to the selected agent.
+          </p>
+        </div>
+
+        <div
+          id="run-agent-fleet-summary"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          class="grid grid-cols-4 gap-px bg-[#252c35] font-mono text-[9px] uppercase tracking-wider sm:min-w-[24rem]"
+        >
+          <.fleet_fact label="Agents" value={@agent_count} tone="text-gray-100" />
+          <.fleet_fact label="Active" value={Map.get(@summary, :active, 0)} tone="text-emerald-300" />
+          <.fleet_fact label="Paused" value={Map.get(@summary, :paused, 0)} tone="text-amber-300" />
+          <.fleet_fact
+            label="Attention"
+            value={Map.get(@summary, :attention, 0)}
+            tone="text-rose-300"
+          />
+        </div>
+      </header>
+
+      <div
+        :if={Map.get(@summary, :recovering, 0) > 0}
+        id="run-agent-fleet-recovering"
+        role="status"
+        class="flex items-start gap-2.5 border-b border-amber-500/20 bg-amber-500/[0.04] px-4 py-3 text-[11px] leading-5 text-amber-100/80"
+      >
+        <.icon name="hero-arrow-path" class="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-amber-300" />
+        <span>
+          {Map.get(@summary, :recovering, 0)} worker {pluralize(
+            Map.get(@summary, :recovering, 0),
+            "is",
+            "are"
+          )} reconciling durable state. Commands remain recorded while ownership is restored.
+        </span>
+      </div>
+
+      <div
+        :if={@loading}
+        id="run-agent-fleet-loading"
+        role="status"
+        class="grid gap-px bg-[#252c35] md:grid-cols-2"
+      >
+        <div
+          :for={index <- 1..2}
+          id={"run-agent-fleet-skeleton-#{index}"}
+          class="animate-pulse bg-[#10151b] p-4 sm:p-5"
+        >
+          <div class="h-3 w-28 bg-[#252c35]"></div>
+          <div class="mt-4 h-2 w-4/5 bg-[#20262e]"></div>
+          <div class="mt-2 h-2 w-2/3 bg-[#20262e]"></div>
+          <div class="mt-5 h-px bg-[#252c35]"></div>
+        </div>
+      </div>
+
+      <div
+        :if={!@loading}
+        id="run-agent-fleet-list"
+        phx-update="stream"
+        class="grid gap-px bg-[#252c35] md:grid-cols-2"
+      >
+        <div
+          id="run-agent-fleet-empty"
+          class="hidden bg-[#0f141a] px-5 py-10 text-center only:block md:col-span-2"
+        >
+          <div class="mx-auto flex h-9 w-9 items-center justify-center border border-dashed border-[#38404a] text-gray-600">
+            <.icon name="hero-cpu-chip" class="h-4 w-4" />
+          </div>
+          <p class="mt-3 text-xs font-medium text-gray-300">{fleet_empty_title(@run)}</p>
+          <p class="mx-auto mt-1 max-w-md text-[11px] leading-5 text-gray-600">
+            {fleet_empty_copy(@run)}
+          </p>
+        </div>
+
+        <article
+          :for={{dom_id, agent} <- @agents}
+          id={dom_id}
+          data-agent-status={agent_value(agent, :status, "pending")}
+          data-agent-health={agent_health(agent)}
+          class="group min-w-0 bg-[#10151b] p-4 transition-colors hover:bg-[#121820] sm:p-5"
+        >
+          <div class="flex items-start justify-between gap-3">
+            <div class="flex min-w-0 items-start gap-3">
+              <span class={[
+                "mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center border",
+                agent_health_tone(agent_health(agent), :surface)
+              ]}>
+                <.icon name={agent_role_icon(agent)} class="h-4 w-4" />
+              </span>
+              <div class="min-w-0">
+                <p class="truncate text-xs font-semibold text-gray-100">
+                  {agent_display_name(agent)}
+                </p>
+                <div class="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[9px] uppercase tracking-wider text-gray-600">
+                  <span>{agent_value(agent, :role, "worker")}</span>
+                  <span class="text-gray-700">/</span>
+                  <span
+                    class="max-w-40 truncate normal-case tracking-normal"
+                    title={agent_value(agent, :key, "agent")}
+                  >
+                    {agent_value(agent, :key, "agent")}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div class="flex shrink-0 flex-col items-end gap-1">
+              <span class={[
+                "border px-1.5 py-0.5 font-mono text-[9px] font-semibold uppercase tracking-wider",
+                agent_status_tone(agent_value(agent, :status, "pending"))
+              ]}>
+                {agent_value(agent, :status, "pending")}
+              </span>
+              <span class={[
+                "flex items-center gap-1 font-mono text-[8px] uppercase tracking-wider",
+                agent_health_tone(agent_health(agent), :text)
+              ]}>
+                <span class={[
+                  "h-1 w-1 rounded-full",
+                  agent_health(agent) == "healthy" && "animate-pulse",
+                  agent_health_tone(agent_health(agent), :dot)
+                ]}></span>
+                {agent_health(agent)}
+              </span>
+            </div>
+          </div>
+
+          <div class="mt-4 min-h-12 border-l border-[#303844] pl-3">
+            <p class="font-mono text-[8px] uppercase tracking-[0.16em] text-gray-600">Current task</p>
+            <p class="mt-1 line-clamp-2 break-words text-[11px] leading-5 text-gray-300">
+              {agent_task(agent)}
+            </p>
+          </div>
+
+          <div class="mt-4">
+            <div class="mb-1.5 flex items-center justify-between font-mono text-[9px] text-gray-600">
+              <span class="min-w-0 truncate pr-2" title={agent_model(agent)}>{agent_model(agent)}</span>
+              <span class="tabular-nums text-gray-400">{agent_progress(agent)}%</span>
+            </div>
+            <div
+              role="progressbar"
+              aria-label={"#{agent_display_name(agent)} progress"}
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow={agent_progress(agent)}
+              class="h-px bg-[#2a313a]"
+            >
+              <div
+                class={[
+                  "h-px transition-[width] duration-300",
+                  agent_value(agent, :status, "pending") == "failed" && "bg-rose-400",
+                  agent_value(agent, :status, "pending") != "failed" && "bg-cyan-400"
+                ]}
+                style={"width: #{agent_progress(agent)}%"}
+              >
+              </div>
+            </div>
+          </div>
+
+          <div class="mt-4 grid grid-cols-3 gap-px bg-[#252c35]">
+            <.agent_metric label="Tokens" value={format_count(agent_tokens(agent))} />
+            <.agent_metric
+              label="Avg latency"
+              value={agent_average_latency(agent)}
+            />
+            <.agent_metric
+              label="Requests"
+              value={format_count(agent_value(agent, :request_count, 0))}
+            />
+          </div>
+
+          <div class="mt-3 flex flex-wrap items-center justify-between gap-2 font-mono text-[9px] text-gray-600">
+            <span title={agent_heartbeat_title(agent)}>
+              Heartbeat · {agent_heartbeat_label(agent)}
+            </span>
+            <span :if={agent_desired_state_pending?(agent)} class="text-amber-300">
+              Requested · {agent_value(agent, :desired_state)}
+            </span>
+            <span :if={!agent_desired_state_pending?(agent)}>
+              Last · {agent_last_latency(agent)}
+            </span>
+          </div>
+
+          <div
+            :if={agent_value(agent, :error_message)}
+            id={"run-agent-error-#{agent_value(agent, :id)}"}
+            role="alert"
+            class="mt-3 break-words border-l-2 border-rose-500 pl-3 text-[10px] leading-5 text-rose-300"
+          >
+            {agent_value(agent, :error_message)}
+          </div>
+
+          <div class="mt-4 border-t border-[#252c35] pt-3">
+            <div class="flex flex-wrap gap-1.5">
+              <button
+                :if={agent_value(agent, :status) in ["idle", "running"]}
+                id={"pause-run-agent-#{agent_value(agent, :id)}"}
+                type="button"
+                phx-click="control_run_agent"
+                phx-value-id={agent_value(agent, :id)}
+                phx-value-action="pause"
+                phx-disable-with="Pausing…"
+                aria-label={"Pause #{agent_display_name(agent)}"}
+                class="min-h-9 flex-1 border border-amber-500/25 bg-amber-500/[0.05] px-2.5 font-mono text-[9px] font-semibold uppercase tracking-wider text-amber-300 transition-colors hover:bg-amber-500/10 sm:flex-none"
+              >
+                Pause
+              </button>
+              <button
+                :if={agent_value(agent, :status) == "paused"}
+                id={"resume-run-agent-#{agent_value(agent, :id)}"}
+                type="button"
+                phx-click="control_run_agent"
+                phx-value-id={agent_value(agent, :id)}
+                phx-value-action="resume"
+                phx-disable-with="Resuming…"
+                aria-label={"Resume #{agent_display_name(agent)}"}
+                class="min-h-9 flex-1 border border-emerald-500/25 bg-emerald-500/[0.05] px-2.5 font-mono text-[9px] font-semibold uppercase tracking-wider text-emerald-300 transition-colors hover:bg-emerald-500/10 sm:flex-none"
+              >
+                Resume
+              </button>
+              <button
+                :if={agent_retryable?(agent)}
+                id={"restart-run-agent-#{agent_value(agent, :id)}"}
+                type="button"
+                phx-click="control_run_agent"
+                phx-value-id={agent_value(agent, :id)}
+                phx-value-action="restart"
+                phx-disable-with="Restarting…"
+                aria-label={"Restart #{agent_display_name(agent)}"}
+                class="min-h-9 flex-1 border border-cyan-500/25 bg-cyan-500/[0.05] px-2.5 font-mono text-[9px] font-semibold uppercase tracking-wider text-cyan-300 transition-colors hover:bg-cyan-500/10 sm:flex-none"
+              >
+                Restart
+              </button>
+              <button
+                :if={agent_cancellable?(agent)}
+                id={"cancel-run-agent-#{agent_value(agent, :id)}"}
+                type="button"
+                phx-click="control_run_agent"
+                phx-value-id={agent_value(agent, :id)}
+                phx-value-action="cancel"
+                phx-disable-with="Stopping…"
+                aria-label={"Stop #{agent_display_name(agent)}"}
+                data-confirm="Stop only this agent? Dependent work may wait for recovery or operator action."
+                class="min-h-9 flex-1 border border-rose-500/25 bg-rose-500/[0.05] px-2.5 font-mono text-[9px] font-semibold uppercase tracking-wider text-rose-300 transition-colors hover:bg-rose-500/10 sm:flex-none"
+              >
+                Stop
+              </button>
+            </div>
+
+            <.form
+              :if={agent_steerable?(agent)}
+              for={agent_steering_form(agent, @guidance)}
+              id={"run-agent-steering-form-#{agent_value(agent, :id)}"}
+              phx-change="update_run_agent_guidance"
+              phx-submit="steer_run_agent"
+              class="mt-2 flex items-end gap-2"
+            >
+              <.input
+                type="hidden"
+                id={"run-agent-steering-agent-id-#{agent_value(agent, :id)}"}
+                name="agent_id"
+                value={agent_value(agent, :id)}
+              />
+              <div class="min-w-0 flex-1">
+                <.input
+                  field={agent_steering_form(agent, @guidance)[:guidance]}
+                  id={"run-agent-steering-input-#{agent_value(agent, :id)}"}
+                  type="text"
+                  label="Agent guidance"
+                  placeholder="Redirect this worker…"
+                  class="block min-h-9 w-full border border-[#303844] bg-[#0b0f14] px-2.5 py-2 text-[11px] text-gray-100 outline-none transition-colors placeholder:text-gray-700 focus:border-cyan-500/50"
+                />
+              </div>
+              <button
+                id={"run-agent-steering-submit-#{agent_value(agent, :id)}"}
+                type="submit"
+                phx-disable-with="Queueing…"
+                aria-label={"Send guidance to #{agent_display_name(agent)}"}
+                class="mb-0.5 min-h-9 shrink-0 bg-cyan-400 px-3 font-mono text-[9px] font-semibold uppercase tracking-wider text-[#071014] transition-colors hover:bg-cyan-300"
+              >
+                Steer
+              </button>
+            </.form>
+          </div>
+        </article>
+      </div>
+    </section>
+    """
+  end
+
+  attr :label, :string, required: true
+  attr :value, :integer, required: true
+  attr :tone, :string, required: true
+
+  defp fleet_fact(assigns) do
+    ~H"""
+    <div class="bg-[#10151b] px-2.5 py-2 text-center">
+      <span class={[@tone, "block text-xs font-semibold tabular-nums"]}>{@value}</span>
+      <span class="mt-0.5 block text-[8px] text-gray-600">{@label}</span>
+    </div>
+    """
+  end
+
+  attr :label, :string, required: true
+  attr :value, :string, required: true
+
+  defp agent_metric(assigns) do
+    ~H"""
+    <div class="min-w-0 bg-[#0d1218] px-2 py-2">
+      <span class="block font-mono text-[8px] uppercase tracking-wider text-gray-600">{@label}</span>
+      <span class="mt-0.5 block truncate font-mono text-[10px] tabular-nums text-gray-300">{@value}</span>
+    </div>
     """
   end
 
@@ -1227,6 +1586,283 @@ defmodule IexCodeWeb.RunComponents do
 
   defp display_value(value, _fallback) when is_binary(value), do: String.replace(value, "_", " ")
   defp display_value(value, _fallback), do: to_string(value)
+
+  defp fleet_state(_run, _count, _summary, true), do: "loading"
+  defp fleet_state(_run, 0, _summary, false), do: "empty"
+
+  defp fleet_state(_run, _count, summary, false) do
+    cond do
+      Map.get(summary, :recovering, 0) > 0 -> "recovering"
+      Map.get(summary, :attention, 0) > 0 -> "attention"
+      Map.get(summary, :active, 0) > 0 -> "active"
+      Map.get(summary, :paused, 0) > 0 -> "paused"
+      true -> "settled"
+    end
+  end
+
+  defp fleet_empty_title(run) do
+    case agent_value(run, :status) do
+      "queued" -> "Fleet awaits dispatcher claim"
+      "running" -> "No worker instances attached"
+      _ -> "No persisted agent fleet"
+    end
+  end
+
+  defp fleet_empty_copy(run) do
+    case agent_value(run, :status) do
+      "queued" ->
+        "Worker records appear only when the dispatcher materializes this run's topology."
+
+      "running" ->
+        "This run may be executing a non-agent step, or its durable topology has not materialized yet."
+
+      status when status in ["completed", "failed", "cancelled", "interrupted"] ->
+        "This archived run completed without a durable agent instance record."
+
+      _ ->
+        "This run has no agent workers attached. Tool-only and provider work can run without a fleet."
+    end
+  end
+
+  defp agent_value(record, key, default \\ nil)
+  defp agent_value(nil, _key, default), do: default
+
+  defp agent_value(record, key, default) when is_map(record) do
+    Map.get(record, key, Map.get(record, Atom.to_string(key), default))
+  end
+
+  defp agent_value(_record, _key, default), do: default
+
+  defp agent_display_name(agent) do
+    display_value(
+      agent_value(agent, :display_name),
+      agent_value(agent, :role, agent_value(agent, :key, "Agent worker"))
+    )
+  end
+
+  defp agent_task(agent) do
+    cond do
+      present_value?(agent_value(agent, :current_task)) -> agent_value(agent, :current_task)
+      agent_value(agent, :status) == "queued" -> "Waiting for a runnable step"
+      agent_value(agent, :status) == "paused" -> "Paused with durable context retained"
+      agent_value(agent, :status) in ["completed", "cancelled"] -> "No active task"
+      true -> "No current task reported"
+    end
+  end
+
+  defp agent_model(agent) do
+    provider = agent_value(agent, :model_provider)
+    model = agent_value(agent, :model_name)
+
+    case {present_value?(provider), present_value?(model)} do
+      {true, true} -> "#{provider} · #{model}"
+      {false, true} -> to_string(model)
+      {true, false} -> to_string(provider)
+      _ -> "Model not reported"
+    end
+  end
+
+  defp agent_progress(agent) do
+    case agent_value(agent, :progress, 0) do
+      value when is_integer(value) -> min(max(value, 0), 100)
+      value when is_float(value) -> value |> round() |> min(100) |> max(0)
+      _ -> 0
+    end
+  end
+
+  defp agent_tokens(agent) do
+    nonnegative_integer(agent_value(agent, :input_tokens)) +
+      nonnegative_integer(agent_value(agent, :output_tokens))
+  end
+
+  defp nonnegative_integer(value) when is_integer(value), do: max(value, 0)
+  defp nonnegative_integer(_value), do: 0
+
+  defp format_count(value) when is_integer(value) and value >= 1_000_000,
+    do: "#{Float.round(value / 1_000_000, 1)}m"
+
+  defp format_count(value) when is_integer(value) and value >= 1_000,
+    do: "#{Float.round(value / 1_000, 1)}k"
+
+  defp format_count(value) when is_integer(value), do: Integer.to_string(max(value, 0))
+  defp format_count(_value), do: "0"
+
+  defp format_latency(value) when is_integer(value) and value >= 60_000,
+    do: "#{Float.round(value / 60_000, 1)}m"
+
+  defp format_latency(value) when is_integer(value) and value >= 1_000,
+    do: "#{Float.round(value / 1_000, 1)}s"
+
+  defp format_latency(value) when is_integer(value) and value >= 0, do: "#{value}ms"
+  defp format_latency(_value), do: "—"
+
+  defp agent_average_latency(agent) do
+    if nonnegative_integer(agent_value(agent, :request_count)) > 0,
+      do: format_latency(agent_value(agent, :average_latency_ms)),
+      else: "—"
+  end
+
+  defp agent_last_latency(agent) do
+    if nonnegative_integer(agent_value(agent, :request_count)) > 0,
+      do: format_latency(agent_value(agent, :last_latency_ms)),
+      else: "—"
+  end
+
+  defp agent_health(agent) do
+    status = agent_value(agent, :status, "pending")
+
+    cond do
+      status in ["starting", "recovering"] -> "recovering"
+      status == "failed" -> "degraded"
+      status in ["completed", "cancelled", "interrupted"] -> "offline"
+      status in ["pending", "queued"] -> "unknown"
+      timestamp_past?(agent_value(agent, :lease_expires_at)) -> "stale"
+      present_value?(agent_value(agent, :heartbeat_at)) -> "healthy"
+      true -> "unknown"
+    end
+  end
+
+  defp timestamp_past?(%DateTime{} = timestamp),
+    do: DateTime.compare(timestamp, DateTime.utc_now()) == :lt
+
+  defp timestamp_past?(%NaiveDateTime{} = timestamp) do
+    timestamp
+    |> DateTime.from_naive!("Etc/UTC")
+    |> timestamp_past?()
+  end
+
+  defp timestamp_past?(_timestamp), do: false
+
+  defp agent_heartbeat_label(agent) do
+    case agent_value(agent, :heartbeat_at) || agent_value(agent, :last_active_at) do
+      %DateTime{} = timestamp ->
+        relative_time(timestamp)
+
+      %NaiveDateTime{} = timestamp ->
+        timestamp |> DateTime.from_naive!("Etc/UTC") |> relative_time()
+
+      _ ->
+        "not reported"
+    end
+  end
+
+  defp agent_heartbeat_title(agent) do
+    case agent_value(agent, :heartbeat_at) || agent_value(agent, :last_active_at) do
+      %DateTime{} = timestamp -> DateTime.to_iso8601(timestamp)
+      %NaiveDateTime{} = timestamp -> NaiveDateTime.to_iso8601(timestamp)
+      _ -> "No heartbeat has been persisted"
+    end
+  end
+
+  defp relative_time(%DateTime{} = timestamp) do
+    seconds = max(DateTime.diff(DateTime.utc_now(), timestamp, :second), 0)
+
+    cond do
+      seconds < 5 -> "now"
+      seconds < 60 -> "#{seconds}s ago"
+      seconds < 3_600 -> "#{div(seconds, 60)}m ago"
+      true -> "#{div(seconds, 3_600)}h ago"
+    end
+  end
+
+  defp agent_status_tone(status) do
+    cond do
+      status in ["running", "completed"] ->
+        "border-emerald-500/20 bg-emerald-500/[0.06] text-emerald-300"
+
+      status in ["paused", "waiting", "starting", "recovering"] ->
+        "border-amber-500/25 bg-amber-500/[0.06] text-amber-300"
+
+      status in ["failed", "cancelled", "interrupted"] ->
+        "border-rose-500/20 bg-rose-500/[0.05] text-rose-300"
+
+      true ->
+        "border-[#303844] bg-[#151b22] text-gray-400"
+    end
+  end
+
+  defp agent_health_tone("healthy", :surface),
+    do: "border-emerald-500/20 bg-emerald-500/[0.05] text-emerald-300"
+
+  defp agent_health_tone("healthy", :text), do: "text-emerald-400"
+  defp agent_health_tone("healthy", :dot), do: "bg-emerald-400"
+
+  defp agent_health_tone(health, :surface) when health in ["stale", "recovering"],
+    do: "border-amber-500/25 bg-amber-500/[0.05] text-amber-300"
+
+  defp agent_health_tone(health, :text) when health in ["stale", "recovering"],
+    do: "text-amber-400"
+
+  defp agent_health_tone(health, :dot) when health in ["stale", "recovering"],
+    do: "bg-amber-400"
+
+  defp agent_health_tone(health, :surface) when health in ["degraded", "offline"],
+    do: "border-rose-500/20 bg-rose-500/[0.04] text-rose-300"
+
+  defp agent_health_tone(health, :text) when health in ["degraded", "offline"],
+    do: "text-rose-400"
+
+  defp agent_health_tone(health, :dot) when health in ["degraded", "offline"],
+    do: "bg-rose-400"
+
+  defp agent_health_tone(_health, :surface),
+    do: "border-[#303844] bg-[#151b22] text-gray-500"
+
+  defp agent_health_tone(_health, :text), do: "text-gray-600"
+  defp agent_health_tone(_health, :dot), do: "bg-gray-600"
+
+  defp agent_role_icon(agent) do
+    case agent_value(agent, :role, "") |> to_string() |> String.downcase() do
+      "planner" -> "hero-map"
+      "explorer" -> "hero-magnifying-glass"
+      "coder" -> "hero-code-bracket"
+      "verifier" -> "hero-check-badge"
+      "researcher" -> "hero-globe-alt"
+      _ -> "hero-cpu-chip"
+    end
+  end
+
+  defp agent_cancellable?(agent),
+    do:
+      agent_value(agent, :status) in [
+        "pending",
+        "starting",
+        "idle",
+        "running",
+        "paused",
+        "stopping"
+      ]
+
+  defp agent_retryable?(agent) do
+    agent_value(agent, :status) == "interrupted" and
+      nonnegative_integer(agent_value(agent, :attempt)) <
+        max(nonnegative_integer(agent_value(agent, :max_attempts)), 1)
+  end
+
+  defp agent_steerable?(agent),
+    do: agent_value(agent, :status) in ["idle", "running", "paused"]
+
+  defp agent_desired_state_pending?(agent) do
+    desired = agent_value(agent, :desired_state)
+    status = agent_value(agent, :status)
+
+    case desired do
+      "paused" -> status != "paused"
+      "stopped" -> status not in ["stopping", "completed", "failed", "cancelled"]
+      "active" -> status in ["paused", "stopping", "failed", "cancelled", "interrupted"]
+      _ -> false
+    end
+  end
+
+  defp agent_steering_form(agent, guidance) do
+    value = Map.get(guidance, agent_value(agent, :id), "")
+    to_form(%{"guidance" => value}, as: :agent_control)
+  end
+
+  defp present_value?(value), do: not is_nil(value) and value != ""
+
+  defp pluralize(1, singular, _plural), do: singular
+  defp pluralize(_count, _singular, plural), do: plural
 
   defp control_value(control, key, fallback) do
     case manifest_get(control, key) do

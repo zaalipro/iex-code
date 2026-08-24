@@ -11,7 +11,7 @@ defmodule IexCode.Research.Search do
 
   alias IexCode.Research.{Registry, Result}
 
-  @provider_option_keys ~w(api_key base_url enabled cx engine_id country language search_depth)a
+  @provider_option_keys ~w(api_key base_url enabled cx engine_id engine country language search_depth location safe include_domains exclude_domains start_date end_date search_after_date search_before_date recency)a
 
   @type response :: %{
           results: [IexCode.Research.Result.t()],
@@ -126,12 +126,32 @@ defmodule IexCode.Research.Search do
         if is_nil(value), do: acc, else: Keyword.put(acc, key, value)
       end)
 
-    Enum.reduce([:request, :limit, :receive_timeout], configured, fn key, acc ->
-      case Keyword.fetch(opts, key) do
-        {:ok, value} -> Keyword.put(acc, key, value)
-        :error -> acc
+    Enum.reduce(
+      [
+        :request,
+        :limit,
+        :receive_timeout,
+        :country,
+        :language,
+        :search_depth,
+        :location,
+        :safe,
+        :include_domains,
+        :exclude_domains,
+        :start_date,
+        :end_date,
+        :search_after_date,
+        :search_before_date,
+        :recency
+      ],
+      configured,
+      fn key, acc ->
+        case Keyword.fetch(opts, key) do
+          {:ok, value} -> Keyword.put(acc, key, value)
+          :error -> acc
+        end
       end
-    end)
+    )
   end
 
   defp interleave(provider_results) do

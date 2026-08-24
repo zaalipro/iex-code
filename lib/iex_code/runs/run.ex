@@ -11,6 +11,7 @@ defmodule IexCode.Runs.Run do
   @modes ~w(single swarm workflow research)
   @kinds ~w(coding_swarm analysis deep_research)
   @priorities ~w(low normal high critical)
+  @execution_engines ~w(legacy_v1 dag_v1)
 
   schema "runs" do
     field :objective, :string
@@ -18,6 +19,7 @@ defmodule IexCode.Runs.Run do
     field :status, :string, default: "queued"
     field :mode, :string, default: "swarm"
     field :priority, :string, default: "normal"
+    field :execution_engine, :string, default: "legacy_v1"
     field :progress, :integer, default: 0
     field :event_sequence, :integer, default: 0
     field :control_sequence, :integer, default: 0
@@ -48,6 +50,8 @@ defmodule IexCode.Runs.Run do
     has_many :approvals, IexCode.Runs.RunApproval
     has_many :artifacts, IexCode.Runs.RunArtifact
     has_many :controls, IexCode.Runs.RunControl
+    has_many :agents, IexCode.Runs.RunAgent
+    has_many :agent_controls, IexCode.Runs.RunAgentControl
 
     timestamps(type: :utc_datetime)
   end
@@ -60,6 +64,7 @@ defmodule IexCode.Runs.Run do
       :status,
       :mode,
       :priority,
+      :execution_engine,
       :progress,
       :token_budget,
       :cost_budget_cents,
@@ -80,7 +85,16 @@ defmodule IexCode.Runs.Run do
       :attempt,
       :max_attempts
     ])
-    |> validate_required([:project_id, :session_id, :objective, :kind, :status, :mode, :priority])
+    |> validate_required([
+      :project_id,
+      :session_id,
+      :objective,
+      :kind,
+      :status,
+      :mode,
+      :priority,
+      :execution_engine
+    ])
     |> validate_length(:objective, min: 1, max: 100_000)
     |> validate_length(:error_message, max: 20_000)
     |> validate_length(:lease_owner, max: 200)
@@ -88,6 +102,7 @@ defmodule IexCode.Runs.Run do
     |> validate_inclusion(:mode, @modes)
     |> validate_inclusion(:kind, @kinds)
     |> validate_inclusion(:priority, @priorities)
+    |> validate_inclusion(:execution_engine, @execution_engines)
     |> validate_number(:progress, greater_than_or_equal_to: 0, less_than_or_equal_to: 100)
     |> validate_nonnegative_optional(:token_budget)
     |> validate_nonnegative_optional(:cost_budget_cents)
@@ -100,12 +115,14 @@ defmodule IexCode.Runs.Run do
     |> validate_attempts()
     |> foreign_key_constraint(:project_id)
     |> foreign_key_constraint(:session_id)
+    |> check_constraint(:execution_engine, name: :runs_execution_engine_check)
   end
 
   def statuses, do: @statuses
   def modes, do: @modes
   def kinds, do: @kinds
   def priorities, do: @priorities
+  def execution_engines, do: @execution_engines
 
   defp validate_attempts(changeset) do
     attempt = get_field(changeset, :attempt)

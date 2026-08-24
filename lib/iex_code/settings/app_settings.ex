@@ -2,12 +2,14 @@ defmodule IexCode.Settings.AppSettings do
   use Ecto.Schema
   import Ecto.Changeset
 
+  alias IexCode.Research.Registry, as: SearchRegistry
+
   @primary_key {:id, :binary_id, autogenerate: true}
 
   schema "app_settings" do
-    field :anthropic_api_key, :string
+    field :anthropic_api_key, :string, redact: true
     field :anthropic_base_url, :string, default: "https://api.anthropic.com"
-    field :openai_api_key, :string
+    field :openai_api_key, :string, redact: true
     field :openai_base_url, :string, default: "https://api.openai.com/v1"
     field :default_model_provider, :string, default: "anthropic"
     field :default_model, :string, default: "claude-3-7-sonnet"
@@ -17,11 +19,16 @@ defmodule IexCode.Settings.AppSettings do
     field :max_tokens, :integer, default: 4096
 
     field :search_providers, :map,
+      redact: true,
       default: %{
         "tavily" => %{"enabled" => false},
         "brave" => %{"enabled" => false},
         "exa" => %{"enabled" => false},
+        "perplexity" => %{"enabled" => false},
+        "firecrawl" => %{"enabled" => false},
+        "linkup" => %{"enabled" => false},
         "serper" => %{"enabled" => false},
+        "serpapi" => %{"enabled" => false},
         "google" => %{"enabled" => false},
         "bing" => %{"enabled" => false},
         "searxng" => %{"enabled" => false},
@@ -29,7 +36,8 @@ defmodule IexCode.Settings.AppSettings do
       }
 
     field :search_provider_order, {:array, :string},
-      default: ~w(tavily brave exa serper google bing searxng duckduckgo)
+      default:
+        ~w(tavily brave exa perplexity firecrawl linkup serper serpapi google bing searxng duckduckgo)
 
     field :research_depth, :string, default: "standard"
     field :research_max_sources, :integer, default: 12
@@ -39,17 +47,7 @@ defmodule IexCode.Settings.AppSettings do
   end
 
   @model_providers ~w(openai anthropic)
-  @search_provider_ids ~w(tavily brave exa serper google bing searxng duckduckgo)
-  @search_provider_fields ~w(enabled api_key base_url engine_id)
-  @official_search_hosts %{
-    "tavily" => "api.tavily.com",
-    "brave" => "api.search.brave.com",
-    "exa" => "api.exa.ai",
-    "serper" => "google.serper.dev",
-    "google" => "customsearch.googleapis.com",
-    "bing" => "api.bing.microsoft.com",
-    "duckduckgo" => "html.duckduckgo.com"
-  }
+  @search_provider_ids ~w(tavily brave exa perplexity firecrawl linkup serper serpapi google bing searxng duckduckgo)
 
   def changeset(settings, attrs) do
     settings
@@ -115,19 +113,36 @@ defmodule IexCode.Settings.AppSettings do
   defp valid_provider_config?({id, config}) when is_binary(id) and is_map(config) do
     keys = Enum.map(Map.keys(config), &to_string/1)
 
-    id in @search_provider_ids and Enum.all?(keys, &(&1 in @search_provider_fields)) and
+    id in @search_provider_ids and valid_provider_fields?(id, keys) and
       valid_enabled?(Map.get(config, "enabled", Map.get(config, :enabled))) and
       valid_bounded_string?(Map.get(config, "api_key", Map.get(config, :api_key)), 4_096) and
       valid_bounded_string?(Map.get(config, "engine_id", Map.get(config, :engine_id)), 500) and
+      valid_engine?(id, Map.get(config, "engine", Map.get(config, :engine))) and
       valid_provider_url?(id, Map.get(config, "base_url", Map.get(config, :base_url)))
   end
 
   defp valid_provider_config?(_), do: false
 
+  defp valid_provider_fields?(id, fields) do
+    case SearchRegistry.descriptor(id) do
+      {:ok, descriptor} ->
+        allowed = Enum.map(descriptor.config_fields, &Atom.to_string/1)
+        Enum.all?(fields, &(&1 in allowed))
+
+      :error ->
+        false
+    end
+  end
+
   defp valid_enabled?(value), do: is_nil(value) or is_boolean(value)
 
   defp valid_bounded_string?(value, max),
     do: is_nil(value) or (is_binary(value) and byte_size(value) <= max)
+
+  defp valid_engine?("serpapi", value),
+    do: is_nil(value) or value in ~w(google bing duckduckgo baidu yahoo yandex)
+
+  defp valid_engine?(_id, value), do: is_nil(value)
 
   defp valid_provider_url?(_id, value) when value in [nil, ""], do: true
 
@@ -138,7 +153,7 @@ defmodule IexCode.Settings.AppSettings do
         if id == "searxng" do
           true
         else
-          scheme == "https" and Map.get(@official_search_hosts, id) == String.downcase(host)
+          scheme == "https" and SearchRegistry.official_host(id) == String.downcase(host)
         end
 
       _ ->

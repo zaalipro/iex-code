@@ -39,12 +39,12 @@ defmodule IexCode.RunDispatcherTestExecutor do
         await_control(run, receiver)
 
       {:run_control, run_id, control_id, :pause, _payload} when run_id == run.id ->
-        _ = IexCode.Runs.resolve_control(control_id, "applied", %{"worker" => "test"})
+        _ = resolve_control(run, control_id, "pause")
         if receiver, do: send(receiver, {:test_run_paused, run.id})
         await_control(run, receiver)
 
       {:run_control, run_id, control_id, :resume, _payload} when run_id == run.id ->
-        _ = IexCode.Runs.resolve_control(control_id, "applied", %{"worker" => "test"})
+        _ = resolve_control(run, control_id, "resume")
         if receiver, do: send(receiver, {:test_run_resumed, run.id})
         await_control(run, receiver)
 
@@ -54,9 +54,23 @@ defmodule IexCode.RunDispatcherTestExecutor do
 
       {:run_control, run_id, control_id, :steer, %{"guidance" => guidance}}
       when run_id == run.id ->
-        _ = IexCode.Runs.resolve_control(control_id, "applied", %{"worker" => "test"})
+        _ = resolve_control(run, control_id, "steer")
         if receiver, do: send(receiver, {:test_run_steered, run.id, guidance})
         await_control(run, receiver)
+    end
+  end
+
+  defp resolve_control(run, control_id, kind) do
+    case IexCode.Runs.get_control(control_id) do
+      %{worker_id: worker_id} = control ->
+        IexCode.Runs.resolve_control(control, "applied", %{"worker" => "test"},
+          run_id: run.id,
+          worker_id: worker_id,
+          kind: kind
+        )
+
+      nil ->
+        {:error, :not_found}
     end
   end
 end

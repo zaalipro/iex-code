@@ -8,11 +8,308 @@ defmodule IexCode.Research.ProvidersTest do
     Brave,
     DuckDuckGo,
     Exa,
+    Firecrawl,
     GoogleCSE,
+    Linkup,
+    Perplexity,
     SearxNG,
+    SerpApi,
     Serper,
     Tavily
   }
+
+  test "Perplexity calls the structured Search API and clamps its provider limit" do
+    request = fn opts ->
+      assert opts[:method] == :post
+      assert opts[:url] == "https://api.perplexity.ai/search"
+      assert opts[:headers] == [{"authorization", "Bearer pplx-secret"}]
+
+      assert opts[:json] == %{
+               query: "beam",
+               max_results: 20,
+               country: "GE",
+               search_context_size: "high",
+               search_language_filter: ["en"]
+             }
+
+      {:ok,
+       %{
+         status: 200,
+         body: %{
+           "results" => [
+             %{
+               "title" => "Perplexity result",
+               "url" => "https://perplexity.test/result",
+               "snippet" => "ranked search",
+               "date" => "2026-08-24",
+               "last_updated" => "2026-08-24"
+             }
+           ]
+         }
+       }}
+    end
+
+    assert {:ok, [result]} =
+             Perplexity.search("beam",
+               api_key: "pplx-secret",
+               limit: 50,
+               country: "GE",
+               language: "en",
+               search_depth: "deep",
+               request: request
+             )
+
+    assert result.provider == "perplexity"
+    assert result.published_at == "2026-08-24"
+    assert result.metadata["last_updated"] == "2026-08-24"
+  end
+
+  test "Firecrawl v2 requests ranked web metadata without full scrape bodies" do
+    request = fn opts ->
+      assert opts[:method] == :post
+      assert opts[:url] == "https://api.firecrawl.dev/v2/search"
+      assert opts[:headers] == [{"authorization", "Bearer fc-secret"}]
+      assert opts[:json] == %{query: "beam", limit: 7, sources: ["web"], country: "US"}
+      refute Map.has_key?(opts[:json], :scrapeOptions)
+
+      {:ok,
+       %{
+         status: 200,
+         body: %{
+           "success" => true,
+           "data" => %{
+             "web" => [
+               %{
+                 "title" => "Firecrawl result",
+                 "url" => "https://firecrawl.test/result",
+                 "description" => "search metadata"
+               }
+             ]
+           },
+           "creditsUsed" => 1
+         }
+       }}
+    end
+
+    assert {:ok, [result]} =
+             Firecrawl.search("beam",
+               api_key: "fc-secret",
+               limit: 7,
+               country: "US",
+               request: request
+             )
+
+    assert result.provider == "firecrawl"
+    assert result.snippet == "search metadata"
+
+    error_request = fn _opts ->
+      {:ok, %{status: 200, body: %{"success" => false, "error" => "fc-secret invalid"}}}
+    end
+
+    assert {:error, :provider_error} =
+             Firecrawl.search("beam", api_key: "fc-secret", request: error_request)
+  end
+
+  test "SerpApi uses an allowlisted ranked engine and normalizes organic results" do
+    request = fn opts ->
+      assert opts[:method] == :get
+      assert opts[:url] == "https://serpapi.com/search.json"
+
+      assert opts[:params] == %{
+               q: "beam",
+               engine: "google",
+               api_key: "serp-secret",
+               num: 9,
+               gl: "us",
+               hl: "en"
+             }
+
+      {:ok,
+       %{
+         status: 200,
+         body: %{
+           "organic_results" => [
+             %{
+               "position" => 1,
+               "title" => "SerpApi result",
+               "link" => "https://serpapi.test/result",
+               "snippet" => "structured serp"
+             }
+           ]
+         }
+       }}
+    end
+
+    assert {:ok, [result]} =
+             SerpApi.search("beam",
+               api_key: "serp-secret",
+               engine: "google",
+               limit: 9,
+               country: "us",
+               language: "en",
+               request: request
+             )
+
+    assert result.provider == "serpapi"
+    assert result.score == 1
+
+    assert {:error, :unsupported_engine} =
+             SerpApi.search("beam", api_key: "secret", engine: "arbitrary")
+  end
+
+  test "Linkup requests searchResults rather than a grounded sourcedAnswer" do
+    request = fn opts ->
+      assert opts[:method] == :post
+      assert opts[:url] == "https://api.linkup.so/v1/search"
+      assert opts[:headers] == [{"authorization", "Bearer link-secret"}]
+
+      assert opts[:json] == %{
+               q: "beam",
+               depth: "deep",
+               outputType: "searchResults",
+               maxResults: 6
+             }
+
+      {:ok,
+       %{
+         status: 200,
+         body: %{
+           "results" => [
+             %{
+               "name" => "Linkup result",
+               "url" => "https://linkup.test/result",
+               "content" => "retrieved context",
+               "type" => "text"
+             }
+           ]
+         }
+       }}
+    end
+
+    assert {:ok, [result]} =
+             Linkup.search("beam",
+               api_key: "link-secret",
+               search_depth: "deep",
+               limit: 6,
+               request: request
+             )
+
+    assert result.provider == "linkup"
+    assert result.snippet == "retrieved context"
+  end
+
+  test "new official providers reject changed origins and require credentials" do
+    for module <- [Perplexity, Firecrawl, SerpApi, Linkup] do
+      assert {:error, :missing_api_key} = module.search("query", [])
+
+      assert_raise ArgumentError, fn ->
+        module.search("query",
+          api_key: "secret",
+          base_url: "https://attacker.test",
+          request: fn _opts -> flunk("request must not be issued") end
+        )
+      end
+    end
+  end
+
+  test "new adapters bound response rows even when an upstream ignores the requested limit" do
+    cases = [
+      {Perplexity,
+       %{
+         "results" =>
+           for(
+             rank <- 1..3,
+             do: %{"title" => "P#{rank}", "url" => "https://p.test/#{rank}"}
+           )
+       }},
+      {Firecrawl,
+       %{
+         "success" => true,
+         "data" => %{
+           "web" =>
+             for(
+               rank <- 1..3,
+               do: %{"title" => "F#{rank}", "url" => "https://f.test/#{rank}"}
+             )
+         }
+       }},
+      {SerpApi,
+       %{
+         "organic_results" =>
+           for(
+             rank <- 1..3,
+             do: %{"title" => "S#{rank}", "link" => "https://s.test/#{rank}"}
+           )
+       }},
+      {Linkup,
+       %{
+         "results" =>
+           for(
+             rank <- 1..3,
+             do: %{"name" => "L#{rank}", "url" => "https://l.test/#{rank}"}
+           )
+       }}
+    ]
+
+    for {module, body} <- cases do
+      request = fn _opts -> {:ok, %{status: 200, body: body}} end
+
+      assert {:ok, [_one_result]} =
+               module.search("beam", api_key: "key", limit: 1, request: request)
+    end
+  end
+
+  test "modern provider filters are validated before any network request" do
+    request = fn _opts -> flunk("invalid options must not issue a request") end
+
+    assert {:error, :conflicting_domain_filters} =
+             Firecrawl.search("beam",
+               api_key: "key",
+               include_domains: ["example.com"],
+               exclude_domains: ["other.example"],
+               request: request
+             )
+
+    assert {:error, :invalid_domain_filter} =
+             Firecrawl.search("beam",
+               api_key: "key",
+               include_domains: ["https://example.com/path"],
+               request: request
+             )
+
+    assert {:error, :invalid_safe_search} =
+             Firecrawl.search("beam", api_key: "key", safe: "yes", request: request)
+
+    assert {:error, :invalid_country} =
+             Firecrawl.search("beam", api_key: "key", country: "USA", request: request)
+
+    assert {:error, :invalid_language_filter} =
+             Perplexity.search("beam", api_key: "key", language: "eng", request: request)
+
+    assert {:error, :invalid_search_after_date} =
+             Perplexity.search("beam",
+               api_key: "key",
+               search_after_date: "2026-08-24",
+               request: request
+             )
+
+    assert {:error, :invalid_recency} =
+             Perplexity.search("beam", api_key: "key", recency: "forever", request: request)
+
+    assert {:error, :invalid_language} =
+             SerpApi.search("beam", api_key: "key", language: ["en", "ka"], request: request)
+
+    assert {:error, :invalid_date_range} =
+             Linkup.search("beam",
+               api_key: "key",
+               start_date: "2026-08-24",
+               end_date: "2026-08-01",
+               request: request
+             )
+
+    assert {:error, :invalid_search_depth} =
+             Linkup.search("beam", api_key: "key", search_depth: "exhaustive", request: request)
+  end
 
   test "Tavily maps its response and sends credentials in JSON" do
     request = fn opts ->

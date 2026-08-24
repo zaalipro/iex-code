@@ -26,9 +26,19 @@ defmodule IexCode.Research.HTTP do
             :enabled,
             :cx,
             :engine_id,
+            :engine,
             :country,
             :language,
-            :search_depth
+            :search_depth,
+            :location,
+            :safe,
+            :include_domains,
+            :exclude_domains,
+            :start_date,
+            :end_date,
+            :search_after_date,
+            :search_before_date,
+            :recency
           ])
           |> Keyword.put(:method, method)
           |> Keyword.put(:url, url)

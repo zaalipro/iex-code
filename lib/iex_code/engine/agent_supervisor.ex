@@ -8,7 +8,8 @@ defmodule IexCode.Engine.AgentSupervisor do
   alias IexCode.Engine.AgentRegistry
 
   def start_link(init_arg \\ []) do
-    DynamicSupervisor.start_link(__MODULE__, init_arg, name: __MODULE__)
+    name = Keyword.get(init_arg, :name, __MODULE__)
+    DynamicSupervisor.start_link(__MODULE__, init_arg, name: name)
   end
 
   @impl true
@@ -22,6 +23,54 @@ defmodule IexCode.Engine.AgentSupervisor do
   """
   def start_agent(session_id, agent_type, opts \\ []) do
     do_start_agent(session_id, agent_type, opts, 3)
+  end
+
+  @doc "Starts one strictly allowlisted agent inside a durable run fleet."
+  def start_run_agent(supervisor, run_id, agent_id, agent_type, opts \\ [])
+      when is_binary(run_id) and is_binary(agent_id) do
+    module = resolve_agent_module(agent_type)
+
+    child_opts =
+      opts
+      |> Keyword.put(:run_id, run_id)
+      |> Keyword.put(:agent_id, agent_id)
+      |> Keyword.put(:agent_type, AgentRegistry.normalize_type(agent_type))
+
+    child_spec = Supervisor.child_spec({module, child_opts}, restart: :temporary)
+
+    case DynamicSupervisor.start_child(supervisor, child_spec) do
+      {:ok, pid} ->
+        allow_sandbox(pid)
+        {:ok, pid}
+
+      {:error, {:already_started, _pid}} ->
+        {:error, :registration_conflict}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc "Stops exactly one durable run agent and never enumerates by session."
+  def stop_run_agent(supervisor, run_id, agent_id) do
+    case AgentRegistry.whereis_agent(run_id, agent_id) do
+      nil -> {:error, :not_found}
+      pid -> DynamicSupervisor.terminate_child(supervisor, pid)
+    end
+  end
+
+  @doc "Stops all and only the agents registered to one durable run."
+  def stop_run_agents(supervisor, run_id) do
+    run_id
+    |> AgentRegistry.list_run_agents()
+    |> Task.async_stream(
+      fn {_agent_id, pid, _metadata} -> DynamicSupervisor.terminate_child(supervisor, pid) end,
+      timeout: 5_000,
+      on_timeout: :kill_task
+    )
+    |> Stream.run()
+
+    :ok
   end
 
   defp do_start_agent(_session_id, _agent_type, _opts, 0),
@@ -193,13 +242,6 @@ defmodule IexCode.Engine.AgentSupervisor do
 
       :verifier ->
         IexCode.Engine.Agents.VerifierAgent
-
-      mod when is_atom(mod) ->
-        if Code.ensure_loaded?(mod) and function_exported?(mod, :start_link, 1) do
-          mod
-        else
-          raise ArgumentError, "unknown agent type: #{inspect(type)}"
-        end
 
       other ->
         raise ArgumentError, "unknown agent type: #{inspect(other)}"

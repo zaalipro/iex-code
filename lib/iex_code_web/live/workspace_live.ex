@@ -4,6 +4,7 @@ defmodule IexCodeWeb.WorkspaceLive do
   alias IexCode.{Projects, Runs, Sessions, Settings, Kanban, WorkspaceLocks, WorkspacePath}
   alias IexCode.Engine.SessionServer
   alias IexCode.Runs.RunDispatcher
+  alias IexCode.Research.Registry, as: SearchRegistry
   alias IexCode.Tools.Git
   alias IexCode.Tools.Git.{DiffParser, HunkOps}
   alias IexCode.Tools.TerminalServer
@@ -54,6 +55,7 @@ defmodule IexCodeWeb.WorkspaceLive do
     run_controls = if selected_run, do: Runs.list_controls(selected_run), else: []
     pending_approval_count = Runs.count_pending_approvals(session.id)
     run_artifacts = if selected_run, do: Runs.list_artifacts(selected_run), else: []
+    run_agents = if selected_run, do: Runs.list_run_agents(selected_run, limit: 100), else: []
     workspace_locks = Runs.list_workspace_locks(project_id: project.id, active: true)
     settings = Settings.get_settings()
     files = list_project_files(project.root_path)
@@ -98,6 +100,10 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:run_controls, run_controls)
       |> assign(:run_manifest, run_manifest(selected_run))
       |> assign(:run_artifacts, run_artifacts)
+      |> assign(:run_agent_count, length(run_agents))
+      |> assign(:run_fleet_summary, run_fleet_summary(run_agents))
+      |> assign(:run_fleet_loading?, false)
+      |> assign(:run_agent_guidance, %{})
       |> assign(:workspace_locks, workspace_locks)
       |> assign(:run_rows, durable_runs)
       |> assign(:run_event_rows, run_events)
@@ -119,6 +125,7 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:active_agent, nil)
       |> assign(:active_stage, :init)
       |> assign(:settings, settings)
+      |> assign(:search_provider_descriptors, SearchRegistry.descriptors())
       # "swarm", "kanban", "calendar", "changes", "chat", "files", "terminal"
       |> assign(:active_tab, "kanban")
       |> assign(:expanded_column, "running")
@@ -274,6 +281,7 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:staged_diffs, [])
       |> assign(:unstaged_diffs, [])
       |> assign(:active_diff_scope, :unstaged)
+      |> stream(:run_agents, run_agents, dom_id: &"run-agent-#{&1.id}")
 
     # Initialize live git state if git is available
     socket = refresh_git_state(socket)
@@ -401,6 +409,8 @@ defmodule IexCodeWeb.WorkspaceLive do
         do: assign(socket, :project_files, list_project_files(socket.assigns.project.root_path)),
         else: socket
 
+    socket = if tab == "swarm", do: refresh_run_fleet(socket), else: socket
+
     {:noreply, socket}
   end
 
@@ -419,6 +429,8 @@ defmodule IexCodeWeb.WorkspaceLive do
       if tab == "files",
         do: assign(socket, :project_files, list_project_files(socket.assigns.project.root_path)),
         else: socket
+
+    socket = if tab == "swarm", do: refresh_run_fleet(socket), else: socket
 
     {:noreply, socket}
   end
@@ -2502,6 +2514,93 @@ defmodule IexCodeWeb.WorkspaceLive do
   end
 
   @impl true
+  def handle_event(
+        "update_run_agent_guidance",
+        %{"agent_id" => agent_id, "agent_control" => %{"guidance" => guidance}},
+        socket
+      ) do
+    if selected_run_agent?(socket, agent_id) do
+      {:noreply,
+       update(
+         socket,
+         :run_agent_guidance,
+         &Map.put(&1, agent_id, String.slice(guidance, 0, 4_000))
+       )}
+    else
+      {:noreply, put_flash(socket, :error, "Agent not found in the selected run")}
+    end
+  end
+
+  def handle_event("update_run_agent_guidance", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event(
+        "steer_run_agent",
+        %{"agent_id" => agent_id, "agent_control" => %{"guidance" => guidance}},
+        socket
+      ) do
+    guidance = guidance |> to_string() |> String.trim() |> String.slice(0, 4_000)
+
+    cond do
+      guidance == "" ->
+        {:noreply, put_flash(socket, :error, "Enter guidance for this agent")}
+
+      !selected_run_agent?(socket, agent_id) ->
+        {:noreply, put_flash(socket, :error, "Agent not found in the selected run")}
+
+      true ->
+        case control_selected_run_agent(socket, agent_id, :steer, %{"guidance" => guidance}) do
+          {:ok, _result} ->
+            {:noreply,
+             socket
+             |> update(:run_agent_guidance, &Map.delete(&1, agent_id))
+             |> put_flash(:info, "Agent guidance persisted and dispatched")}
+
+          {:error, reason} ->
+            {:noreply,
+             socket
+             |> update(:run_agent_guidance, &Map.put(&1, agent_id, guidance))
+             |> put_flash(:error, "Agent steering failed: #{format_run_error(reason)}")}
+        end
+    end
+  end
+
+  def handle_event("steer_run_agent", _params, socket),
+    do: {:noreply, put_flash(socket, :error, "Invalid agent steering request")}
+
+  @impl true
+  def handle_event(
+        "control_run_agent",
+        %{"id" => agent_id, "action" => action},
+        socket
+      )
+      when action in ["pause", "resume", "cancel", "restart"] do
+    kind =
+      case action do
+        "pause" -> :pause
+        "resume" -> :resume
+        "cancel" -> :cancel
+        "restart" -> :restart
+      end
+
+    if selected_run_agent?(socket, agent_id) do
+      case control_selected_run_agent(socket, agent_id, kind, %{}) do
+        {:ok, _result} ->
+          {:noreply, put_flash(socket, :info, "Agent #{action} request persisted")}
+
+        {:error, reason} ->
+          {:noreply,
+           put_flash(socket, :error, "Agent control failed: #{format_run_error(reason)}")}
+      end
+    else
+      {:noreply, put_flash(socket, :error, "Agent not found in the selected run")}
+    end
+  end
+
+  def handle_event("control_run_agent", _params, socket),
+    do: {:noreply, put_flash(socket, :error, "Invalid agent control request")}
+
+  @impl true
   def handle_event("toggle_run_setup", _params, socket) do
     {:noreply, assign(socket, :run_setup_open?, !socket.assigns.run_setup_open?)}
   end
@@ -3626,6 +3725,16 @@ defmodule IexCodeWeb.WorkspaceLive do
   end
 
   @impl true
+  def handle_info({event_name, agent}, socket)
+      when event_name in [:run_agent_created, :run_agent_updated] do
+    if socket.assigns.selected_run && agent.run_id == socket.assigns.selected_run.id do
+      {:noreply, refresh_run_fleet(socket)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
   def handle_info({:async_run_started, run, _pid}, socket) do
     {:noreply, select_run_projection(socket, Runs.get_run(run.id) || run)}
   end
@@ -4489,6 +4598,7 @@ defmodule IexCodeWeb.WorkspaceLive do
     selected = List.first(runs)
     approvals = if selected, do: Runs.list_approvals(selected), else: []
     pending_approval_count = Runs.count_pending_approvals(session_id)
+    agents = if selected, do: Runs.list_run_agents(selected, limit: 100), else: []
 
     socket
     |> assign(:selected_run, selected)
@@ -4497,6 +4607,11 @@ defmodule IexCodeWeb.WorkspaceLive do
     |> assign(:run_controls, if(selected, do: Runs.list_controls(selected), else: []))
     |> assign(:run_manifest, run_manifest(selected))
     |> assign(:run_artifacts, if(selected, do: Runs.list_artifacts(selected), else: []))
+    |> assign(:run_agent_count, length(agents))
+    |> assign(:run_fleet_summary, run_fleet_summary(agents))
+    |> assign(:run_fleet_loading?, false)
+    |> assign(:run_agent_guidance, %{})
+    |> stream(:run_agents, agents, reset: true, dom_id: &"run-agent-#{&1.id}")
     |> assign(:run_rows, runs)
     |> assign(
       :run_event_rows,
@@ -4511,6 +4626,13 @@ defmodule IexCodeWeb.WorkspaceLive do
     approvals = Runs.list_approvals(run)
     session_runs = Runs.list_runs(session_id: socket.assigns.session.id, limit: 100)
     pending_approval_count = Runs.count_pending_approvals(socket.assigns.session.id)
+    agents = Runs.list_run_agents(run, limit: 100)
+
+    agent_guidance =
+      case socket.assigns.selected_run do
+        %{id: selected_id} when selected_id == run.id -> socket.assigns.run_agent_guidance
+        _other -> %{}
+      end
 
     socket
     |> assign(:selected_run, run)
@@ -4519,6 +4641,11 @@ defmodule IexCodeWeb.WorkspaceLive do
     |> assign(:run_controls, Runs.list_controls(run))
     |> assign(:run_manifest, run_manifest(run))
     |> assign(:run_artifacts, Runs.list_artifacts(run))
+    |> assign(:run_agent_count, length(agents))
+    |> assign(:run_fleet_summary, run_fleet_summary(agents))
+    |> assign(:run_fleet_loading?, false)
+    |> assign(:run_agent_guidance, agent_guidance)
+    |> stream(:run_agents, agents, reset: true, dom_id: &"run-agent-#{&1.id}")
     |> assign(:run_rows, session_runs)
     |> assign(:run_event_rows, Runs.list_latest_events(run, limit: 500))
     |> assign(:run_count, length(session_runs))
@@ -4531,6 +4658,30 @@ defmodule IexCodeWeb.WorkspaceLive do
       nil -> assign_run_projection(socket, socket.assigns.session.id)
       selected -> select_run_projection(socket, Runs.get_run(selected.id) || selected)
     end
+  end
+
+  defp refresh_run_fleet(socket) do
+    agents =
+      case socket.assigns.selected_run do
+        nil -> []
+        run -> Runs.list_run_agents(run, limit: 100)
+      end
+
+    socket
+    |> assign(:run_agent_count, length(agents))
+    |> assign(:run_fleet_summary, run_fleet_summary(agents))
+    |> assign(:run_fleet_loading?, false)
+    |> stream(:run_agents, agents, reset: true, dom_id: &"run-agent-#{&1.id}")
+  end
+
+  defp run_fleet_summary(agents) do
+    %{
+      active: Enum.count(agents, &(&1.status in ["starting", "idle", "running", "stopping"])),
+      paused: Enum.count(agents, &(&1.status == "paused")),
+      attention: Enum.count(agents, &(&1.status in ["failed", "interrupted"])),
+      recovering: Enum.count(agents, &(&1.status == "starting" and &1.attempt > 1)),
+      tokens: Enum.reduce(agents, 0, &((&1.input_tokens || 0) + (&1.output_tokens || 0) + &2))
+    }
   end
 
   defp refresh_run_counts(socket) do
@@ -4596,6 +4747,29 @@ defmodule IexCodeWeb.WorkspaceLive do
   catch
     :exit, _ ->
       {:noreply, put_flash(socket, :error, "The run dispatcher is not available")}
+  end
+
+  defp selected_run_agent?(socket, agent_id) when is_binary(agent_id) do
+    case socket.assigns.selected_run do
+      nil -> false
+      run -> not is_nil(Runs.get_run_agent(run, agent_id))
+    end
+  end
+
+  defp selected_run_agent?(_socket, _agent_id), do: false
+
+  defp control_selected_run_agent(socket, agent_id, kind, payload)
+       when kind in [:pause, :resume, :cancel, :steer, :restart] and is_map(payload) do
+    run = socket.assigns.selected_run
+    module = IexCode.Engine.RunFleetSupervisor
+
+    if run && Code.ensure_loaded?(module) && function_exported?(module, :control_agent, 4) do
+      apply(module, :control_agent, [run, agent_id, kind, payload])
+    else
+      {:error, :fleet_control_unavailable}
+    end
+  catch
+    :exit, reason -> {:error, {:fleet_control_unavailable, reason}}
   end
 
   defp format_run_error(%Ecto.Changeset{} = changeset) do
@@ -4887,6 +5061,39 @@ defmodule IexCodeWeb.WorkspaceLive do
     |> Kernel.||(%{})
     |> Map.get(provider, %{})
   end
+
+  defp search_lifecycle_tone(:active),
+    do: "border-emerald-500/20 bg-emerald-500/[0.05] text-emerald-300"
+
+  defp search_lifecycle_tone(:sunsetting),
+    do: "border-amber-500/25 bg-amber-500/[0.06] text-amber-300"
+
+  defp search_lifecycle_tone(:retired),
+    do: "border-rose-500/25 bg-rose-500/[0.06] text-rose-300"
+
+  defp search_lifecycle_tone(:unofficial),
+    do: "border-blue-500/20 bg-blue-500/[0.05] text-blue-300"
+
+  defp search_lifecycle_tone(_lifecycle),
+    do: "border-[#303844] bg-[#151b22] text-gray-400"
+
+  defp search_lifecycle_note(%{lifecycle: :active, capabilities: capabilities}) do
+    capabilities
+    |> Enum.take(3)
+    |> Enum.map_join(" · ", &(&1 |> Atom.to_string() |> String.replace("_", " ")))
+  end
+
+  defp search_lifecycle_note(%{lifecycle: :sunsetting, retires_at: retires_at}) do
+    "No new customers · sunsets #{Date.to_iso8601(retires_at)}"
+  end
+
+  defp search_lifecycle_note(%{lifecycle: :retired}),
+    do: "Retired compatibility adapter · explicit API requests only"
+
+  defp search_lifecycle_note(%{lifecycle: :unofficial}),
+    do: "Unofficial credential-free HTML adapter"
+
+  defp search_lifecycle_note(_descriptor), do: "Provider lifecycle not reported"
 
   defp masked_secret(secret) when is_binary(secret) and byte_size(secret) >= 4,
     do: "Configured ·•••• #{String.slice(secret, -4, 4)}"

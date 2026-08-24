@@ -67,6 +67,10 @@ defmodule IexCode.DataCase do
   TaskSupervisor, AgentSupervisor, and SessionSupervisor with multi-pass confirmation.
   """
   def drain_all_processes do
+    # Per-run fleet supervisors own their own agent/task supervisors, so drain
+    # them before the shared compatibility supervisors and sandbox owner.
+    terminate_supervisor_children(IexCode.Engine.FleetSupervisor, :dynamic)
+
     # Pass 1: Monitored termination of TaskSupervisor children
     terminate_supervisor_children(IexCode.TaskSupervisor, :task)
 
@@ -100,7 +104,6 @@ defmodule IexCode.DataCase do
       end
     end
 
-    :timer.sleep(10)
     :ok
   end
 

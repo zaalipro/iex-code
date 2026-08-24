@@ -17,6 +17,10 @@ defmodule IexCode.Engine.OperationManager do
   Returns `{:ok, task_pid, op_record}` or `{:error, reason}` if the task could not be started.
   """
   def run_async_operation(session_id, parent_op_id, agent_name, op_type, title, params, fun) do
+    fleet_owner = Process.get(:iex_code_fleet_owner)
+    fleet_control_token = Process.get(:iex_code_fleet_control_token)
+    task_supervisor = fleet_task_supervisor(fleet_owner)
+
     op =
       create_or_fallback_operation(session_id, parent_op_id, agent_name, op_type, title, params)
 
@@ -26,7 +30,13 @@ defmodule IexCode.Engine.OperationManager do
 
     emit_telemetry(:start, session_id, op_id, 0, nil, nil, op)
 
-    case Task.Supervisor.start_child(IexCode.TaskSupervisor, fn ->
+    case Task.Supervisor.start_child(task_supervisor, fn ->
+           if fleet_owner, do: Process.put(:iex_code_fleet_owner, fleet_owner)
+
+           if fleet_control_token,
+             do: Process.put(:iex_code_fleet_control_token, fleet_control_token)
+
+           assert_fleet_control!(fleet_control_token)
            pid_str = inspect(self())
 
            started_op =
@@ -35,7 +45,14 @@ defmodule IexCode.Engine.OperationManager do
            broadcast(session_id, {:operation_started, started_op})
 
            progress_fn = fn percent, message ->
+             assert_fleet_control!(fleet_control_token)
              safe_update_operation(op_id, %{progress: percent, result: message}, op)
+
+             case IexCode.Engine.FleetRuntime.progress(fleet_owner, percent, message) do
+               :ok -> :ok
+               {:error, reason} -> exit({:fleet_lease_lost, reason})
+             end
+
              broadcast(session_id, {:operation_progress, op_id, percent, message})
              emit_telemetry(:progress, session_id, op_id, percent, nil, message, op)
            end
@@ -126,6 +143,8 @@ defmodule IexCode.Engine.OperationManager do
            result
          end) do
       {:ok, task_pid} ->
+        if fleet_owner, do: safely_link_fleet_task(task_pid)
+
         # Spawn crash watcher process under TaskSupervisor to guarantee zero dangling operations on abnormal exits
         watcher_fun = fn ->
           ref = Process.monitor(task_pid)
@@ -142,7 +161,7 @@ defmodule IexCode.Engine.OperationManager do
           end
         end
 
-        case Task.Supervisor.start_child(IexCode.TaskSupervisor, watcher_fun) do
+        case Task.Supervisor.start_child(task_supervisor, watcher_fun) do
           {:ok, _watcher_pid} ->
             :ok
 
@@ -182,6 +201,31 @@ defmodule IexCode.Engine.OperationManager do
         {:error, err_str}
     end
   end
+
+  defp safely_link_fleet_task(pid) do
+    Process.link(pid)
+    :ok
+  rescue
+    ArgumentError -> :ok
+  end
+
+  defp assert_fleet_control!(nil), do: :ok
+
+  defp assert_fleet_control!(token) do
+    case IexCode.Engine.FleetControlToken.checkpoint(token) do
+      :ok -> :ok
+      :cancelled -> exit(:fleet_agent_cancelled)
+    end
+  end
+
+  defp fleet_task_supervisor(%{run_id: run_id}) when is_binary(run_id) do
+    case IexCode.Engine.AgentRegistry.whereis_fleet(run_id, :task_supervisor) do
+      nil -> IexCode.TaskSupervisor
+      _pid -> IexCode.Engine.AgentRegistry.via_fleet(run_id, :task_supervisor)
+    end
+  end
+
+  defp fleet_task_supervisor(_owner), do: IexCode.TaskSupervisor
 
   @doc """
   Synchronous wrapper that monitors the task process with Process.monitor/1 and awaits completion.

@@ -21,8 +21,9 @@ defmodule IexCodeWeb.WorkspaceComponents do
   # ============================================================================
 
   @doc """
-  Renders a 4-column live telemetry grid for OTP subagents (Planner, Explorer, Coder, Verifier).
-  Includes real-time progress bars (0-100%), execution latency in ms, PID monitors, and active state indicators.
+  Renders legacy interactive-session role templates (Planner, Explorer, Coder, Verifier).
+  A card becomes operation telemetry only when a matching operation exists; idle cards
+  are templates and never claim to be live or persisted workers.
   """
   attr :operations, :list, default: []
   attr :active_stage, :atom, default: :init
@@ -161,7 +162,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
                   </span>
                 <% else %>
                   <span class="text-[10px] font-mono text-emerald-400/80 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
-                    OTP Supervised
+                    Role template · OTP Supervised when active
                   </span>
                 <% end %>
                 <span class={[

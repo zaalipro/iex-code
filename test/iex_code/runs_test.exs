@@ -338,7 +338,11 @@ defmodule IexCode.RunsTest do
     assert claimed.claimed_at
 
     assert {:ok, applied} =
-             Runs.resolve_control(claimed, "applied", %{"phase" => "research.search"})
+             Runs.resolve_control(claimed, "applied", %{"phase" => "research.search"},
+               run_id: run.id,
+               worker_id: "dispatcher:test",
+               kind: "steer"
+             )
 
     assert applied.status == "applied"
     assert applied.result == %{"phase" => "research.search"}
