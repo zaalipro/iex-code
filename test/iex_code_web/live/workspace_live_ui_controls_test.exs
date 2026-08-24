@@ -349,7 +349,12 @@ defmodule IexCodeWeb.WorkspaceLiveUIControlsTest do
           "openai_api_key" => "   ",
           "anthropic_api_key" => "",
           "research_depth" => "deep",
+          "research_level" => "high",
           "research_max_sources" => "7",
+          "research_require_conflict_audit" => "false",
+          "research_max_cost_cents" => "9000",
+          "research_max_tokens" => "180000",
+          "research_time_budget_minutes" => "45",
           "search_providers" => %{
             "tavily" => %{
               "enabled" => "true",
@@ -371,6 +376,11 @@ defmodule IexCodeWeb.WorkspaceLiveUIControlsTest do
       assert stored.search_providers["tavily"]["api_key"] == "tavily-preserved"
       assert stored.search_providers["tavily"]["enabled"] == true
       assert stored.search_providers["duckduckgo"]["enabled"] == false
+      assert stored.research_level == "high"
+      assert stored.research_require_conflict_audit == false
+      assert stored.research_max_cost_cents == 9_000
+      assert stored.research_max_tokens == 180_000
+      assert stored.research_time_budget_minutes == 45
 
       assert has_element?(view, "#run-setup-provider-tavily[checked]")
       refute has_element?(view, "#run-setup-provider-duckduckgo[checked]")

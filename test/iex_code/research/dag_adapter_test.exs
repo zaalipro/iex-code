@@ -11,7 +11,7 @@ defmodule IexCode.Research.DagAdapterTest do
              DagAdapter.build("Compare durable asynchronous coding harnesses",
                ranked_providers: [:tavily, "brave"],
                grounded_providers: [:openai_responses],
-               max_rounds: 2,
+               level: "medium",
                max_queries_per_round: 10,
                max_sources: 80,
                provider_snapshot_ref: "settings://search-providers/revision/42"
@@ -54,16 +54,19 @@ defmodule IexCode.Research.DagAdapterTest do
 
     assert {:error, :unsupported_research_provider} =
              DagAdapter.build("Research", grounded_providers: ["azure_foundry"])
+
+    assert {:error, :unsupported_research_provider} =
+             DagAdapter.build("Research", ranked_providers: ["bing"])
   end
 
-  test "canonical registry rejects research nodes until every typed handler is registered" do
+  test "canonical registry accepts the fully registered typed research manifest" do
     assert {:ok, nodes} =
-             DagAdapter.build("Research", ranked_providers: ["duckduckgo"], max_rounds: 1)
+             DagAdapter.build("Research", ranked_providers: ["duckduckgo"], level: "low")
 
-    assert {:error, {:invalid_dag_step, 0, {:unsupported_kind, "research_plan"}}} =
-             DagManifest.normalize(nodes)
+    assert {:ok, normalized} = DagManifest.normalize(nodes)
+    assert length(normalized) == length(nodes)
 
-    assert Enum.all?(DagAdapter.required_kinds(), &(&1 not in DagManifest.kinds()))
+    assert Enum.all?(DagAdapter.required_kinds(), &(&1 in DagManifest.kinds()))
   end
 
   test "keeps credentials out, exposes artifact boundaries, and bounds node count" do
@@ -71,7 +74,7 @@ defmodule IexCode.Research.DagAdapterTest do
              DagAdapter.build("Research",
                ranked_providers: ["duckduckgo"],
                grounded_providers: ["anthropic_messages"],
-               max_rounds: 6,
+               level: "ultra",
                provider_snapshot_ref: "settings://search-providers/current"
              )
 
@@ -98,9 +101,9 @@ defmodule IexCode.Research.DagAdapterTest do
              )
   end
 
-  test "all current providers and rounds remain within the canonical 128-step limit" do
+  test "all current providers at ultra remain within the canonical 128-step limit" do
     ranked =
-      ~w(tavily brave exa perplexity firecrawl linkup serper serpapi google bing searxng duckduckgo)
+      ~w(tavily brave exa perplexity firecrawl linkup serper serpapi google searxng duckduckgo)
 
     grounded = ~w(openai_responses anthropic_messages gemini_interactions)
 
@@ -108,12 +111,75 @@ defmodule IexCode.Research.DagAdapterTest do
              DagAdapter.build("Research",
                ranked_providers: ranked,
                grounded_providers: grounded,
-               max_rounds: 6
+               level: "ultra"
              )
 
-    assert length(nodes) == 116
+    assert length(nodes) == 74
     assert length(nodes) <= 128
-    assert Enum.count(nodes, &(&1.kind == "research_ranked_search")) == 72
-    assert Enum.count(nodes, &(&1.kind == "research_grounded_search")) == 18
+    assert Enum.count(nodes, &(&1.kind == "research_ranked_search")) == 44
+    assert Enum.count(nodes, &(&1.kind == "research_grounded_search")) == 12
+
+    assert Enum.all?(Enum.filter(nodes, &(&1.kind == "research_plan")), fn node ->
+             node.params["max_queries"] == 10
+           end)
+
+    assert Enum.all?(
+             Enum.filter(
+               nodes,
+               &(&1.kind in ~w(research_ranked_search research_grounded_search))
+             ),
+             fn node -> node.params["max_search_calls"] == 10 end
+           )
+
+    assert Enum.all?(nodes, fn node ->
+             node.params["level_policy"] == %{
+               "level" => "ultra",
+               "multistep_rounds" => 4,
+               "lead_per_step" => 1,
+               "async_subagents" => 10
+             }
+           end)
+  end
+
+  test "rejects a manual round override that drifts from the named level" do
+    assert {:error, :research_level_policy_drift} =
+             DagAdapter.build("Research",
+               ranked_providers: ["duckduckgo"],
+               level: "high",
+               max_rounds: 4
+             )
+  end
+
+  test "all named levels produce their exact immutable DAG shape" do
+    for {level, rounds, subagents, node_count} <- [
+          {"low", 1, 2, 7},
+          {"medium", 2, 3, 12},
+          {"high", 3, 4, 17},
+          {"ultra", 4, 10, 22}
+        ] do
+      assert {:ok, nodes} =
+               DagAdapter.build("Exact #{level} shape",
+                 ranked_providers: ["duckduckgo"],
+                 level: level
+               )
+
+      assert length(nodes) == node_count
+      assert Enum.count(nodes, &(&1.kind == "research_plan")) == rounds
+      assert Enum.count(nodes, &(&1.kind == "research_ranked_search")) == rounds
+      assert Enum.count(nodes, &(&1.kind == "research_evidence_merge")) == rounds
+      assert Enum.count(nodes, &(&1.kind == "research_source_fetch")) == rounds
+      assert Enum.count(nodes, &(&1.kind == "research_evidence_audit")) == rounds
+      assert Enum.count(nodes, &(&1.kind == "research_report_synthesize")) == 1
+      assert Enum.count(nodes, &(&1.kind == "research_report_verify")) == 1
+
+      assert Enum.all?(nodes, fn node ->
+               node.params["level_policy"] == %{
+                 "level" => level,
+                 "multistep_rounds" => rounds,
+                 "lead_per_step" => 1,
+                 "async_subagents" => subagents
+               }
+             end)
+    end
   end
 end

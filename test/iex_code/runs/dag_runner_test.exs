@@ -80,6 +80,42 @@ defmodule IexCode.Runs.DagRunnerTest do
     assert results["join"]["dependencies"]["one"]["content"] == "one"
   end
 
+  test "execution context exposes a bound provider effect without raw authority", context do
+    run = dag_run(context, [step("inventory", "project_inventory", %{})])
+    receiver = self()
+
+    executor = fn claim, step_context ->
+      send(receiver, {
+        :provider_effect_context,
+        is_function(step_context.provider_effect, 5),
+        Map.keys(step_context),
+        Map.take(step_context, [
+          :owner,
+          :lease_owner,
+          :run_generation,
+          :step_generation,
+          :lease_generation
+        ])
+      })
+
+      {:ok, %{"key" => claim.step.key}}
+    end
+
+    runner = start_runner(run, context.root, executor, poll_ms: 10)
+
+    assert_receive {:provider_effect_context, true, keys, %{}}, 2_000
+    assert :provider_effect in keys
+    assert :cancelled? in keys
+    assert :checkpoint_callback in keys
+    refute :owner in keys
+    refute :lease_owner in keys
+    refute :run_generation in keys
+    refute :step_generation in keys
+    refute :lease_generation in keys
+
+    assert_receive {:dag_runner_result, ^runner, {:ok, %Run{status: "completed"}}}, 2_000
+  end
+
   test "heartbeats an active attempt while its handler is blocked", context do
     run = dag_run(context, [step("inventory", "project_inventory", %{})])
     receiver = self()

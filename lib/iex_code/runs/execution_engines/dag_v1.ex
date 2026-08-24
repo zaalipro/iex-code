@@ -2,10 +2,11 @@ defmodule IexCode.Runs.ExecutionEngines.DagV1 do
   @moduledoc """
   Available adapter for finite, immutable, dependency-aware workflows.
 
-  Version one executes only handlers in the closed read-only registry. The
+  Version one executes only handlers in the closed typed registry. The
   durable scheduler owns ready-node claims, bounded fan-out, append-only step
   attempts, leases, generation fencing, checkpoint receipts, retry backoff, and
-  terminal recovery. Unknown or future handler kinds remain fail-closed and
+  terminal recovery. The catalog includes bounded workspace reads and finite
+  research workflows; unknown or future handler kinds remain fail-closed and
   existing `legacy_v1` runs are never reinterpreted as DAGs.
   """
 

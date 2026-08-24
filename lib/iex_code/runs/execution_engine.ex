@@ -6,7 +6,7 @@ defmodule IexCode.Runs.ExecutionEngine do
   are owned by `legacy_v1` and must never be reinterpreted as generic DAGs merely
   because their steps contain `depends_on` values. The dependency-aware scheduler
   is selected only through a run persisted with `execution_engine: "dag_v1"` and
-  accepts only kinds in its closed read-only registry.
+  accepts only kinds in its closed typed registry.
   """
 
   alias IexCode.Runs.Run

@@ -15,7 +15,9 @@ defmodule IexCode.Runs.RunDispatcher do
 
   alias IexCode.{Kanban, Projects, Runs, Sessions, WorkspaceLocks}
   alias IexCode.Engine.{AgentRegistry, FleetManager, FleetSupervisor}
+  alias IexCode.Research.{DagAdapter, DagFinalizer, LevelPolicy, ProviderEffect, Results}
   alias IexCode.Runs.{DagRunner, DagScheduler, Run}
+  alias IexCode.Runs.DagStepRegistry
   alias IexCode.Runs.ExecutionEngine
 
   @default_poll_interval 1_000
@@ -24,6 +26,8 @@ defmodule IexCode.Runs.RunDispatcher do
   @default_cancel_grace_ms 1_500
   @default_workspace_lock_retry_interval 1_000
   @default_workspace_lock_lease_seconds 60
+  @default_research_reconcile_interval 60_000
+  @research_reconcile_limit 100
 
   defstruct [
     :name,
@@ -41,6 +45,9 @@ defmodule IexCode.Runs.RunDispatcher do
     :dag_runner,
     :dag_runner_opts,
     :dag_max_concurrency,
+    :research_finalizer,
+    :provider_effect,
+    :research_reconcile_interval,
     workers: %{},
     lock_waiters: %{},
     run_refs: %{},
@@ -85,6 +92,71 @@ defmodule IexCode.Runs.RunDispatcher do
   end
 
   def enqueue_dag(_attrs, _steps, _server), do: {:error, :invalid_dag_run}
+
+  @doc "Builds, persists, and schedules an exact finite deep-research DAG."
+  def enqueue_research(attrs, research, server \\ __MODULE__)
+
+  def enqueue_research(attrs, research, server) when is_map(attrs) and is_map(research) do
+    objective = Map.get(attrs, :objective) || Map.get(attrs, "objective")
+    level = Map.get(research, :level) || Map.get(research, "level")
+    ranked = Map.get(research, :ranked_providers) || Map.get(research, "ranked_providers") || []
+
+    grounded =
+      Map.get(research, :grounded_providers) || Map.get(research, "grounded_providers") || []
+
+    max_sources =
+      research
+      |> then(&(Map.get(&1, :max_sources) || Map.get(&1, "max_sources")))
+      |> bounded_research_integer(1, 250, 40)
+
+    fetch_parallelism =
+      research
+      |> then(&(Map.get(&1, :fetch_parallelism) || Map.get(&1, "fetch_parallelism")))
+      |> bounded_research_integer(1, 16, 6)
+
+    require_conflict_audit =
+      Map.get(
+        research,
+        :require_conflict_audit,
+        Map.get(research, "require_conflict_audit", true)
+      )
+
+    session_id = Map.get(attrs, :session_id) || Map.get(attrs, "session_id")
+    metadata = Map.get(attrs, :metadata) || Map.get(attrs, "metadata") || %{}
+
+    attachment_ids =
+      Map.get(metadata, "research_result_ids", Map.get(metadata, :research_result_ids, []))
+
+    with {:ok, policy} <- LevelPolicy.fetch(level),
+         {:ok, attachment_refs} <- Results.attachment_refs(attachment_ids, session_id),
+         {:ok, steps} <-
+           DagAdapter.build(objective,
+             ranked_providers: ranked,
+             grounded_providers: grounded,
+             level: level,
+             max_sources: max_sources,
+             fetch_parallelism: fetch_parallelism,
+             require_conflict_audit: require_conflict_audit,
+             attachment_refs: attachment_refs
+           ) do
+      attrs =
+        research_run_attrs(
+          attrs,
+          policy,
+          ranked,
+          grounded,
+          max_sources,
+          fetch_parallelism,
+          require_conflict_audit,
+          attachment_refs,
+          steps
+        )
+
+      enqueue_dag(attrs, steps, server)
+    end
+  end
+
+  def enqueue_research(_attrs, _research, _server), do: {:error, :invalid_research_run}
 
   @doc "Wakes the dispatcher without blocking the caller."
   def dispatch(server \\ __MODULE__) do
@@ -171,7 +243,19 @@ defmodule IexCode.Runs.RunDispatcher do
       execution_engines: ExecutionEngine.available_ids(),
       dag_runner: Keyword.get(opts, :dag_runner, DagRunner),
       dag_runner_opts: Keyword.get(opts, :dag_runner_opts, []),
-      dag_max_concurrency: positive(Keyword.get(opts, :dag_max_concurrency, 4), 4) |> min(32)
+      dag_max_concurrency: positive(Keyword.get(opts, :dag_max_concurrency, 4), 4) |> min(32),
+      research_finalizer: Keyword.get(opts, :research_finalizer, DagFinalizer),
+      provider_effect: Keyword.get(opts, :provider_effect, ProviderEffect),
+      research_reconcile_interval:
+        positive(
+          Keyword.get(
+            opts,
+            :research_reconcile_interval,
+            @default_research_reconcile_interval
+          ),
+          @default_research_reconcile_interval
+        )
+        |> max(1_000)
     }
 
     # A new dispatcher identity cannot safely resume writes abandoned by an old
@@ -193,8 +277,14 @@ defmodule IexCode.Runs.RunDispatcher do
     Enum.each(interrupted, &reconcile_terminal_dag/1)
     Enum.each(interrupted, &terminalize_interrupted_steps/1)
     Enum.each(interrupted, &project_terminal_task/1)
+    # Reconcile provider intents only after orphaned runs have been made
+    # terminal, so their abandoned reservations become uncertain immediately
+    # instead of waiting for the periodic pass.
+    reconcile_provider_effects(state)
+    reconcile_research_results(state)
     schedule_poll(state.poll_interval)
     schedule_heartbeat(state.heartbeat_interval)
+    schedule_research_reconciliation(state.research_reconcile_interval)
     send(self(), :drain)
     {:ok, state}
   end
@@ -339,6 +429,13 @@ defmodule IexCode.Runs.RunDispatcher do
     Enum.each(interrupted, &terminalize_interrupted_steps/1)
     Enum.each(interrupted, &project_terminal_task/1)
     {:noreply, drain_capacity(state)}
+  end
+
+  def handle_info(:reconcile_research_results, state) do
+    schedule_research_reconciliation(state.research_reconcile_interval)
+    reconcile_provider_effects(state)
+    reconcile_research_results(state)
+    {:noreply, state}
   end
 
   def handle_info(:heartbeat, state) do
@@ -1108,6 +1205,100 @@ defmodule IexCode.Runs.RunDispatcher do
     end
   end
 
+  defp research_run_attrs(
+         attrs,
+         policy,
+         ranked,
+         grounded,
+         max_sources,
+         fetch_parallelism,
+         require_conflict_audit,
+         attachment_refs,
+         steps
+       ) do
+    metadata = Map.get(attrs, :metadata) || Map.get(attrs, "metadata") || %{}
+
+    research = %{
+      "level" => policy.level,
+      "level_policy" => LevelPolicy.durable(policy),
+      "ranked_providers" => ranked,
+      "grounded_providers" => grounded,
+      "max_sources" => max_sources,
+      "fetch_parallelism" => fetch_parallelism,
+      "require_conflict_audit" => require_conflict_audit,
+      "attachment_refs" => attachment_refs
+    }
+
+    {token_ceiling, cost_ceiling} = research_budget_ceilings(steps)
+
+    attrs
+    |> normalized_research_attrs()
+    |> Map.merge(%{
+      kind: "deep_research",
+      mode: "research",
+      execution_engine: "dag_v1",
+      metadata: Map.put(metadata, "research", research),
+      max_attempts: 1
+    })
+    |> put_default_budget(:token_budget, token_ceiling)
+    |> put_default_budget(:cost_budget_cents, cost_ceiling)
+    |> put_default_budget(:time_budget_ms, research_time_ceiling(policy.level))
+  end
+
+  defp research_budget_ceilings(steps) do
+    Enum.reduce(steps, {0, 0}, fn step, {tokens, cost} ->
+      descriptor = DagStepRegistry.descriptor!(step.kind)
+
+      if descriptor.effect_class == :provider do
+        params = step.params
+        input = Map.get(params, "max_input_tokens", 0)
+        output = Map.get(params, "max_output_tokens", 0)
+        step_cost = Map.get(params, "max_cost_cents", 0)
+        {tokens + input + output, cost + step_cost}
+      else
+        {tokens, cost}
+      end
+    end)
+  end
+
+  defp put_default_budget(attrs, field, value) do
+    current = Map.get(attrs, field, Map.get(attrs, Atom.to_string(field)))
+    if is_nil(current), do: Map.put(attrs, field, value), else: attrs
+  end
+
+  defp research_time_ceiling("low"), do: 10 * 60_000
+  defp research_time_ceiling("medium"), do: 20 * 60_000
+  defp research_time_ceiling("high"), do: 40 * 60_000
+  defp research_time_ceiling("ultra"), do: 90 * 60_000
+
+  defp bounded_research_integer(value, minimum, maximum, _default)
+       when is_integer(value) and value >= minimum and value <= maximum,
+       do: value
+
+  defp bounded_research_integer(_value, _minimum, _maximum, default), do: default
+
+  # Accept either atom- or string-keyed external maps without ever creating
+  # atoms from caller input or passing a mixed-key map into Ecto.
+  defp normalized_research_attrs(attrs) do
+    Enum.reduce(
+      ~w(project_id session_id objective priority token_budget cost_budget_cents time_budget_ms not_before)a,
+      %{},
+      fn field, normalized ->
+        case Map.fetch(attrs, field) do
+          {:ok, value} -> Map.put(normalized, field, value)
+          :error -> maybe_copy_string_attr(normalized, attrs, field)
+        end
+      end
+    )
+  end
+
+  defp maybe_copy_string_attr(normalized, attrs, field) do
+    case Map.fetch(attrs, Atom.to_string(field)) do
+      {:ok, value} -> Map.put(normalized, field, value)
+      :error -> normalized
+    end
+  end
+
   defp execution_engine_available(engine) do
     if engine in ExecutionEngine.available_ids(),
       do: :ok,
@@ -1202,6 +1393,35 @@ defmodule IexCode.Runs.RunDispatcher do
 
   defp schedule_poll(interval), do: Process.send_after(self(), :poll, interval)
   defp schedule_heartbeat(interval), do: Process.send_after(self(), :heartbeat, interval)
+
+  defp schedule_research_reconciliation(interval),
+    do: Process.send_after(self(), :reconcile_research_results, interval)
+
+  defp reconcile_research_results(state) do
+    _ = state.research_finalizer.reconcile(limit: @research_reconcile_limit)
+    :ok
+  rescue
+    error ->
+      Logger.warning("Research result reconciliation failed: #{Exception.message(error)}")
+      :ok
+  catch
+    kind, reason ->
+      Logger.warning("Research result reconciliation failed: #{inspect({kind, reason})}")
+      :ok
+  end
+
+  defp reconcile_provider_effects(state) do
+    _ = state.provider_effect.reconcile_claimed(limit: @research_reconcile_limit)
+    :ok
+  rescue
+    error ->
+      Logger.warning("Provider effect reconciliation failed: #{Exception.message(error)}")
+      :ok
+  catch
+    kind, reason ->
+      Logger.warning("Provider effect reconciliation failed: #{inspect({kind, reason})}")
+      :ok
+  end
 
   defp schedule_time_budget(%Run{id: run_id, time_budget_ms: budget_ms}, pid)
        when is_integer(budget_ms) and budget_ms >= 0 do

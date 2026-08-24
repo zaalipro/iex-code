@@ -4,7 +4,15 @@ defmodule IexCode.Runs.DagStepRegistry do
   @handlers %{
     "project_inventory" => IexCode.Runs.DagStepHandlers.ProjectInventory,
     "read_file" => IexCode.Runs.DagStepHandlers.ReadFile,
-    "aggregate" => IexCode.Runs.DagStepHandlers.Aggregate
+    "aggregate" => IexCode.Runs.DagStepHandlers.Aggregate,
+    "research_plan" => IexCode.Research.DagStepHandlers.Plan,
+    "research_ranked_search" => IexCode.Research.DagStepHandlers.RankedSearch,
+    "research_grounded_search" => IexCode.Research.DagStepHandlers.GroundedSearch,
+    "research_evidence_merge" => IexCode.Research.DagStepHandlers.EvidenceMerge,
+    "research_source_fetch" => IexCode.Research.DagStepHandlers.SourceFetch,
+    "research_evidence_audit" => IexCode.Research.DagStepHandlers.EvidenceAudit,
+    "research_report_synthesize" => IexCode.Research.DagStepHandlers.ReportSynthesize,
+    "research_report_verify" => IexCode.Research.DagStepHandlers.ReportVerify
   }
 
   def fetch(kind) when is_binary(kind), do: Map.fetch(@handlers, kind)

@@ -66,6 +66,29 @@ defmodule IexCode.Runs.RunDispatcherTest do
     assert IexCode.Kanban.get_task!(task.id) == projected
   end
 
+  test "periodically reconciles bounded research results and provider effects" do
+    name = Module.concat(__MODULE__, PeriodicReconciliation)
+
+    opts =
+      dispatcher_options()
+      |> Keyword.put(:name, name)
+      |> Keyword.put(:worker_id, "reconciliation-test")
+      |> Keyword.put(:research_finalizer, IexCode.RunDispatcherReconciliationStub)
+      |> Keyword.put(:provider_effect, IexCode.RunDispatcherReconciliationStub)
+      |> Keyword.put(:research_reconcile_interval, 60_000)
+
+    start_supervised!(%{id: name, start: {RunDispatcher, :start_link, [opts]}})
+
+    assert_receive {:provider_effect_reconcile, [limit: 100]}
+    assert_receive {:research_result_reconcile, [limit: 100]}
+
+    send(name, :reconcile_research_results)
+
+    assert_receive {:provider_effect_reconcile, [limit: 100]}
+    assert_receive {:research_result_reconcile, [limit: 100]}
+    assert Process.whereis(name)
+  end
+
   test "enforces global capacity and one active run per project", context do
     {:ok, first} = enqueue(context, "first project run")
     assert_receive {:test_run_started, first_id, first_pid}, 2_000

@@ -7,7 +7,7 @@ defmodule IexCode.Research.Runner do
   attempt and can safely coexist with dispatcher-created graph nodes and prior retries.
   """
 
-  alias IexCode.Research.{Fetcher, Report, Search}
+  alias IexCode.Research.{Fetcher, Report, Results, Search}
   alias IexCode.Runs
   alias IexCode.Runs.{Run, RunStep}
   alias IexCode.{Sessions, Settings}
@@ -23,7 +23,8 @@ defmodule IexCode.Research.Runner do
     llm_module = Keyword.get(opts, :llm_module, IexCode.LLM)
     config = research_config(run, opts)
 
-    with :ok <- control_checkpoint(run, opts),
+    with {:ok, durable_result} <- Results.prepare_run(run),
+         :ok <- control_checkpoint(run, opts),
          {:ok, plan_step} <- stage(run, "plan", "Research plan", 20),
          :ok <- begin_stage(plan_step),
          :ok <- announce(run, progress_fun, 5, "Planning durable research strategy"),
@@ -52,7 +53,8 @@ defmodule IexCode.Research.Runner do
          :ok <- control_checkpoint(run, opts),
          {:ok, markdown} <- synthesize(llm_module, run, sources, config, opts),
          :ok <- control_checkpoint(run, opts, false),
-         {:ok, report_artifact} <- persist_report(run, synthesis_step, markdown, sources, config),
+         {:ok, report_artifact} <-
+           persist_report(run, synthesis_step, markdown, sources, config, durable_result, opts),
          {:ok, _step} <- finish_synthesis(synthesis_step, markdown, sources),
          :ok <- announce(run, progress_fun, 100, "Research report ready") do
       {:ok,
@@ -62,22 +64,26 @@ defmodule IexCode.Research.Runner do
          providers: search_result.providers,
          provider_errors: search_result.errors,
          depth: config.depth,
+         research_result_id: durable_result && durable_result.id,
          artifacts: %{evidence: evidence_artifact, report: report_artifact}
        }}
     else
       {:error, reason} = error ->
         record_failure(run, reason)
+        terminalize_result(run, reason)
         error
     end
   rescue
     error ->
       reason = {error, __STACKTRACE__}
       record_failure(run, reason)
+      terminalize_result(run, reason)
       {:error, reason}
   catch
     kind, reason ->
       caught = {kind, reason}
       record_failure(run, caught)
+      terminalize_result(run, caught)
       {:error, caught}
   end
 
@@ -514,21 +520,74 @@ defmodule IexCode.Research.Runner do
     )
   end
 
-  defp persist_report(run, step, markdown, sources, config) do
+  defp persist_report(run, step, markdown, sources, config, nil, _opts) do
+    persist_markdown_artifact(run, step, markdown, sources, config, nil)
+  end
+
+  defp persist_report(run, step, markdown, sources, config, durable_result, opts) do
+    result_opts =
+      [
+        source_count: length(sources),
+        metadata: %{
+          "providers" => sources |> Enum.map(& &1.provider) |> Enum.uniq() |> Enum.sort()
+        }
+      ]
+      |> maybe_put(:root, Keyword.get(opts, :research_root))
+
+    with {:ok, ready} <- Results.commit(durable_result, markdown, result_opts),
+         {:ok, markdown_artifact} <-
+           persist_markdown_artifact(run, step, markdown, sources, config, ready),
+         {:ok, html} <- Results.read_html(ready, result_opts),
+         {:ok, _html_artifact} <-
+           persist_artifact(
+             run,
+             step,
+             "research_report_html",
+             "Research report · HTML",
+             "result-#{ready.id}.html",
+             html,
+             "text/html",
+             %{
+               "research_result_id" => ready.id,
+               "source_count" => ready.source_count,
+               "sha256" => ready.html_sha256,
+               "open_path" => "/research/#{ready.id}/report",
+               "download_path" => "/research/#{ready.id}/report/download"
+             }
+           ) do
+      {:ok, markdown_artifact}
+    end
+  end
+
+  defp persist_markdown_artifact(run, step, markdown, sources, config, durable_result) do
+    filename = if durable_result, do: "result-#{durable_result.id}.md", else: "report.md"
+
+    metadata = %{
+      "source_count" => length(sources),
+      "sources" => sources,
+      "depth" => config.depth,
+      "content" => markdown
+    }
+
+    metadata =
+      if durable_result do
+        metadata
+        |> Map.put("research_result_id", durable_result.id)
+        |> Map.put("open_path", "/research/#{durable_result.id}/report")
+        |> Map.put("download_path", "/research/#{durable_result.id}/result/download")
+      else
+        metadata
+      end
+
     persist_artifact(
       run,
       step,
       "research_report",
       "Research report",
-      "report.md",
+      filename,
       markdown,
       "text/markdown",
-      %{
-        "source_count" => length(sources),
-        "sources" => sources,
-        "depth" => config.depth,
-        "content" => markdown
-      }
+      metadata
     )
   end
 
@@ -609,6 +668,39 @@ defmodule IexCode.Research.Runner do
     :ok
   rescue
     _ -> :ok
+  end
+
+  defp terminalize_result(%Run{kind: "deep_research"} = run, reason) do
+    case Results.get_by_run(run) do
+      %{status: status} = result when status in ["queued", "running"] ->
+        action = if reason == :cancelled, do: :cancelled, else: :failed
+
+        case action do
+          :cancelled -> Results.mark_cancelled(result)
+          :failed -> Results.mark_failed(result, failure_code(reason))
+        end
+
+      _result ->
+        :ok
+    end
+
+    :ok
+  rescue
+    _exception -> :ok
+  end
+
+  defp terminalize_result(_run, _reason), do: :ok
+
+  defp failure_code(reason) do
+    reason
+    |> safe_term()
+    |> inspect(limit: 10, printable_limit: 200)
+    |> String.replace(~r/[^A-Za-z0-9_.:-]/, "_")
+    |> String.slice(0, 160)
+    |> case do
+      "" -> "research_failed"
+      code -> code
+    end
   end
 
   defp not_cancelled(opts) do

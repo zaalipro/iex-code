@@ -11,12 +11,13 @@ state and an ordered event history are persisted independently of the browser. S
 
 ## Workspace
 
-The main LiveView exposes nine connected tools:
+The main LiveView exposes ten connected tools:
 
 | Area | Current capability |
 | --- | --- |
 | Kanban | Task CRUD, eight workflow states, priorities, assignees, filters, schedules, and subtasks |
 | Swarm | Durable Mission Control for coding and deep-research runs; coding adds persisted dynamic fleets and per-agent controls, while research adds provider manifests and cited artifacts |
+| Research | Dedicated deep-research workspace with exact level semantics, provider selection, recent runs, checksum-verified reports, and session-scoped prior-result attachments |
 | Calendar | Monthly task view, task inspection/editing, manual “run now,” and supervised UTC schedule dispatch |
 | Changes | Staged, unstaged, and untracked rails; inline/split diffs; hunk actions; branches and commits |
 | Tests | Asynchronous ExUnit runs, parsed failures, AutoFix proposals, preview, apply, and rollback |
@@ -98,10 +99,47 @@ contract can be represented safely. Public source fetches reject local/private/
 link-local/reserved destinations, validate every DNS answer and redirect, pin the
 validated address against DNS rebinding, restrict content types, and cap time and bytes.
 
-Use **Run setup** in the composer or the `/research` command to queue a deep-research
-mission. Research runs persist plan, federated-search, safe-fetch, and synthesis stages,
-the normalized evidence manifest, and a citation-indexed Markdown report. No-key or
-all-provider failure is reported honestly; the harness does not invent a report.
+Use **Run setup** in the composer or the `/research` command to queue the same exact
+`dag_v1` deep-research workflow as the dedicated Research page. The configured legacy depth is
+mapped deterministically to low, medium, or high for compatibility. Existing persisted
+`legacy_v1` research rows remain executable by their fixed-stage runner; they are never silently
+reinterpreted. No-key or all-provider failure is reported honestly, and the harness does not
+invent a report.
+
+Every newly created legacy or DAG deep-research run receives a monotonically increasing integer
+result ID in the same SQLite transaction. A successful legacy runner or DAG finalizer commits
+exact `_APP_DIR/research/<id>/result.md` and `_APP_DIR/research/<id>/report.html` paths through
+content-addressed, symlink-rejecting storage before the result becomes ready. The HTML is a
+self-contained, script-free rendering. Open, HTML-download, and Markdown-download routes read the
+files through their recorded SHA-256 digests and fail closed on missing or changed content. Those
+routes retain the application's trusted-local-user boundary; they are not multi-user
+authorization.
+
+Open the dedicated **Research** workspace at `/research`, or use `/sessions/:id/research` for a
+specific session. It lists recent investigations and ready numbered reports. The chat command
+`/deep_research` opens a session-scoped picker; `/deep_research N` selects one ready result by
+number. Up to 12 selected reports can be injected server-side into the next ordinary prompt as
+bounded, checksum-verified, explicitly untrusted evidence. This attachment mechanism does not
+create a new durable research agent. For a follow-up Research launch, the run instead snapshots
+immutable same-session result ID/checksum references: the raw objective alone drives external
+search queries, while the verified prior-report bodies are supplied only to final synthesis as
+untrusted, non-citation context under the same 90 KB aggregate ceiling.
+
+The tab also launches durable static `dag_v1` research with exact `low`, `medium`, `high`, and
+`ultra` levels and one or more selected ranked-search providers. Their contracts are respectively 1/2/3/4
+multistep rounds and bounded asynchronous query-fanout ceilings of 2/3/4/10, with one logical lead
+per step. Ranked and grounded search implement that fanout as handler-internal `Task.async_stream`
+work, not durable `run_agents` with independent identity or controls. Run-level
+pause/resume/cancel/retry still apply. Grounded-search handlers are registered for typed
+manifests, but grounded-provider selection is not exposed by the launchers. The composer,
+`/research`, and dedicated page all create exact DAG runs; only already-persisted legacy rows keep
+the legacy execution path.
+
+Research settings persist the default exact level, maximum sources, conflict-audit requirement,
+maximum cost in cents, maximum tokens, and time budget in minutes, together with ranked-provider
+configuration and order. The dedicated launcher requires at least one selected, automatically
+selectable ranked provider and fails before inserting a run when that selection is empty.
+Credentials and provider availability are checked at execution; configure them in **Settings**.
 
 API keys are currently persisted in the local SQLite settings row. They are not stored
 in an operating-system keychain or encrypted vault. Protect the database file and do
@@ -129,8 +167,8 @@ manifest that application changesets do not permit later lifecycle updates to re
 Creation and retry validate the supplied manifest through its selected engine, claims select
 only engines that are currently available, and the dispatcher revalidates a claimed manifest
 before preparation or execution. `dag_v1` is available for finite, immutable workflows whose
-kinds exist in its closed read-only registry; unknown provider, mutation, and research kinds fail
-closed. Existing `legacy_v1` rows are never silently reinterpreted as DAGs. Within a live legacy
+kinds exist in its closed registry; unknown kinds and mutation handlers fail closed. Existing
+`legacy_v1` rows are never silently reinterpreted as DAGs. Within a live legacy
 run, agent calls resolve the current PID and lease generation from the run fleet
 immediately before invocation. An operator restart after an agent crash can advance the
 generation and let a later phase bind to the replacement, while the abandoned generation
@@ -141,7 +179,7 @@ as durable fleet truth.
 
 ### Typed DAG workflows
 
-Run setup also exposes an explicit **Typed DAG (read-only)** mission. `dag_v1` accepts a
+Run setup also exposes an explicit **Typed DAG** mission. `dag_v1` accepts a
 static JSON manifest, canonicalizes and hashes it before persistence, and schedules dependency
 roots and fan-in nodes from SQLite. Independent ready nodes run concurrently through a bounded
 runner (four by default, configurable up to 32); append-only step-attempt rows record the run
@@ -149,14 +187,21 @@ generation, step generation, lease, heartbeat, retry timing, checkpoint receipt,
 outcome. Claims and completions are generation-fenced, and Mission Control rehydrates a layered
 graph with readiness, dependencies, attempts, retry state, lease health, and checkpoint timing.
 
-Version one intentionally has a small closed handler catalog:
+Version one intentionally has a closed handler catalog:
 
 - `project_inventory` lists at most 2,000 immediate entries below a contained project path.
 - `read_file` reads one contained, regular UTF-8 file up to 256 KB.
 - `aggregate` combines the bounded durable results of one or more dependencies.
+- `research_plan`, `research_ranked_search`, `research_grounded_search`,
+  `research_evidence_merge`, `research_source_fetch`, `research_evidence_audit`,
+  `research_report_synthesize`, and `research_report_verify` execute the finite research graph.
 
-All three handlers are replay-safe and either pure or read-only. Their default timeout and
-maximum result are 30 seconds and 256 KB. A manifest may contain at most 128 nodes, 512 edges,
+The three project handlers are replay-safe and pure/read-only. Research provider effects use
+fenced pre-use reservations and bounded atomic response-payload replay. Intermediate research
+contracts are canonical digested attempt results rather than durable subagent rows or materialized
+`RunArtifact` rows; `DagFinalizer` reconciles verified Markdown into content-addressed
+`Research.Results` Markdown and HTML directly, at startup, and on a bounded periodic pass. A manifest may contain at
+most 128 nodes, 512 edges,
 32 dependencies per node, 32 topological levels, and five attempts per node. Step params are
 bounded JSON maps and checkpoint callbacks accept bounded JSON values (64 KB, depth 12, at most
 512 items per collection); both reject secret-shaped keys. Handler kind is resolved only through
@@ -167,9 +212,9 @@ Run-wide pause/resume marks active attempts and cooperative tokens paused and st
 a short built-in read may still reach settlement before observing a checkpoint. Cancel
 terminalizes current attempts; safe handler failures use durable exponential retry backoff; and
 explicit run retry retains attempt history while resetting the same immutable logical graph
-under a new run generation. Steering is not supported for `dag_v1`. Existing coding and
-deep-research runs remain on `legacy_v1`; their descriptive dependency labels are never
-reinterpreted by the DAG scheduler.
+under a new run generation. Steering is not supported for `dag_v1`. Existing legacy coding and
+research rows remain on `legacy_v1`; their descriptive dependency labels are never reinterpreted
+by the DAG scheduler. The dedicated exact-level Research launcher creates new `dag_v1` rows.
 
 ## Verification
 
@@ -202,10 +247,10 @@ substitute for running the gate on the current checkout.
   loss does not automatically resume the outer run. Explicit run retry starts a new generation.
 - Legacy coding runs retain a fixed `prepare → execute` shell and fixed role phases. Their fleet
   topology is durable and dynamic, with bounded parallel explorers, and their dependency labels
-  remain descriptive. Separately, `dag_v1` schedules finite immutable graphs of allowlisted
-  read-only `project_inventory`, `read_file`, and `aggregate` nodes with durable attempts,
-  parallel readiness, leases, fencing, checkpoints, retries, and controls. It is not yet a
-  general provider/mutation/research DAG; every unregistered kind fails closed.
+  remain descriptive. Separately, `dag_v1` schedules finite immutable graphs of the three
+  project-read handlers and eight registered research handlers with durable attempts, parallel
+  readiness, leases, fencing, checkpoints, retries, and run-level controls. It is not a general
+  coding/mutation DAG; unknown kinds still fail closed.
 - Calendar work now has a supervised UTC cron scheduler with atomic claims, stable
   occurrence keys, recurrence, existing-run recovery, and stale-claim recovery. Rich
   notification and dead-letter workflows remain future work.
@@ -220,18 +265,20 @@ substitute for running the gate on the current checkout.
   live ownership view. The plane is cooperative: direct calls to lower-level mutation
   modules, external editors/processes, filesystem aliases not represented by canonical
   paths, and orphaned command descendants can bypass or outlive it.
-- `dag_v1` handler descriptors currently declare a `project_read_v1` resource contract, but
-  v1 does not acquire per-step workspace-lock permits. Its production effects are limited to
-  contained reads and pure aggregation. Mutation handlers require real resource admission and
-  generation-bound delegation before they can be registered; the native workspace boundary
-  remains cooperative rather than an OS sandbox.
+- The project-read handlers declare `project_read_v1`; research handlers declare separate
+  evidence/provider/fetch/model resource contracts and use the fenced provider-effect boundary.
+  `dag_v1` still does not acquire per-step workspace-lock permits for native mutation. Mutation
+  handlers require real resource admission and generation-bound delegation before registration;
+  the native workspace boundary remains cooperative rather than an OS sandbox.
 - Wall-clock budgets are enforced by the dispatcher. Token budgets accumulate and stop
   covered planner/coder/research boundaries when providers report usage. Durable fleet
   cost thresholds likewise fail a run after reported `cost_cents` crosses the configured
   limit. When either reported fleet threshold is crossed, the manager cancels and stops the
   run's sibling agents and terminalizes their durable rows rather than leaving a partially
-  live fleet behind. Neither threshold is a pre-use reservation, and providers that omit
-  usage or cost cannot be measured without the still-planned versioned pricing ledger.
+  live fleet behind. These active fleet thresholds are not pre-use reservations, and providers
+  that omit usage or cost cannot be measured without the still-planned versioned pricing ledger.
+  Registered research DAG provider effects instead use fenced pre-use reservations. Universal
+  pricing and a reservation plane shared with coding/legacy research remain future work.
   Forced cancellation stops the supervised BEAM worker; a tool-spawned external descendant
   may still require OS-level cleanup.
 - Pause, resume, cancel, restart, and steer have ordered, idempotent per-agent records in
@@ -245,13 +292,18 @@ substitute for running the gate on the current checkout.
   rows are fenced and bounded; there is no automatic checkpoint resume. Current recovery is
   limited to starting a new attempt for the closed replay-safe handlers, not resuming arbitrary
   code at an instruction boundary.
-- The current DAG catalog performs no model/provider calls and therefore reports no token or
-  provider cost usage. Its dispatcher wall-clock budget is enforced. Where coding/research
-  providers report token or cost usage, accounting still occurs after the response and can
-  overshoot through already in-flight work; there is no shared reserve-before-claim ledger.
-- `IexCode.Research.DagAdapter` can construct a bounded static research graph design, but its
-  research handler kinds are deliberately absent from the executable registry. Deep research
-  continues through the durable `legacy_v1` research runner.
+- The research DAG provider plane has bounded reservation/effect accounting, but broad versioned
+  pricing across every provider path remains incomplete. Coding and legacy research still account
+  after responses and can overshoot through already in-flight work.
+- The dedicated exact-level launcher now enqueues the bounded static research graph and selects
+  ranked-search providers. Its eight handlers and direct/startup finalizer are registered, and an
+  end-to-end finite-DAG test reaches checksum-addressed Markdown and HTML. Full current-checkout
+  precommit plus Ego Lite desktop/mobile smoke remain the final release proof; this documentation
+  does not claim that gate has passed.
+- Research fanout is handler-internal `Task.async_stream` work, not persisted or independently
+  controlled fleet agents. Static manifests cannot expand dynamically; grounded-provider UI
+  selection, durable per-subagent identity/control, broader pricing, and mutation handlers remain
+  future work.
 - Rollback ownership is durable and run-scoped for MultiPatch/AutoFix mutations. Direct
   file, Git, test, and terminal effects are coordinated while they execute but are not
   made transactional or added to the rollback manifest.

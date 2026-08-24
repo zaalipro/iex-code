@@ -79,7 +79,8 @@ defmodule IexCode.Runs do
     "interrupted" => ~w(queued claimed running failed cancelled),
     "completed" => [],
     "failed" => [],
-    "cancelled" => []
+    "cancelled" => [],
+    "uncertain" => []
   }
 
   @run_agent_transitions %{

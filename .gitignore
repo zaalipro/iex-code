@@ -39,6 +39,9 @@ npm-debug.log
 *.db
 *.db-*
 
+# Durable development research artifacts (production uses the configured app directory)
+/research/
+
 # Subagent scratch logs
 /.agents/
 .DS_Store

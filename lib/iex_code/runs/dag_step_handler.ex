@@ -23,7 +23,9 @@ defmodule IexCode.Runs.DagStepHandler do
           required(:dependency_results) => map(),
           required(:checkpoint) => map() | nil,
           required(:cancelled?) => (-> boolean()),
-          required(:checkpoint_callback) => (map(), non_neg_integer() -> :ok | {:error, term()})
+          required(:checkpoint_callback) => (map(), non_neg_integer() -> :ok | {:error, term()}),
+          required(:provider_effect) => (String.t(), map(), map(), (-> term()), keyword() ->
+                                           {:ok, map()} | {:error, term()})
         }
 
   @callback descriptor() :: descriptor()

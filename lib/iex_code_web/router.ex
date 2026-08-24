@@ -19,7 +19,13 @@ defmodule IexCodeWeb.Router do
     pipe_through :browser
 
     live "/", WorkspaceLive, :index
+    live "/research", WorkspaceLive, :research
     live "/sessions/:id", WorkspaceLive, :show
+    live "/sessions/:id/research", WorkspaceLive, :research
+
+    get "/research/:id/report", ResearchReportController, :show
+    get "/research/:id/report/download", ResearchReportController, :download_html
+    get "/research/:id/result/download", ResearchReportController, :download_markdown
   end
 
   # Other scopes may use custom stacks.

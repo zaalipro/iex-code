@@ -40,8 +40,13 @@ defmodule IexCode.Settings.AppSettings do
         ~w(tavily brave exa perplexity firecrawl linkup serper serpapi google bing searxng duckduckgo)
 
     field :research_depth, :string, default: "standard"
+    field :research_level, :string, default: "medium"
     field :research_max_sources, :integer, default: 12
     field :research_parallelism, :integer, default: 4
+    field :research_require_conflict_audit, :boolean, default: true
+    field :research_max_cost_cents, :integer
+    field :research_max_tokens, :integer
+    field :research_time_budget_minutes, :integer
 
     timestamps(type: :utc_datetime)
   end
@@ -65,8 +70,13 @@ defmodule IexCode.Settings.AppSettings do
       :search_providers,
       :search_provider_order,
       :research_depth,
+      :research_level,
       :research_max_sources,
-      :research_parallelism
+      :research_parallelism,
+      :research_require_conflict_audit,
+      :research_max_cost_cents,
+      :research_max_tokens,
+      :research_time_budget_minutes
     ])
     |> validate_inclusion(:default_model_provider, @model_providers)
     |> validate_number(:swarm_agent_count,
@@ -82,6 +92,7 @@ defmodule IexCode.Settings.AppSettings do
       less_than_or_equal_to: 128_000
     )
     |> validate_inclusion(:research_depth, ~w(quick standard deep))
+    |> validate_inclusion(:research_level, ~w(low medium high ultra))
     |> validate_number(:research_max_sources,
       greater_than_or_equal_to: 1,
       less_than_or_equal_to: 100
@@ -90,6 +101,19 @@ defmodule IexCode.Settings.AppSettings do
       greater_than_or_equal_to: 1,
       less_than_or_equal_to: 16
     )
+    |> validate_number(:research_max_cost_cents,
+      greater_than_or_equal_to: 0,
+      less_than_or_equal_to: 10_000_000
+    )
+    |> validate_number(:research_max_tokens,
+      greater_than_or_equal_to: 0,
+      less_than_or_equal_to: 10_000_000
+    )
+    |> validate_number(:research_time_budget_minutes,
+      greater_than_or_equal_to: 1,
+      less_than_or_equal_to: 1_440
+    )
+    |> check_constraint(:research_level, name: :app_settings_research_level_check)
     |> validate_search_providers()
     |> validate_search_provider_order()
   end

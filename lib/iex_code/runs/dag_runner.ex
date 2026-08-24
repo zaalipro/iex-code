@@ -3,6 +3,7 @@ defmodule IexCode.Runs.DagRunner do
 
   alias IexCode.Engine.FleetControlToken
   alias IexCode.Projects
+  alias IexCode.Research.{DagFinalizer, ProviderEffect}
   alias IexCode.Runs
   alias IexCode.Runs.{DagPayload, DagScheduler, DagStepRegistry, Run}
 
@@ -265,6 +266,7 @@ defmodule IexCode.Runs.DagRunner do
     entry = %{
       pid: task.pid,
       attempt: claim.attempt,
+      step: claim.step,
       generation: claim.attempt.lease_generation,
       token: token,
       timer: timer
@@ -274,6 +276,46 @@ defmodule IexCode.Runs.DagRunner do
   end
 
   defp execution_context(config, claim, token) do
+    checkpoint_callback = fn checkpoint, progress ->
+      case FleetControlToken.checkpoint(token) do
+        :ok ->
+          DagScheduler.checkpoint(
+            claim.attempt,
+            config.owner,
+            config.generation,
+            claim.attempt.lease_generation,
+            checkpoint,
+            progress
+          )
+
+        :cancelled ->
+          {:error, :cancelled}
+      end
+    end
+
+    cancelled? = fn -> FleetControlToken.cancelled?(token) end
+
+    provider_effect = fn operation, request, estimate, callback, effect_opts ->
+      effect_opts =
+        effect_opts
+        |> Keyword.delete(:cancelled?)
+        |> Keyword.delete(:checkpoint)
+        |> Keyword.put(:cancelled?, cancelled?)
+        |> Keyword.put(:checkpoint, checkpoint_callback)
+
+      ProviderEffect.invoke(
+        claim.attempt,
+        config.owner,
+        config.generation,
+        claim.attempt.lease_generation,
+        operation,
+        request,
+        estimate,
+        callback,
+        effect_opts
+      )
+    end
+
     %{
       run: config.run,
       step: claim.step,
@@ -281,23 +323,9 @@ defmodule IexCode.Runs.DagRunner do
       project_root: config.project_root,
       dependency_results: claim.dependency_results,
       checkpoint: claim.attempt.checkpoint,
-      cancelled?: fn -> FleetControlToken.cancelled?(token) end,
-      checkpoint_callback: fn checkpoint, progress ->
-        case FleetControlToken.checkpoint(token) do
-          :ok ->
-            DagScheduler.checkpoint(
-              claim.attempt,
-              config.owner,
-              config.generation,
-              claim.attempt.lease_generation,
-              checkpoint,
-              progress
-            )
-
-          :cancelled ->
-            {:error, :cancelled}
-        end
-      end
+      cancelled?: cancelled?,
+      checkpoint_callback: checkpoint_callback,
+      provider_effect: provider_effect
     }
   end
 
@@ -316,13 +344,17 @@ defmodule IexCode.Runs.DagRunner do
 
     case DagPayload.validate(result, max_bytes: descriptor.max_output_bytes) do
       {:ok, validated} ->
-        DagScheduler.complete(
-          entry.attempt,
-          config.owner,
-          config.generation,
-          entry.generation,
-          validated
-        )
+        with {:ok, completed} <-
+               DagScheduler.complete(
+                 entry.attempt,
+                 config.owner,
+                 config.generation,
+                 entry.generation,
+                 validated
+               ),
+             :ok <- finalize_public_research_result(entry, config) do
+          {:ok, completed}
+        end
 
       {:error, _reason} ->
         DagScheduler.fail(
@@ -348,6 +380,24 @@ defmodule IexCode.Runs.DagRunner do
       {:invalid_result, other}
     )
   end
+
+  defp finalize_public_research_result(
+         %{step: %{kind: "research_report_verify"}},
+         %{run: %{kind: "deep_research", execution_engine: "dag_v1", id: run_id}}
+       ) do
+    case Runs.get_run(run_id) do
+      %{status: "completed"} = run ->
+        case DagFinalizer.finalize(run) do
+          {:ok, _ready} -> :ok
+          {:error, reason} -> {:error, {:research_result_finalization_failed, reason}}
+        end
+
+      _run ->
+        {:error, :research_dag_not_completed}
+    end
+  end
+
+  defp finalize_public_research_result(_entry, _config), do: :ok
 
   defp heartbeat_active(state) do
     Enum.reduce_while(Map.to_list(state.active), {:ok, state}, fn {_ref, entry}, {:ok, current} ->

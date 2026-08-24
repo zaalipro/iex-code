@@ -192,25 +192,36 @@ defmodule IexCodeWeb.WorkspaceLiveAsyncRunsTest do
     [run] = Runs.list_runs(session_id: session.id)
     assert run.kind == "deep_research"
     assert run.mode == "research"
+    assert run.execution_engine == "dag_v1"
     assert run.priority == "high"
-    assert run.max_attempts == 4
+    assert run.max_attempts == 1
     assert run.token_budget == 25_000
     assert run.cost_budget_cents == 500
     assert run.time_budget_ms == 2_700_000
 
-    assert run.metadata["research"]["mode"] == "research"
-    assert run.metadata["research"]["depth"] == "deep"
-    assert run.metadata["research"]["max_sources"] == 18
-    assert "duckduckgo" in run.metadata["research"]["providers"]
+    assert run.metadata["research"]["level"] == "high"
 
-    assert Enum.map(Runs.list_steps(run), & &1.key) == [
-             "prepare",
-             "execute",
-             "research.plan",
-             "research.search",
-             "research.fetch",
-             "research.synthesize"
-           ]
+    assert run.metadata["research"]["level_policy"] == %{
+             "level" => "high",
+             "multistep_rounds" => 3,
+             "lead_per_step" => 1,
+             "async_subagents" => 4
+           }
+
+    assert run.metadata["research"]["max_sources"] == 18
+    assert run.metadata["research"]["fetch_parallelism"] == 4
+    assert "duckduckgo" in run.metadata["research"]["ranked_providers"]
+
+    steps = Runs.list_steps(run)
+    step_keys = Enum.map(steps, & &1.key)
+    assert length(step_keys) == 20
+    assert "research.plan.1" in step_keys
+    assert "research.report.verify" in step_keys
+
+    assert Enum.all?(
+             Enum.filter(steps, &(&1.kind == "research_source_fetch")),
+             &(&1.params["max_parallel_fetches"] == 4)
+           )
 
     assert has_element?(view, "#async-run-research-manifest")
     assert has_element?(view, "#async-run-token-budget[data-budget-limit='25000']")
@@ -265,6 +276,36 @@ defmodule IexCodeWeb.WorkspaceLiveAsyncRunsTest do
 
     assert has_element?(view, "#run-setup-panel")
     assert Runs.list_runs(session_id: session.id) == []
+  end
+
+  test "research setup mode always uses the exact DAG even from interactive dispatch", %{
+    conn: conn,
+    workspace_path: path
+  } do
+    project = create_project_fixture(%{root_path: path})
+    session = create_session_fixture(project)
+    {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+    view |> element("#dispatch-mode-interactive") |> render_click()
+    view |> element("#toggle-run-setup") |> render_click()
+
+    view
+    |> form("#run-setup-panel", %{
+      "run_setup" => %{
+        "mode" => "research",
+        "research_depth" => "quick",
+        "providers" => %{"duckduckgo" => "true"}
+      }
+    })
+    |> render_change()
+
+    view
+    |> form("#prompt-form", %{"prompt" => "Compare the current coordination choices"})
+    |> render_submit()
+
+    assert [run] = Runs.list_runs(session_id: session.id)
+    assert run.execution_engine == "dag_v1"
+    assert run.metadata["research"]["level"] == "low"
   end
 
   test "rejects selecting a durable run from another session", %{

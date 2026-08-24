@@ -3,8 +3,10 @@ defmodule IexCode.Runs.DagScheduler do
   Durable, generation-fenced scheduler authority for static `dag_v1` graphs.
 
   SQLite transactions own readiness, claims, terminalization and event order.
-  PubSub is notification only. The current handler registry is read-only and
-  replay-safe; mutation and provider effects remain unavailable.
+  PubSub is notification only. The closed registry is mutation-free: project
+  handlers are replay-safe reads or pure aggregation, while registered research
+  provider effects cross a separate fenced reservation and replay boundary.
+  Mutation handlers remain unavailable.
   """
 
   import Ecto.Query, warn: false

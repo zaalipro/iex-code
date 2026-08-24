@@ -149,6 +149,20 @@
             <span>Coach & Swarm</span>
           </button>
 
+          <.link
+            id="sidebar-tab-research"
+            patch={~p"/sessions/#{@session.id}/research"}
+            aria-current={if @active_tab == "research", do: "page", else: false}
+            class={[
+              "w-full flex items-center gap-2.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-smooth text-left",
+              @active_tab == "research" && "bg-[#21262d] text-white shadow-sm font-semibold",
+              @active_tab != "research" && "text-gray-400 hover:text-gray-200 hover:bg-[#161b22]"
+            ]}
+          >
+            <.icon name="hero-globe-alt" class="w-3.5 h-3.5 text-violet-400" />
+            <span>Deep Research</span>
+          </.link>
+
           <button
             id="sidebar-tab-calendar"
             phx-click="switch_tab"
@@ -424,6 +438,19 @@
             >
               <.icon name="hero-cpu-chip" class="w-3.5 h-3.5 text-amber-400" /> Swarm
             </button>
+
+            <.link
+              id="tab-btn-research"
+              patch={~p"/sessions/#{@session.id}/research"}
+              aria-current={if @active_tab == "research", do: "page", else: false}
+              class={[
+                "px-3 py-1 rounded-lg text-xs font-mono font-medium flex items-center gap-1.5 transition-smooth",
+                @active_tab == "research" && "bg-[#21262d] text-white shadow-sm",
+                @active_tab != "research" && "text-gray-400 hover:text-gray-200"
+              ]}
+            >
+              <.icon name="hero-globe-alt" class="w-3.5 h-3.5 text-violet-400" /> Research
+            </.link>
 
             <button
               id="tab-btn-calendar"
@@ -1982,7 +2009,438 @@
           />
         <% end %>
 
-        <!-- TAB 5: CHAT WITH SCROLL ASSISTANT MINIMAP -->
+        <!-- DEDICATED DEEP RESEARCH WORKSPACE -->
+        <%= if @active_tab == "research" do %>
+          <% level = research_level_semantics(@research_launch_level) %>
+          <div id="deep-research-page" class="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8">
+            <div class="mx-auto max-w-7xl space-y-5">
+              <header class="flex flex-col gap-5 border-b border-[#252c35] pb-6 lg:flex-row lg:items-end lg:justify-between">
+                <div class="max-w-3xl">
+                  <div class="mb-2 flex items-center gap-2 font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-violet-300">
+                    <span class="h-1.5 w-1.5 bg-violet-400"></span> Evidence workspace
+                  </div>
+                  <h2 class="text-3xl font-semibold tracking-[-0.04em] text-white sm:text-4xl">
+                    Deep research, without hidden work.
+                  </h2>
+                  <p class="mt-3 max-w-[68ch] text-sm leading-6 text-gray-400">
+                    Define an exact bounded investigation, attach prior research, and keep the
+                    requested execution contract visible before any work begins.
+                  </p>
+                </div>
+                <button
+                  id="research-open-settings"
+                  type="button"
+                  phx-click="open_research_settings"
+                  class="inline-flex min-h-11 items-center justify-center gap-2 border border-[#303844] bg-[#11161d] px-4 font-mono text-[10px] font-semibold uppercase tracking-wider text-gray-300 transition-colors hover:border-violet-400/40 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60"
+                >
+                  <.icon name="hero-adjustments-horizontal" class="h-4 w-4 text-violet-300" />
+                  Provider settings
+                </button>
+              </header>
+
+              <div class="grid gap-5 xl:grid-cols-[minmax(0,1.15fr)_minmax(22rem,0.85fr)]">
+                <.form
+                  for={@research_form}
+                  id="deep-research-form"
+                  phx-change="update_research_launch"
+                  phx-submit="submit_deep_research"
+                  class="min-w-0 border border-[#29313a] bg-[#0d1218] p-4 sm:p-5"
+                >
+                  <div class="mb-5 flex items-center justify-between gap-4">
+                    <div>
+                      <h3 class="text-base font-semibold text-white">Research brief</h3>
+                      <p class="mt-1 text-xs leading-5 text-gray-500">
+                        Queued as a durable finite DAG with exact level limits.
+                      </p>
+                    </div>
+                    <span class="border border-violet-500/20 bg-violet-500/[0.05] px-2 py-1 font-mono text-[9px] uppercase tracking-wider text-violet-300">
+                      async · durable
+                    </span>
+                  </div>
+
+                  <.input
+                    field={@research_form[:objective]}
+                    id="deep-research-objective"
+                    type="textarea"
+                    rows="5"
+                    label="What should I investigate?"
+                    placeholder="Compare evidence, identify disagreements, and recommend a defensible implementation…"
+                    required
+                    class="block min-h-32 w-full resize-y border border-[#303844] bg-[#090d12] px-3 py-2.5 text-sm leading-6 text-gray-100 outline-none transition-colors placeholder:text-gray-700 focus:border-violet-500/60 focus-visible:ring-2 focus-visible:ring-violet-400/30"
+                  />
+
+                  <fieldset id="deep-research-levels" class="mt-5">
+                    <legend class="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-gray-400">
+                      Research level
+                    </legend>
+                    <div class="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                      <label
+                        :for={
+                          {level_name, title, contract} <- [
+                            {"low", "Low", "1 round · 2-way query fanout"},
+                            {"medium", "Medium", "2 rounds · 3-way query fanout"},
+                            {"high", "High", "3 rounds · 4-way query fanout"},
+                            {"ultra", "Ultra", "4 rounds · 10-way query fanout"}
+                          ]
+                        }
+                        class={[
+                          "cursor-pointer border p-3 transition-colors focus-within:outline-none focus-within:ring-2 focus-within:ring-violet-300/70",
+                          @research_launch_level == level_name &&
+                            "border-violet-400/50 bg-violet-500/[0.07]",
+                          @research_launch_level != level_name &&
+                            "border-[#303844] bg-[#10151b] hover:border-[#46515e]"
+                        ]}
+                        data-level={level_name}
+                        data-subagents={research_level_semantics(level_name).subagents}
+                        data-rounds={research_level_semantics(level_name).rounds}
+                        data-query-fanout={research_level_semantics(level_name).subagents}
+                      >
+                        <input
+                          id={"deep-research-level-#{level_name}"}
+                          type="radio"
+                          name="research[level]"
+                          value={level_name}
+                          checked={@research_launch_level == level_name}
+                          class="sr-only"
+                        />
+                        <span class="block text-sm font-semibold text-gray-100">{title}</span>
+                        <span class="mt-1 block font-mono text-[9px] uppercase tracking-wider text-gray-500">
+                          {contract}
+                        </span>
+                      </label>
+                    </div>
+                  </fieldset>
+
+                  <div class="mt-4 grid gap-3 sm:grid-cols-2">
+                    <div class="border border-[#29313a] bg-[#10151b] px-3 py-2.5">
+                      <p class="font-mono text-[9px] uppercase tracking-wider text-gray-600">
+                        Requested rounds
+                      </p>
+                      <p class="mt-1 text-xs text-gray-300">
+                        {level.rounds} sequential evidence rounds
+                      </p>
+                    </div>
+                    <div class="border border-[#29313a] bg-[#10151b] px-3 py-2.5">
+                      <p class="font-mono text-[9px] uppercase tracking-wider text-gray-600">
+                        Per-search-step query fanout
+                      </p>
+                      <p class="mt-1 text-xs text-gray-300">
+                        Up to {level.subagents} bounded asynchronous queries
+                      </p>
+                    </div>
+                  </div>
+
+                  <div class="mt-5 grid gap-4 sm:grid-cols-[10rem_minmax(0,1fr)]">
+                    <.input
+                      field={@research_form[:max_sources]}
+                      id="deep-research-max-sources"
+                      type="number"
+                      min="1"
+                      max="100"
+                      label="Maximum sources"
+                      value={@research_launch_sources}
+                      class="block min-h-11 w-full border border-[#303844] bg-[#090d12] px-3 py-2 text-sm text-gray-100 outline-none focus:border-violet-500/60"
+                    />
+                    <div>
+                      <div class="flex items-center justify-between gap-3">
+                        <p class="font-mono text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+                          Ranked providers
+                        </p>
+                        <span class="font-mono text-[9px] text-gray-600">
+                          {length(@research_launch_providers)} selected
+                        </span>
+                      </div>
+                      <div class="mt-2 flex flex-wrap gap-2">
+                        <label
+                          :for={provider <- @settings.search_provider_order || ["duckduckgo"]}
+                          class={[
+                            "inline-flex min-h-9 items-center gap-2 border border-[#303844] bg-[#10151b] px-2.5 font-mono text-[9px]",
+                            research_provider_selectable?(@settings, provider) &&
+                              "cursor-pointer text-gray-400",
+                            !research_provider_selectable?(@settings, provider) &&
+                              "cursor-not-allowed text-gray-700 opacity-60"
+                          ]}
+                          title={
+                            if research_provider_selectable?(@settings, provider),
+                              do: "Include #{provider}",
+                              else: "Enable and configure #{provider} in Provider settings"
+                          }
+                        >
+                          <input
+                            type="hidden"
+                            name={"research[providers][#{provider}]"}
+                            value="false"
+                          />
+                          <input
+                            id={"deep-research-provider-#{provider}"}
+                            type="checkbox"
+                            name={"research[providers][#{provider}]"}
+                            value="true"
+                            checked={provider in @research_launch_providers}
+                            disabled={!research_provider_selectable?(@settings, provider)}
+                            class="h-3.5 w-3.5 accent-violet-400"
+                          />
+                          {String.replace(provider, "_", " ")}
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="mt-5 border border-[#29313a] bg-[#0a0f14] p-3">
+                    <div class="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <p class="font-mono text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+                          Prior research
+                        </p>
+                        <p class="mt-1 text-[11px] leading-5 text-gray-600">
+                          Attach up to 12 ready results from this session by public result number.
+                        </p>
+                      </div>
+                      <button
+                        id="deep-research-attachment-picker-toggle"
+                        type="button"
+                        phx-click="toggle_research_attachment_picker"
+                        aria-expanded={@research_attachment_picker_open?}
+                        aria-controls="deep-research-attachment-picker"
+                        class="inline-flex min-h-10 items-center gap-2 border border-[#303844] px-3 font-mono text-[9px] uppercase tracking-wider text-gray-300 hover:border-violet-400/40"
+                      >
+                        <.icon name="hero-paper-clip" class="h-3.5 w-3.5 text-violet-300" />
+                        Attach ready results
+                      </button>
+                    </div>
+                    <div
+                      :if={MapSet.size(@research_attachments) > 0}
+                      class="mt-3 flex flex-wrap gap-1.5"
+                    >
+                      <span
+                        :for={
+                          public_id <- @research_attachments |> MapSet.to_list() |> Enum.sort()
+                        }
+                        class="max-w-full truncate border border-violet-500/20 bg-violet-500/[0.05] px-2 py-1 font-mono text-[9px] text-violet-200"
+                        title={"Ready research result ##{public_id}"}
+                      >
+                        /deep_research {public_id}
+                      </span>
+                      <button
+                        type="button"
+                        phx-click="clear_research_attachments"
+                        class="px-2 py-1 font-mono text-[9px] text-gray-500 hover:text-white"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                    <div
+                      :if={@research_attachment_picker_open?}
+                      id="deep-research-attachment-picker"
+                      class="mt-3 max-h-52 overflow-y-auto border-t border-[#29313a] pt-2"
+                    >
+                      <p
+                        :if={@research_results == []}
+                        class="py-5 text-center text-xs text-gray-600"
+                      >
+                        No ready research results in this session.
+                      </p>
+                      <button
+                        :for={result <- Enum.take(@research_results, 200)}
+                        id={"deep-research-attachment-#{research_result_public_id(result)}"}
+                        type="button"
+                        phx-click="toggle_research_attachment"
+                        phx-value-id={research_result_public_id(result)}
+                        aria-pressed={
+                          MapSet.member?(
+                            @research_attachments,
+                            research_result_public_id(result)
+                          )
+                        }
+                        class={[
+                          "flex min-h-9 w-full items-center gap-2 px-2 text-left font-mono text-[10px] transition-colors",
+                          MapSet.member?(
+                            @research_attachments,
+                            research_result_public_id(result)
+                          ) &&
+                            "bg-violet-500/[0.08] text-violet-200",
+                          !MapSet.member?(
+                            @research_attachments,
+                            research_result_public_id(result)
+                          ) &&
+                            "text-gray-500 hover:bg-[#151b22] hover:text-gray-200"
+                        ]}
+                      >
+                        <.icon name="hero-document-text" class="h-3.5 w-3.5 shrink-0" />
+                        <span class="shrink-0 text-violet-300">
+                          #{research_result_public_id(result)}
+                        </span>
+                        <span class="truncate">{research_result_label(result)}</span>
+                        <span class="ml-auto shrink-0 text-[9px] uppercase tracking-wider text-gray-600">
+                          {Map.get(result, :level)} · {Map.get(result, :source_count, 0)} sources
+                        </span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <button
+                    id="deep-research-submit"
+                    type="submit"
+                    phx-disable-with="Checking availability…"
+                    class="mt-5 inline-flex min-h-12 w-full items-center justify-center gap-2 bg-violet-400 px-5 font-mono text-[11px] font-semibold uppercase tracking-wider text-[#0b0d12] transition-colors hover:bg-violet-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-300/70"
+                  >
+                    <.icon name="hero-arrow-up-right" class="h-4 w-4" /> Queue deep research
+                  </button>
+                </.form>
+
+                <aside class="min-w-0 space-y-4">
+                  <section
+                    id="deep-research-semantics"
+                    class="border border-[#29313a] bg-[#0d1218] p-4 sm:p-5"
+                  >
+                    <div class="flex items-center justify-between gap-3">
+                      <h3 class="text-sm font-semibold text-white">Exact execution semantics</h3>
+                      <span class="border border-amber-400/25 bg-amber-400/[0.06] px-2 py-1 font-mono text-[9px] uppercase tracking-wider text-amber-200">
+                        active
+                      </span>
+                    </div>
+                    <p class="mt-3 text-[11px] leading-5 text-gray-400">
+                      Each named level creates an immutable finite research graph. Every step
+                      records one logical lead; ranked and grounded search steps supervise bounded
+                      asynchronous query tasks. Durable provider intents prevent ambiguous
+                      paid-call replay.
+                    </p>
+                    <dl class="mt-4 grid grid-cols-2 gap-px border border-[#29313a] bg-[#29313a]">
+                      <div class="bg-[#10151b] p-3">
+                        <dt class="font-mono text-[9px] uppercase tracking-wider text-gray-600">
+                          Rounds
+                        </dt>
+                        <dd class="mt-1 text-lg font-semibold text-gray-100">{level.rounds}</dd>
+                      </div>
+                      <div class="bg-[#10151b] p-3">
+                        <dt class="font-mono text-[9px] uppercase tracking-wider text-gray-600">
+                          Search-step query fanout
+                        </dt>
+                        <dd class="mt-1 text-lg font-semibold text-gray-100">
+                          {level.subagents}
+                        </dd>
+                      </div>
+                    </dl>
+                    <div class="mt-4 border border-[#29313a] bg-[#0a0f14] p-3 text-[10px] leading-5 text-gray-500">
+                      The composer, <code class="text-gray-300">/research</code>, and this page
+                      all queue the exact finite DAG. Existing persisted legacy runs keep their
+                      fixed-stage execution history without being reinterpreted.
+                    </div>
+                    <div class="mt-4 border-t border-[#29313a] pt-3 text-[10px] leading-5 text-amber-200/70">
+                      Stage cards are observational. Pause, resume, cancel, and retry remain run-scoped
+                      and generation-fenced in Mission Control. Immutable DAG runs cannot be steered.
+                    </div>
+                  </section>
+
+                  <section
+                    id="deep-research-run-list"
+                    class="border border-[#29313a] bg-[#0d1218] p-4 sm:p-5"
+                  >
+                    <div class="flex items-center justify-between gap-3">
+                      <h3 class="text-sm font-semibold text-white">Recent investigations</h3>
+                      <span class="font-mono text-[10px] text-gray-600">{length(@research_runs)}</span>
+                    </div>
+                    <div :if={@research_runs == []} class="py-8 text-center text-xs text-gray-600">
+                      No research runs in this session.
+                    </div>
+                    <button
+                      :for={run <- Enum.take(@research_runs, 8)}
+                      id={"deep-research-run-#{run.id}"}
+                      type="button"
+                      phx-click="open_research_run"
+                      phx-value-id={run.id}
+                      class="mt-2 w-full border border-[#29313a] bg-[#10151b] p-3 text-left transition-colors hover:border-violet-400/30"
+                    >
+                      <div class="flex items-center justify-between gap-3">
+                        <span class="font-mono text-[9px] uppercase tracking-wider text-violet-300">{run.status}</span>
+                        <span class="font-mono text-[9px] tabular-nums text-gray-600">{run.progress ||
+                          0}%</span>
+                      </div>
+                      <p class="mt-2 line-clamp-2 text-xs leading-5 text-gray-300">
+                        {run.objective}
+                      </p>
+                    </button>
+                  </section>
+
+                  <section
+                    id="deep-research-ready-results"
+                    class="border border-[#29313a] bg-[#0d1218] p-4 sm:p-5"
+                  >
+                    <div class="flex items-center justify-between gap-3">
+                      <div>
+                        <h3 class="text-sm font-semibold text-white">Ready reports</h3>
+                        <p class="mt-1 text-[10px] leading-5 text-gray-600">
+                          Checksum-verified Markdown and self-contained HTML.
+                        </p>
+                      </div>
+                      <span class="font-mono text-[10px] text-gray-600">
+                        {length(@research_results)}
+                      </span>
+                    </div>
+
+                    <div
+                      :if={@research_results == []}
+                      class="py-8 text-center text-xs text-gray-600"
+                    >
+                      Completed reports will appear here with an integer result number.
+                    </div>
+
+                    <article
+                      :for={result <- Enum.take(@research_results, 12)}
+                      id={"deep-research-result-#{research_result_public_id(result)}"}
+                      class="mt-3 border border-[#29313a] bg-[#10151b] p-3"
+                    >
+                      <div class="flex items-start justify-between gap-3">
+                        <div class="min-w-0">
+                          <p class="font-mono text-[9px] uppercase tracking-wider text-violet-300">
+                            Result #{research_result_public_id(result)} · {Map.get(result, :level)}
+                          </p>
+                          <p class="mt-1 line-clamp-2 text-xs leading-5 text-gray-300">
+                            {research_result_label(result)}
+                          </p>
+                        </div>
+                        <span class="shrink-0 font-mono text-[9px] text-gray-600">
+                          {Map.get(result, :source_count, 0)} src
+                        </span>
+                      </div>
+                      <div class="mt-3 grid grid-cols-3 gap-1.5">
+                        <.link
+                          id={"deep-research-result-open-#{research_result_public_id(result)}"}
+                          href={~p"/research/#{research_result_public_id(result)}/report"}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          class="inline-flex min-h-9 items-center justify-center gap-1 border border-violet-400/30 bg-violet-500/[0.06] px-2 font-mono text-[9px] uppercase tracking-wider text-violet-200 hover:border-violet-300/60"
+                        >
+                          <.icon name="hero-arrow-top-right-on-square" class="h-3 w-3" /> Open
+                        </.link>
+                        <.link
+                          id={"deep-research-result-html-#{research_result_public_id(result)}"}
+                          href={
+                            ~p"/research/#{research_result_public_id(result)}/report/download"
+                          }
+                          class="inline-flex min-h-9 items-center justify-center gap-1 border border-[#303844] px-2 font-mono text-[9px] uppercase tracking-wider text-gray-400 hover:text-white"
+                        >
+                          <.icon name="hero-arrow-down-tray" class="h-3 w-3" /> HTML
+                        </.link>
+                        <.link
+                          id={"deep-research-result-md-#{research_result_public_id(result)}"}
+                          href={
+                            ~p"/research/#{research_result_public_id(result)}/result/download"
+                          }
+                          class="inline-flex min-h-9 items-center justify-center gap-1 border border-[#303844] px-2 font-mono text-[9px] uppercase tracking-wider text-gray-400 hover:text-white"
+                        >
+                          <.icon name="hero-document-arrow-down" class="h-3 w-3" /> MD
+                        </.link>
+                      </div>
+                    </article>
+                  </section>
+                </aside>
+              </div>
+            </div>
+          </div>
+        <% end %>
+
+        <!-- TAB: CHAT WITH SCROLL ASSISTANT MINIMAP -->
         <%= if @active_tab == "chat" do %>
           <div class="flex-1 flex h-full overflow-hidden relative">
             <!-- Left Rail: Chat Scroll Assistant Minimap & Hover Preview Cards -->
@@ -2584,7 +3042,7 @@
                     options={[
                       Code: "code",
                       "Deep research": "research",
-                      "Typed DAG (read-only)": "dag"
+                      "Typed DAG (non-mutating)": "dag"
                     ]}
                     value={@run_setup_mode}
                     class="w-full border border-[#30363d] bg-[#0b0f14] px-2.5 py-2 text-xs text-white outline-none focus:border-[#ff7e5f]/60"
@@ -2672,7 +3130,7 @@
                       </p>
                       <p class="mt-1 max-w-2xl text-[11px] leading-5 text-gray-500">
                         Editable sample for common Phoenix repositories. Missing files fail visibly;
-                        only bounded, registered read-only node kinds execute.
+                        only bounded, registered project-read and research node kinds execute.
                       </p>
                     </div>
                     <span class="font-mono text-[9px] uppercase tracking-wider text-gray-600">
@@ -2739,6 +3197,28 @@
                 phx-submit="submit_prompt"
                 class="flex flex-col gap-2"
               >
+                <div
+                  :if={MapSet.size(@research_attachments) > 0}
+                  id="prompt-research-attachments"
+                  class="flex flex-wrap items-center gap-1.5 px-2"
+                  aria-label="Attached deep research results"
+                >
+                  <span class="mr-1 font-mono text-[9px] uppercase tracking-wider text-gray-500">
+                    Context
+                  </span>
+                  <button
+                    :for={public_id <- @research_attachments |> MapSet.to_list() |> Enum.sort()}
+                    id={"prompt-research-attachment-#{public_id}"}
+                    type="button"
+                    phx-click="toggle_research_attachment"
+                    phx-value-id={public_id}
+                    title={"Remove ready research result ##{public_id}"}
+                    class="inline-flex min-h-7 items-center gap-1.5 border border-violet-500/25 bg-violet-500/[0.06] px-2 font-mono text-[9px] text-violet-200 transition-colors hover:border-rose-400/40 hover:text-rose-200"
+                  >
+                    <.icon name="hero-document-text" class="h-3 w-3" /> /deep_research {public_id}
+                    <.icon name="hero-x-mark" class="h-3 w-3" />
+                  </button>
+                </div>
                 <textarea
                   id="prompt-textarea"
                   name="prompt"
@@ -3644,47 +4124,83 @@
                 <% end %>
               </div>
 
-              <div class="grid gap-2 sm:grid-cols-3">
-                <label class="text-[9px] uppercase tracking-wider text-gray-600">
-                  Default depth
-                  <select
-                    id="settings-research-depth"
-                    name="settings[research_depth]"
-                    class="mt-1 w-full border border-[#30363d] bg-[#090d12] px-2 py-1.5 text-[10px] normal-case text-white outline-none"
-                  >
-                    <option
-                      :for={depth <- ~w(quick standard deep)}
-                      value={depth}
-                      selected={@settings.research_depth == depth}
-                    >
-                      {String.capitalize(depth)}
-                    </option>
-                  </select>
-                </label>
-                <label class="text-[9px] uppercase tracking-wider text-gray-600">
-                  Max sources
-                  <input
-                    id="settings-research-max-sources"
-                    type="number"
-                    name="settings[research_max_sources]"
-                    min="1"
-                    max="100"
-                    value={@settings.research_max_sources || 12}
-                    class="mt-1 w-full border border-[#30363d] bg-[#090d12] px-2 py-1.5 text-[10px] normal-case text-white outline-none"
+              <div class="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                <.input
+                  field={@settings_form[:research_level]}
+                  id="settings-research-level"
+                  type="select"
+                  label="Exact DAG level"
+                  options={Enum.map(~w(low medium high ultra), &{String.capitalize(&1), &1})}
+                  class="mt-1 w-full border border-[#30363d] bg-[#090d12] px-2 py-1.5 text-[10px] normal-case text-white outline-none focus-visible:ring-2 focus-visible:ring-violet-400/50"
+                />
+                <.input
+                  field={@settings_form[:research_depth]}
+                  id="settings-research-depth"
+                  type="select"
+                  label="Legacy depth"
+                  options={Enum.map(~w(quick standard deep), &{String.capitalize(&1), &1})}
+                  class="mt-1 w-full border border-[#30363d] bg-[#090d12] px-2 py-1.5 text-[10px] normal-case text-white outline-none focus-visible:ring-2 focus-visible:ring-violet-400/50"
+                />
+                <.input
+                  field={@settings_form[:research_max_sources]}
+                  id="settings-research-max-sources"
+                  type="number"
+                  label="Max sources"
+                  min="1"
+                  max="100"
+                  class="mt-1 w-full border border-[#30363d] bg-[#090d12] px-2 py-1.5 text-[10px] normal-case text-white outline-none focus-visible:ring-2 focus-visible:ring-violet-400/50"
+                />
+                <.input
+                  field={@settings_form[:research_parallelism]}
+                  id="settings-research-parallelism"
+                  type="number"
+                  label="Fetch parallelism"
+                  min="1"
+                  max="16"
+                  class="mt-1 w-full border border-[#30363d] bg-[#090d12] px-2 py-1.5 text-[10px] normal-case text-white outline-none focus-visible:ring-2 focus-visible:ring-violet-400/50"
+                />
+              </div>
+
+              <div class="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                <.input
+                  field={@settings_form[:research_max_cost_cents]}
+                  id="settings-research-max-cost"
+                  type="number"
+                  label="Max cost (cents)"
+                  min="0"
+                  max="10000000"
+                  placeholder="level ceiling"
+                  class="mt-1 w-full border border-[#30363d] bg-[#090d12] px-2 py-1.5 text-[10px] normal-case text-white outline-none focus-visible:ring-2 focus-visible:ring-violet-400/50"
+                />
+                <.input
+                  field={@settings_form[:research_max_tokens]}
+                  id="settings-research-max-tokens"
+                  type="number"
+                  label="Max tokens"
+                  min="0"
+                  max="10000000"
+                  placeholder="level ceiling"
+                  class="mt-1 w-full border border-[#30363d] bg-[#090d12] px-2 py-1.5 text-[10px] normal-case text-white outline-none focus-visible:ring-2 focus-visible:ring-violet-400/50"
+                />
+                <.input
+                  field={@settings_form[:research_time_budget_minutes]}
+                  id="settings-research-time-budget"
+                  type="number"
+                  label="Time budget (minutes)"
+                  min="1"
+                  max="1440"
+                  placeholder="level ceiling"
+                  class="mt-1 w-full border border-[#30363d] bg-[#090d12] px-2 py-1.5 text-[10px] normal-case text-white outline-none focus-visible:ring-2 focus-visible:ring-violet-400/50"
+                />
+                <div class="min-h-12 border border-[#30363d] bg-[#090d12] px-2.5 py-2">
+                  <.input
+                    field={@settings_form[:research_require_conflict_audit]}
+                    id="settings-research-conflict-audit"
+                    type="checkbox"
+                    label="Require conflict audit"
+                    class="h-3.5 w-3.5 accent-violet-400 focus-visible:ring-2 focus-visible:ring-violet-400/50"
                   />
-                </label>
-                <label class="text-[9px] uppercase tracking-wider text-gray-600">
-                  Parallelism
-                  <input
-                    id="settings-research-parallelism"
-                    type="number"
-                    name="settings[research_parallelism]"
-                    min="1"
-                    max="16"
-                    value={@settings.research_parallelism || 4}
-                    class="mt-1 w-full border border-[#30363d] bg-[#090d12] px-2 py-1.5 text-[10px] normal-case text-white outline-none"
-                  />
-                </label>
+                </div>
               </div>
             </div>
 

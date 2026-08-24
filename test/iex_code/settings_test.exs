@@ -137,8 +137,13 @@ defmodule IexCode.SettingsTest do
                  search_providers: providers,
                  search_provider_order: ["tavily", "duckduckgo"],
                  research_depth: "deep",
+                 research_level: "ultra",
                  research_max_sources: 24,
-                 research_parallelism: 6
+                 research_parallelism: 6,
+                 research_require_conflict_audit: false,
+                 research_max_cost_cents: 12_345,
+                 research_max_tokens: 543_210,
+                 research_time_budget_minutes: 75
                })
 
       assert updated.search_providers["tavily"] == providers["tavily"]
@@ -154,8 +159,13 @@ defmodule IexCode.SettingsTest do
                providers: updated.search_providers,
                order: ["tavily", "duckduckgo"],
                depth: "deep",
+               level: "ultra",
                max_sources: 24,
-               parallelism: 6
+               parallelism: 6,
+               require_conflict_audit: false,
+               max_cost_cents: 12_345,
+               max_tokens: 543_210,
+               time_budget_minutes: 75
              }
 
       invalid = Settings.change_settings(updated, %{search_provider_order: ["unknown"]})

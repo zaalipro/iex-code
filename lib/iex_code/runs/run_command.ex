@@ -7,7 +7,7 @@ defmodule IexCode.Runs.RunCommand do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
 
-  @statuses ~w(queued claimed running waiting_approval completed failed cancelled interrupted)
+  @statuses ~w(queued claimed running waiting_approval completed failed cancelled interrupted uncertain)
 
   schema "run_commands" do
     field :idempotency_key, :string
@@ -56,6 +56,7 @@ defmodule IexCode.Runs.RunCommand do
     |> validate_length(:output, max: 1_000_000)
     |> validate_length(:error_message, max: 20_000)
     |> validate_inclusion(:status, @statuses)
+    |> validate_uncertain_is_terminal()
     |> validate_number(:attempt, greater_than_or_equal_to: 0)
     |> validate_number(:max_attempts, greater_than_or_equal_to: 1, less_than_or_equal_to: 100)
     |> validate_attempts()
@@ -65,6 +66,14 @@ defmodule IexCode.Runs.RunCommand do
   end
 
   def statuses, do: @statuses
+
+  defp validate_uncertain_is_terminal(changeset) do
+    if changeset.data.status == "uncertain" and get_field(changeset, :status) != "uncertain" do
+      add_error(changeset, :status, "cannot transition from uncertain")
+    else
+      changeset
+    end
+  end
 
   defp validate_attempts(changeset) do
     attempt = get_field(changeset, :attempt)

@@ -1,15 +1,13 @@
 defmodule IexCode.Research.DagAdapter do
   @moduledoc """
-  Produces a bounded, plain-node integration manifest for future multi-pass research.
+  Produces the bounded, plain-node manifest for finite multi-pass research.
 
-  Nodes use the canonical `IexCode.Runs.DagManifest` fields. The research kinds
-  remain intentionally unregistered while their handlers, budgets, artifact
-  commits and expansion/checkpoint contracts are incomplete, so feeding this
-  manifest to the current closed registry fails safely rather than dispatching a
-  partial research workflow.
+  Nodes use the canonical `IexCode.Runs.DagManifest` fields and resolve through
+  the closed typed registry. Named levels bind immutable round and asynchronous
+  fanout limits; no manifest-supplied module or executable callback is accepted.
   """
 
-  alias IexCode.Research.{GroundedSearch, Registry}
+  alias IexCode.Research.{GroundedSearch, LevelPolicy, Registry}
 
   @required_kinds ~w(
     research_plan
@@ -21,7 +19,7 @@ defmodule IexCode.Research.DagAdapter do
     research_report_synthesize
     research_report_verify
   )
-  @max_rounds 6
+  @max_rounds 4
   @max_manifest_steps 128
 
   @type dag_node :: %{
@@ -33,11 +31,11 @@ defmodule IexCode.Research.DagAdapter do
           required(:max_attempts) => pos_integer()
         }
 
-  @doc "Research handler kinds that must be registered before this manifest is executable."
+  @doc "Registered research handler kinds required by this manifest."
   @spec required_kinds() :: [String.t()]
   def required_kinds, do: @required_kinds
 
-  @doc "Builds canonical plain nodes without registering or activating the research kinds."
+  @doc "Builds canonical plain nodes for the activated finite research engine."
   @spec build(String.t(), keyword()) :: {:ok, [dag_node()]} | {:error, term()}
   def build(objective, opts \\ [])
 
@@ -48,8 +46,11 @@ defmodule IexCode.Research.DagAdapter do
          {:ok, ranked} <- ranked_providers(Keyword.get(opts, :ranked_providers, [])),
          {:ok, grounded} <- grounded_providers(Keyword.get(opts, :grounded_providers, [])),
          :ok <- evidence_plane(ranked, grounded),
-         {:ok, rounds} <- rounds(opts, length(ranked) + length(grounded)) do
-      {:ok, nodes(objective, ranked, grounded, rounds, opts)}
+         {:ok, level_policy} <- LevelPolicy.fetch(Keyword.get(opts, :level, "medium")),
+         :ok <- validate_round_override(opts[:max_rounds], level_policy.multistep_rounds),
+         :ok <- manifest_size(level_policy.multistep_rounds, length(ranked) + length(grounded)) do
+      nodes = nodes(objective, ranked, grounded, level_policy.multistep_rounds, opts)
+      {:ok, apply_level_policy(nodes, level_policy)}
     end
   end
 
@@ -114,7 +115,7 @@ defmodule IexCode.Research.DagAdapter do
             "max_cost_cents" => bounded(opts[:ranked_search_cost_cents], 0, 100_000, 500),
             "artifact_kind" => "research_query_ledger"
           },
-          3
+          2
         )
       end)
 
@@ -157,7 +158,7 @@ defmodule IexCode.Research.DagAdapter do
         "canonicalize_urls" => true,
         "artifact_kind" => "research_evidence"
       },
-      1
+      2
     )
   end
 
@@ -170,6 +171,8 @@ defmodule IexCode.Research.DagAdapter do
       %{
         "round" => round,
         "max_sources" => bounded(opts[:max_sources], 1, 250, 40),
+        "max_requests" => bounded(opts[:max_sources], 1, 250, 40),
+        "max_cost_cents" => bounded(opts[:source_fetch_cost_cents], 0, 100_000, 0),
         "max_parallel_fetches" => bounded(opts[:fetch_parallelism], 1, 16, 6),
         "max_body_bytes" => bounded(opts[:max_body_bytes], 1_000, 5_000_000, 750_000),
         "max_text_chars" => bounded(opts[:max_text_chars], 1_000, 200_000, 20_000),
@@ -210,6 +213,7 @@ defmodule IexCode.Research.DagAdapter do
         "max_output_tokens" => bounded(opts[:synthesis_output_tokens], 256, 100_000, 12_000),
         "max_cost_cents" => bounded(opts[:synthesis_cost_cents], 0, 100_000, 2_000),
         "require_claim_ledger" => true,
+        "attachment_refs" => attachment_refs(opts[:attachment_refs]),
         "artifact_kind" => "research_report_draft"
       },
       2
@@ -247,7 +251,10 @@ defmodule IexCode.Research.DagAdapter do
   end
 
   defp ranked_providers(values) when is_list(values) do
-    normalize_providers(values, fn provider -> match?({:ok, _}, Registry.descriptor(provider)) end)
+    normalize_providers(values, fn provider ->
+      match?({:ok, _}, Registry.descriptor(provider)) and
+        Registry.automatically_selectable?(provider)
+    end)
   end
 
   defp ranked_providers(_values), do: {:error, :invalid_ranked_providers}
@@ -277,15 +284,40 @@ defmodule IexCode.Research.DagAdapter do
   defp evidence_plane([], []), do: {:error, :no_research_provider}
   defp evidence_plane(_ranked, _grounded), do: :ok
 
-  defp rounds(opts, provider_count) do
-    requested = bounded(opts[:max_rounds], 1, @max_rounds, 3)
+  defp manifest_size(requested, provider_count) when requested in 1..@max_rounds do
     steps_per_round = provider_count + 4
     maximum = div(@max_manifest_steps - 2, steps_per_round)
 
     if requested <= maximum,
-      do: {:ok, requested},
+      do: :ok,
       else: {:error, {:research_manifest_too_large, @max_manifest_steps}}
   end
+
+  defp validate_round_override(nil, _expected), do: :ok
+  defp validate_round_override(expected, expected), do: :ok
+  defp validate_round_override(_requested, _expected), do: {:error, :research_level_policy_drift}
+
+  defp apply_level_policy(nodes, policy) do
+    durable = LevelPolicy.durable(policy)
+
+    Enum.map(nodes, fn node ->
+      params =
+        node.params
+        |> Map.put("level_policy", durable)
+        |> ensure_subagent_work(node.kind, policy.async_subagents)
+
+      %{node | params: params}
+    end)
+  end
+
+  defp ensure_subagent_work(params, "research_plan", subagents),
+    do: Map.put(params, "max_queries", subagents)
+
+  defp ensure_subagent_work(params, kind, subagents)
+       when kind in ["research_ranked_search", "research_grounded_search"],
+       do: Map.put(params, "max_search_calls", subagents)
+
+  defp ensure_subagent_work(params, _kind, _subagents), do: params
 
   # Leaves ample room below DagManifest's 64 KB JSON params ceiling for policy.
   defp valid_objective(value) when byte_size(value) in 1..50_000, do: :ok
@@ -295,6 +327,9 @@ defmodule IexCode.Research.DagAdapter do
     do: value
 
   defp provider_snapshot_ref(_value), do: "settings://search-providers/current"
+
+  defp attachment_refs(refs) when is_list(refs), do: refs
+  defp attachment_refs(_refs), do: []
 
   defp bounded(value, min, max, _default)
        when is_integer(value) and value >= min and value <= max,

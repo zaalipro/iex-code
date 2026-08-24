@@ -244,8 +244,10 @@ defmodule IexCode.Tools.Challenger2StressVerificationTest do
     test "CHALLENGER2_03_zero_lingering_shims_and_zero_defunct_zombies_process_table_audit", %{
       workspace_path: path
     } do
-      # Initial check: no lingering shims
-      initial_shims = get_running_shims()
+      # A prior stress case may have terminated its BEAM-side owner before the
+      # OS has fully reaped the shim. Give that external lifecycle the same
+      # bounded settling window used by the postconditions below.
+      initial_shims = wait_until_shims_reaped(0, 6_000)
 
       assert initial_shims == [],
              "Lingering shims detected prior to test: #{inspect(initial_shims)}"

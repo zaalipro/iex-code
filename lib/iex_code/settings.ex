@@ -106,8 +106,13 @@ defmodule IexCode.Settings do
       providers: providers,
       order: Enum.filter(order, &Map.has_key?(providers, &1)),
       depth: settings.research_depth || "standard",
+      level: settings.research_level || "medium",
       max_sources: settings.research_max_sources || 12,
-      parallelism: settings.research_parallelism || 4
+      parallelism: settings.research_parallelism || 4,
+      require_conflict_audit: settings.research_require_conflict_audit != false,
+      max_cost_cents: settings.research_max_cost_cents,
+      max_tokens: settings.research_max_tokens,
+      time_budget_minutes: settings.research_time_budget_minutes
     }
   end
 
@@ -126,8 +131,13 @@ defmodule IexCode.Settings do
       search_providers: default_search_providers(),
       search_provider_order: @search_provider_order,
       research_depth: "standard",
+      research_level: "medium",
       research_max_sources: 12,
-      research_parallelism: 4
+      research_parallelism: 4,
+      research_require_conflict_audit: true,
+      research_max_cost_cents: nil,
+      research_max_tokens: nil,
+      research_time_budget_minutes: nil
     }
   end
 
@@ -276,8 +286,14 @@ defmodule IexCode.Settings do
             settings.search_providers || default_search_providers()
           ),
         research_depth: settings.research_depth || "standard",
+        research_level: settings.research_level || "medium",
         research_max_sources: settings.research_max_sources || 12,
-        research_parallelism: settings.research_parallelism || 4
+        research_parallelism: settings.research_parallelism || 4,
+        research_require_conflict_audit:
+          if(is_boolean(settings.research_require_conflict_audit),
+            do: settings.research_require_conflict_audit,
+            else: true
+          )
     }
   end
 

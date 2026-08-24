@@ -68,12 +68,12 @@ Each node permits at most five attempts. Canonical ordering includes the handler
 produces a SHA-256 manifest hash stored on the run; handler version, effect class, replay policy,
 resource contract, timeout, and graph fields become changeset-immutable step data.
 
-The closed production registry contains only version-one `project_inventory`, `read_file`, and
-`aggregate`. Inventory returns at most 2,000 immediate entries; file reads require a contained,
-regular, valid UTF-8 file no larger than 256 KB; aggregation packages bounded completed
-dependency results. All are pure/read-only, replay-safe, default to a 30-second timeout, and
-limit output to 256 KB. Unknown handler or descriptor drift fails before claim or settlement.
-The separate research DAG adapter emits unregistered research kinds and is not executable.
+The closed production registry contains version-one `project_inventory`, `read_file`, and
+`aggregate`, plus all eight finite `research_*` handlers. Inventory returns at most 2,000
+immediate entries; file reads require a contained, regular, valid UTF-8 file no larger than
+256 KB; aggregation packages bounded completed dependency results. Research handlers use exact
+level policies, bounded contract envelopes, pre-use provider reservations, and tamper-checked
+response replay. Unknown handlers or descriptor drift fail before claim or settlement.
 
 ### DAG step-attempt fencing
 
@@ -242,10 +242,10 @@ reported threshold, the manager cancels the sibling control tokens, stops the ru
 children, and terminalizes every remaining fleet row as failed so the durable projection does
 not show a live sibling after its parent run has failed.
 
-The current DAG handlers do not call models or providers and do not report token/cost usage;
-their dispatcher wall-clock budget still applies. Provider-bearing DAG handlers remain
-unregistered until they can settle fenced usage and cost. Existing coding/research accounting
-is post-use, not a reserve-before-claim hard ceiling.
+Registered research DAG handlers call models/providers only through the runner-bound
+`ProviderEffect`, which reserves declared request/token/cost ceilings before dispatch and settles
+actual or conservative usage under run/step generation fencing. Coding and legacy research
+accounting remains post-use rather than a shared reserve-before-dispatch hard ceiling.
 
 ## Remaining limitations
 
@@ -271,13 +271,16 @@ spawn descendants outside that process tree. Killing an owner or closing a port 
 that every OS descendant has stopped. Terminal ownership and workspace release therefore must
 not be described as process isolation or proof of native cleanup.
 
-### Budgets are accounted after use
+### Coding and legacy-research budgets are accounted after use
 
-Provider usage is settled after a response. There is no atomic pre-use reservation shared
-across the run, agent subtree, and parallel agents. Crossing either `token_budget` or
-`cost_budget_cents` fails the run when that reported usage is recorded, but neither value is a
-pre-use hard ceiling: concurrent calls can overshoot by work already in flight. Hierarchical
-token/cost allocations and reserve-before-start semantics remain to be implemented.
+Coding and legacy-research provider usage is settled after a response. Those paths have no
+atomic pre-use reservation shared across the run, agent subtree, and parallel agents. Crossing
+either `token_budget` or `cost_budget_cents` fails the run when that reported usage is recorded,
+but neither value is a pre-use hard ceiling: concurrent calls can overshoot by work already in
+flight. Registered research DAG effects are the bounded exception: they reserve declared
+request/token/cost ceilings before dispatch and settle actual or conservative usage under the
+current run and step generations. Hierarchical reservations and versioned pricing shared by
+coding, legacy research, and every provider path remain to be implemented.
 
 ### General mutation replay is not checkpoint-safe
 
@@ -286,19 +289,21 @@ tool, filesystem, Git, terminal, and native effects do not yet have a universal 
 idempotency contract. Recovery must continue to interrupt rather than automatically replay an
 uncertain mutation.
 
-### DAG v1 is static and read-only
+### DAG v1 is static and mutation-free
 
-The scheduler's `project_read_v1` resource contract is immutable handler metadata, not a
-per-step workspace-lock acquisition or OS capability. This is sufficient only because every
-registered production handler is a contained read or pure aggregation. No coding agent,
-filesystem mutation, Git, terminal/native command, model, search-provider, or research handler
-is registered. Such handlers require real resource admission, generation-bound delegation,
-effect idempotency, usage settlement, and terminal cleanup before activation.
+The project handlers' `project_read_v1` resource contract is immutable handler metadata, not a
+per-step workspace-lock acquisition or OS capability. Those handlers are contained reads or pure
+aggregation. The eight registered research handlers instead declare descriptor-bound evidence,
+provider, fetch, or model resource contracts and route external calls through the fenced
+`ProviderBudget` and `ProviderEffect` boundary. No coding-agent, filesystem-mutation, Git,
+terminal/native-command, or approval handler is registered. Such mutation handlers require real
+resource admission, generation-bound delegation, effect idempotency, approvals, and terminal
+cleanup before activation.
 
 Graphs cannot expand after creation. There is no automatic checkpoint resume, per-node operator
 control, manual approval-gate handler, or DAG steering. Pause/resume/cancel and retry are
-run-wide. The research DAG adapter is an integration design and deliberately fails closed
-against the current registry.
+run-wide. The exact finite research adapter resolves all eight of its typed kinds through the
+closed registry; unknown kinds and mutation handlers still fail closed.
 
 ### Actor authorization remains local-user scoped
 
@@ -336,7 +341,7 @@ authorization policy before exposing fleet controls.
 - [x] Streaming success/error collection is bounded and supplied auth-header credentials are
       redacted from returned transport errors.
 - [x] DAG manifests are bounded, acyclic, canonical-hashed, changeset-immutable, and restricted
-      to a closed read-only handler registry.
+      to a closed typed, mutation-free registry of project-read and research handlers.
 - [x] DAG claims, heartbeats, checkpoints, settlement, and terminalization reject foreign or
       stale parent/step owners and generations.
 - [x] Concurrent claims create one attempt; dependency fan-in waits for completed predecessors;
@@ -347,9 +352,11 @@ authorization policy before exposing fleet controls.
       projections omit owners, results, checkpoint bodies, and execution keys.
 - [ ] Add agent-generation-bound workspace subdelegation and revocation.
 - [ ] Prove or quarantine uncertain native descendants before declaring cleanup complete.
-- [ ] Add atomic hierarchical token/cost/time reservations before provider/tool dispatch.
+- [x] Add fenced request/token/cost reservations before research provider dispatch.
+- [ ] Extend hierarchical reservations and versioned pricing to coding and every tool/provider.
 - [ ] Add explicit checkpoint/idempotency contracts before replaying general mutations.
 - [ ] Add authenticated actor authorization before supporting remote multi-user control.
-- [ ] Add DAG mutation/provider/research handlers only with real resource, idempotency, usage,
-      artifact, and cleanup contracts.
+- [x] Add finite research DAG handlers with provider idempotency, usage, recovery, and final
+      checksum-addressed report contracts.
+- [ ] Add DAG mutation handlers only with real workspace resources, approvals, and cleanup.
 - [ ] Add authorized manual gates, per-node controls, and bounded dynamic graph expansion.
