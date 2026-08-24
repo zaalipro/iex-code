@@ -115,7 +115,9 @@ export const TerminalHook = {
 
     // 6. Keystroke Listener -> Push to Backend PTY
     this.term.onData((data) => {
-      this.pushEvent("terminal_input", { data })
+      if (this.el.dataset.monitorOnly !== "true") {
+        this.pushEvent("terminal_input", { data })
+      }
     })
 
     // 7. Clipboard Paste Listener on Container

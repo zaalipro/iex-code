@@ -17,12 +17,14 @@ defmodule IexCode.Runs.Executor do
   alias IexCode.Settings
 
   @doc false
-  def execute(%Run{} = run, progress) when is_function(progress, 2) do
+  def execute(run, progress, opts \\ [])
+
+  def execute(%Run{} = run, progress, opts) when is_function(progress, 2) and is_list(opts) do
     with :ok <- supported_run?(run),
          project <- Projects.get_project!(run.project_id) do
       progress.(5, "Preparing durable #{run_label(run)} run")
 
-      result = execute_typed(run, project.root_path, progress)
+      result = execute_typed(run, project.root_path, progress, opts)
 
       progress.(100, "#{String.capitalize(run_label(run))} run finished")
       result
@@ -46,7 +48,7 @@ defmodule IexCode.Runs.Executor do
   defp supported_run?(%Run{kind: kind, mode: mode}),
     do: {:error, {:unsupported_run, kind, mode}}
 
-  defp execute_typed(%Run{kind: "coding_swarm"} = run, project_root, _progress) do
+  defp execute_typed(%Run{kind: "coding_swarm"} = run, project_root, _progress, opts) do
     allowed_tools =
       Map.get(run.metadata || %{}, "allowed_tools") ||
         Map.get(run.metadata || %{}, :allowed_tools) || :all
@@ -55,18 +57,19 @@ defmodule IexCode.Runs.Executor do
     |> SwarmCoordinator.run(run.objective,
       project_root: project_root,
       run_id: run.id,
-      allowed_tools: allowed_tools
+      allowed_tools: allowed_tools,
+      workspace_lock_delegation: opts[:workspace_lock_delegation]
     )
     |> normalize_swarm_result()
   end
 
-  defp execute_typed(%Run{kind: "analysis"}, project_root, _progress) do
+  defp execute_typed(%Run{kind: "analysis"}, project_root, _progress, _opts) do
     with {:ok, entries} <- File.ls(project_root) do
       {:ok, %{project_root: project_root, entries: Enum.sort(entries)}}
     end
   end
 
-  defp execute_typed(%Run{kind: "deep_research"} = run, _project_root, progress) do
+  defp execute_typed(%Run{kind: "deep_research"} = run, _project_root, progress, _opts) do
     search = Settings.search_config()
     research = research_metadata(run.metadata)
 

@@ -6,7 +6,7 @@ defmodule IexCode.Engine.SessionServer do
   """
   use GenServer, restart: :transient
   require Logger
-  alias IexCode.{Sessions, Tools, LLM}
+  alias IexCode.{LLM, Projects, Sessions, Tools, WorkspacePath}
   alias IexCode.Engine.{SwarmCoordinator, OperationManager, AgentSupervisor}
   alias Phoenix.PubSub
 
@@ -351,6 +351,7 @@ defmodule IexCode.Engine.SessionServer do
     current_session = fetch_current_session(session_id, session)
 
     project_root = resolve_project_root(current_session, opts)
+    mutation_project_id = trusted_project_id_for_root(current_session, project_root)
 
     # 1. Signal all workers via PubSub. A live swarm coordinator subscribes to
     #    this topic and performs its own rollback/commit + termination, so the
@@ -389,11 +390,23 @@ defmodule IexCode.Engine.SessionServer do
 
           SwarmCoordinator.perform_rollback(
             project_root,
-            %SwarmCoordinator.State{session_id: session_id, project_root: project_root}
+            %SwarmCoordinator.State{
+              session_id: session_id,
+              session: %{project_id: mutation_project_id},
+              project_root: project_root
+            }
           )
 
         :commit ->
-          SwarmCoordinator.perform_commit(project_root, opts)
+          commit_opts =
+            opts
+            |> Keyword.delete(:project_id)
+            |> maybe_put_project_id(mutation_project_id)
+
+          SwarmCoordinator.perform_commit(
+            project_root,
+            commit_opts
+          )
 
         _ ->
           :ok
@@ -720,6 +733,21 @@ defmodule IexCode.Engine.SessionServer do
               # If there are tool calls, execute each in a dedicated process!
               tool_results =
                 Enum.map(tool_calls, fn tc ->
+                  trusted_args =
+                    if is_map(tc.args) do
+                      Map.merge(tc.args, %{
+                        "project_id" => session.project_id,
+                        "run_id" => nil,
+                        "session_id" => session_id
+                      })
+                    else
+                      %{
+                        "project_id" => session.project_id,
+                        "run_id" => nil,
+                        "session_id" => session_id
+                      }
+                    end
+
                   case control_checkpoint() do
                     :cancel ->
                       throw({:session_cancelled, session_id})
@@ -732,10 +760,10 @@ defmodule IexCode.Engine.SessionServer do
                             nil,
                             "AssistantAgent",
                             tc.name,
-                            "Tool: #{tc.name} (#{Map.get(tc.args, "path", Map.get(tc.args, "command", ""))})",
-                            tc.args,
+                            "Tool: #{tc.name} (#{Map.get(trusted_args, "path", Map.get(trusted_args, "command", ""))})",
+                            trusted_args,
                             fn progress ->
-                              Tools.execute(tc.name, tc.args, project_root, progress)
+                              Tools.execute(tc.name, trusted_args, project_root, progress)
                             end
                           )
                         else
@@ -937,6 +965,32 @@ defmodule IexCode.Engine.SessionServer do
       (((session && Ecto.assoc_loaded?(session.project)) and session.project) &&
          session.project.root_path) ||
       File.cwd!()
+  end
+
+  defp trusted_project_id_for_root(%{project_id: project_id}, project_root)
+       when is_binary(project_id) and is_binary(project_root) do
+    project = Projects.get_project!(project_id)
+
+    with {:ok, registered_root} <- WorkspacePath.resolve(project.root_path, ""),
+         {:ok, requested_root} <- WorkspacePath.resolve(project_root, ""),
+         true <- registered_root == requested_root do
+      project_id
+    else
+      _ -> if(sandbox_test_environment?(), do: nil, else: project_id)
+    end
+  rescue
+    _ -> if(sandbox_test_environment?(), do: nil, else: project_id)
+  end
+
+  defp trusted_project_id_for_root(_session, _project_root), do: nil
+
+  defp maybe_put_project_id(opts, project_id) when is_binary(project_id),
+    do: Keyword.put(opts, :project_id, project_id)
+
+  defp maybe_put_project_id(opts, _project_id), do: opts
+
+  defp sandbox_test_environment? do
+    Application.get_env(:iex_code, IexCode.Repo, [])[:pool] == Ecto.Adapters.SQL.Sandbox
   end
 
   defp update_db_session_status(session_id, status_str) do

@@ -10,6 +10,7 @@ defmodule IexCode.Settings do
   import Ecto.Query, warn: false
   require Logger
   alias IexCode.Repo
+  alias IexCode.Research.Registry, as: SearchRegistry
   alias IexCode.Settings.AppSettings
 
   @default_openai_base "https://cli.llmotions.com/v1"
@@ -95,7 +96,9 @@ defmodule IexCode.Settings do
     order =
       Enum.filter(configured_order, fn provider ->
         config = Map.get(providers, provider, %{})
-        Map.get(config, "enabled", Map.get(config, :enabled, false)) == true
+
+        Map.get(config, "enabled", Map.get(config, :enabled, false)) == true and
+          SearchRegistry.automatically_selectable?(provider)
       end)
 
     %{

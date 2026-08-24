@@ -17,6 +17,7 @@ defmodule IexCode.Application do
         {Registry, keys: :unique, name: IexCode.SessionRegistry},
         {Registry, keys: :unique, name: IexCode.Engine.AgentRegistry},
         {Task.Supervisor, name: IexCode.TaskSupervisor},
+        IexCode.WorkspaceLocks,
         IexCode.Engine.SessionSupervisor,
         IexCode.Engine.AgentSupervisor,
         IexCode.Tools.TerminalSupervisor,

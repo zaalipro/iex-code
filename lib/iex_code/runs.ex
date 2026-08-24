@@ -20,7 +20,8 @@ defmodule IexCode.Runs do
     RunCommand,
     RunControl,
     RunEvent,
-    RunStep
+    RunStep,
+    WorkspaceLock
   }
 
   @max_event_payload_bytes 256_000
@@ -1465,6 +1466,876 @@ defmodule IexCode.Runs do
     end
   end
 
+  # Workspace locks
+
+  @default_workspace_lock_lease_seconds 60
+  @max_workspace_lock_lease_seconds 86_400
+
+  @doc "Acquires or durably queues one workspace lock as a one-row atomic batch."
+  def acquire_workspace_lock(attrs) when is_map(attrs), do: acquire_workspace_locks([attrs])
+  def acquire_workspace_lock(_attrs), do: {:error, :invalid_lock_attrs}
+
+  @doc """
+  Atomically persists an all-or-none lock batch in deterministic resource order.
+
+  If any requested resource conflicts with an external holder, every row is
+  stored as waiting. Otherwise every row is held and receives a fencing token.
+  A raw batch capability is returned once and is never exposed by read APIs.
+  """
+  def acquire_workspace_locks(attrs_list) when is_list(attrs_list) and attrs_list != [] do
+    with {:ok, normalized} <- normalize_workspace_lock_batch(attrs_list) do
+      do_acquire_workspace_lock_batch(normalized)
+    end
+  end
+
+  def acquire_workspace_locks(_attrs_list), do: {:error, :invalid_lock_batch}
+
+  def get_workspace_lock(id) when is_binary(id) do
+    WorkspaceLock |> Repo.get(id) |> redact_workspace_lock()
+  end
+
+  def get_workspace_lock(_id), do: nil
+  def get_workspace_lock!(id), do: WorkspaceLock |> Repo.get!(id) |> redact_workspace_lock()
+
+  def list_workspace_locks(opts \\ []) when is_list(opts) do
+    WorkspaceLock
+    |> maybe_where(:project_id, opts[:project_id])
+    |> maybe_where(:run_id, opts[:run_id])
+    |> maybe_where(:session_id, opts[:session_id])
+    |> maybe_where(:batch_id, opts[:batch_id])
+    |> maybe_where(:owner_id, opts[:owner_id])
+    |> maybe_where(:resource_type, opts[:resource_type])
+    |> maybe_where(:resource_key, opts[:resource_key])
+    |> maybe_where(:mode, opts[:mode])
+    |> maybe_where(:status, opts[:status])
+    |> maybe_active_lock_filter(opts[:active])
+    |> order_by([lock], desc: lock.requested_at, desc: lock.id)
+    |> limit(^bounded_limit(opts[:limit], 200, 1_000))
+    |> Repo.all()
+    |> Enum.map(&redact_workspace_lock/1)
+  end
+
+  def subscribe_workspace_locks(project_id) when is_binary(project_id) and project_id != "" do
+    Phoenix.PubSub.subscribe(IexCode.PubSub, workspace_locks_topic(project_id))
+  end
+
+  def subscribe_workspace_locks(_project_id), do: {:error, :invalid_project_id}
+
+  @doc "Verifies a complete held batch immediately before a protected effect, without renewal."
+  def assert_workspace_lock(lock_or_id, capability_token)
+      when is_binary(capability_token) and capability_token != "" do
+    with %WorkspaceLock{} = lock <- resolve_workspace_lock(lock_or_id) do
+      transact_workspace_lock_batch(lock.batch_id, capability_token, fn locks, now ->
+        if Enum.all?(locks, fn current ->
+             current.status == "held" and
+               DateTime.compare(current.lease_expires_at, now) == :gt and
+               is_integer(current.fencing_token)
+           end) do
+          locks
+        else
+          {:invalid, Enum.map(locks, & &1.status)}
+        end
+      end)
+      |> case do
+        {:ok, {:invalid, statuses}} -> {:error, {:lock_batch_not_held, statuses}}
+        {:ok, locks} -> {:ok, lock_envelope(locks, nil)}
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      nil -> {:error, :not_found}
+    end
+  end
+
+  def assert_workspace_lock(_lock_or_id, _capability_token),
+    do: {:error, :invalid_capability}
+
+  def assert_workspace_locks(lock_or_id, capability_token),
+    do: assert_workspace_lock(lock_or_id, capability_token)
+
+  @doc "Renews every held lock in a batch using its opaque capability."
+  def heartbeat_workspace_lock(lock_or_id, capability_token, lease_seconds \\ nil)
+
+  def heartbeat_workspace_lock(lock_or_id, capability_token, lease_seconds)
+      when is_binary(capability_token) and capability_token != "" do
+    with {:ok, lease_seconds} <- lock_lease_seconds(lease_seconds),
+         %WorkspaceLock{} = lock <- resolve_workspace_lock(lock_or_id) do
+      transact_workspace_lock_batch(lock.batch_id, capability_token, fn locks, now ->
+        cond do
+          Enum.all?(locks, &(&1.status in WorkspaceLock.terminal_statuses())) ->
+            {:expired, locks}
+
+          Enum.any?(locks, &(&1.status != "held")) ->
+            Repo.rollback({:lock_batch_not_held, Enum.map(locks, & &1.status)})
+
+          Enum.any?(locks, &(DateTime.compare(&1.lease_expires_at, now) != :gt)) ->
+            expired = Enum.map(locks, &expire_workspace_lock!(&1, now))
+            {:expired, expired}
+
+          true ->
+            expires_at = DateTime.add(now, lease_seconds, :second)
+
+            Enum.map(locks, fn held ->
+              update_workspace_lock!(held, %{heartbeat_at: now, lease_expires_at: expires_at})
+            end)
+        end
+      end)
+      |> case do
+        {:ok, {:expired, expired}} ->
+          {:error, {:lock_expired, Enum.map(expired, &redact_workspace_lock/1)}}
+
+        {:ok, locks} ->
+          broadcast_workspace_locks(locks)
+          # The caller already possesses the capability used to authorize this
+          # renewal. Never echo that secret back after the initial acquire.
+          {:ok, lock_envelope(locks, nil)}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      nil -> {:error, :not_found}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def heartbeat_workspace_lock(_lock_or_id, _capability_token, _lease_seconds),
+    do: {:error, :invalid_capability}
+
+  @doc "Rechecks and promotes a complete waiting batch, or renews a held batch."
+  def retry_workspace_lock(lock_or_id, capability_token, lease_seconds \\ nil)
+
+  def retry_workspace_lock(lock_or_id, capability_token, lease_seconds)
+      when is_binary(capability_token) and capability_token != "" do
+    with {:ok, lease_seconds} <- lock_lease_seconds(lease_seconds),
+         %WorkspaceLock{} = lock <- resolve_workspace_lock(lock_or_id) do
+      do_retry_workspace_lock_batch(lock.batch_id, capability_token, lease_seconds)
+    else
+      nil -> {:error, :not_found}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def retry_workspace_lock(_lock_or_id, _capability_token, _lease_seconds),
+    do: {:error, :invalid_capability}
+
+  @doc "Releases or cancels a complete lock batch, retaining every row as history."
+  def release_workspace_lock(lock_or_id, capability_token)
+      when is_binary(capability_token) and capability_token != "" do
+    case resolve_workspace_lock(lock_or_id) do
+      nil ->
+        :ok
+
+      %WorkspaceLock{} = lock ->
+        transact_workspace_lock_batch(lock.batch_id, capability_token, fn locks, now ->
+          Enum.map(locks, fn current ->
+            if current.status in WorkspaceLock.terminal_statuses() do
+              current
+            else
+              status = if current.status == "waiting", do: "cancelled", else: "released"
+
+              update_workspace_lock!(current, %{
+                status: status,
+                released_at: now,
+                conflict_lock_id: nil,
+                conflict_owner_id: nil,
+                wait_reason: nil
+              })
+            end
+          end)
+        end)
+        |> case do
+          {:ok, locks} ->
+            broadcast_workspace_locks(locks)
+            {:ok, %{batch_id: lock.batch_id, locks: Enum.map(locks, &redact_workspace_lock/1)}}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+    end
+  end
+
+  def release_workspace_lock(_lock_or_id, _capability_token),
+    do: {:error, :invalid_capability}
+
+  @doc "Expires held leases and cancels waiting leases at or before `before`."
+  def release_expired_workspace_locks(before \\ nil) do
+    before =
+      if match?(%DateTime{}, before),
+        do: DateTime.truncate(before, :microsecond),
+        else: lock_now()
+
+    Repo.retry_on_busy(fn ->
+      Repo.transaction(
+        fn -> expire_workspace_locks_in_transaction!(before) end,
+        mode: :immediate
+      )
+    end)
+    |> case do
+      {:ok, expired} ->
+        broadcast_workspace_locks(expired)
+        {:ok, length(expired)}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp do_acquire_workspace_lock_batch(normalized) do
+    token = normalized.capability_token || generate_lock_capability()
+    token_hash = hash_lock_capability(token)
+    batch_id = Ecto.UUID.generate()
+
+    result =
+      Repo.retry_on_busy(fn ->
+        Repo.transaction(
+          fn ->
+            now = lock_now()
+            expired = expire_workspace_locks_in_transaction!(now)
+            matching = active_identity_locks(normalized.locks)
+
+            acquired =
+              if matching == [] and not is_nil(normalized.capability_token) do
+                :lock_batch_not_active
+              else
+                if matching == [] do
+                  insert_workspace_lock_batch!(
+                    normalized.locks,
+                    batch_id,
+                    token_hash,
+                    now
+                  )
+                else
+                  existing_batch_ids = matching |> Enum.map(& &1.batch_id) |> Enum.uniq()
+
+                  existing =
+                    case existing_batch_ids do
+                      [existing_batch_id] -> workspace_lock_batch(existing_batch_id)
+                      _batch_ids -> matching
+                    end
+
+                  cond do
+                    length(existing_batch_ids) != 1 or
+                        not same_lock_identities?(existing, normalized.locks) ->
+                      Repo.rollback(:lock_already_requested)
+
+                    is_nil(normalized.capability_token) or
+                        not valid_lock_batch_capability?(existing, normalized.capability_token) ->
+                      Repo.rollback(:invalid_capability)
+
+                    true ->
+                      recheck_workspace_lock_batch!(existing, now, normalized.lease_seconds)
+                  end
+                end
+              end
+
+            {acquired, expired}
+          end,
+          mode: :immediate
+        )
+      end)
+
+    case result do
+      {:ok, {:lock_batch_not_active, expired}} ->
+        broadcast_workspace_locks(expired)
+        {:error, :lock_batch_not_active}
+
+      {:ok, {locks, expired}} ->
+        broadcast_workspace_locks(expired)
+        broadcast_workspace_locks(locks)
+
+        returned_token =
+          if is_nil(normalized.capability_token), do: token, else: nil
+
+        {:ok, lock_envelope(locks, returned_token)}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp do_retry_workspace_lock_batch(batch_id, capability_token, lease_seconds) do
+    transact_workspace_lock_batch(batch_id, capability_token, fn locks, now ->
+      if Enum.all?(locks, &(&1.status in WorkspaceLock.terminal_statuses())) do
+        {:inactive, locks}
+      else
+        recheck_workspace_lock_batch!(locks, now, lease_seconds)
+      end
+    end)
+    |> case do
+      {:ok, {:inactive, locks}} ->
+        {:error, {:lock_batch_not_active, Enum.map(locks, & &1.status)}}
+
+      {:ok, locks} ->
+        broadcast_workspace_locks(locks)
+        # Retry is capability-authorized but must not become another secret
+        # distribution channel. The gateway retains its original token.
+        {:ok, lock_envelope(locks, nil)}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp transact_workspace_lock_batch(batch_id, capability_token, callback) do
+    Repo.retry_on_busy(fn ->
+      Repo.transaction(
+        fn ->
+          now = lock_now()
+          expired = expire_workspace_locks_in_transaction!(now)
+          locks = workspace_lock_batch(batch_id)
+
+          cond do
+            locks == [] ->
+              Repo.rollback(:not_found)
+
+            not valid_lock_batch_capability?(locks, capability_token) ->
+              Repo.rollback(:invalid_capability)
+
+            true ->
+              {callback.(locks, now), expired}
+          end
+        end,
+        mode: :immediate
+      )
+    end)
+    |> case do
+      {:ok, {value, expired}} ->
+        broadcast_workspace_locks(expired)
+        {:ok, value}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp insert_workspace_lock_batch!(locks, batch_id, token_hash, now) do
+    conflicts = batch_lock_conflicts(locks, [])
+    first_conflict = conflicts |> Map.values() |> Enum.find(& &1)
+    held? = is_nil(first_conflict)
+
+    same_owner_conflict =
+      conflicts
+      |> Map.values()
+      |> Enum.find(&(&1 && &1.owner_id == hd(locks).owner_id))
+
+    if same_owner_conflict, do: Repo.rollback(:lock_upgrade_not_supported)
+
+    fence_start = if held?, do: next_workspace_fencing_token(hd(locks).workspace_key), else: nil
+
+    locks
+    |> Enum.with_index()
+    |> Enum.map(fn {attrs, index} ->
+      direct_conflict = Map.get(conflicts, lock_identity(attrs))
+
+      lifecycle_attrs =
+        if held? do
+          %{
+            status: "held",
+            acquired_at: now,
+            heartbeat_at: now,
+            lease_expires_at: DateTime.add(now, attrs.lease_seconds, :second),
+            fencing_token: fence_start + index
+          }
+        else
+          conflict = direct_conflict || first_conflict
+
+          %{
+            status: "waiting",
+            lease_expires_at: DateTime.add(now, attrs.lease_seconds, :second),
+            conflict_lock_id: conflict.id,
+            conflict_owner_id: conflict.owner_id,
+            wait_reason: conflict_wait_reason(direct_conflict, conflict)
+          }
+        end
+
+      struct = %WorkspaceLock{
+        project_id: attrs.project_id,
+        run_id: attrs.run_id,
+        session_id: attrs.session_id
+      }
+
+      changes =
+        attrs
+        |> Map.drop([:lease_seconds, :capability_token])
+        |> Map.merge(lifecycle_attrs)
+        |> Map.merge(%{
+          batch_id: batch_id,
+          capability_token_hash: token_hash,
+          requested_at: now
+        })
+
+      case struct |> WorkspaceLock.changeset(changes) |> Repo.insert() do
+        {:ok, inserted} -> inserted
+        {:error, changeset} -> Repo.rollback(changeset)
+      end
+    end)
+  end
+
+  defp recheck_workspace_lock_batch!(locks, now, lease_seconds) do
+    cond do
+      Enum.all?(locks, &(&1.status == "held")) ->
+        expires_at = DateTime.add(now, lease_seconds, :second)
+
+        Enum.map(
+          locks,
+          &update_workspace_lock!(&1, %{heartbeat_at: now, lease_expires_at: expires_at})
+        )
+
+      Enum.all?(locks, &(&1.status == "waiting")) ->
+        conflicts = batch_lock_conflicts(locks, Enum.map(locks, & &1.id))
+        first_conflict = conflicts |> Map.values() |> Enum.find(& &1)
+
+        if first_conflict do
+          Enum.map(locks, fn waiting ->
+            direct_conflict = Map.get(conflicts, lock_identity(waiting))
+            conflict = direct_conflict || first_conflict
+
+            update_workspace_lock!(waiting, %{
+              lease_expires_at: DateTime.add(now, lease_seconds, :second),
+              conflict_lock_id: conflict.id,
+              conflict_owner_id: conflict.owner_id,
+              wait_reason: conflict_wait_reason(direct_conflict, conflict)
+            })
+          end)
+        else
+          fence_start = next_workspace_fencing_token(hd(locks).workspace_key)
+
+          locks
+          |> Enum.with_index()
+          |> Enum.map(fn {waiting, index} ->
+            update_workspace_lock!(waiting, %{
+              status: "held",
+              acquired_at: now,
+              heartbeat_at: now,
+              lease_expires_at: DateTime.add(now, lease_seconds, :second),
+              fencing_token: fence_start + index,
+              conflict_lock_id: nil,
+              conflict_owner_id: nil,
+              wait_reason: nil
+            })
+          end)
+        end
+
+      true ->
+        Repo.rollback(:inconsistent_lock_batch)
+    end
+  end
+
+  defp normalize_workspace_lock_batch(attrs_list) do
+    with {:ok, locks} <- map_lock_attrs(attrs_list),
+         [first | _] <- locks,
+         true <-
+           Enum.all?(locks, &(&1.project_id == first.project_id)) ||
+             {:error, :mixed_lock_projects},
+         true <-
+           Enum.all?(locks, &(&1.owner_id == first.owner_id)) || {:error, :mixed_lock_owners},
+         true <- Enum.all?(locks, &(&1.run_id == first.run_id)) || {:error, :mixed_lock_runs},
+         true <-
+           Enum.all?(locks, &(&1.session_id == first.session_id)) ||
+             {:error, :mixed_lock_sessions},
+         {:ok, capability_token} <- common_batch_capability(attrs_list) do
+      locks =
+        locks
+        |> Enum.group_by(&{&1.resource_type, &1.resource_key})
+        |> Enum.map(fn {_resource, duplicates} ->
+          Enum.max_by(duplicates, &lock_mode_rank(&1.mode))
+        end)
+        |> Enum.sort_by(&{&1.project_id, &1.resource_type, &1.resource_key, &1.mode})
+
+      lease_seconds = Enum.map(locks, & &1.lease_seconds) |> Enum.min()
+      locks = Enum.map(locks, &Map.put(&1, :lease_seconds, lease_seconds))
+
+      {:ok,
+       %{
+         locks: locks,
+         capability_token: capability_token,
+         lease_seconds: lease_seconds
+       }}
+    else
+      [] -> {:error, :invalid_lock_batch}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp map_lock_attrs(attrs_list) do
+    Enum.reduce_while(attrs_list, {:ok, []}, fn attrs, {:ok, locks} ->
+      case normalize_workspace_lock_attrs(attrs) do
+        {:ok, lock} -> {:cont, {:ok, [lock | locks]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, locks} -> {:ok, Enum.reverse(locks)}
+      error -> error
+    end
+  end
+
+  defp normalize_workspace_lock_attrs(attrs) when is_map(attrs) do
+    with {:ok, project_id} <- required_id(attrs, :project_id),
+         {:ok, owner_id} <- required_id(attrs, :owner_id),
+         {:ok, project} <- fetch_lock_project(project_id),
+         {:ok, workspace_key} <- IexCode.WorkspacePath.resolve(project.root_path, ""),
+         {:ok, resource_type} <- lock_label(attrs, :resource_type),
+         {:ok, resource_key} <-
+           canonical_lock_key(project, resource_type, attr(attrs, :resource_key)),
+         {:ok, mode} <- lock_label(attrs, :mode),
+         true <-
+           resource_type in WorkspaceLock.resource_types() || {:error, :invalid_resource_type},
+         true <- mode in WorkspaceLock.modes() || {:error, :invalid_lock_mode},
+         {:ok, lease_seconds} <- lock_lease_seconds(attr(attrs, :lease_seconds)),
+         {:ok, identities} <- validate_lock_identities(project_id, attrs) do
+      {:ok,
+       %{
+         project_id: project_id,
+         workspace_key: workspace_key,
+         run_id: identities.run_id,
+         session_id: identities.session_id,
+         owner_id: owner_id,
+         resource_type: resource_type,
+         resource_key: resource_key,
+         mode: mode,
+         lease_seconds: lease_seconds
+       }}
+    end
+  end
+
+  defp normalize_workspace_lock_attrs(_attrs), do: {:error, :invalid_lock_attrs}
+
+  defp common_batch_capability(attrs_list) do
+    tokens =
+      attrs_list
+      |> Enum.map(&attr(&1, :capability_token))
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+
+    case tokens do
+      [] -> {:ok, nil}
+      [token] when is_binary(token) and token != "" -> {:ok, token}
+      _tokens -> {:error, :mixed_lock_capabilities}
+    end
+  end
+
+  defp active_identity_locks(locks) do
+    identities = MapSet.new(Enum.map(locks, &lock_identity/1))
+
+    WorkspaceLock
+    |> where([lock], lock.status in ["waiting", "held"])
+    |> where([lock], lock.workspace_key == ^hd(locks).workspace_key)
+    |> Repo.all()
+    |> Enum.filter(&MapSet.member?(identities, lock_identity(&1)))
+  end
+
+  defp same_lock_identities?(existing, requested) do
+    MapSet.new(Enum.map(existing, &lock_request_identity/1)) ==
+      MapSet.new(Enum.map(requested, &lock_request_identity/1))
+  end
+
+  defp batch_lock_conflicts(candidates, excluded_ids) do
+    batch_order =
+      candidates
+      |> Enum.map(&{Map.get(&1, :requested_at), Map.get(&1, :id) || ""})
+      |> Enum.reject(fn {requested_at, _id} -> is_nil(requested_at) end)
+      |> Enum.min_by(
+        fn {requested_at, id} ->
+          {DateTime.to_unix(requested_at, :microsecond), id}
+        end,
+        fn -> nil end
+      )
+
+    blockers =
+      WorkspaceLock
+      |> where([lock], lock.status in ["waiting", "held"])
+      |> order_by([lock], asc: lock.requested_at, asc: lock.id)
+      |> Repo.all()
+      |> Enum.filter(&workspaces_overlap?(&1.workspace_key, hd(candidates).workspace_key))
+      |> Enum.reject(&(&1.id in excluded_ids))
+      |> Enum.filter(fn blocker ->
+        blocker.status == "held" or is_nil(batch_order) or
+          older_lock_request?({blocker.requested_at, blocker.id}, batch_order)
+      end)
+
+    Map.new(candidates, fn candidate ->
+      {lock_identity(candidate), Enum.find(blockers, &workspace_locks_conflict?(candidate, &1))}
+    end)
+  end
+
+  defp workspace_locks_conflict?(left, right) do
+    cond do
+      left.resource_type == "project" and left.mode in ["write", "exclusive"] ->
+        true
+
+      right.resource_type == "project" and right.mode in ["write", "exclusive"] ->
+        true
+
+      left.resource_type == "project" ->
+        right.mode in ["write", "exclusive"]
+
+      right.resource_type == "project" ->
+        left.mode in ["write", "exclusive"]
+
+      left.resource_type == "git" and left.mode in ["write", "exclusive"] ->
+        true
+
+      right.resource_type == "git" and right.mode in ["write", "exclusive"] ->
+        true
+
+      left.resource_type == "git" ->
+        right.mode in ["write", "exclusive"]
+
+      right.resource_type == "git" ->
+        left.mode in ["write", "exclusive"]
+
+      left.resource_type == right.resource_type and left.resource_key == right.resource_key ->
+        not (left.mode == "read" and right.mode == "read")
+
+      true ->
+        false
+    end
+  end
+
+  defp older_lock_request?({left_at, left_id}, {right_at, right_id}) do
+    case DateTime.compare(left_at, right_at) do
+      :lt -> true
+      :gt -> false
+      :eq -> left_id < right_id
+    end
+  end
+
+  # Canonical exact roots are the durable identity. Ancestor/descendant roots
+  # also coordinate, while hard-link identity remains outside this slice.
+  defp workspaces_overlap?(left, right) do
+    path_contains?(left, right) or path_contains?(right, left)
+  end
+
+  defp path_contains?(parent, child) do
+    relative = Path.relative_to(child, parent)
+    child == parent or (Path.type(relative) == :relative and ".." not in Path.split(relative))
+  end
+
+  defp lock_identity(lock),
+    do: {lock.owner_id, lock.workspace_key, lock.resource_type, lock.resource_key, lock.mode}
+
+  defp lock_request_identity(lock),
+    do: {lock_identity(lock), Map.get(lock, :run_id), Map.get(lock, :session_id)}
+
+  defp conflict_wait_reason(nil, _batch_conflict), do: "batch_blocked"
+  defp conflict_wait_reason(%WorkspaceLock{status: "waiting"}, _conflict), do: "queue_predecessor"
+  defp conflict_wait_reason(%WorkspaceLock{}, _conflict), do: "external_conflict"
+
+  defp lock_mode_rank("read"), do: 1
+  defp lock_mode_rank("write"), do: 2
+  defp lock_mode_rank("exclusive"), do: 3
+
+  defp next_workspace_fencing_token(_workspace_key) do
+    from(lock in WorkspaceLock, select: max(lock.fencing_token))
+    |> Repo.one()
+    |> case do
+      nil -> 1
+      token -> token + 1
+    end
+  end
+
+  defp expire_workspace_locks_in_transaction!(before) do
+    WorkspaceLock
+    |> where(
+      [lock],
+      lock.status in ["waiting", "held"] and lock.lease_expires_at <= ^before
+    )
+    |> order_by([lock], asc: lock.requested_at, asc: lock.id)
+    |> Repo.all()
+    |> Enum.map(fn lock ->
+      update_workspace_lock!(lock, %{
+        status: if(lock.status == "waiting", do: "cancelled", else: "expired"),
+        released_at: before,
+        conflict_lock_id: nil,
+        conflict_owner_id: nil,
+        wait_reason: nil
+      })
+    end)
+  end
+
+  defp expire_workspace_lock!(lock, at) do
+    update_workspace_lock!(lock, %{
+      status: "expired",
+      released_at: at,
+      conflict_lock_id: nil,
+      conflict_owner_id: nil,
+      wait_reason: nil
+    })
+  end
+
+  defp update_workspace_lock!(lock, attrs) do
+    case lock |> WorkspaceLock.changeset(attrs) |> Repo.update() do
+      {:ok, updated} -> updated
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
+  end
+
+  defp workspace_lock_batch(batch_id) do
+    WorkspaceLock
+    |> where([lock], lock.batch_id == ^batch_id)
+    |> order_by([lock], asc: lock.resource_type, asc: lock.resource_key, asc: lock.mode)
+    |> Repo.all()
+  end
+
+  defp lock_envelope(locks, capability_token) do
+    %{
+      batch_id: hd(locks).batch_id,
+      capability_token: capability_token,
+      locks: Enum.map(locks, &redact_workspace_lock/1)
+    }
+  end
+
+  defp redact_workspace_lock(nil), do: nil
+
+  defp redact_workspace_lock(lock),
+    do: %{lock | capability_token_hash: "[REDACTED]", capability_token: nil}
+
+  defp generate_lock_capability do
+    32 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
+  end
+
+  defp hash_lock_capability(token) do
+    :crypto.hash(:sha256, token) |> Base.encode16(case: :lower)
+  end
+
+  defp valid_lock_capability?(lock, token) when is_binary(token) do
+    Plug.Crypto.secure_compare(lock.capability_token_hash, hash_lock_capability(token))
+  end
+
+  defp valid_lock_capability?(_lock, _token), do: false
+
+  defp valid_lock_batch_capability?([first | rest], token) do
+    valid_lock_capability?(first, token) and
+      Enum.all?(rest, fn lock ->
+        lock.batch_id == first.batch_id and lock.project_id == first.project_id and
+          lock.workspace_key == first.workspace_key and lock.owner_id == first.owner_id and
+          lock.capability_token_hash == first.capability_token_hash and
+          valid_lock_capability?(lock, token)
+      end)
+  end
+
+  defp valid_lock_batch_capability?([], _token), do: false
+
+  defp fetch_lock_project(project_id) do
+    case Repo.get(IexCode.Projects.Project, project_id) do
+      nil -> {:error, {:invalid, :project_id}}
+      project -> {:ok, project}
+    end
+  end
+
+  defp validate_lock_identities(project_id, attrs) do
+    run_id = optional_id(attrs, :run_id)
+    session_id = optional_id(attrs, :session_id)
+
+    with :ok <- validate_lock_run(run_id, project_id, session_id),
+         :ok <- validate_lock_session(session_id, project_id) do
+      {:ok, %{run_id: run_id, session_id: session_id}}
+    end
+  end
+
+  defp validate_lock_run(nil, _project_id, _session_id), do: :ok
+
+  defp validate_lock_run(run_id, project_id, session_id) do
+    case Repo.get(Run, run_id) do
+      nil ->
+        {:error, {:invalid, :run_id}}
+
+      %Run{project_id: ^project_id, session_id: run_session_id}
+      when is_nil(session_id) or run_session_id == session_id ->
+        :ok
+
+      %Run{project_id: ^project_id} ->
+        {:error, :run_session_mismatch}
+
+      %Run{} ->
+        {:error, :run_project_mismatch}
+    end
+  end
+
+  defp validate_lock_session(nil, _project_id), do: :ok
+
+  defp validate_lock_session(session_id, project_id) do
+    case Repo.get(IexCode.Sessions.Session, session_id) do
+      nil -> {:error, {:invalid, :session_id}}
+      %{project_id: ^project_id} -> :ok
+      _session -> {:error, :session_project_mismatch}
+    end
+  end
+
+  defp canonical_lock_key(project, "project", _resource_key) do
+    IexCode.WorkspacePath.resolve(project.root_path, "")
+  end
+
+  defp canonical_lock_key(project, "file", resource_key) do
+    IexCode.WorkspacePath.resolve(project.root_path, resource_key)
+  end
+
+  defp canonical_lock_key(project, "git", resource_key) when is_binary(resource_key) do
+    with {:ok, root} <- IexCode.WorkspacePath.resolve(project.root_path, ""),
+         {:ok, candidate} <- IexCode.WorkspacePath.resolve(project.root_path, resource_key) do
+      if candidate == root, do: {:ok, root}, else: {:error, :invalid_git_resource}
+    end
+  end
+
+  defp canonical_lock_key(_project, _resource_type, resource_key)
+       when is_binary(resource_key) and resource_key != "",
+       do: {:ok, resource_key}
+
+  defp canonical_lock_key(_project, _resource_type, _resource_key),
+    do: {:error, {:missing, :resource_key}}
+
+  defp lock_label(attrs, key) do
+    case attr(attrs, key) do
+      value when key == :resource_type and value in [:workspace, "workspace"] -> {:ok, "project"}
+      value when is_atom(value) or is_binary(value) -> {:ok, to_string(value)}
+      _value -> {:error, {:missing, key}}
+    end
+  end
+
+  defp lock_lease_seconds(nil), do: {:ok, @default_workspace_lock_lease_seconds}
+
+  defp lock_lease_seconds(seconds)
+       when is_integer(seconds) and seconds >= 1 and seconds <= @max_workspace_lock_lease_seconds,
+       do: {:ok, seconds}
+
+  defp lock_lease_seconds(_seconds), do: {:error, :invalid_lease_seconds}
+
+  defp optional_id(attrs, key) do
+    case attr(attrs, key) do
+      value when is_binary(value) and value != "" -> value
+      _value -> nil
+    end
+  end
+
+  defp resolve_workspace_lock(%WorkspaceLock{id: id}), do: Repo.get(WorkspaceLock, id)
+  defp resolve_workspace_lock(id) when is_binary(id), do: Repo.get(WorkspaceLock, id)
+  defp resolve_workspace_lock(_lock_or_id), do: nil
+
+  defp maybe_active_lock_filter(query, true),
+    do: where(query, [lock], lock.status in ["waiting", "held"])
+
+  defp maybe_active_lock_filter(query, false),
+    do: where(query, [lock], lock.status in ["released", "expired", "cancelled"])
+
+  defp maybe_active_lock_filter(query, _active), do: query
+
+  defp broadcast_workspace_locks([]), do: :ok
+
+  defp broadcast_workspace_locks(locks) do
+    locks
+    |> Enum.group_by(& &1.project_id)
+    |> Enum.each(fn {project_id, project_locks} ->
+      Phoenix.PubSub.broadcast(
+        IexCode.PubSub,
+        workspace_locks_topic(project_id),
+        {:workspace_locks_updated, Enum.map(project_locks, &redact_workspace_lock/1)}
+      )
+    end)
+  end
+
+  defp workspace_locks_topic(project_id), do: "workspace_locks:project:#{project_id}"
+
   defp insert_initial_steps!(run_id, steps) do
     steps
     |> Enum.with_index()
@@ -1901,6 +2772,7 @@ defmodule IexCode.Runs do
   end
 
   defp now, do: DateTime.utc_now() |> DateTime.truncate(:second)
+  defp lock_now, do: DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
   defp topic(run_id), do: "run:#{run_id}"
   defp session_topic(session_id), do: "runs:session:#{session_id}"

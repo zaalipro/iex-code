@@ -33,9 +33,12 @@ staleness validation, atomic multi-file patch writes with snapshots, process tim
 supervision, and explicit rollback/commit choices in supported workflows. They do not
 make arbitrary shell commands reversible.
 
-The roadmap adds workspace leases and file-level write locks so concurrent work is
-visible and conflicting writes are prevented. Today the dispatcher excludes a second
-active background run for the same project, but interactive tools can bypass it.
+The current cooperative lock plane persists project, file, and Git resources with
+read/write/exclusive modes, wait records, lease heartbeats, fencing generations, and
+opaque capabilities. Coding runs reserve the project; guarded editor, patch, test,
+terminal, hunk, and Git paths coordinate with that reservation and surface conflicts.
+This does not mediate arbitrary native processes or lower-level code that bypasses the
+gateway, and lease expiry alone cannot prove that an orphaned OS descendant stopped.
 
 ## Current system
 
@@ -48,6 +51,7 @@ IexCode.Application
 ├── Session Registry
 ├── Agent Registry
 ├── Task.Supervisor
+├── WorkspaceLocks (capability gateway + private delegation registry)
 ├── SessionSupervisor (DynamicSupervisor)
 │   └── SessionServer per active coding session
 ├── AgentSupervisor (DynamicSupervisor)
@@ -87,6 +91,7 @@ background run per project.
 | Run event | Per-run monotonic sequence, type, source, bounded payload, occurrence time |
 | Run command/control/approval/artifact | Tool command idempotency, ordered run controls, review decisions, cited reports, and artifact metadata |
 | Mutation snapshot | Durable native-workspace rollback manifest, mirrored in ETS |
+| Workspace lock | Canonical resource, mode, owner/run/session, batch wait state, lease, and fencing generation; capability stored only as a hash |
 
 The current graph is deliberately small. General fan-out/fan-in DAG planning, durable
 model-token deltas, enforced approval policy, and resumable checkpoints remain future
@@ -119,7 +124,8 @@ work.
 - `IexCode.LLM`: OpenAI-compatible and Anthropic streaming, retry, fallback,
   circuit breaking, SSE parsing, and UTF-8 boundary handling.
 - `IexCode.Research`: normalized Tavily/Brave/Exa/Serper/Google/Bing/SearxNG/
-  DuckDuckGo federation, hardened public fetching, evidence retention, and cited synthesis.
+  DuckDuckGo federation, provider lifecycle descriptors, rank-interleaved results,
+  duplicate-source provenance, hardened public fetching, evidence retention, and cited synthesis.
 
 ### Current lifecycle
 
@@ -161,7 +167,7 @@ workspace effects from being replayed blindly.
 | Durable run/event model | Current | Transactional run/step/event/command/approval/artifact records; checkpoints remain planned |
 | Run budgets | Partial | Wall time and provider-reported tokens enforced at covered boundaries; cost/pricing enforcement remains planned |
 | Dependency-aware parallel DAG | Partial | Research has typed plan/search/fetch/synthesis nodes and provider fan-out; arbitrary DAG scheduling/locks remain planned |
-| Native workspace coordination | Partial | Dispatcher excludes a second active run per project; interactive/file/Git locks remain planned |
+| Native workspace coordination | Current cooperative baseline | Durable batched project/file/Git resources, FIFO-oriented waits, capability checks, heartbeats, fencing, dispatcher ownership, guarded UI/tools/terminal, and Mission Control; native bypass/physical-alias hardening remain |
 | Approval and durable command records | Partial | Command idempotency keys and approval records exist; policy enforcement/inbox UX remain planned |
 | Restart reconciliation | Partial | Expired workers become interrupted; safe checkpoint resume is not implemented |
 | Automatic calendar worker | Current | Supervised claims, stable occurrence keys, recurrence, stale recovery, and existing-run reuse |
@@ -228,7 +234,8 @@ the target scheduler. Items explicitly marked planned are not current behavior.
 
 - Append-only and monotonically sequenced within a run.
 - Currently records run/step transitions, progress, command/approval/artifact creation,
-  retries, and related metadata. Model deltas, locks, and complete tool I/O are planned.
+  retries, and related metadata. Lock state has its own durable ledger and PubSub topic;
+  model deltas and complete tool I/O remain planned.
 - `(run_id, sequence)` is unique. Events do not currently have a producer idempotency key.
 
 #### Artifact
@@ -244,14 +251,24 @@ the target scheduler. Items explicitly marked planned are not current behavior.
   resolved durably, and are delivered over run-isolated PubSub topics. A general replaying
   consumer for pending controls after dispatcher restart is not yet implemented.
 
-#### Workspace lease and file lock
+#### Workspace coordination ledger
 
-- A renewable worker lease and active-run query currently prevent the dispatcher from
-  starting two background runs for one project.
-- File locks, Git-exclusive locks, read/write lock modes, wait queues, and lock UI are
-  planned. Interactive host controls are not governed by the run lease.
-
-This is coordination in the native checkout, not isolation and not a worktree.
+- Coding runs acquire a renewable project-exclusive batch before their executor starts;
+  a conflicting claim remains durably waiting and keeps its requested ordering.
+- Resource batches are all held or all waiting. Project, file, and Git resources support
+  read/write/exclusive conflicts, opaque capability checks, heartbeats, expiry, and
+  monotonically increasing fencing values while retained history exists.
+- A private, unforgeable delegation context lets nested run tools reuse the outer
+  reservation without distributing the raw capability. Read APIs, PubSub, Inspect,
+  LiveView assigns, run metadata, and events expose redacted rows only.
+- Guarded Tools, AutoFix/MultiPatch production paths, WorkspaceLive editor/Git/hunk/test
+  actions, and terminal command/input lifecycles assert ownership immediately before
+  their effect and release after cleanup. Mission Control and editor/terminal banners
+  show held/waiting state without exposing capability or arbitrary owner strings.
+- Coordination is still cooperative in the native checkout. Direct lower-level module
+  calls, external editors/processes, hard-link or mount aliases, symlink/root swaps after
+  validation, and orphaned subprocess descendants are outside a database lock's physical
+  enforcement. It is not isolation, a sandbox, or a worktree.
 
 ## Target scheduler invariants
 
@@ -260,8 +277,9 @@ This is coordination in the native checkout, not isolation and not a worktree.
 2. **At-least-once dispatch, idempotent effects.** Claims may be retried; step effects
    must use stable keys and preconditions.
 3. **One ordered event stream per run.** Every state transition has a sequence number.
-4. **No write without ownership.** Planned mutating-tool gates must hold the required workspace or
-   file lock and validate the expected file digest/revision.
+4. **No guarded write without ownership.** Current production mutation entry points hold
+   and reassert a compatible workspace/file/Git capability. Universal physical path
+   identity and revision/digest fencing across every lower-level API remain hardening work.
 5. **Review is a state.** Waiting for a human does not occupy a worker or masquerade as
    running.
 6. **Cancellation is cooperative, then forceful.** Stop new dispatch, signal active
@@ -311,16 +329,21 @@ recovers a run according to its checkpoint and tool capabilities.
 
 ### A3 — Native workspace coordination
 
-**State: partial; coarse project exclusivity implemented**
+**State: cooperative baseline current; physical enforcement/recovery hardening remains**
 
-- Add project leases, file read/write locks, Git-exclusive locks, heartbeats, and stale
-  lock recovery.
-- Require mutating tools to declare paths before dispatch where possible.
-- Surface owners, wait queues, conflicts, expected digests, and workspace revision.
+- Durable project/file/Git resource batches, modes, opaque capabilities, heartbeat/expiry,
+  wait records, fencing, dispatcher integration, and lock UI are implemented.
+- Guarded file/patch/test/Git/terminal entry points declare conservative resources and
+  nested coding tools use an unforgeable delegation from the run reservation.
+- Add descriptor-relative/no-follow filesystem effects, physical filesystem identity,
+  directory/descendant and rename-endpoint rules, digest/revision preconditions, durable
+  restart recovery for wait capabilities, and quarantine for uncertain native children.
+- Extend enforcement into every lower-level mutation API so arbitrary in-process callers
+  cannot bypass the gateway.
 - Preserve direct native execution; do not introduce worktrees or sandboxes.
 
-**Exit:** concurrent steps cannot silently overwrite each other, and Git/index
-operations cannot overlap incompatible mutations.
+**Exit:** all application mutation paths and physical aliases are fenced, and promotion
+cannot occur until an expired native holder is confirmed stopped or quarantined.
 
 ### A4 — Dependency-aware execution
 
@@ -356,6 +379,8 @@ lost deltas.
 - Add explicit retry policy, notification, and dead-letter workflows.
 - Maintain shared conformance tests for Tavily, Brave, Exa, Serper, Google, Bing,
   SearxNG, and DuckDuckGo; add more providers through the registry contract.
+  Bing is retained as an explicitly requested retired compatibility adapter;
+  Google is labeled legacy and the DuckDuckGo HTML adapter unofficial.
 - Add first-class direct Gemini and local-model adapters only when their transport,
   cancellation, usage, and error behavior meet the same contracts.
 - Add encrypted/keychain-backed secret storage before shared or remote deployment.

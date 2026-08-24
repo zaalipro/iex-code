@@ -9,6 +9,7 @@ defmodule IexCode.Tools.TerminalSession do
 
   alias IexCode.LLM.UTF8Buffer
   alias IexCode.Tools.PTYAdapter
+  alias IexCode.WorkspaceLocks
 
   @default_cols 80
   @default_rows 24
@@ -40,7 +41,10 @@ defmodule IexCode.Tools.TerminalSession do
     :command_marker_buffer,
     :max_queued_commands,
     :history_suppressed_command_id,
-    :recent_command_inputs
+    :recent_command_inputs,
+    :workspace_lock_handle,
+    :raw_input_lock?,
+    :external_lock_count
   ]
 
   # --- Client API ---
@@ -210,6 +214,24 @@ defmodule IexCode.Tools.TerminalSession do
     end
   end
 
+  @doc false
+  def begin_workspace_mutation(session_id, identity_opts \\ []) when is_binary(session_id) do
+    try do
+      GenServer.call(via_tuple(session_id), {:begin_workspace_mutation, identity_opts})
+    catch
+      :exit, _ -> {:error, :not_found}
+    end
+  end
+
+  @doc false
+  def end_workspace_mutation(session_id) when is_binary(session_id) do
+    try do
+      GenServer.call(via_tuple(session_id), :end_workspace_mutation)
+    catch
+      :exit, _ -> :ok
+    end
+  end
+
   @doc """
   Restarts the shell process within the existing session.
   """
@@ -298,7 +320,10 @@ defmodule IexCode.Tools.TerminalSession do
       command_marker_buffer: "",
       max_queued_commands: max_queued_commands,
       history_suppressed_command_id: nil,
-      recent_command_inputs: []
+      recent_command_inputs: [],
+      workspace_lock_handle: nil,
+      raw_input_lock?: false,
+      external_lock_count: 0
     }
 
     {:ok, state, {:continue, :spawn_shell}}
@@ -355,11 +380,31 @@ defmodule IexCode.Tools.TerminalSession do
         {:reply, {:error, :agent_occupied}, state}
 
       true ->
-        {payload, state} = append_heredoc_marker_if_complete(state, data)
+        case ensure_workspace_lock(state) do
+          {:ok, locked_state, acquired?} ->
+            {payload, locked_state} = append_heredoc_marker_if_complete(locked_state, data)
 
-        case PTYAdapter.send_input(adapter, payload) do
-          :ok -> {:reply, :ok, state}
-          {:error, reason} -> {:reply, {:error, reason}, state}
+            case PTYAdapter.send_input(adapter, payload) do
+              :ok ->
+                new_state = %{
+                  locked_state
+                  | raw_input_lock?: locked_state.raw_input_lock? or not force?
+                }
+
+                new_state =
+                  if force?, do: maybe_release_workspace_lock(new_state), else: new_state
+
+                {:reply, :ok, new_state}
+
+              {:error, reason} ->
+                locked_state =
+                  if acquired?, do: release_workspace_lock(locked_state), else: locked_state
+
+                {:reply, {:error, reason}, locked_state}
+            end
+
+          {:error, reason, locked_state} ->
+            {:reply, {:error, reason}, locked_state}
         end
     end
   end
@@ -388,18 +433,34 @@ defmodule IexCode.Tools.TerminalSession do
         {:reply, {:error, :command_queue_full}, state}
 
       true ->
-        entry = new_command_entry(command)
+        case ensure_workspace_lock(state) do
+          {:ok, locked_state, acquired?} ->
+            entry = new_command_entry(command)
 
-        case state.active_command do
-          nil ->
-            case dispatch_command(state, entry) do
-              {:ok, new_state} -> {:reply, {:ok, entry.id}, new_state}
-              {:error, reason, new_state} -> {:reply, {:error, reason}, new_state}
+            case locked_state.active_command do
+              nil ->
+                case dispatch_command(locked_state, entry) do
+                  {:ok, new_state} ->
+                    {:reply, {:ok, entry.id}, new_state}
+
+                  {:error, reason, new_state} ->
+                    new_state =
+                      if acquired?, do: release_workspace_lock(new_state), else: new_state
+
+                    {:reply, {:error, reason}, new_state}
+                end
+
+              _active ->
+                new_state = %{
+                  locked_state
+                  | command_queue: :queue.in(entry, locked_state.command_queue)
+                }
+
+                {:reply, {:ok, entry.id}, new_state}
             end
 
-          _active ->
-            new_state = %{state | command_queue: :queue.in(entry, state.command_queue)}
-            {:reply, {:ok, entry.id}, new_state}
+          {:error, reason, locked_state} ->
+            {:reply, {:error, reason}, locked_state}
         end
     end
   end
@@ -533,7 +594,33 @@ defmodule IexCode.Tools.TerminalSession do
   end
 
   @impl true
+  def handle_call({:begin_workspace_mutation, identity_opts}, _from, state)
+      when state.external_lock_count > 0 or not is_nil(state.active_command) do
+    if Keyword.get(identity_opts, :terminal_mutation_kind) == :agent do
+      {:reply, {:error, :terminal_mutation_busy}, state}
+    else
+      do_begin_workspace_mutation(identity_opts, state)
+    end
+  end
+
+  def handle_call({:begin_workspace_mutation, identity_opts}, _from, state) do
+    if Keyword.get(identity_opts, :terminal_mutation_kind) == :agent and
+         not :queue.is_empty(state.command_queue) do
+      {:reply, {:error, :terminal_mutation_busy}, state}
+    else
+      do_begin_workspace_mutation(identity_opts, state)
+    end
+  end
+
+  @impl true
+  def handle_call(:end_workspace_mutation, _from, state) do
+    state = %{state | external_lock_count: max(state.external_lock_count - 1, 0)}
+    {:reply, :ok, maybe_release_workspace_lock(state)}
+  end
+
+  @impl true
   def handle_call({:restart, opts}, _from, state) do
+    state = release_workspace_lock(state)
     if state.adapter, do: PTYAdapter.close(state.adapter)
 
     updated_shell = Keyword.get(opts, :shell, state.shell)
@@ -564,7 +651,9 @@ defmodule IexCode.Tools.TerminalSession do
         active_command: nil,
         command_queue: :queue.new(),
         command_marker_buffer: "",
-        recent_command_inputs: []
+        recent_command_inputs: [],
+        raw_input_lock?: false,
+        external_lock_count: 0
     }
 
     broadcast_status(reset_state)
@@ -697,6 +786,7 @@ defmodule IexCode.Tools.TerminalSession do
   def terminate(reason, state) do
     Logger.debug("[TerminalSession] Terminating #{state.session_id}: #{inspect(reason)}")
     if state.adapter, do: PTYAdapter.close(state.adapter)
+    _ = release_workspace_lock(state)
 
     if state.status != :stopped do
       duration_ms =
@@ -772,6 +862,7 @@ defmodule IexCode.Tools.TerminalSession do
       flushed_state
       |> complete_active_on_shell_exit(code)
       |> complete_queued_on_shell_exit()
+      |> release_workspace_lock()
 
     duration_ms =
       if state.started_at do
@@ -804,7 +895,9 @@ defmodule IexCode.Tools.TerminalSession do
         active_command: nil,
         command_queue: :queue.new(),
         command_marker_buffer: "",
-        recent_command_inputs: []
+        recent_command_inputs: [],
+        raw_input_lock?: false,
+        external_lock_count: 0
     }
 
     broadcast_event(state.session_id, {
@@ -933,6 +1026,7 @@ defmodule IexCode.Tools.TerminalSession do
             |> finish_active_command(code)
             |> publish_output(after_marker)
             |> dispatch_next_command()
+            |> maybe_release_workspace_lock()
         end
     end
   end
@@ -1014,7 +1108,10 @@ defmodule IexCode.Tools.TerminalSession do
     }
 
     broadcast_event(state.session_id, {:terminal_command_completed, payload})
-    dispatch_next_command(state)
+
+    state
+    |> dispatch_next_command()
+    |> maybe_release_workspace_lock()
   end
 
   defp complete_active_on_shell_exit(%{active_command: nil} = state, _code) do
@@ -1044,6 +1141,105 @@ defmodule IexCode.Tools.TerminalSession do
     end)
 
     %{state | command_queue: :queue.new()}
+  end
+
+  defp do_begin_workspace_mutation(identity_opts, state) do
+    identity_opts = Keyword.delete(identity_opts, :terminal_mutation_kind)
+
+    case ensure_workspace_lock(state, identity_opts) do
+      {:ok, locked_state, _acquired?} ->
+        {:reply, :ok, %{locked_state | external_lock_count: locked_state.external_lock_count + 1}}
+
+      {:error, reason, locked_state} ->
+        {:reply, {:error, reason}, locked_state}
+    end
+  end
+
+  defp ensure_workspace_lock(%{workspace_lock_handle: %WorkspaceLocks{}} = state) do
+    case WorkspaceLocks.assert(state.workspace_lock_handle) do
+      :ok -> {:ok, state, false}
+      {:error, reason} -> {:error, reason, release_workspace_lock(state)}
+    end
+  end
+
+  defp ensure_workspace_lock(state), do: ensure_workspace_lock(state, [])
+
+  defp ensure_workspace_lock(%{workspace_lock_handle: %WorkspaceLocks{}} = state, _identity_opts) do
+    ensure_workspace_lock(state)
+  end
+
+  defp ensure_workspace_lock(state, identity_opts) do
+    identity = workspace_lock_identity(state, identity_opts)
+
+    case WorkspaceLocks.acquire(state.project_root, [{:project, :exclusive}], identity) do
+      {:ok, handle} ->
+        {:ok, %{state | workspace_lock_handle: handle}, true}
+
+      {:error, reason} when reason == :unmanaged_workspace ->
+        acquire_unmanaged_workspace_lock(state, identity)
+
+      {:error, {:workspace_lock_database_error, message}}
+      when is_binary(message) ->
+        if test_sandbox_ownership_error?(message) do
+          acquire_unmanaged_workspace_lock(state, identity)
+        else
+          {:error, {:workspace_lock_database_error, message}, state}
+        end
+
+      {:error, reason} ->
+        {:error, reason, state}
+    end
+  end
+
+  defp workspace_lock_identity(state, opts) when is_list(opts) do
+    allowed_keys = [
+      :owner_id,
+      :project_id,
+      :run_id,
+      :session_id,
+      :delegation,
+      :allow_unmanaged,
+      :lease_seconds,
+      :heartbeat_interval_ms
+    ]
+
+    opts = Keyword.take(opts, allowed_keys)
+    Keyword.put_new(opts, :owner_id, "terminal-session:#{state.session_id}")
+  end
+
+  defp workspace_lock_identity(state, _opts),
+    do: [owner_id: "terminal-session:#{state.session_id}"]
+
+  defp acquire_unmanaged_workspace_lock(state, identity) do
+    case WorkspaceLocks.acquire(
+           state.project_root,
+           [{:project, :exclusive}],
+           Keyword.put(identity, :allow_unmanaged, true)
+         ) do
+      {:ok, handle} -> {:ok, %{state | workspace_lock_handle: handle}, true}
+      {:error, reason} -> {:error, reason, state}
+    end
+  end
+
+  defp test_sandbox_ownership_error?(message) do
+    String.contains?(message, "cannot find ownership process") and
+      String.contains?(message, "using mode :manual")
+  end
+
+  defp maybe_release_workspace_lock(state) do
+    if state.raw_input_lock? or state.external_lock_count > 0 or not is_nil(state.active_command) or
+         not :queue.is_empty(state.command_queue) do
+      state
+    else
+      release_workspace_lock(state)
+    end
+  end
+
+  defp release_workspace_lock(%{workspace_lock_handle: nil} = state), do: state
+
+  defp release_workspace_lock(state) do
+    _ = WorkspaceLocks.release(state.workspace_lock_handle)
+    %{state | workspace_lock_handle: nil}
   end
 
   defp publish_output(state, ""), do: state

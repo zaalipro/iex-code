@@ -25,4 +25,30 @@ defmodule IexCode.Research.ResultTest do
     assert is_nil(Result.new(:bing, %{title: "", url: "https://example.com"}))
     assert is_nil(Result.new(:bing, %{title: "A", url: nil}))
   end
+
+  test "merges normalized provenance without discarding primary provider metadata" do
+    primary =
+      Result.new(:brave, %{
+        title: "Primary",
+        url: "https://example.com/article/",
+        snippet: "first",
+        metadata: %{"language" => "en"}
+      })
+
+    duplicate =
+      Result.new(:exa, %{
+        title: "Alternate title",
+        url: "https://example.com/article",
+        snippet: "second",
+        score: 0.8
+      })
+
+    merged = Result.merge_provenance(primary, duplicate)
+
+    assert merged.provider == "brave"
+    assert merged.metadata["language"] == "en"
+
+    assert Enum.map(Result.provenance(merged), & &1["provider"]) == ["brave", "exa"]
+    assert Enum.at(Result.provenance(merged), 1)["score"] == 0.8
+  end
 end

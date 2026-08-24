@@ -4,9 +4,11 @@ defmodule IexCode.Engine.SwarmCoordinatorTest do
   alias IexCode.{Projects, Sessions}
   alias IexCode.Engine.{SwarmCoordinator, AgentSupervisor}
 
-  setup do
+  setup context do
+    root_path = Map.get(context, :tmp_dir, File.cwd!())
+
     {:ok, project} =
-      Projects.create_project(%{name: "SwarmCoord Test Proj", root_path: File.cwd!()})
+      Projects.create_project(%{name: "SwarmCoord Test Proj", root_path: root_path})
 
     {:ok, session} =
       Sessions.create_session(%{

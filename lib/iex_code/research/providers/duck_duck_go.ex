@@ -1,5 +1,10 @@
 defmodule IexCode.Research.Providers.DuckDuckGo do
-  @moduledoc "Credential-free DuckDuckGo HTML search adapter."
+  @moduledoc """
+  Unofficial credential-free DuckDuckGo HTML search adapter.
+
+  This parses DuckDuckGo's public HTML results and is not an official or
+  stability-guaranteed DuckDuckGo API.
+  """
   @behaviour IexCode.Research.Provider
 
   alias IexCode.Research.{HTTP, Providers}

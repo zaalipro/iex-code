@@ -5,9 +5,13 @@ defmodule IexCode.Tools do
   """
   require Logger
 
+  alias IexCode.{Projects, Runs}
+  alias IexCode.Projects.Project
   alias IexCode.Research.{Fetcher, Search}
+  alias IexCode.Sessions
   alias IexCode.Settings
   alias IexCode.Tools.{ASTSearch, Git, MultiPatch, TerminalServer, TestRunner}
+  alias IexCode.Tools.MultiPatch.Snapshot
   alias IexCode.WorkspacePath
 
   @max_command_output 256_000
@@ -272,12 +276,55 @@ defmodule IexCode.Tools do
 
   # --- Direct Delegations ---
   def ast_search(query, root_path \\ "."), do: ASTSearch.search(root_path, query)
-  def multi_patch(patches, root_path \\ "."), do: MultiPatch.apply_patches(root_path, patches)
-  def run_tests(opts \\ []), do: TestRunner.run(opts)
+
+  def multi_patch(patches, root_path \\ ".", opts \\ []) do
+    args = Map.put(trusted_lock_args(opts), "patches", patches)
+
+    with_mutation_locks("multi_patch", args, root_path, fn ->
+      MultiPatch.apply_patches(root_path, patches, opts)
+    end)
+  end
+
+  def run_tests(opts \\ []) do
+    root_path = Keyword.get(opts, :project_root, File.cwd!())
+    args = trusted_lock_args(opts)
+
+    with_mutation_locks("run_tests", args, root_path, fn -> TestRunner.run(opts) end)
+  end
+
   def git_status(repo_dir \\ "."), do: Git.status(repo_dir)
   def git_diff(repo_dir \\ ".", opts \\ []), do: Git.diff(repo_dir, opts)
-  def git_stage(files, repo_dir \\ "."), do: Git.stage(files, repo_dir)
-  def git_commit(message, repo_dir \\ "."), do: Git.commit(message, repo_dir)
+
+  def git_stage(files, repo_dir \\ ".", opts \\ []) do
+    args = Map.put(trusted_lock_args(opts), "files", files)
+
+    with_mutation_locks("git_stage", args, repo_dir, fn ->
+      Git.stage(files, repo_dir)
+    end)
+  end
+
+  def git_commit(message, repo_dir \\ ".", opts \\ []) do
+    args = Map.put(trusted_lock_args(opts), "message", message)
+
+    with_mutation_locks("git_commit", args, repo_dir, fn ->
+      Git.commit(message, repo_dir, opts)
+    end)
+  end
+
+  def rollback_multi_patch(transaction_id, project_root, opts \\ []) do
+    case Snapshot.get_snapshot(transaction_id) do
+      {:ok, %{patches: patches}} ->
+        args = Map.put(trusted_lock_args(opts), "patches", patches)
+
+        with_mutation_locks("multi_patch", args, project_root, fn ->
+          MultiPatch.rollback(transaction_id)
+        end)
+
+      _missing_or_invalid ->
+        MultiPatch.rollback(transaction_id)
+    end
+  end
+
   def git_generate_commit(repo_dir \\ "."), do: Git.generate_commit_message(repo_dir)
 
   @doc """
@@ -286,7 +333,14 @@ defmodule IexCode.Tools do
   instead of propagating to callers.
   """
   def execute(tool_name, args, root_path, on_progress \\ fn _p, _msg -> :ok end) do
-    do_execute(tool_name, args, root_path, on_progress)
+    with_mutation_locks(tool_name, args, root_path, fn identity_opts, remaining_timeout_ms ->
+      trusted_args =
+        args
+        |> Map.put("__workspace_lock_identity__", identity_opts)
+        |> put_remaining_command_timeout(tool_name, remaining_timeout_ms)
+
+      do_execute(tool_name, trusted_args, root_path, on_progress)
+    end)
   rescue
     exception -> {:error, "Tool #{tool_name} crashed: #{Exception.message(exception)}"}
   end
@@ -706,6 +760,7 @@ defmodule IexCode.Tools do
     command = Map.get(args, "command") || Map.get(args, :command)
     session_id = Map.get(args, "session_id") || Map.get(args, :session_id)
     timeout = Map.get(args, "timeout_ms") || Map.get(args, :timeout_ms) || 30_000
+    requested_timeout = Map.get(args, "__requested_timeout_ms__", timeout)
     agent_name = Map.get(args, "agent_name") || Map.get(args, :agent_name) || "Agent"
     op_id = Map.get(args, "op_id") || Map.get(args, :op_id)
 
@@ -715,7 +770,8 @@ defmodule IexCode.Tools do
       case TerminalServer.run_agent_command(session_id, command, agent_name,
              timeout_ms: timeout,
              op_id: op_id,
-             workspace_path: root_path
+             workspace_path: root_path,
+             workspace_lock_identity: Map.get(args, "__workspace_lock_identity__", [])
            ) do
         {:ok, %{exit_code: 0, output: output}} ->
           on_progress.(100, "Command exited successfully (0)")
@@ -726,8 +782,8 @@ defmodule IexCode.Tools do
           {:ok, "Exit Code #{exit_code}:\n#{output}"}
 
         {:error, :timeout} ->
-          on_progress.(100, "Command timed out after #{timeout}ms")
-          {:error, "Command timed out after #{timeout}ms"}
+          on_progress.(100, "Command timed out after #{requested_timeout}ms")
+          {:error, "Command timed out after #{requested_timeout}ms"}
 
         {:error, reason} ->
           on_progress.(100, "Command failed: #{inspect(reason)}")
@@ -774,7 +830,7 @@ defmodule IexCode.Tools do
           # orphaned grandchildren spawned by the command may survive since we do
           # not track the full OS process tree.
           Port.close(port)
-          on_progress.(100, "Command timed out after #{timeout}ms")
+          on_progress.(100, "Command timed out after #{requested_timeout}ms")
 
           suffix =
             if truncated? do
@@ -784,7 +840,7 @@ defmodule IexCode.Tools do
             end
 
           {:error,
-           "Command timed out after #{timeout}ms. Partial output:\n#{IexCode.Sessions.sanitize_utf8(output)}#{suffix}"}
+           "Command timed out after #{requested_timeout}ms. Partial output:\n#{IexCode.Sessions.sanitize_utf8(output)}#{suffix}"}
       end
     end
   end
@@ -844,6 +900,306 @@ defmodule IexCode.Tools do
       {:error, _reason} -> {:error, :outside_workspace}
     end
   end
+
+  # All opaque or directly mutating tools enter the durable workspace-lock gateway
+  # before they inspect or change native workspace state. Keeping this gate at the
+  # semantic tool boundary also covers direct agent calls and ensures MultiPatch
+  # declares its complete file set before its planning phase begins.
+  defp with_mutation_locks(tool_name, args, root_path, fun)
+       when is_function(fun, 0) or is_function(fun, 1) or is_function(fun, 2) do
+    case mutation_resources(tool_name, args) do
+      [] ->
+        invoke_locked_fun(fun, [], nil)
+
+      resources ->
+        with {:ok, project_or_root, identity_opts} <-
+               resolve_lock_identity(root_path, args) do
+          result =
+            if wait_for_command_lock?(tool_name, args) do
+              with_waiting_command_lock(project_or_root, resources, identity_opts, args, fun)
+            else
+              IexCode.WorkspaceLocks.with_locks(
+                project_or_root,
+                resources,
+                identity_opts,
+                fn -> invoke_with_active_identity(fun, identity_opts, nil) end
+              )
+            end
+
+          case result do
+            {:error, {:conflict, locks}} -> {:error, {:workspace_lock_waiting, locks}}
+            result -> result
+          end
+        end
+    end
+  end
+
+  defp with_waiting_command_lock(project_or_root, resources, identity_opts, args, fun) do
+    timeout_ms = normalize_command_timeout(arg_value(args, "timeout_ms", 30_000))
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+
+    case IexCode.WorkspaceLocks.acquire_or_wait(project_or_root, resources, identity_opts) do
+      {:ok, handle} -> run_with_command_handle(handle, identity_opts, deadline, fun)
+      {:waiting, handle} -> retry_command_lock(handle, identity_opts, deadline, fun)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # Persisted application callers fail closed immediately so the UI can surface
+  # the owning run/session. Legacy PTY callers without a durable project id keep
+  # their historical synchronous contract by waiting within their command budget.
+  defp wait_for_command_lock?("run_command", args),
+    do: is_nil(nonempty_binary(arg_value(args, "project_id")))
+
+  defp wait_for_command_lock?(_tool_name, _args), do: false
+
+  defp retry_command_lock(handle, identity_opts, deadline, fun) do
+    remaining = deadline - System.monotonic_time(:millisecond)
+
+    if remaining <= 0 do
+      locks = Map.get(handle, :locks, [])
+      _ = IexCode.WorkspaceLocks.release(handle)
+      {:error, {:workspace_lock_waiting, locks}}
+    else
+      receive do
+      after
+        min(25, remaining) -> :ok
+      end
+
+      case IexCode.WorkspaceLocks.retry(handle) do
+        {:ok, held_handle} ->
+          run_with_command_handle(held_handle, identity_opts, deadline, fun)
+
+        {:waiting, waiting_handle} ->
+          retry_command_lock(waiting_handle, identity_opts, deadline, fun)
+
+        {:error, reason} ->
+          _ = IexCode.WorkspaceLocks.release(handle)
+          {:error, reason}
+      end
+    end
+  end
+
+  defp run_with_command_handle(handle, identity_opts, deadline, fun) do
+    try do
+      IexCode.WorkspaceLocks.with_delegation(handle, fn ->
+        case IexCode.WorkspaceLocks.assert(handle) do
+          :ok ->
+            remaining = max(deadline - System.monotonic_time(:millisecond), 1)
+            invoke_with_active_identity(fun, identity_opts, remaining)
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+      end)
+    after
+      _ = IexCode.WorkspaceLocks.release(handle)
+    end
+  end
+
+  defp invoke_with_active_identity(fun, identity_opts, remaining_timeout_ms) do
+    active_identity_opts =
+      Keyword.put(
+        identity_opts,
+        :delegation,
+        IexCode.WorkspaceLocks.current_delegation()
+      )
+
+    invoke_locked_fun(fun, active_identity_opts, remaining_timeout_ms)
+  end
+
+  defp invoke_locked_fun(fun, _identity_opts, _remaining_timeout_ms) when is_function(fun, 0),
+    do: fun.()
+
+  defp invoke_locked_fun(fun, identity_opts, _remaining_timeout_ms) when is_function(fun, 1),
+    do: fun.(identity_opts)
+
+  defp invoke_locked_fun(fun, identity_opts, remaining_timeout_ms) when is_function(fun, 2),
+    do: fun.(identity_opts, remaining_timeout_ms)
+
+  defp mutation_resources("write_file", args), do: file_resources(args, ["path"])
+  defp mutation_resources("patch_file", args), do: file_resources(args, ["path"])
+
+  defp mutation_resources("multi_patch", args) do
+    args
+    |> arg_value("patches", [])
+    |> List.wrap()
+    |> Enum.map(&arg_value(&1, "path"))
+    |> Enum.filter(&(is_binary(&1) and &1 != ""))
+    |> Enum.uniq()
+    |> Enum.map(&{{:file, &1}, :write})
+  end
+
+  defp mutation_resources("run_command", _args), do: [{:project, :exclusive}]
+  defp mutation_resources("run_tests", _args), do: [{:project, :exclusive}]
+  defp mutation_resources("git_stage", _args), do: [{:git, :exclusive}]
+  defp mutation_resources("git_commit", _args), do: [{:git, :exclusive}]
+  defp mutation_resources(_tool_name, _args), do: []
+
+  defp file_resources(args, keys) do
+    keys
+    |> Enum.map(&arg_value(args, &1))
+    |> Enum.filter(&(is_binary(&1) and &1 != ""))
+    |> Enum.map(&{{:file, &1}, :write})
+  end
+
+  defp resolve_lock_identity(root_path, args) when is_binary(root_path) and is_map(args) do
+    project_id = arg_value(args, "project_id")
+
+    with {:ok, project_or_root, allow_unmanaged?} <-
+           resolve_lock_project(project_id, root_path) do
+      requested_run_id = nonempty_binary(arg_value(args, "run_id"))
+      routing_session_id = nonempty_binary(arg_value(args, "session_id"))
+
+      durable_session_id =
+        trusted_lock_session_id(project_or_root, project_id, routing_session_id)
+
+      durable_run_id =
+        trusted_lock_run_id(
+          project_or_root,
+          project_id,
+          requested_run_id,
+          durable_session_id
+        )
+
+      identity_opts =
+        [
+          owner_id: lock_owner_id(durable_run_id, routing_session_id),
+          project_id: if(match?(%Project{}, project_or_root), do: project_or_root.id),
+          run_id: durable_run_id,
+          session_id: durable_session_id,
+          delegation: IexCode.WorkspaceLocks.current_delegation(),
+          allow_unmanaged: allow_unmanaged?
+        ]
+        |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+
+      {:ok, project_or_root, identity_opts}
+    end
+  end
+
+  defp resolve_lock_identity(_root_path, _args), do: {:error, :invalid_workspace}
+
+  defp resolve_lock_project(project_id, root_path)
+       when is_binary(project_id) and project_id != "" do
+    case fetch_project(project_id) do
+      %Project{} = project ->
+        if same_workspace?(project.root_path, root_path) do
+          {:ok, project, false}
+        else
+          {:error, :project_workspace_mismatch}
+        end
+
+      nil ->
+        {:error, :invalid_project}
+    end
+  end
+
+  defp resolve_lock_project(_project_id, root_path), do: {:ok, root_path, true}
+
+  defp fetch_project(project_id) do
+    Projects.get_project!(project_id)
+  rescue
+    _ in [Ecto.NoResultsError, Ecto.Query.CastError] -> nil
+  end
+
+  # A terminal routing id is not automatically a durable lock identity. Legacy
+  # callers and tests often use arbitrary PTY ids; binding those as a foreign key
+  # would reject an otherwise valid native command. Only a caller that supplied a
+  # validated project id may attach a persisted session belonging to that project.
+  defp trusted_lock_session_id(
+         %Project{id: project_id},
+         project_id,
+         session_id
+       )
+       when is_binary(session_id) do
+    case Sessions.get_session(session_id) do
+      %{project_id: ^project_id} -> session_id
+      _ -> nil
+    end
+  end
+
+  defp trusted_lock_session_id(_project_or_root, _project_id, _session_id), do: nil
+
+  defp trusted_lock_run_id(
+         %Project{id: project_id},
+         project_id,
+         run_id,
+         session_id
+       )
+       when is_binary(run_id) and is_binary(session_id) do
+    case Runs.get_run(run_id) do
+      %{project_id: ^project_id, session_id: ^session_id} -> run_id
+      _ -> nil
+    end
+  rescue
+    _ in [Ecto.Query.CastError] -> nil
+  end
+
+  defp trusted_lock_run_id(_project_or_root, _project_id, _run_id, _session_id), do: nil
+
+  defp same_workspace?(registered_root, requested_root) do
+    with {:ok, canonical_registered} <- WorkspacePath.resolve(registered_root, ""),
+         {:ok, canonical_requested} <- WorkspacePath.resolve(requested_root, "") do
+      canonical_registered == canonical_requested
+    else
+      _ -> false
+    end
+  end
+
+  defp lock_owner_id(run_id, _session_id) when is_binary(run_id), do: "run:#{run_id}"
+
+  defp lock_owner_id(_run_id, session_id) when is_binary(session_id),
+    do: "session:#{session_id}:tool:#{unique_lock_owner_suffix()}"
+
+  defp lock_owner_id(_run_id, _session_id) do
+    "tool:#{unique_lock_owner_suffix()}"
+  end
+
+  defp unique_lock_owner_suffix,
+    do: System.unique_integer([:positive, :monotonic]) |> Integer.to_string()
+
+  defp trusted_lock_args(opts) do
+    %{
+      "project_id" => Keyword.get(opts, :project_id),
+      "run_id" => Keyword.get(opts, :run_id),
+      "session_id" => Keyword.get(opts, :session_id)
+    }
+  end
+
+  defp arg_value(map, key, default \\ nil)
+
+  defp arg_value(map, key, default) when is_map(map) and is_binary(key) do
+    case Map.fetch(map, key) do
+      {:ok, value} -> value
+      :error -> Map.get(map, safe_existing_atom(key), default)
+    end
+  end
+
+  defp arg_value(_map, _key, default), do: default
+
+  defp safe_existing_atom("path"), do: :path
+  defp safe_existing_atom("patches"), do: :patches
+  defp safe_existing_atom("project_id"), do: :project_id
+  defp safe_existing_atom("run_id"), do: :run_id
+  defp safe_existing_atom("session_id"), do: :session_id
+  defp safe_existing_atom(_key), do: :__unknown_lock_arg__
+
+  defp nonempty_binary(value) when is_binary(value) and value != "", do: value
+  defp nonempty_binary(_value), do: nil
+
+  defp normalize_command_timeout(value) when is_integer(value) and value > 0, do: value
+  defp normalize_command_timeout(_value), do: 30_000
+
+  defp put_remaining_command_timeout(args, "run_command", remaining)
+       when is_integer(remaining) and remaining > 0 do
+    requested = normalize_command_timeout(arg_value(args, "timeout_ms", 30_000))
+
+    args
+    |> Map.put("__requested_timeout_ms__", requested)
+    |> Map.put("timeout_ms", remaining)
+  end
+
+  defp put_remaining_command_timeout(args, _tool_name, _remaining), do: args
 
   defp excluded_dir?(name) when name in @excluded_dirs, do: true
   defp excluded_dir?(_name), do: false

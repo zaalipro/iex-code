@@ -1,5 +1,5 @@
 defmodule IexCode.Research.Providers.GoogleCSE do
-  @moduledoc "Google Programmable Search (Custom Search JSON API) adapter."
+  @moduledoc "Legacy Google Programmable Search (Custom Search JSON API) adapter."
   @behaviour IexCode.Research.Provider
 
   alias IexCode.Research.{HTTP, Providers}

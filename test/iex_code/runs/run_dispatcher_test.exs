@@ -3,7 +3,7 @@ defmodule IexCode.Runs.RunDispatcherTest do
 
   import Ecto.Query
 
-  alias IexCode.{Projects, Repo, Runs, Sessions}
+  alias IexCode.{Projects, Repo, Runs, Sessions, WorkspaceLocks}
   alias IexCode.Runs.{Run, RunDispatcher}
 
   @dispatcher IexCode.RunDispatcherUnderTest
@@ -224,6 +224,176 @@ defmodule IexCode.Runs.RunDispatcherTest do
     refute_receive {:test_run_started, ^run_id, _pid}, 100
   end
 
+  test "a foreign interactive lock blocks coding execution until it is released", context do
+    {:ok, blocker} =
+      WorkspaceLocks.acquire(context.project, [:project],
+        owner_id: "interactive:test",
+        project_id: context.project.id,
+        session_id: context.session.id,
+        lease_seconds: 60,
+        heartbeat_interval_ms: 20_000
+      )
+
+    attrs =
+      context
+      |> run_attrs("workspace-exclusive coding")
+      |> Map.merge(%{kind: "coding_swarm", mode: "swarm"})
+
+    assert {:ok, run} = RunDispatcher.enqueue(attrs, @dispatcher)
+    run_id = run.id
+
+    refute_receive {:test_run_started, ^run_id, _pid}, 150
+
+    assert %Run{status: "running", attempt: 1} = Runs.get_run!(run_id)
+    assert Enum.at(Runs.list_steps(run_id), 1).status == "blocked"
+
+    assert [%{status: "waiting", owner_id: owner}] =
+             Runs.list_workspace_locks(run_id: run_id, active: true)
+
+    assert owner == "run:#{run_id}"
+    assert :ok = WorkspaceLocks.release(blocker)
+
+    assert_receive {:test_run_delegation, ^run_id, :present}, 2_000
+    assert_receive {:test_run_started, ^run_id, worker_pid}, 2_000
+    assert Enum.at(Runs.list_steps(run_id), 1).status == "running"
+
+    send(worker_pid, {:finish, run_id, {:ok, :done}})
+    assert_receive {:async_run_updated, %Run{id: ^run_id, status: "completed"}}, 2_000
+    _ = RunDispatcher.get_stats(@dispatcher)
+
+    assert [%{status: "released", capability_token_hash: "[REDACTED]"}] =
+             Runs.list_workspace_locks(run_id: run_id)
+
+    finished = Runs.get_run!(run_id)
+    refute inspect(finished.metadata) =~ "capability"
+
+    refute Enum.any?(Runs.list_events(run_id), fn event ->
+             inspect(event.payload) =~ "capability"
+           end)
+  end
+
+  test "cancelling a lock-waiting coding run cancels its opaque lock batch", context do
+    {:ok, blocker} =
+      WorkspaceLocks.acquire(context.project, [:project],
+        owner_id: "interactive:cancel-test",
+        project_id: context.project.id,
+        lease_seconds: 60,
+        heartbeat_interval_ms: 20_000
+      )
+
+    attrs =
+      context
+      |> run_attrs("cancel while waiting")
+      |> Map.merge(%{kind: "coding_swarm", mode: "swarm"})
+
+    assert {:ok, run} = RunDispatcher.enqueue(attrs, @dispatcher)
+    run_id = run.id
+    refute_receive {:test_run_started, ^run_id, _pid}, 100
+
+    assert {:ok, %Run{status: "cancelled"}} = RunDispatcher.cancel(run_id, @dispatcher)
+
+    assert [%{status: "cancelled"}] = Runs.list_workspace_locks(run_id: run_id)
+    refute_receive {:test_run_started, ^run_id, _pid}, 100
+    assert :ok = WorkspaceLocks.release(blocker)
+  end
+
+  test "a crashed coding worker releases its workspace lock after process exit", context do
+    attrs =
+      context
+      |> run_attrs("crashing coding run")
+      |> Map.merge(%{kind: "coding_swarm", mode: "swarm"})
+
+    assert {:ok, run} = RunDispatcher.enqueue(attrs, @dispatcher)
+    run_id = run.id
+    assert_receive {:test_run_started, ^run_id, worker_pid}, 2_000
+
+    assert [%{status: "held"}] = Runs.list_workspace_locks(run_id: run_id, active: true)
+
+    ref = Process.monitor(worker_pid)
+    Process.exit(worker_pid, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^worker_pid, :killed}, 2_000
+    assert_receive {:async_run_updated, %Run{id: ^run_id, status: "interrupted"}}, 2_000
+    _ = RunDispatcher.get_stats(@dispatcher)
+
+    assert [%{status: "released"}] = Runs.list_workspace_locks(run_id: run_id)
+
+    assert {:ok, interactive} =
+             WorkspaceLocks.acquire(context.project, [:project],
+               owner_id: "interactive:after-crash",
+               project_id: context.project.id,
+               lease_seconds: 60,
+               heartbeat_interval_ms: 20_000
+             )
+
+    assert :ok = WorkspaceLocks.release(interactive)
+  end
+
+  test "dispatcher shutdown cleans up a coding worker and its outer lock", context do
+    attrs =
+      context
+      |> run_attrs("dispatcher shutdown coding run")
+      |> Map.merge(%{kind: "coding_swarm", mode: "swarm"})
+
+    assert {:ok, run} = RunDispatcher.enqueue(attrs, @dispatcher)
+    run_id = run.id
+    assert_receive {:test_run_started, ^run_id, worker_pid}, 2_000
+    assert [%{status: "held"}] = Runs.list_workspace_locks(run_id: run_id, active: true)
+    assert :ok = Runs.subscribe_workspace_locks(context.project.id)
+
+    worker_ref = Process.monitor(worker_pid)
+    stop_supervised!(RunDispatcher)
+    assert_receive {:DOWN, ^worker_ref, :process, ^worker_pid, _reason}, 2_000
+
+    assert_receive {:workspace_locks_updated, locks}, 2_000
+    assert Enum.any?(locks, &(&1.run_id == run_id and &1.status == "released"))
+    assert [%{status: "released"}] = Runs.list_workspace_locks(run_id: run_id)
+  end
+
+  test "a coding run keeps its exclusive workspace lock while paused", context do
+    attrs =
+      context
+      |> run_attrs("paused coding run")
+      |> Map.merge(%{kind: "coding_swarm", mode: "swarm"})
+
+    assert {:ok, run} = RunDispatcher.enqueue(attrs, @dispatcher)
+    run_id = run.id
+    assert_receive {:test_run_started, ^run_id, worker_pid}, 2_000
+
+    assert {:ok, %Run{status: "paused"}} = RunDispatcher.pause(run_id, @dispatcher)
+    assert_receive {:test_run_paused, ^run_id}, 2_000
+    assert [%{status: "held"}] = Runs.list_workspace_locks(run_id: run_id, active: true)
+
+    assert {:error, {:workspace_lock_waiting, _locks}} =
+             WorkspaceLocks.acquire(context.project, [:project],
+               owner_id: "interactive:while-paused",
+               project_id: context.project.id,
+               lease_seconds: 60,
+               heartbeat_interval_ms: 20_000
+             )
+
+    assert {:ok, %Run{status: "running"}} = RunDispatcher.resume(run_id, @dispatcher)
+    send(worker_pid, {:finish, run_id, {:ok, :done}})
+    assert_receive {:async_run_updated, %Run{id: ^run_id, status: "completed"}}, 2_000
+  end
+
+  test "cancelling an active coding worker releases only after worker cleanup", context do
+    attrs =
+      context
+      |> run_attrs("cancel active coding")
+      |> Map.merge(%{kind: "coding_swarm", mode: "swarm"})
+
+    assert {:ok, run} = RunDispatcher.enqueue(attrs, @dispatcher)
+    run_id = run.id
+    assert_receive {:test_run_started, ^run_id, worker_pid}, 2_000
+    assert [%{status: "held"}] = Runs.list_workspace_locks(run_id: run_id, active: true)
+
+    worker_ref = Process.monitor(worker_pid)
+    assert {:ok, %Run{status: "cancelled"}} = RunDispatcher.cancel(run_id, @dispatcher)
+    assert_receive {:DOWN, ^worker_ref, :process, ^worker_pid, _reason}, 2_000
+    _ = RunDispatcher.get_stats(@dispatcher)
+    assert [%{status: "released"}] = Runs.list_workspace_locks(run_id: run_id)
+  end
+
   test "an interrupted research worker terminalizes pending descendants", context do
     attrs =
       context
@@ -404,7 +574,9 @@ defmodule IexCode.Runs.RunDispatcherTest do
       poll_interval: 60_000,
       heartbeat_interval: 60_000,
       lease_ms: 120_000,
-      cancel_grace_ms: 20
+      cancel_grace_ms: 20,
+      workspace_lock_retry_interval: 20,
+      workspace_lock_lease_seconds: 60
     ]
   end
 end

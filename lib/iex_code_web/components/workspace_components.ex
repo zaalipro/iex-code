@@ -844,6 +844,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
   attr :dirty_content, :string, default: nil
   attr :is_dirty, :boolean, default: false
   attr :open_buffers, :list, default: []
+  attr :editor_lock, :map, default: nil
 
   def file_explorer(assigns) do
     has_filter = assigns.filter != "" and not is_nil(assigns.filter)
@@ -865,12 +866,14 @@ defmodule IexCodeWeb.WorkspaceComponents do
       end
 
     current_text = assigns.dirty_content || assigns.file_content || ""
+    editor_locked? = not is_nil(assigns.editor_lock)
 
     assigns =
       assigns
       |> assign(:tree_items, tree_items)
       |> assign(:has_filter, has_filter)
       |> assign(:current_text, current_text)
+      |> assign(:editor_locked?, editor_locked?)
 
     ~H"""
     <div id="file-explorer-container" class="flex-1 flex h-full overflow-hidden bg-[#0a0d12]">
@@ -1028,14 +1031,25 @@ defmodule IexCodeWeb.WorkspaceComponents do
               <% end %>
 
               <button
+                id="save-file-btn"
                 phx-click="save_file"
+                disabled={@editor_locked?}
                 class={[
                   "px-3 py-1 rounded-lg text-xs font-mono font-semibold transition-smooth flex items-center gap-1.5",
+                  @editor_locked? &&
+                    "cursor-not-allowed bg-rose-950/50 text-rose-300/60 border border-rose-500/20",
                   @is_dirty &&
+                    !@editor_locked? &&
                     "bg-emerald-600 hover:bg-emerald-500 text-white shadow-md shadow-emerald-600/20",
-                  !@is_dirty && "bg-[#21262d] text-gray-400 hover:text-gray-200"
+                  !@is_dirty && !@editor_locked? &&
+                    "bg-[#21262d] text-gray-400 hover:text-gray-200"
                 ]}
-                title="Save file to disk (Cmd+S)"
+                title={
+                  if(@editor_locked?,
+                    do: "Save unavailable while another session owns this workspace resource",
+                    else: "Save file to disk (Cmd+S)"
+                  )
+                }
               >
                 <.icon name="hero-document-check" class="w-3.5 h-3.5" />
                 <span>Save</span>
@@ -1053,6 +1067,33 @@ defmodule IexCodeWeb.WorkspaceComponents do
               </button>
             </div>
           </div>
+
+          <%= if @editor_locked? do %>
+            <div
+              id="editor-lock-ribbon"
+              role="status"
+              data-lock-state="foreign"
+              data-lock-resource={@editor_lock.resource_type}
+              class="flex items-center justify-between gap-4 border-b border-rose-500/30 bg-rose-950/35 px-3 py-2 font-mono text-xs text-rose-100"
+            >
+              <div class="flex min-w-0 items-center gap-2">
+                <.icon name="hero-lock-closed" class="h-4 w-4 shrink-0 text-rose-400" />
+                <span class="truncate">
+                  Read-only while
+                  <strong class="text-rose-300">{workspace_lock_label(@editor_lock)}</strong>
+                  holds the {editor_lock_label(@editor_lock)} lock. Your unsaved buffer is safe.
+                </span>
+              </div>
+              <button
+                id="retry-file-lock-btn"
+                type="button"
+                phx-click="retry_file_lock"
+                class="shrink-0 rounded-lg border border-rose-400/30 bg-rose-400/10 px-2.5 py-1 font-semibold text-rose-200 transition hover:border-rose-300/60 hover:bg-rose-400/20"
+              >
+                Retry access
+              </button>
+            </div>
+          <% end %>
 
           <!-- Code Editor Body with Line Numbers & Colocated JS Hook -->
           <div
@@ -1072,7 +1113,12 @@ defmodule IexCodeWeb.WorkspaceComponents do
               autocomplete="off"
               autocorrect="off"
               autocapitalize="off"
-              class="flex-1 bg-transparent border-0 p-3 text-gray-200 font-mono text-xs leading-relaxed focus:outline-none focus:ring-0 resize-none overflow-auto whitespace-pre tab-2"
+              readonly={@editor_locked?}
+              aria-readonly={to_string(@editor_locked?)}
+              class={[
+                "flex-1 bg-transparent border-0 p-3 text-gray-200 font-mono text-xs leading-relaxed focus:outline-none focus:ring-0 resize-none overflow-auto whitespace-pre tab-2",
+                @editor_locked? && "cursor-not-allowed bg-rose-950/5 text-gray-400"
+              ]}
             ><%= @current_text %></textarea>
           </div>
 
@@ -1091,9 +1137,11 @@ defmodule IexCodeWeb.WorkspaceComponents do
                 this.textarea.addEventListener('keydown', (e) => {
                   if ((e.metaKey || e.ctrlKey) && e.key === 's') {
                     e.preventDefault();
+                    if (this.textarea.readOnly) return;
                     this.pushEvent('save_file', { content: this.textarea.value });
                   }
                   if (e.key === 'Tab') {
+                    if (this.textarea.readOnly) return;
                     e.preventDefault();
                     const start = this.textarea.selectionStart;
                     const end = this.textarea.selectionEnd;
@@ -1154,6 +1202,10 @@ defmodule IexCodeWeb.WorkspaceComponents do
     </div>
     """
   end
+
+  defp editor_lock_label(%{resource_type: "project"}), do: "project"
+  defp editor_lock_label(%{resource_type: "file"}), do: "file"
+  defp editor_lock_label(_lock), do: "workspace"
 
   defp file_icon(path) do
     path_str = to_string(path || "")
@@ -1246,6 +1298,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
   attr :active_cmd, :string, default: nil
   attr :output, :string, default: ""
   attr :form, :any, default: nil
+  attr :workspace_locks, :list, default: []
 
   def terminal_session(assigns) do
     session_id =
@@ -1255,7 +1308,19 @@ defmodule IexCodeWeb.WorkspaceComponents do
         _ -> "default"
       end
 
-    assigns = assign(assigns, :session_id, session_id)
+    owner_id = "terminal-session:#{session_id}"
+
+    foreign_lock =
+      Enum.find(assigns.workspace_locks, fn lock ->
+        workspace_lock_value(lock, :status) == "held" and
+          workspace_lock_value(lock, :owner_id) != owner_id
+      end)
+
+    assigns =
+      assigns
+      |> assign(:session_id, session_id)
+      |> assign(:monitor_only, not is_nil(foreign_lock))
+      |> assign(:foreign_lock, foreign_lock)
 
     ~H"""
     <div
@@ -1298,7 +1363,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
             id="btn-quick-iex"
             phx-click="run_terminal_quick_action"
             phx-value-cmd="iex -S mix"
-            disabled={!@running}
+            disabled={!@running or @monitor_only}
             class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] active:bg-[#30363d] border border-[#30363d] rounded-lg text-purple-300 hover:text-purple-200 transition-smooth font-mono text-xs flex items-center gap-1.5 disabled:opacity-50 disabled:pointer-events-none group shadow-sm"
             title="Start Interactive Elixir Shell"
           >
@@ -1313,7 +1378,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
             id="btn-quick-test"
             phx-click="run_terminal_quick_action"
             phx-value-cmd="mix test"
-            disabled={!@running}
+            disabled={!@running or @monitor_only}
             class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] active:bg-[#30363d] border border-[#30363d] rounded-lg text-emerald-300 hover:text-emerald-200 transition-smooth font-mono text-xs flex items-center gap-1.5 disabled:opacity-50 disabled:pointer-events-none group shadow-sm"
             title="Run Mix Test Suite"
           >
@@ -1328,7 +1393,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
             id="btn-quick-precommit"
             phx-click="run_terminal_quick_action"
             phx-value-cmd="mix precommit"
-            disabled={!@running}
+            disabled={!@running or @monitor_only}
             class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] active:bg-[#30363d] border border-[#30363d] rounded-lg text-cyan-300 hover:text-cyan-200 transition-smooth font-mono text-xs flex items-center gap-1.5 disabled:opacity-50 disabled:pointer-events-none group shadow-sm"
             title="Run Precommit Quality Checks"
           >
@@ -1343,7 +1408,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
             id="btn-quick-git-status"
             phx-click="run_terminal_quick_action"
             phx-value-cmd="git status"
-            disabled={!@running}
+            disabled={!@running or @monitor_only}
             class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] active:bg-[#30363d] border border-[#30363d] rounded-lg text-amber-300 hover:text-amber-200 transition-smooth font-mono text-xs flex items-center gap-1.5 disabled:opacity-50 disabled:pointer-events-none group shadow-sm"
             title="Check Git Working Directory Status"
           >
@@ -1358,7 +1423,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
             id="btn-quick-git-diff"
             phx-click="run_terminal_quick_action"
             phx-value-cmd="git diff"
-            disabled={!@running}
+            disabled={!@running or @monitor_only}
             class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] active:bg-[#30363d] border border-[#30363d] rounded-lg text-amber-300 hover:text-amber-200 transition-smooth font-mono text-xs flex items-center gap-1.5 disabled:opacity-50 disabled:pointer-events-none group shadow-sm"
             title="Show Git Diff of Unstaged Changes"
           >
@@ -1385,6 +1450,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
           <button
             id="btn-terminal-restart"
             phx-click="restart_terminal_session"
+            disabled={@monitor_only}
             class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] active:bg-[#30363d] border border-[#30363d] rounded-lg text-sky-400 hover:text-sky-300 transition-smooth font-mono text-xs flex items-center gap-1.5 shadow-sm"
             title="Restart PTY Shell Process"
           >
@@ -1395,6 +1461,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
           <button
             id="btn-terminal-kill"
             phx-click="kill_terminal_session"
+            disabled={@monitor_only}
             class="px-2.5 py-1 bg-rose-950/40 hover:bg-rose-900/50 active:bg-rose-800/60 border border-rose-800/60 rounded-lg text-rose-300 hover:text-rose-200 transition-smooth font-mono text-xs flex items-center gap-1.5 shadow-sm"
             title="Send SIGINT / Interrupt Shell"
           >
@@ -1403,6 +1470,26 @@ defmodule IexCodeWeb.WorkspaceComponents do
           </button>
         </div>
       </div>
+
+      <%= if @monitor_only do %>
+        <div
+          id="terminal-workspace-lock-banner"
+          role="status"
+          data-lock-state="foreign"
+          class="flex shrink-0 items-center justify-between gap-3 rounded-xl border border-sky-400/25 bg-sky-400/10 px-3.5 py-2 font-mono text-xs text-sky-100"
+        >
+          <div class="flex items-center gap-2.5">
+            <.icon name="hero-eye" class="size-4 text-sky-300" />
+            <span class="font-semibold">Monitor-only terminal</span>
+            <span class="text-sky-200/70">
+              Workspace changes are locked by {workspace_lock_label(@foreign_lock)}.
+            </span>
+          </div>
+          <span class="rounded-md border border-sky-300/20 bg-black/20 px-2 py-0.5 text-[10px] uppercase tracking-wider text-sky-200/70">
+            Input disabled
+          </span>
+        </div>
+      <% end %>
 
       <!-- Visual Active Agent Banner -->
       <%= if match?({:agent, _, _}, @occupant) or match?({:agent, _}, @occupant) do %>
@@ -1462,6 +1549,8 @@ defmodule IexCodeWeb.WorkspaceComponents do
           phx-hook="TerminalHook"
           phx-update="ignore"
           data-session-id={@session_id}
+          data-monitor-only={to_string(@monitor_only)}
+          aria-disabled={to_string(@monitor_only)}
           class="flex-1 w-full h-full p-2 bg-[#0d1117]"
         >
         </div>
@@ -1485,7 +1574,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
               name="command"
               value={Phoenix.HTML.Form.input_value(@form, :command)}
               placeholder="Enter shell command..."
-              disabled={!@running}
+              disabled={!@running or @monitor_only}
               class="w-full bg-[#11151c] border border-[#21262d] rounded-xl pl-7 pr-4 py-2 text-xs font-mono text-white focus:outline-none focus:border-emerald-500 disabled:opacity-50"
             />
             <%= if @active_cmd do %>
@@ -1494,7 +1583,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
           </div>
           <button
             type="submit"
-            disabled={!@running}
+            disabled={!@running or @monitor_only}
             class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-mono font-medium transition-smooth disabled:opacity-50 disabled:pointer-events-none"
           >
             Run
@@ -1508,6 +1597,20 @@ defmodule IexCodeWeb.WorkspaceComponents do
   # ============================================================================
   # F10: Collapsible Reasoning / Thinking Trace (<.thinking_trace>)
   # ============================================================================
+
+  defp workspace_lock_value(nil, _key), do: nil
+
+  defp workspace_lock_value(lock, key) when is_map(lock) do
+    Map.get(lock, key) || Map.get(lock, Atom.to_string(key))
+  end
+
+  defp workspace_lock_label(lock) do
+    cond do
+      workspace_lock_value(lock, :run_id) -> "a coding run"
+      workspace_lock_value(lock, :session_id) -> "another session"
+      true -> "another task"
+    end
+  end
 
   @doc """
   Renders a collapsible disclosure card for LLM chain-of-thought reasoning deltas with latency metrics and markdown formatting.

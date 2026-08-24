@@ -279,4 +279,77 @@ defmodule IexCodeWeb.WorkspaceLiveAsyncRunsTest do
     assert LazyHTML.query(offline_document, "#async-dispatcher-status") |> LazyHTML.text() =~
              "Dispatcher offline"
   end
+
+  test "renders durable workspace lock ownership and wait state in Mission Control", %{
+    conn: conn,
+    workspace_path: path
+  } do
+    project = create_project_fixture(%{root_path: path})
+    session = create_session_fixture(project)
+
+    {:ok, held_run} =
+      Runs.create_run(%{
+        project_id: project.id,
+        session_id: session.id,
+        objective: "Hold the project mutation boundary",
+        kind: "coding_swarm",
+        mode: "swarm",
+        status: "running"
+      })
+
+    {:ok, waiting_run} =
+      Runs.create_run(%{
+        project_id: project.id,
+        session_id: session.id,
+        objective: "Wait for the project mutation boundary",
+        kind: "coding_swarm",
+        mode: "swarm"
+      })
+
+    {:ok, held} =
+      Runs.acquire_workspace_lock(%{
+        project_id: project.id,
+        session_id: session.id,
+        run_id: held_run.id,
+        owner_id: "mission-control-holder",
+        resource_type: "project",
+        resource_key: ".",
+        mode: "exclusive"
+      })
+
+    {:ok, waiting} =
+      Runs.acquire_workspace_lock(%{
+        project_id: project.id,
+        session_id: session.id,
+        run_id: waiting_run.id,
+        owner_id: "mission-control-waiter",
+        resource_type: "project",
+        resource_key: ".",
+        mode: "exclusive"
+      })
+
+    held_lock = hd(held.locks)
+    waiting_lock = hd(waiting.locks)
+    assert held_lock.status == "held"
+    assert waiting_lock.status == "waiting"
+
+    {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+    view |> element("#tab-btn-swarm") |> render_click()
+    view |> element("#async-run-#{waiting_run.id}") |> render_click()
+
+    assert has_element?(view, "#workspace-lock-overview[data-lock-state='waiting']")
+    assert has_element?(view, "#workspace-lock-details")
+    assert has_element?(view, "#workspace-lock-#{held_lock.id}[data-lock-status='held']")
+    assert has_element?(view, "#workspace-lock-#{waiting_lock.id}[data-lock-status='waiting']")
+
+    assert has_element?(
+             view,
+             "#async-run-#{held_run.id}[data-workspace-lock-state='held']"
+           )
+
+    assert has_element?(
+             view,
+             "#async-run-#{waiting_run.id}[data-workspace-lock-state='waiting']"
+           )
+  end
 end

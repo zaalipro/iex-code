@@ -6,6 +6,7 @@ defmodule IexCode.Projects do
   require Logger
   alias IexCode.Repo
   alias IexCode.Projects.Project
+  alias IexCode.Runs.WorkspaceLock
 
   def list_projects do
     Project
@@ -93,7 +94,27 @@ defmodule IexCode.Projects do
 
   def delete_project(%Project{} = project) do
     Repo.retry_on_busy(fn ->
-      Repo.delete(project)
+      Repo.transaction(
+        fn ->
+          now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+          active? =
+            WorkspaceLock
+            |> where(
+              [lock],
+              lock.project_id == ^project.id and lock.status in ["waiting", "held"] and
+                lock.lease_expires_at > ^now
+            )
+            |> Repo.exists?()
+
+          if active? do
+            Repo.rollback(:project_has_active_workspace_locks)
+          else
+            Repo.delete!(project)
+          end
+        end,
+        mode: :immediate
+      )
     end)
   end
 

@@ -6,12 +6,14 @@ defmodule IexCode.Engine.Agents.VerifierAgent do
   use GenServer, restart: :transient
   require Logger
   alias IexCode.Engine.{AgentRegistry, OperationManager}
-  alias IexCode.Tools
+  alias IexCode.{Sessions, Tools}
   alias IexCode.Tools.TestRunner
 
   @outer_timeout 90_000
   @inner_timeout 60_000
   @history_limit 20
+  @lock_retry_interval 25
+  @call_completion_margin 250
 
   # Directories excluded from standalone workspace syntax validation
   @excluded_validate_dirs ~w(_build deps node_modules .git tmp)
@@ -102,6 +104,9 @@ defmodule IexCode.Engine.Agents.VerifierAgent do
     session_id = state.session_id
     project_root = opts[:project_root] || state.project_root
     parent_op_id = opts[:parent_op_id]
+    project_id = trusted_project_id(opts, state)
+    run_id = opts[:run_id]
+    workspace_lock_delegation = opts[:workspace_lock_delegation]
     allowed_tools = Keyword.get(opts, :allowed_tools, :all)
     mix_exs_exists = File.exists?(Path.join(project_root, "mix.exs"))
 
@@ -137,18 +142,22 @@ defmodule IexCode.Engine.Agents.VerifierAgent do
                     "Verifier: mix compile check",
                     %{command: "mix compile"},
                     fn p ->
-                      Tools.execute(
-                        "run_command",
-                        %{
-                          "command" => "mix compile",
-                          "timeout_ms" => 20_000,
-                          "session_id" => session_id,
-                          "agent_name" => "VerifierAgent",
-                          "op_id" => parent_op_id
-                        },
-                        project_root,
-                        p
-                      )
+                      with_workspace_delegation(workspace_lock_delegation, fn ->
+                        Tools.execute(
+                          "run_command",
+                          %{
+                            "command" => "mix compile",
+                            "timeout_ms" => 20_000,
+                            "project_id" => project_id,
+                            "run_id" => run_id,
+                            "session_id" => session_id,
+                            "agent_name" => "VerifierAgent",
+                            "op_id" => parent_op_id
+                          },
+                          project_root,
+                          p
+                        )
+                      end)
                     end
                   )
 
@@ -160,6 +169,9 @@ defmodule IexCode.Engine.Agents.VerifierAgent do
 
                   test_runner_opts = [
                     project_root: project_root,
+                    project_id: project_id,
+                    run_id: run_id,
+                    session_id: session_id,
                     timeout_ms: Keyword.get(opts, :test_timeout_ms, 30_000)
                   ]
 
@@ -168,7 +180,10 @@ defmodule IexCode.Engine.Agents.VerifierAgent do
                       do: Keyword.put(test_runner_opts, :file, opts[:test_file]),
                       else: test_runner_opts
 
-                  test_res = TestRunner.run(test_runner_opts)
+                  test_res =
+                    with_workspace_delegation(workspace_lock_delegation, fn ->
+                      Tools.run_tests(test_runner_opts)
+                    end)
 
                   progress.(90, "Evaluating verification verdict...")
 
@@ -210,8 +225,17 @@ defmodule IexCode.Engine.Agents.VerifierAgent do
 
   @impl true
   def handle_call({:run_tests, test_opts}, _from, %State{} = state) do
-    opts = Keyword.put_new(test_opts, :project_root, state.project_root)
-    res = TestRunner.run(opts)
+    opts =
+      test_opts
+      |> Keyword.put_new(:project_root, state.project_root)
+      |> Keyword.put(:project_id, trusted_project_id(test_opts, state))
+      |> Keyword.put(:session_id, state.session_id)
+
+    res =
+      with_workspace_delegation(test_opts[:workspace_lock_delegation], fn ->
+        Tools.run_tests(opts)
+      end)
+
     {:reply, res, state}
   end
 
@@ -219,20 +243,90 @@ defmodule IexCode.Engine.Agents.VerifierAgent do
   def handle_call({:check_compile, compile_opts}, _from, %State{} = state) do
     project_root = compile_opts[:project_root] || state.project_root
     session_id = compile_opts[:session_id] || state.session_id
+    project_id = trusted_project_id(compile_opts, state)
 
-    args = %{
+    base_args = %{
       "command" => "mix compile",
+      "project_id" => project_id,
+      "run_id" => compile_opts[:run_id],
       "session_id" => session_id,
       "agent_name" => "VerifierAgent"
     }
 
-    res = Tools.execute("run_command", args, project_root, fn _, _ -> :ok end)
+    res =
+      with_workspace_delegation(compile_opts[:workspace_lock_delegation], fn ->
+        wait_timeout =
+          compile_opts
+          |> Keyword.get(:timeout, 60_000)
+          |> Kernel.-(@call_completion_margin)
+          |> max(0)
+
+        retry_compile_lock_conflicts(
+          fn remaining ->
+            args = Map.put(base_args, "timeout_ms", max(1, min(30_000, remaining)))
+            Tools.execute("run_command", args, project_root, fn _, _ -> :ok end)
+          end,
+          wait_timeout
+        )
+      end)
+
     {:reply, res, state}
   end
 
   @impl true
   def handle_call(:get_state, _from, %State{} = state) do
     {:reply, state, state}
+  end
+
+  defp trusted_project_id(_opts, state) do
+    (state.session && state.session.project_id) ||
+      case Sessions.get_session(state.session_id) do
+        %{project_id: project_id} -> project_id
+        _ -> nil
+      end
+  end
+
+  defp with_workspace_delegation(nil, fun), do: fun.()
+
+  defp with_workspace_delegation(delegation, fun) do
+    IexCode.WorkspaceLocks.with_delegation(delegation, fun)
+  end
+
+  # A compile check is a cooperative verifier operation. Valid sessions sharing
+  # one project serialize behind the project-exclusive command lock instead of
+  # failing merely because another verifier got there first. The public
+  # `run_tests/2` path intentionally remains fail-closed on a foreign lock.
+  defp retry_compile_lock_conflicts(fun, wait_timeout_ms) do
+    deadline = System.monotonic_time(:millisecond) + wait_timeout_ms
+    do_retry_compile_lock_conflicts(fun, deadline)
+  end
+
+  defp do_retry_compile_lock_conflicts(fun, deadline) do
+    remaining = max(deadline - System.monotonic_time(:millisecond), 1)
+
+    case fun.(remaining) do
+      {:error, {:workspace_lock_waiting, _locks}} = waiting ->
+        retry_compile_after_conflict(fun, deadline, waiting)
+
+      {:error, {:conflict, _locks}} = waiting ->
+        retry_compile_after_conflict(fun, deadline, waiting)
+
+      result ->
+        result
+    end
+  end
+
+  defp retry_compile_after_conflict(fun, deadline, waiting) do
+    remaining = deadline - System.monotonic_time(:millisecond)
+
+    if remaining > 0 do
+      receive do
+      after
+        min(@lock_retry_interval, remaining) -> do_retry_compile_lock_conflicts(fun, deadline)
+      end
+    else
+      waiting
+    end
   end
 
   # Steering / cancellation helpers

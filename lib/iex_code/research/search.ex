@@ -3,11 +3,13 @@ defmodule IexCode.Research.Search do
   Concurrent federated web search.
 
   Providers are isolated: one provider's crash, timeout, or HTTP failure never
-  discards successful results from another. Results are deduplicated by their
-  canonicalized URL while preserving provider order.
+  discards successful results from another. Successful provider result lists
+  are deterministically interleaved so an early provider cannot consume the
+  caller's result budget. Results are deduplicated by canonical URL while
+  retaining duplicate-provider provenance.
   """
 
-  alias IexCode.Research.Registry
+  alias IexCode.Research.{Registry, Result}
 
   @provider_option_keys ~w(api_key base_url enabled cx engine_id country language search_depth)a
 
@@ -53,12 +55,12 @@ defmodule IexCode.Research.Search do
       )
       |> Enum.to_list()
 
-    {results, errors, successful} =
+    {provider_results, errors, successful} =
       selected
       |> Enum.zip(outputs)
       |> Enum.reduce({[], %{}, []}, fn
         {{name, _module, _config}, {:ok, {:ok, provider_results}}}, {results, errors, ok} ->
-          {results ++ provider_results, errors, ok ++ [to_string(name)]}
+          {results ++ [provider_results], errors, ok ++ [to_string(name)]}
 
         {{name, _module, _config}, {:ok, {:error, reason}}}, {results, errors, ok} ->
           {results, Map.put(errors, to_string(name), reason), ok}
@@ -70,7 +72,8 @@ defmodule IexCode.Research.Search do
     if map_size(errors) == length(selected) do
       {:error, {:all_providers_failed, errors}}
     else
-      {:ok, %{results: deduplicate(results), errors: errors, providers: successful}}
+      results = provider_results |> interleave() |> deduplicate()
+      {:ok, %{results: results, errors: errors, providers: successful}}
     end
   end
 
@@ -131,18 +134,36 @@ defmodule IexCode.Research.Search do
     end)
   end
 
+  defp interleave(provider_results) do
+    provider_results
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {results, provider_index} ->
+      results
+      |> Enum.with_index()
+      |> Enum.map(fn {result, rank} -> {result, rank, provider_index} end)
+    end)
+    |> Enum.sort_by(fn {_result, rank, provider_index} -> {rank, provider_index} end)
+    |> Enum.map(fn {result, _rank, _provider_index} -> result end)
+  end
+
   defp deduplicate(results) do
     results
-    |> Enum.reduce({[], MapSet.new()}, fn result, {unique, seen} ->
+    |> Enum.reduce({[], %{}}, fn result, {order, indexed} ->
       key = canonical_url(result.url)
 
-      if MapSet.member?(seen, key) do
-        {unique, seen}
-      else
-        {unique ++ [result], MapSet.put(seen, key)}
+      case Map.fetch(indexed, key) do
+        {:ok, primary} ->
+          {order, Map.put(indexed, key, Result.merge_provenance(primary, result))}
+
+        :error ->
+          {[key | order], Map.put(indexed, key, result)}
       end
     end)
-    |> elem(0)
+    |> then(fn {reversed_order, indexed} ->
+      reversed_order
+      |> Enum.reverse()
+      |> Enum.map(&Map.fetch!(indexed, &1))
+    end)
   end
 
   defp canonical_url(url) do

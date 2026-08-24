@@ -20,9 +20,44 @@ defmodule IexCodeWeb.RunComponents do
   attr :run_manifest, :map, default: %{}
   attr :events, :any, required: true
   attr :stats, :map, default: %{}
+  attr :workspace_locks, :list, default: []
 
   def run_control_plane(assigns) do
-    assigns = assign(assigns, :steering_form, to_form(%{"steering" => ""}))
+    active_workspace_locks =
+      Enum.filter(assigns.workspace_locks, &(lock_value(&1, :status) in ["held", "waiting"]))
+
+    held_workspace_locks =
+      Enum.filter(active_workspace_locks, &(lock_value(&1, :status) == "held"))
+
+    waiting_workspace_locks =
+      Enum.filter(active_workspace_locks, &(lock_value(&1, :status) == "waiting"))
+
+    selected_lock_state = run_workspace_lock_state(assigns.selected_run, active_workspace_locks)
+
+    selected_workspace_lock =
+      selected_run_workspace_lock(
+        assigns.selected_run,
+        active_workspace_locks,
+        selected_lock_state
+      )
+
+    workspace_lock_state =
+      cond do
+        selected_lock_state in ["held", "waiting"] -> selected_lock_state
+        held_workspace_locks != [] -> "held"
+        waiting_workspace_locks != [] -> "waiting"
+        true -> "free"
+      end
+
+    assigns =
+      assigns
+      |> assign(:steering_form, to_form(%{"steering" => ""}))
+      |> assign(:active_workspace_locks, active_workspace_locks)
+      |> assign(:held_workspace_locks, held_workspace_locks)
+      |> assign(:waiting_workspace_locks, waiting_workspace_locks)
+      |> assign(:selected_lock_state, selected_lock_state)
+      |> assign(:selected_workspace_lock, selected_workspace_lock)
+      |> assign(:workspace_lock_state, workspace_lock_state)
 
     ~H"""
     <section id="async-run-control" aria-labelledby="async-run-heading" class="space-y-4">
@@ -69,6 +104,152 @@ defmodule IexCodeWeb.RunComponents do
         </div>
       </div>
 
+      <section
+        id="workspace-lock-overview"
+        aria-labelledby="workspace-lock-heading"
+        aria-live="polite"
+        aria-atomic="true"
+        data-lock-state={@workspace_lock_state}
+        class={[
+          "border bg-[#0d1117] transition-colors",
+          @workspace_lock_state == "free" && "border-[#26313a]",
+          @workspace_lock_state == "held" && "border-emerald-500/25",
+          @workspace_lock_state == "waiting" && "border-amber-500/30"
+        ]}
+      >
+        <div class="flex flex-col gap-3 px-3.5 py-3 sm:px-4 md:flex-row md:items-center md:justify-between">
+          <div class="flex min-w-0 items-start gap-3 md:items-center">
+            <span class={[
+              "mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center border md:mt-0",
+              @workspace_lock_state == "free" &&
+                "border-[#303943] bg-[#151b22] text-gray-500",
+              @workspace_lock_state == "held" &&
+                "border-emerald-500/25 bg-emerald-500/[0.07] text-emerald-300",
+              @workspace_lock_state == "waiting" &&
+                "border-amber-500/30 bg-amber-500/[0.08] text-amber-300"
+            ]}>
+              <.icon
+                name={
+                  if @workspace_lock_state == "free", do: "hero-lock-open", else: "hero-lock-closed"
+                }
+                class="h-4 w-4"
+              />
+            </span>
+
+            <div class="min-w-0">
+              <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                <h3
+                  id="workspace-lock-heading"
+                  class="text-xs font-semibold tracking-tight text-gray-100"
+                >
+                  Workspace access
+                </h3>
+                <span
+                  id="workspace-lock-summary"
+                  class={[
+                    "font-mono text-[10px] uppercase tracking-[0.13em]",
+                    @workspace_lock_state == "free" && "text-gray-500",
+                    @workspace_lock_state == "held" && "text-emerald-300",
+                    @workspace_lock_state == "waiting" && "text-amber-300"
+                  ]}
+                >
+                  {workspace_lock_summary(
+                    @workspace_lock_state,
+                    @selected_lock_state,
+                    selected_or_first(
+                      @selected_workspace_lock,
+                      @held_workspace_locks
+                    ),
+                    selected_or_first(
+                      @selected_workspace_lock,
+                      @waiting_workspace_locks
+                    )
+                  )}
+                </span>
+              </div>
+              <p
+                id="workspace-lock-context"
+                class="mt-0.5 truncate text-[11px] leading-5 text-gray-500"
+              >
+                {workspace_lock_context(
+                  @workspace_lock_state,
+                  @selected_lock_state,
+                  selected_or_first(@selected_workspace_lock, @held_workspace_locks),
+                  selected_or_first(@selected_workspace_lock, @waiting_workspace_locks)
+                )}
+              </p>
+            </div>
+          </div>
+
+          <div class="flex shrink-0 items-center justify-between gap-4 border-t border-[#21262d] pt-2.5 md:border-l md:border-t-0 md:pl-4 md:pt-0">
+            <div class="flex items-center gap-3 font-mono text-[10px] tabular-nums text-gray-500">
+              <span id="workspace-lock-held-count">
+                <strong class="font-semibold text-gray-200">{length(@held_workspace_locks)}</strong>
+                held resources
+              </span>
+              <span id="workspace-lock-waiting-count">
+                <strong class="font-semibold text-gray-200">{length(@waiting_workspace_locks)}</strong>
+                waiting resources
+              </span>
+            </div>
+
+            <details
+              :if={@active_workspace_locks != []}
+              id="workspace-lock-details"
+              class="group relative"
+            >
+              <summary class="flex min-h-8 cursor-pointer list-none items-center gap-1.5 border border-[#30363d] bg-[#131920] px-2.5 font-mono text-[10px] text-gray-400 transition-colors hover:border-[#46515e] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff7e5f]/60 [&::-webkit-details-marker]:hidden">
+                Details
+                <.icon
+                  name="hero-chevron-down"
+                  class="h-3 w-3 transition-transform group-open:rotate-180"
+                />
+              </summary>
+              <div class="absolute right-0 top-full z-20 mt-2 grid max-h-80 w-[min(42rem,calc(100vw-2rem))] overflow-y-auto border border-[#30363d] bg-[#0b0f14] shadow-2xl shadow-black/40 md:grid-cols-2">
+                <article
+                  :for={lock <- @active_workspace_locks}
+                  id={"workspace-lock-#{lock_value(lock, :id)}"}
+                  data-lock-status={lock_value(lock, :status)}
+                  class="min-w-0 border-b border-[#21262d] px-3.5 py-3 md:border-r md:[&:nth-child(even)]:border-r-0"
+                >
+                  <div class="flex items-start justify-between gap-3">
+                    <div class="min-w-0">
+                      <p
+                        class="truncate font-mono text-[11px] font-medium text-gray-200"
+                        title={workspace_lock_resource(lock)}
+                      >
+                        {workspace_lock_resource(lock)}
+                      </p>
+                      <p class="mt-1 truncate text-[10px] text-gray-600">
+                        Owner · {workspace_lock_owner(lock)}
+                      </p>
+                    </div>
+                    <span class={[
+                      "shrink-0 border px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider",
+                      lock_value(lock, :status) == "held" &&
+                        "border-emerald-500/20 bg-emerald-500/[0.06] text-emerald-300",
+                      lock_value(lock, :status) == "waiting" &&
+                        "border-amber-500/25 bg-amber-500/[0.07] text-amber-300"
+                    ]}>
+                      {lock_value(lock, :status)}
+                    </span>
+                  </div>
+                  <div class="mt-2 flex min-w-0 items-center justify-between gap-3 font-mono text-[9px] uppercase tracking-wider text-gray-600">
+                    <span>{display_value(lock_value(lock, :mode), "access")}</span>
+                    <span
+                      class="truncate normal-case tracking-normal"
+                      title={workspace_lock_lease_title(lock)}
+                    >
+                      {workspace_lock_lease(lock)}
+                    </span>
+                  </div>
+                </article>
+              </div>
+            </details>
+          </div>
+        </div>
+      </section>
+
       <div
         id="async-run-metrics"
         role="status"
@@ -113,6 +294,7 @@ defmodule IexCodeWeb.RunComponents do
               phx-click="select_async_run"
               phx-value-id={run.id}
               aria-pressed={@selected_run && @selected_run.id == run.id}
+              data-workspace-lock-state={run_workspace_lock_state(run, @active_workspace_locks)}
               class={[
                 "group mb-1 w-full border px-3 py-3 text-left transition-colors",
                 @selected_run && @selected_run.id == run.id &&
@@ -133,6 +315,30 @@ defmodule IexCodeWeb.RunComponents do
               <div class="mt-3 flex items-center justify-between font-mono text-[10px] text-gray-500">
                 <span>{run.kind |> String.replace("_", " ")}</span>
                 <span>attempt {run.attempt}/{run.max_attempts}</span>
+              </div>
+              <div
+                :if={run_workspace_lock_state(run, @active_workspace_locks) != "none"}
+                class={[
+                  "mt-2 flex items-center gap-1.5 font-mono text-[9px] uppercase tracking-wider",
+                  run_workspace_lock_state(run, @active_workspace_locks) == "held" &&
+                    "text-emerald-400/80",
+                  run_workspace_lock_state(run, @active_workspace_locks) == "waiting" &&
+                    "text-amber-400/80"
+                ]}
+              >
+                <.icon
+                  name={
+                    if run_workspace_lock_state(run, @active_workspace_locks) == "held",
+                      do: "hero-lock-closed",
+                      else: "hero-clock"
+                  }
+                  class="h-3 w-3"
+                />
+                <span>
+                  {if run_workspace_lock_state(run, @active_workspace_locks) == "held",
+                    do: "owns workspace",
+                    else: "waiting for workspace"}
+                </span>
               </div>
               <div class="mt-2 h-px overflow-hidden bg-[#252b34]">
                 <div
@@ -867,6 +1073,142 @@ defmodule IexCodeWeb.RunComponents do
       _other -> manifest
     end
   end
+
+  defp run_workspace_lock_state(nil, _locks), do: "none"
+
+  defp run_workspace_lock_state(run, locks) do
+    run_id = lock_value(run, :id)
+
+    cond do
+      Enum.any?(locks, fn lock ->
+        lock_value(lock, :run_id) == run_id and lock_value(lock, :status) == "held"
+      end) ->
+        "held"
+
+      Enum.any?(locks, fn lock ->
+        lock_value(lock, :run_id) == run_id and lock_value(lock, :status) == "waiting"
+      end) ->
+        "waiting"
+
+      true ->
+        "none"
+    end
+  end
+
+  defp selected_run_workspace_lock(nil, _locks, _state), do: nil
+
+  defp selected_run_workspace_lock(run, locks, state) when state in ["held", "waiting"] do
+    run_id = lock_value(run, :id)
+
+    Enum.find(locks, fn lock ->
+      lock_value(lock, :run_id) == run_id and lock_value(lock, :status) == state
+    end)
+  end
+
+  defp selected_run_workspace_lock(_run, _locks, _state), do: nil
+
+  defp selected_or_first(nil, locks), do: List.first(locks)
+  defp selected_or_first(selected, _locks), do: selected
+
+  defp workspace_lock_summary("free", _selected_state, _held, _waiting), do: "Available"
+
+  defp workspace_lock_summary("held", "held", _held, _waiting),
+    do: "Reserved by this run"
+
+  defp workspace_lock_summary("waiting", "waiting", _held, _waiting),
+    do: "This run is waiting"
+
+  defp workspace_lock_summary("held", _selected_state, held, _waiting),
+    do: "Reserved by #{workspace_lock_owner(held)}"
+
+  defp workspace_lock_summary("waiting", _selected_state, _held, _waiting),
+    do: "Waiting for workspace"
+
+  defp workspace_lock_summary(_state, _selected_state, _held, _waiting), do: "Available"
+
+  defp workspace_lock_context("free", _selected_state, _held, _waiting),
+    do: "No active IexCode workspace reservations."
+
+  defp workspace_lock_context("held", _selected_state, held, _waiting),
+    do:
+      "#{workspace_lock_resource(held)} · #{display_value(lock_value(held, :mode), "access")} access · #{workspace_lock_lease(held)}"
+
+  defp workspace_lock_context("waiting", _selected_state, _held, waiting),
+    do: "#{workspace_lock_resource(waiting)} · queued behind another workspace owner"
+
+  defp workspace_lock_context(_state, _selected_state, _held, _waiting),
+    do: "Workspace ownership is synchronized from the durable lock ledger."
+
+  defp workspace_lock_resource(nil), do: "Workspace"
+
+  defp workspace_lock_resource(lock) do
+    resource_type = display_value(lock_value(lock, :resource_type), "workspace")
+    resource_key = lock_value(lock, :resource_key)
+
+    case {resource_type, resource_key} do
+      {"project", _key} -> "Project workspace"
+      {"git", _key} -> "Git repository"
+      {"file", key} when is_binary(key) and key != "" -> "File · #{Path.basename(key)}"
+      {type, _key} -> String.capitalize(type)
+    end
+  end
+
+  defp workspace_lock_owner(nil), do: "another run"
+
+  defp workspace_lock_owner(lock) do
+    cond do
+      is_binary(lock_value(lock, :run_id)) ->
+        "Run ##{String.slice(lock_value(lock, :run_id), 0, 7)}"
+
+      is_binary(lock_value(lock, :session_id)) ->
+        "Session ##{String.slice(lock_value(lock, :session_id), 0, 7)}"
+
+      true ->
+        "workspace worker"
+    end
+  end
+
+  defp workspace_lock_lease(lock) do
+    case lock_value(lock, :status) do
+      "held" ->
+        case lock_value(lock, :lease_expires_at) do
+          %DateTime{} = expires_at -> "lease until #{format_lock_time(expires_at)}"
+          _ -> "active lease"
+        end
+
+      "waiting" ->
+        case lock_value(lock, :wait_reason) do
+          "queue_predecessor" -> "queued by request order"
+          "batch_blocked" -> "waiting for lock batch"
+          _ -> "waiting on owner release"
+        end
+
+      _ ->
+        "inactive"
+    end
+  end
+
+  defp workspace_lock_lease_title(lock) do
+    case lock_value(lock, :lease_expires_at) do
+      %DateTime{} = expires_at -> DateTime.to_iso8601(expires_at)
+      _ -> workspace_lock_lease(lock)
+    end
+  end
+
+  defp format_lock_time(%DateTime{} = datetime) do
+    datetime
+    |> DateTime.to_time()
+    |> Time.truncate(:second)
+    |> Time.to_string()
+  end
+
+  defp lock_value(nil, _key), do: nil
+
+  defp lock_value(value, key) when is_map(value) do
+    Map.get(value, key) || Map.get(value, Atom.to_string(key))
+  end
+
+  defp lock_value(_value, _key), do: nil
 
   defp manifest_get(map, key) when is_map(map) do
     case Map.fetch(map, key) do

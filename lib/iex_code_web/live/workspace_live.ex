@@ -1,7 +1,7 @@
 defmodule IexCodeWeb.WorkspaceLive do
   use IexCodeWeb, :live_view
   require Logger
-  alias IexCode.{Projects, Runs, Sessions, Settings, Kanban}
+  alias IexCode.{Projects, Runs, Sessions, Settings, Kanban, WorkspaceLocks, WorkspacePath}
   alias IexCode.Engine.SessionServer
   alias IexCode.Runs.RunDispatcher
   alias IexCode.Tools.Git
@@ -30,6 +30,7 @@ defmodule IexCodeWeb.WorkspaceLive do
       PubSub.subscribe(IexCode.PubSub, "session:#{session.id}")
       PubSub.subscribe(IexCode.PubSub, "session:#{session.id}:terminal")
       Runs.subscribe_session(session.id)
+      Runs.subscribe_workspace_locks(project.id)
       Kanban.subscribe(project.id)
       SessionServer.ensure_started(session.id)
       _ = TerminalServer.ensure_started(session.id, workspace_path: project.root_path)
@@ -53,6 +54,7 @@ defmodule IexCodeWeb.WorkspaceLive do
     run_controls = if selected_run, do: Runs.list_controls(selected_run), else: []
     pending_approval_count = Runs.count_pending_approvals(session.id)
     run_artifacts = if selected_run, do: Runs.list_artifacts(selected_run), else: []
+    workspace_locks = Runs.list_workspace_locks(project_id: project.id, active: true)
     settings = Settings.get_settings()
     files = list_project_files(project.root_path)
     sessions = Sessions.list_sessions_for_project(project.id)
@@ -96,6 +98,7 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:run_controls, run_controls)
       |> assign(:run_manifest, run_manifest(selected_run))
       |> assign(:run_artifacts, run_artifacts)
+      |> assign(:workspace_locks, workspace_locks)
       |> assign(:run_rows, durable_runs)
       |> assign(:run_event_rows, run_events)
       |> assign(:run_count, length(durable_runs))
@@ -245,6 +248,7 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:test_runner_progress_msg, "")
       |> assign(:test_runner_result, nil)
       |> assign(:test_runner_async_task, nil)
+      |> assign(:test_runner_task_token, nil)
       |> assign(:show_autofix_modal, false)
       |> assign(:autofix_status, :idle)
       |> assign(:autofix_target_failure, nil)
@@ -310,7 +314,14 @@ defmodule IexCodeWeb.WorkspaceLive do
 
                 if new_session.project_id != old_project_id do
                   PubSub.unsubscribe(IexCode.PubSub, "kanban:#{old_project_id}")
+
+                  PubSub.unsubscribe(
+                    IexCode.PubSub,
+                    "workspace_locks:project:#{old_project_id}"
+                  )
+
                   Kanban.subscribe(new_session.project_id)
+                  Runs.subscribe_workspace_locks(new_session.project_id)
                 end
 
                 SessionServer.ensure_started(new_session.id)
@@ -357,6 +368,10 @@ defmodule IexCodeWeb.WorkspaceLive do
                 |> assign(:terminal_occupant, terminal_occupant)
                 |> assign(:terminal_active_cmd, nil)
                 |> assign(:terminal_output, "")
+                |> assign(
+                  :workspace_locks,
+                  Runs.list_workspace_locks(project_id: project.id, active: true)
+                )
                 |> assign_run_projection(new_session.id)
                 |> refresh_git_state()
 
@@ -962,7 +977,6 @@ defmodule IexCodeWeb.WorkspaceLive do
   @impl true
   def handle_event("save_file", params, socket) do
     file_path = socket.assigns.selected_file
-    root = socket.assigns.project.root_path
 
     content =
       case params["content"] do
@@ -971,9 +985,11 @@ defmodule IexCodeWeb.WorkspaceLive do
       end
 
     if file_path do
-      full_path = Path.join(root, file_path)
+      # The hotkey can deliver content before the preceding input event reaches
+      # the server. Keep that exact buffer even when authorization is denied.
+      socket = put_active_buffer_content(socket, content)
 
-      case File.write(full_path, content) do
+      case save_editor_file(socket, file_path, content) do
         :ok ->
           buffers =
             Enum.map(socket.assigns.open_buffers, fn b ->
@@ -984,7 +1000,7 @@ defmodule IexCodeWeb.WorkspaceLive do
               end
             end)
 
-          files = list_project_files(root)
+          files = list_project_files(socket.assigns.project.root_path)
 
           {:noreply,
            socket
@@ -996,11 +1012,39 @@ defmodule IexCodeWeb.WorkspaceLive do
            |> refresh_git_state()
            |> put_flash(:info, "Saved #{file_path}")}
 
+        {:error, {:workspace_lock_waiting, _locks}} ->
+          {:noreply,
+           socket
+           |> refresh_workspace_locks()
+           |> put_flash(
+             :error,
+             "Save blocked: another session owns the workspace lock. Your changes are still in the editor."
+           )}
+
         {:error, reason} ->
-          {:noreply, put_flash(socket, :error, "Failed to save file: #{inspect(reason)}")}
+          {:noreply,
+           put_flash(
+             socket,
+             :error,
+             "Failed to save file: #{editor_save_error(reason)}. Your changes are still in the editor."
+           )}
       end
     else
       {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("retry_file_lock", _params, socket) do
+    socket = refresh_workspace_locks(socket)
+
+    case editor_lock(socket.assigns) do
+      nil ->
+        {:noreply,
+         put_flash(socket, :info, "The file is available. You can save your changes now.")}
+
+      _lock ->
+        {:noreply, put_flash(socket, :error, "The file is still locked by another session.")}
     end
   end
 
@@ -1129,7 +1173,9 @@ defmodule IexCodeWeb.WorkspaceLive do
   def handle_event("accept_hunk", %{"file" => file, "hunk_id" => hunk_id}, socket) do
     root = socket.assigns.project.root_path
 
-    case HunkOps.accept_hunk(root, file, hunk_id, diff: socket.assigns.diff_text) do
+    case with_ui_mutation_lock(socket, fn ->
+           HunkOps.accept_hunk(root, file, hunk_id, diff: socket.assigns.diff_text)
+         end) do
       {:ok, _} ->
         {:noreply,
          socket
@@ -1137,7 +1183,8 @@ defmodule IexCodeWeb.WorkspaceLive do
          |> put_flash(:info, "Accepted hunk #{hunk_id} for #{file}")}
 
       {:error, reason} ->
-        {:noreply, put_flash(socket, :error, "Failed to accept hunk: #{inspect(reason)}")}
+        {:noreply,
+         put_flash(socket, :error, "Failed to accept hunk: #{ui_mutation_error(reason)}")}
     end
   end
 
@@ -1145,7 +1192,9 @@ defmodule IexCodeWeb.WorkspaceLive do
   def handle_event("reject_hunk", %{"file" => file, "hunk_id" => hunk_id}, socket) do
     root = socket.assigns.project.root_path
 
-    case HunkOps.reject_hunk(root, file, hunk_id, diff: socket.assigns.diff_text) do
+    case with_ui_mutation_lock(socket, fn ->
+           HunkOps.reject_hunk(root, file, hunk_id, diff: socket.assigns.diff_text)
+         end) do
       {:ok, _} ->
         {:noreply,
          socket
@@ -1153,7 +1202,8 @@ defmodule IexCodeWeb.WorkspaceLive do
          |> put_flash(:info, "Reverted hunk #{hunk_id} in #{file}")}
 
       {:error, reason} ->
-        {:noreply, put_flash(socket, :error, "Failed to revert hunk: #{inspect(reason)}")}
+        {:noreply,
+         put_flash(socket, :error, "Failed to revert hunk: #{ui_mutation_error(reason)}")}
     end
   end
 
@@ -1164,7 +1214,7 @@ defmodule IexCodeWeb.WorkspaceLive do
   def handle_event("accept_all_hunks", %{"file" => file}, socket) do
     root = socket.assigns.project.root_path
 
-    case HunkOps.accept_all_hunks(root, file) do
+    case with_ui_mutation_lock(socket, fn -> HunkOps.accept_all_hunks(root, file) end) do
       {:ok, _} ->
         {:noreply,
          socket
@@ -1172,7 +1222,8 @@ defmodule IexCodeWeb.WorkspaceLive do
          |> put_flash(:info, "Staged all changes for #{file}")}
 
       {:error, reason} ->
-        {:noreply, put_flash(socket, :error, "Failed to stage changes: #{inspect(reason)}")}
+        {:noreply,
+         put_flash(socket, :error, "Failed to stage changes: #{ui_mutation_error(reason)}")}
     end
   end
 
@@ -1180,7 +1231,7 @@ defmodule IexCodeWeb.WorkspaceLive do
   def handle_event("revert_file", %{"file" => file}, socket) do
     root = socket.assigns.project.root_path
 
-    case HunkOps.revert_file(root, file) do
+    case with_ui_mutation_lock(socket, fn -> HunkOps.revert_file(root, file) end) do
       {:ok, _} ->
         # If the file is open in editor, reload content
         socket =
@@ -1202,7 +1253,8 @@ defmodule IexCodeWeb.WorkspaceLive do
          |> put_flash(:info, "Reverted #{file} to clean git working state")}
 
       {:error, reason} ->
-        {:noreply, put_flash(socket, :error, "Failed to revert file: #{inspect(reason)}")}
+        {:noreply,
+         put_flash(socket, :error, "Failed to revert file: #{ui_mutation_error(reason)}")}
     end
   end
 
@@ -1323,51 +1375,16 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("run_tests", params, socket) do
-    mode = Map.get(params, "mode", "all")
-    file_path = Map.get(params, "file")
-    line = Map.get(params, "line")
-
-    opts =
-      case mode do
-        "failed" ->
-          [failed: true]
-
-        "stale" ->
-          [stale: true]
-
-        "file" when is_binary(file_path) and file_path != "" ->
-          l = if line && line != "", do: String.to_integer(line), else: nil
-          [paths: [file_path], line: l]
-
-        _ ->
-          []
-      end
-
-    project_root = socket.assigns.project.root_path
-    lv_pid = self()
-
-    on_progress = fn pct, msg ->
-      send(lv_pid, {:test_runner_progress, pct, msg})
+    if socket.assigns.test_runner_async_task do
+      {:noreply,
+       put_flash(
+         socket,
+         :error,
+         "A test run is already in progress. Wait for it to finish before retrying."
+       )}
+    else
+      start_test_runner(params, socket)
     end
-
-    opts =
-      opts
-      |> Keyword.put(:project_root, project_root)
-      |> Keyword.put(:on_progress, on_progress)
-      |> Keyword.put(:timeout_ms, 60_000)
-
-    task =
-      Task.Supervisor.async_nolink(IexCode.TaskSupervisor, fn ->
-        IexCode.Tools.TestRunner.run(project_root, opts)
-      end)
-
-    {:noreply,
-     socket
-     |> assign(:test_runner_status, :running)
-     |> assign(:test_runner_progress_pct, 10)
-     |> assign(:test_runner_progress_msg, "Starting ExUnit test suite...")
-     |> assign(:test_runner_async_task, task)
-     |> assign(:active_tab, "tests")}
   end
 
   @impl true
@@ -1419,12 +1436,18 @@ defmodule IexCodeWeb.WorkspaceLive do
   def handle_event("apply_autofix_patch", _params, socket) do
     project_root = socket.assigns.project.root_path
     planned = socket.assigns.autofix_planned_patches
+    proposals = socket.assigns.autofix_proposals
     target_failure = socket.assigns.autofix_target_failure
 
     if planned == [] do
       {:noreply, socket |> assign(:show_autofix_modal, false)}
     else
-      case IexCode.Tools.MultiPatch.apply_patches(project_root, planned) do
+      lock_opts = [
+        project_id: socket.assigns.project.id,
+        session_id: socket.assigns.session.id
+      ]
+
+      case IexCode.Tools.multi_patch(proposals, project_root, lock_opts) do
         {:ok, %{applied: _count, transaction_id: tx_id}} ->
           socket =
             socket
@@ -1452,11 +1475,19 @@ defmodule IexCodeWeb.WorkspaceLive do
 
           {:noreply, socket |> put_flash(:info, "AutoFix patch applied successfully!")}
 
+        {:error, {:workspace_lock_waiting, _locks} = reason} ->
+          {:noreply,
+           put_flash(
+             socket,
+             :error,
+             "Failed to apply patch: #{ui_mutation_error(reason)}"
+           )}
+
         {:error, reason} ->
           {:noreply,
            socket
            |> assign(:autofix_status, :failed)
-           |> put_flash(:error, "Failed to apply patch: #{inspect(reason)}")}
+           |> put_flash(:error, "Failed to apply patch: #{ui_mutation_error(reason)}")}
       end
     end
   end
@@ -1466,7 +1497,12 @@ defmodule IexCodeWeb.WorkspaceLive do
     tx_id = socket.assigns.autofix_tx_id
 
     if tx_id do
-      case IexCode.Tools.MultiPatch.rollback(tx_id) do
+      lock_opts = [
+        project_id: socket.assigns.project.id,
+        session_id: socket.assigns.session.id
+      ]
+
+      case IexCode.Tools.rollback_multi_patch(tx_id, socket.assigns.project.root_path, lock_opts) do
         {:ok, _} ->
           socket =
             socket
@@ -1478,7 +1514,7 @@ defmodule IexCodeWeb.WorkspaceLive do
           {:noreply, socket |> put_flash(:info, "AutoFix patch rolled back successfully.")}
 
         {:error, reason} ->
-          {:noreply, put_flash(socket, :error, "Rollback failed: #{inspect(reason)}")}
+          {:noreply, put_flash(socket, :error, "Rollback failed: #{ui_mutation_error(reason)}")}
       end
     else
       {:noreply, assign(socket, :show_autofix_modal, false)}
@@ -1613,7 +1649,7 @@ defmodule IexCodeWeb.WorkspaceLive do
   def handle_event("switch_git_branch", %{"branch" => branch}, socket) do
     root = socket.assigns.project.root_path
 
-    case Git.switch_branch(root, branch) do
+    case with_ui_mutation_lock(socket, fn -> Git.switch_branch(root, branch) end) do
       {:ok, _} ->
         socket =
           socket
@@ -1624,7 +1660,8 @@ defmodule IexCodeWeb.WorkspaceLive do
         {:noreply, socket}
 
       {:error, reason} ->
-        {:noreply, put_flash(socket, :error, "Failed to switch branch: #{inspect(reason)}")}
+        {:noreply,
+         put_flash(socket, :error, "Failed to switch branch: #{ui_mutation_error(reason)}")}
     end
   end
 
@@ -1638,7 +1675,7 @@ defmodule IexCodeWeb.WorkspaceLive do
     else
       root = socket.assigns.project.root_path
 
-      case Git.create_branch(root, name) do
+      case with_ui_mutation_lock(socket, fn -> Git.create_branch(root, name) end) do
         {:ok, _} ->
           socket =
             socket
@@ -1649,7 +1686,8 @@ defmodule IexCodeWeb.WorkspaceLive do
           {:noreply, socket}
 
         {:error, reason} ->
-          {:noreply, put_flash(socket, :error, "Failed to create branch: #{inspect(reason)}")}
+          {:noreply,
+           put_flash(socket, :error, "Failed to create branch: #{ui_mutation_error(reason)}")}
       end
     end
   end
@@ -1658,14 +1696,16 @@ defmodule IexCodeWeb.WorkspaceLive do
   def handle_event("git_fetch", _params, socket) do
     root = socket.assigns.project.root_path
 
-    case Git.fetch(root) do
+    case with_ui_mutation_lock(socket, fn -> Git.fetch(root) end) do
       {:ok, _} ->
         {:noreply,
          socket |> refresh_git_state() |> put_flash(:info, "Fetched latest remote updates")}
 
       {:error, reason} ->
         {:noreply,
-         socket |> refresh_git_state() |> put_flash(:error, "Fetch failed: #{inspect(reason)}")}
+         socket
+         |> refresh_git_state()
+         |> put_flash(:error, "Fetch failed: #{ui_mutation_error(reason)}")}
     end
   end
 
@@ -1673,14 +1713,16 @@ defmodule IexCodeWeb.WorkspaceLive do
   def handle_event("git_pull", _params, socket) do
     root = socket.assigns.project.root_path
 
-    case Git.pull(root) do
+    case with_ui_mutation_lock(socket, fn -> Git.pull(root) end) do
       {:ok, _} ->
         {:noreply,
          socket |> refresh_git_state() |> put_flash(:info, "Pulled latest changes from remote")}
 
       {:error, reason} ->
         {:noreply,
-         socket |> refresh_git_state() |> put_flash(:error, "Pull failed: #{inspect(reason)}")}
+         socket
+         |> refresh_git_state()
+         |> put_flash(:error, "Pull failed: #{ui_mutation_error(reason)}")}
     end
   end
 
@@ -1688,12 +1730,12 @@ defmodule IexCodeWeb.WorkspaceLive do
   def handle_event("stage_file", %{"file" => file}, socket) do
     root = socket.assigns.project.root_path
 
-    case Git.stage(file, root) do
+    case with_ui_mutation_lock(socket, fn -> Git.stage(file, root) end) do
       :ok ->
         {:noreply, refresh_git_state(socket)}
 
       {:error, reason} ->
-        {:noreply, put_flash(socket, :error, "Staging failed: #{inspect(reason)}")}
+        {:noreply, put_flash(socket, :error, "Staging failed: #{ui_mutation_error(reason)}")}
     end
   end
 
@@ -1701,12 +1743,12 @@ defmodule IexCodeWeb.WorkspaceLive do
   def handle_event("unstage_file", %{"file" => file}, socket) do
     root = socket.assigns.project.root_path
 
-    case Git.unstage(file, root) do
+    case with_ui_mutation_lock(socket, fn -> Git.unstage(file, root) end) do
       :ok ->
         {:noreply, refresh_git_state(socket)}
 
       {:error, reason} ->
-        {:noreply, put_flash(socket, :error, "Unstaging failed: #{inspect(reason)}")}
+        {:noreply, put_flash(socket, :error, "Unstaging failed: #{ui_mutation_error(reason)}")}
     end
   end
 
@@ -1714,12 +1756,12 @@ defmodule IexCodeWeb.WorkspaceLive do
   def handle_event("stage_all", _params, socket) do
     root = socket.assigns.project.root_path
 
-    case Git.stage(:all, root) do
+    case with_ui_mutation_lock(socket, fn -> Git.stage(:all, root) end) do
       :ok ->
         {:noreply, refresh_git_state(socket)}
 
       {:error, reason} ->
-        {:noreply, put_flash(socket, :error, "Stage all failed: #{inspect(reason)}")}
+        {:noreply, put_flash(socket, :error, "Stage all failed: #{ui_mutation_error(reason)}")}
     end
   end
 
@@ -1727,12 +1769,12 @@ defmodule IexCodeWeb.WorkspaceLive do
   def handle_event("unstage_all", _params, socket) do
     root = socket.assigns.project.root_path
 
-    case Git.unstage(:all, root) do
+    case with_ui_mutation_lock(socket, fn -> Git.unstage(:all, root) end) do
       :ok ->
         {:noreply, refresh_git_state(socket)}
 
       {:error, reason} ->
-        {:noreply, put_flash(socket, :error, "Unstage all failed: #{inspect(reason)}")}
+        {:noreply, put_flash(socket, :error, "Unstage all failed: #{ui_mutation_error(reason)}")}
     end
   end
 
@@ -1740,12 +1782,12 @@ defmodule IexCodeWeb.WorkspaceLive do
   def handle_event("unstage_hunk", %{"file" => file, "hunk_id" => hunk_id}, socket) do
     root = socket.assigns.project.root_path
 
-    case HunkOps.unstage_hunk(root, file, hunk_id) do
+    case with_ui_mutation_lock(socket, fn -> HunkOps.unstage_hunk(root, file, hunk_id) end) do
       {:ok, _diff} ->
         {:noreply, refresh_git_state(socket)}
 
       {:error, reason} ->
-        {:noreply, put_flash(socket, :error, "Unstage hunk failed: #{inspect(reason)}")}
+        {:noreply, put_flash(socket, :error, "Unstage hunk failed: #{ui_mutation_error(reason)}")}
     end
   end
 
@@ -1777,7 +1819,7 @@ defmodule IexCodeWeb.WorkspaceLive do
     if msg == "" do
       {:noreply, put_flash(socket, :error, "Please enter a commit message")}
     else
-      case Git.commit(root, msg) do
+      case with_ui_mutation_lock(socket, fn -> Git.commit(root, msg) end) do
         {:ok, _result} ->
           socket =
             socket
@@ -1788,7 +1830,7 @@ defmodule IexCodeWeb.WorkspaceLive do
           {:noreply, socket}
 
         {:error, reason} ->
-          {:noreply, put_flash(socket, :error, "Commit failed: #{inspect(reason)}")}
+          {:noreply, put_flash(socket, :error, "Commit failed: #{ui_mutation_error(reason)}")}
       end
     end
   end
@@ -3422,11 +3464,24 @@ defmodule IexCodeWeb.WorkspaceLive do
   end
 
   @impl true
+  def handle_info(
+        {:test_runner_progress, token, pct, msg},
+        %{assigns: %{test_runner_task_token: token}} = socket
+      ) do
+    {:noreply, apply_test_runner_progress(socket, pct, msg)}
+  end
+
+  @impl true
+  def handle_info({:test_runner_progress, _stale_token, _pct, _msg}, socket) do
+    {:noreply, socket}
+  end
+
+  # Keep the legacy shape for tests and older local producers, while applying
+  # the same monotonic rule so a delayed "starting" callback cannot overwrite
+  # newer progress already visible to the user.
+  @impl true
   def handle_info({:test_runner_progress, pct, msg}, socket) do
-    {:noreply,
-     socket
-     |> assign(:test_runner_progress_pct, pct)
-     |> assign(:test_runner_progress_msg, msg)}
+    {:noreply, apply_test_runner_progress(socket, pct, msg)}
   end
 
   @impl true
@@ -3440,11 +3495,15 @@ defmodule IexCodeWeb.WorkspaceLive do
        :test_runner_progress_msg,
        "Tests completed (#{result.passed}/#{result.total} passed)"
      )
-     |> assign(:test_runner_async_task, nil)}
+     |> assign(:test_runner_async_task, nil)
+     |> assign(:test_runner_task_token, nil)}
   end
 
   @impl true
-  def handle_info({ref, {:ok, %IexCode.Tools.TestRunner.Result{} = result}}, socket) do
+  def handle_info(
+        {ref, {:ok, %IexCode.Tools.TestRunner.Result{} = result}},
+        %{assigns: %{test_runner_async_task: %Task{ref: ref}}} = socket
+      ) do
     Process.demonitor(ref, [:flush])
 
     {:noreply,
@@ -3456,7 +3515,8 @@ defmodule IexCodeWeb.WorkspaceLive do
        :test_runner_progress_msg,
        "Tests completed (#{result.passed}/#{result.total} passed)"
      )
-     |> assign(:test_runner_async_task, nil)}
+     |> assign(:test_runner_async_task, nil)
+     |> assign(:test_runner_task_token, nil)}
   end
 
   @impl true
@@ -3469,6 +3529,7 @@ defmodule IexCodeWeb.WorkspaceLive do
     error_msg =
       case reason do
         :timeout -> "Test execution timed out after 60s"
+        {:workspace_lock_waiting, _locks} -> "Test runner failed: #{ui_mutation_error(reason)}"
         _ -> "Test runner failed: #{inspect(reason)}"
       end
 
@@ -3478,6 +3539,7 @@ defmodule IexCodeWeb.WorkspaceLive do
      |> assign(:test_runner_progress_pct, 100)
      |> assign(:test_runner_progress_msg, error_msg)
      |> assign(:test_runner_async_task, nil)
+     |> assign(:test_runner_task_token, nil)
      |> put_flash(:error, error_msg)}
   end
 
@@ -3494,7 +3556,8 @@ defmodule IexCodeWeb.WorkspaceLive do
        |> assign(:test_runner_status, :error)
        |> assign(:test_runner_progress_pct, 100)
        |> assign(:test_runner_progress_msg, "Test task exited abnormally: #{inspect(reason)}")
-       |> assign(:test_runner_async_task, nil)}
+       |> assign(:test_runner_async_task, nil)
+       |> assign(:test_runner_task_token, nil)}
     end
   end
 
@@ -3570,6 +3633,11 @@ defmodule IexCodeWeb.WorkspaceLive do
   @impl true
   def handle_info({:async_run_updated, run}, socket) do
     {:noreply, select_run_projection(socket, Runs.get_run(run.id) || run)}
+  end
+
+  @impl true
+  def handle_info({:workspace_locks_updated, _locks}, socket) do
+    {:noreply, refresh_workspace_locks(socket)}
   end
 
   @impl true
@@ -3676,40 +3744,241 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   defp open_file_buffer(socket, rel_path) do
     root = socket.assigns.project.root_path
-    expanded_root = Path.expand(root)
-    full_path = Path.expand(Path.join(root, rel_path))
 
-    if String.starts_with?(full_path, expanded_root <> "/") or full_path == expanded_root do
-      content =
-        case File.read(full_path) do
-          {:ok, text} -> text
-          {:error, reason} -> "Could not read file: #{inspect(reason)}"
-        end
+    case WorkspacePath.resolve(root, rel_path) do
+      {:ok, full_path} ->
+        content =
+          case File.read(full_path) do
+            {:ok, text} -> text
+            {:error, reason} -> "Could not read file: #{inspect(reason)}"
+          end
 
-      # Add or select open buffer
-      buffers = socket.assigns.open_buffers
+        # Add or select open buffer
+        buffers = socket.assigns.open_buffers
 
-      updated_buffers =
-        if Enum.any?(buffers, &(&1.path == rel_path)) do
-          buffers
-        else
-          buffers ++ [%{path: rel_path, content: content, dirty_content: content, dirty?: false}]
-        end
+        updated_buffers =
+          if Enum.any?(buffers, &(&1.path == rel_path)) do
+            buffers
+          else
+            buffers ++
+              [%{path: rel_path, content: content, dirty_content: content, dirty?: false}]
+          end
 
-      active_buffer = Enum.find(updated_buffers, &(&1.path == rel_path))
-      is_dirty = active_buffer && active_buffer.dirty?
-      dirty_text = (active_buffer && active_buffer.dirty_content) || content
+        active_buffer = Enum.find(updated_buffers, &(&1.path == rel_path))
+        is_dirty = active_buffer && active_buffer.dirty?
+        dirty_text = (active_buffer && active_buffer.dirty_content) || content
 
-      socket
-      |> assign(:open_buffers, updated_buffers)
-      |> assign(:selected_file, rel_path)
-      |> assign(:file_content, content)
-      |> assign(:dirty_content, dirty_text)
-      |> assign(:is_dirty?, is_dirty)
-    else
-      put_flash(socket, :error, "Invalid file path")
+        socket
+        |> assign(:open_buffers, updated_buffers)
+        |> assign(:selected_file, rel_path)
+        |> assign(:file_content, content)
+        |> assign(:dirty_content, dirty_text)
+        |> assign(:is_dirty?, is_dirty)
+
+      {:error, _reason} ->
+        put_flash(socket, :error, "Invalid file path")
     end
   end
+
+  defp start_test_runner(params, socket) do
+    mode = Map.get(params, "mode", "all")
+    file_path = Map.get(params, "file")
+    line = Map.get(params, "line")
+
+    opts =
+      case mode do
+        "failed" ->
+          [failed: true]
+
+        "stale" ->
+          [stale: true]
+
+        "file" when is_binary(file_path) and file_path != "" ->
+          l = if line && line != "", do: String.to_integer(line), else: nil
+          [paths: [file_path], line: l]
+
+        _ ->
+          []
+      end
+
+    project_root = socket.assigns.project.root_path
+    lv_pid = self()
+    task_token = make_ref()
+
+    on_progress = fn pct, msg ->
+      send(lv_pid, {:test_runner_progress, task_token, pct, msg})
+    end
+
+    opts =
+      opts
+      |> Keyword.put(:project_root, project_root)
+      |> Keyword.put(:project_id, socket.assigns.project.id)
+      |> Keyword.put(:session_id, socket.assigns.session.id)
+      |> Keyword.put(:on_progress, on_progress)
+      |> Keyword.put(:timeout_ms, 60_000)
+
+    task =
+      Task.Supervisor.async_nolink(IexCode.TaskSupervisor, fn ->
+        IexCode.Tools.run_tests(opts)
+      end)
+
+    {:noreply,
+     socket
+     |> assign(:test_runner_status, :running)
+     |> assign(:test_runner_progress_pct, 10)
+     |> assign(:test_runner_progress_msg, "Starting ExUnit test suite...")
+     |> assign(:test_runner_async_task, task)
+     |> assign(:test_runner_task_token, task_token)
+     |> assign(:active_tab, "tests")}
+  end
+
+  defp apply_test_runner_progress(socket, pct, msg)
+       when is_number(pct) and is_binary(msg) do
+    current = socket.assigns.test_runner_progress_pct || 0
+
+    if pct >= current do
+      socket
+      |> assign(:test_runner_progress_pct, pct)
+      |> assign(:test_runner_progress_msg, msg)
+    else
+      socket
+    end
+  end
+
+  defp apply_test_runner_progress(socket, _pct, _msg), do: socket
+
+  # Editor writes intentionally use the low-level gateway form so the lock can
+  # be asserted at the last possible moment before the atomic filesystem effect
+  # and still be released from `after` on every success or failure path.
+  defp save_editor_file(socket, rel_path, content) do
+    project = socket.assigns.project
+    session = socket.assigns.session
+
+    with {:ok, full_path} <- WorkspacePath.resolve(project.root_path, rel_path),
+         {:ok, handle} <-
+           WorkspaceLocks.acquire(project, [{{:file, full_path}, :write}],
+             owner_id: editor_lock_owner(session.id),
+             session_id: session.id,
+             lease_seconds: 5,
+             heartbeat_interval_ms: 1_000
+           ) do
+      try do
+        with :ok <- WorkspaceLocks.assert(handle),
+             :ok <- atomic_editor_write(full_path, content) do
+          :ok
+        end
+      after
+        _ = WorkspaceLocks.release(handle)
+      end
+    end
+  end
+
+  # LiveView event parameters are never trusted as lock identity. Every direct
+  # UI workspace mutation is scoped to the mounted project/session and takes a
+  # conservative exclusive project lock. The opaque handle remains on this
+  # stack only, is asserted immediately before the callback effect, and is
+  # released from `after` even when the effect raises or returns an error.
+  defp with_ui_mutation_lock(socket, fun) when is_function(fun, 0) do
+    project = socket.assigns.project
+    session_id = socket.assigns.session.id
+
+    with {:ok, handle} <-
+           WorkspaceLocks.acquire(project, [:project],
+             owner_id: editor_lock_owner(session_id),
+             session_id: session_id,
+             lease_seconds: 15,
+             heartbeat_interval_ms: 3_000
+           ) do
+      try do
+        case WorkspaceLocks.assert(handle) do
+          :ok -> fun.()
+          {:error, _reason} = error -> error
+        end
+      after
+        _ = WorkspaceLocks.release(handle)
+      end
+    end
+  end
+
+  defp ui_mutation_error({:workspace_lock_waiting, _locks}) do
+    "Workspace change blocked by another IexCode task. Retry after it releases the reservation; no UI state was discarded."
+  end
+
+  defp ui_mutation_error(reason), do: inspect(reason)
+
+  defp atomic_editor_write(full_path, content) do
+    tmp_path =
+      Path.join(
+        Path.dirname(full_path),
+        ".#{Path.basename(full_path)}.iex-code-#{System.unique_integer([:positive, :monotonic])}.tmp"
+      )
+
+    result =
+      with :ok <- File.write(tmp_path, content, [:binary, :exclusive]),
+           :ok <- preserve_editor_file_mode(full_path, tmp_path),
+           :ok <- File.rename(tmp_path, full_path) do
+        :ok
+      end
+
+    if result != :ok, do: File.rm(tmp_path)
+    result
+  end
+
+  defp preserve_editor_file_mode(full_path, tmp_path) do
+    case File.stat(full_path) do
+      {:ok, stat} -> File.chmod(tmp_path, stat.mode)
+      {:error, :enoent} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp put_active_buffer_content(socket, content) do
+    file_path = socket.assigns.selected_file
+    original = socket.assigns.file_content || ""
+    dirty? = content != original
+
+    buffers =
+      Enum.map(socket.assigns.open_buffers, fn buffer ->
+        if buffer.path == file_path,
+          do: %{buffer | dirty_content: content, dirty?: dirty?},
+          else: buffer
+      end)
+
+    socket
+    |> assign(:dirty_content, content)
+    |> assign(:is_dirty?, dirty?)
+    |> assign(:open_buffers, buffers)
+  end
+
+  defp refresh_workspace_locks(socket) do
+    assign(
+      socket,
+      :workspace_locks,
+      Runs.list_workspace_locks(project_id: socket.assigns.project.id, active: true)
+    )
+  end
+
+  defp editor_lock_owner(session_id), do: "session:#{session_id}"
+
+  defp editor_lock(assigns) do
+    with path when is_binary(path) <- assigns.selected_file,
+         {:ok, full_path} <- WorkspacePath.resolve(assigns.project.root_path, path) do
+      owner_id = editor_lock_owner(assigns.session.id)
+
+      Enum.find(assigns.workspace_locks, fn lock ->
+        lock.status == "held" and lock.owner_id != owner_id and
+          (lock.resource_type == "project" or
+             (lock.resource_type == "file" and
+                Path.expand(lock.resource_key) == full_path))
+      end)
+    else
+      _ -> nil
+    end
+  end
+
+  defp editor_save_error(:outside_workspace), do: "invalid file path"
+  defp editor_save_error(:invalid_path), do: "invalid file path"
+  defp editor_save_error(reason), do: inspect(reason)
 
   defp execute_command_palette_item(socket, item) do
     socket = assign(socket, :show_command_palette, false)
@@ -4581,7 +4850,9 @@ defmodule IexCodeWeb.WorkspaceLive do
     enabled =
       Enum.filter(order, fn provider ->
         config = Map.get(providers, provider, %{})
-        Map.get(config, "enabled", Map.get(config, :enabled, false)) == true
+
+        Map.get(config, "enabled", Map.get(config, :enabled, false)) == true and
+          IexCode.Research.Registry.automatically_selectable?(provider)
       end)
 
     enabled

@@ -107,7 +107,7 @@ defmodule IexCode.Tools.AutoFix do
           {:error, :no_applicable_patches}
 
         {:ok, patches} ->
-          MultiPatch.apply_patches(project_root, patches, opts)
+          IexCode.Tools.multi_patch(patches, project_root, opts)
 
         {:error, reason} ->
           {:error, reason}

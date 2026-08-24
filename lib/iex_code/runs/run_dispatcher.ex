@@ -13,7 +13,7 @@ defmodule IexCode.Runs.RunDispatcher do
 
   require Logger
 
-  alias IexCode.{Kanban, Projects, Runs, Sessions}
+  alias IexCode.{Kanban, Projects, Runs, Sessions, WorkspaceLocks}
   alias IexCode.Engine.AgentSupervisor
   alias IexCode.Runs.Run
 
@@ -21,6 +21,8 @@ defmodule IexCode.Runs.RunDispatcher do
   @default_heartbeat_interval 5_000
   @default_lease_ms 15_000
   @default_cancel_grace_ms 1_500
+  @default_workspace_lock_retry_interval 1_000
+  @default_workspace_lock_lease_seconds 60
 
   defstruct [
     :name,
@@ -32,7 +34,10 @@ defmodule IexCode.Runs.RunDispatcher do
     :heartbeat_interval,
     :lease_ms,
     :cancel_grace_ms,
+    :workspace_lock_retry_interval,
+    :workspace_lock_lease_seconds,
     workers: %{},
+    lock_waiters: %{},
     run_refs: %{},
     cancelling: MapSet.new()
   ]
@@ -116,7 +121,25 @@ defmodule IexCode.Runs.RunDispatcher do
         positive(Keyword.get(opts, :heartbeat_interval, @default_heartbeat_interval), 5_000),
       lease_ms: positive(Keyword.get(opts, :lease_ms, @default_lease_ms), 15_000),
       cancel_grace_ms:
-        positive(Keyword.get(opts, :cancel_grace_ms, @default_cancel_grace_ms), 1_500)
+        positive(Keyword.get(opts, :cancel_grace_ms, @default_cancel_grace_ms), 1_500),
+      workspace_lock_retry_interval:
+        positive(
+          Keyword.get(
+            opts,
+            :workspace_lock_retry_interval,
+            @default_workspace_lock_retry_interval
+          ),
+          @default_workspace_lock_retry_interval
+        ),
+      workspace_lock_lease_seconds:
+        positive(
+          Keyword.get(
+            opts,
+            :workspace_lock_lease_seconds,
+            @default_workspace_lock_lease_seconds
+          ),
+          @default_workspace_lock_lease_seconds
+        )
     }
 
     # A new dispatcher identity cannot safely resume writes abandoned by an old
@@ -149,7 +172,7 @@ defmodule IexCode.Runs.RunDispatcher do
 
   @impl true
   def handle_call(:get_stats, _from, state) do
-    active = map_size(state.workers)
+    active = active_count(state)
     queued = state |> queued_count()
 
     {:reply,
@@ -165,8 +188,7 @@ defmodule IexCode.Runs.RunDispatcher do
 
   def handle_call(:active_runs, _from, state) do
     runs =
-      state.workers
-      |> Map.values()
+      (Map.values(state.workers) ++ Map.values(state.lock_waiters))
       |> Enum.map(&Runs.get_run(&1.run_id))
       |> Enum.reject(&is_nil/1)
 
@@ -193,7 +215,12 @@ defmodule IexCode.Runs.RunDispatcher do
                 if active?, do: AgentSupervisor.cancel_session_activity(cancelled.session_id)
                 cancel_open_steps(cancelled)
                 project_terminal_task(cancelled)
-                new_state = begin_worker_cancellation(state, run_id)
+
+                new_state =
+                  state
+                  |> remove_lock_waiter(run_id)
+                  |> begin_worker_cancellation(run_id)
+
                 send(self(), :drain)
                 {:reply, {:ok, cancelled}, new_state}
 
@@ -275,16 +302,22 @@ defmodule IexCode.Runs.RunDispatcher do
       end
     end)
 
+    Enum.each(state.lock_waiters, fn {run_id, _waiter} ->
+      _ = Runs.renew_lease(run_id, state.worker_id, state.lease_ms)
+    end)
+
     {:noreply, state}
   end
 
   def handle_info({ref, result}, state) when is_reference(ref) do
     case Map.fetch(state.workers, ref) do
       {:ok, worker} ->
-        Process.demonitor(ref, [:flush])
-        state = finish_worker(state, ref, worker, result)
-        send(self(), :drain)
-        {:noreply, state}
+        # A Task sends its result immediately before it exits. Keep the workspace
+        # lock until the corresponding DOWN arrives so cleanup cannot race the
+        # next lock holder.
+        if worker[:budget_timer], do: Process.cancel_timer(worker.budget_timer)
+        worker = worker |> Map.put(:result, result) |> Map.put(:budget_timer, nil)
+        {:noreply, put_in(state.workers[ref], worker)}
 
       :error ->
         {:noreply, state}
@@ -294,7 +327,19 @@ defmodule IexCode.Runs.RunDispatcher do
   def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
     case Map.fetch(state.workers, ref) do
       {:ok, worker} ->
-        state = finish_worker(state, ref, worker, {:worker_exit, reason})
+        result =
+          cond do
+            Map.has_key?(worker, :result) ->
+              worker.result
+
+            Map.has_key?(worker, :lock_failure) ->
+              {:worker_exit, {:workspace_lock_heartbeat_failed, worker.lock_failure}}
+
+            true ->
+              {:worker_exit, reason}
+          end
+
+        state = finish_worker(state, ref, worker, result)
         send(self(), :drain)
         {:noreply, state}
 
@@ -309,6 +354,36 @@ defmodule IexCode.Runs.RunDispatcher do
     end
 
     {:noreply, state}
+  end
+
+  def handle_info({:retry_workspace_lock, run_id}, state) do
+    case Map.fetch(state.lock_waiters, run_id) do
+      {:ok, waiter} ->
+        state = retry_workspace_lock(state, waiter)
+        send(self(), :drain)
+        {:noreply, state}
+
+      :error ->
+        {:noreply, state}
+    end
+  end
+
+  def handle_info({:workspace_lock_heartbeat_failed, lock_id, reason}, state) do
+    case Enum.find(state.workers, fn {_ref, worker} -> worker.lock_id == lock_id end) do
+      {ref, worker} ->
+        Logger.error(
+          "Coding run #{worker.run_id} lost its workspace lock heartbeat: #{inspect(reason)}"
+        )
+
+        if Process.alive?(worker.pid) do
+          _ = Task.Supervisor.terminate_child(state.task_supervisor, worker.pid)
+        end
+
+        {:noreply, put_in(state.workers[ref], Map.put(worker, :lock_failure, reason))}
+
+      nil ->
+        {:noreply, state}
+    end
   end
 
   def handle_info({:run_time_budget_exceeded, run_id, pid}, state) do
@@ -355,7 +430,7 @@ defmodule IexCode.Runs.RunDispatcher do
   def handle_info(_message, state), do: {:noreply, state}
 
   defp drain_capacity(state) do
-    if map_size(state.workers) < state.max_concurrency do
+    if active_count(state) < state.max_concurrency do
       opts = [
         lease_ms: state.lease_ms,
         exclude_project_ids: active_project_ids(state)
@@ -363,7 +438,7 @@ defmodule IexCode.Runs.RunDispatcher do
 
       case Runs.claim_next_run(state.worker_id, opts) do
         {:ok, %Run{} = run} ->
-          state |> start_worker(run) |> drain_capacity()
+          state |> start_claimed_run(run) |> drain_capacity()
 
         :none ->
           state
@@ -377,10 +452,21 @@ defmodule IexCode.Runs.RunDispatcher do
     end
   end
 
-  defp start_worker(state, run) do
+  defp start_claimed_run(state, %Run{kind: "coding_swarm"} = run) do
+    case acquire_coding_lock(state, run) do
+      {:ok, handle} -> start_worker(state, run, handle)
+      {:waiting, handle} -> wait_for_workspace_lock(state, run, handle)
+      {:error, reason} -> fail_claimed_run(state, run, reason)
+    end
+  end
+
+  defp start_claimed_run(state, %Run{} = run), do: start_worker(state, run, nil)
+
+  defp start_worker(state, run, lock_handle) do
     case prepare_claimed_run(run) do
       {:ok, execute_step} ->
         executor = state.executor
+        delegation = workspace_lock_delegation(lock_handle)
 
         task =
           Task.Supervisor.async(state.task_supervisor, fn ->
@@ -388,7 +474,12 @@ defmodule IexCode.Runs.RunDispatcher do
               report_progress(run.id, state.worker_id, state.lease_ms, percent, message)
             end
 
-            execute(executor, run, progress)
+            with_workspace_lock_delegation(delegation, fn ->
+              case assert_workspace_lock(lock_handle) do
+                :ok -> execute(executor, run, progress, delegation)
+                {:error, reason} -> {:error, {:workspace_lock_lost_before_execute, reason}}
+              end
+            end)
           end)
 
         worker = %{
@@ -396,7 +487,10 @@ defmodule IexCode.Runs.RunDispatcher do
           project_id: run.project_id,
           pid: task.pid,
           execute_step_id: execute_step.id,
-          budget_timer: schedule_time_budget(run, task.pid)
+          budget_timer: schedule_time_budget(run, task.pid),
+          lock_handle: lock_handle,
+          lock_delegation: delegation,
+          lock_id: WorkspaceLocks.handle_id(lock_handle)
         }
 
         workers = Map.put(state.workers, task.ref, worker)
@@ -406,6 +500,8 @@ defmodule IexCode.Runs.RunDispatcher do
         %{state | workers: workers, run_refs: run_refs}
 
       {:error, reason} ->
+        release_workspace_lock(lock_handle)
+
         case Runs.transition_run(run, "failed", error_attrs(reason)) do
           {:ok, failed} -> project_terminal_task(failed)
           _ -> :ok
@@ -415,8 +511,92 @@ defmodule IexCode.Runs.RunDispatcher do
     end
   end
 
-  defp execute(executor, run, progress) do
-    executor.execute(run, progress)
+  defp acquire_coding_lock(state, run) do
+    project = Projects.get_project!(run.project_id)
+
+    WorkspaceLocks.acquire_or_wait(project, [:project],
+      owner_id: "run:#{run.id}",
+      run_id: run.id,
+      session_id: run.session_id,
+      project_id: run.project_id,
+      lease_seconds: coding_lock_lease_seconds(state, run),
+      heartbeat_interval_ms: coding_lock_heartbeat_interval(state, run),
+      heartbeat_failure: :notify
+    )
+  rescue
+    error -> {:error, {:workspace_lock_acquire_failed, error}}
+  catch
+    kind, reason -> {:error, {:workspace_lock_acquire_failed, kind, reason}}
+  end
+
+  defp wait_for_workspace_lock(state, run, handle) do
+    mark_execute_step_blocked(run)
+
+    timer =
+      Process.send_after(
+        self(),
+        {:retry_workspace_lock, run.id},
+        state.workspace_lock_retry_interval
+      )
+
+    waiter = %{
+      run_id: run.id,
+      project_id: run.project_id,
+      lock_handle: handle,
+      lock_id: WorkspaceLocks.handle_id(handle),
+      retry_timer: timer
+    }
+
+    %{state | lock_waiters: Map.put(state.lock_waiters, run.id, waiter)}
+  end
+
+  defp retry_workspace_lock(state, waiter) do
+    case Runs.get_run(waiter.run_id) do
+      %Run{status: status} = run when status in ["running", "paused"] ->
+        case WorkspaceLocks.retry(waiter.lock_handle) do
+          {:ok, handle} ->
+            state
+            |> remove_lock_waiter(run.id, release?: false)
+            |> start_worker(run, handle)
+
+          {:waiting, handle} ->
+            wait_for_workspace_lock(
+              remove_lock_waiter(state, run.id, release?: false),
+              run,
+              handle
+            )
+
+          {:error, reason} ->
+            state
+            |> remove_lock_waiter(run.id)
+            |> fail_claimed_run(run, reason)
+        end
+
+      _ ->
+        remove_lock_waiter(state, waiter.run_id)
+    end
+  end
+
+  defp fail_claimed_run(state, run, reason) do
+    case Runs.transition_run(run, "failed", error_attrs(reason)) do
+      {:ok, failed} ->
+        fail_open_steps(failed)
+        project_terminal_task(failed)
+        broadcast_session(failed, {:async_run_updated, failed})
+
+      _ ->
+        :ok
+    end
+
+    state
+  end
+
+  defp execute(executor, run, progress, delegation) do
+    if Code.ensure_loaded?(executor) and function_exported?(executor, :execute, 3) do
+      executor.execute(run, progress, workspace_lock_delegation: delegation)
+    else
+      executor.execute(run, progress)
+    end
   rescue
     error -> {:error, {error, __STACKTRACE__}}
   catch
@@ -486,6 +666,7 @@ defmodule IexCode.Runs.RunDispatcher do
     end
 
     if run, do: reject_unapplied_controls(run)
+    release_workspace_lock(worker.lock_handle)
 
     %{
       state
@@ -562,7 +743,88 @@ defmodule IexCode.Runs.RunDispatcher do
   end
 
   defp active_project_ids(state) do
-    state.workers |> Map.values() |> Enum.map(& &1.project_id) |> Enum.uniq()
+    (Map.values(state.workers) ++ Map.values(state.lock_waiters))
+    |> Enum.map(& &1.project_id)
+    |> Enum.uniq()
+  end
+
+  defp active_count(state), do: map_size(state.workers) + map_size(state.lock_waiters)
+
+  defp remove_lock_waiter(state, run_id, opts \\ []) do
+    case Map.pop(state.lock_waiters, run_id) do
+      {nil, _waiters} ->
+        state
+
+      {waiter, waiters} ->
+        if waiter.retry_timer, do: Process.cancel_timer(waiter.retry_timer)
+        if Keyword.get(opts, :release?, true), do: release_workspace_lock(waiter.lock_handle)
+        %{state | lock_waiters: waiters}
+    end
+  end
+
+  defp release_workspace_lock(nil), do: :ok
+
+  defp release_workspace_lock(handle) do
+    case WorkspaceLocks.release(handle) do
+      :ok -> :ok
+      {:error, reason} -> Logger.warning("Workspace lock release failed: #{inspect(reason)}")
+    end
+  end
+
+  defp assert_workspace_lock(nil), do: :ok
+  defp assert_workspace_lock(handle), do: WorkspaceLocks.assert(handle)
+
+  defp workspace_lock_delegation(nil), do: nil
+
+  defp workspace_lock_delegation(handle) do
+    case WorkspaceLocks.delegate(handle) do
+      {:ok, delegation} -> delegation
+      {:error, reason} -> {:workspace_lock_delegation_error, reason}
+    end
+  end
+
+  defp with_workspace_lock_delegation(nil, fun), do: fun.()
+
+  defp with_workspace_lock_delegation({:workspace_lock_delegation_error, reason}, _fun) do
+    {:error, {:workspace_lock_delegation_failed, reason}}
+  end
+
+  defp with_workspace_lock_delegation(delegation, fun) do
+    WorkspaceLocks.with_delegation(delegation, fun)
+  end
+
+  defp mark_execute_step_blocked(run) do
+    run
+    |> current_attempt_steps()
+    |> Enum.find(&(&1.kind == "execute" and &1.status in ["pending", "ready"]))
+    |> case do
+      nil ->
+        :ok
+
+      step ->
+        _ =
+          Runs.transition_step(step, "blocked", %{
+            error_message: "Waiting for exclusive project workspace access"
+          })
+
+        :ok
+    end
+  end
+
+  defp coding_lock_lease_seconds(state, %Run{time_budget_ms: budget_ms})
+       when is_integer(budget_ms) and budget_ms > 0 do
+    budget_seconds = div(budget_ms + 999, 1_000) + 5
+    max(state.workspace_lock_lease_seconds, budget_seconds) |> min(86_400)
+  end
+
+  defp coding_lock_lease_seconds(state, _run), do: state.workspace_lock_lease_seconds
+
+  defp coding_lock_heartbeat_interval(state, run) do
+    state
+    |> coding_lock_lease_seconds(run)
+    |> Kernel.*(1_000)
+    |> div(3)
+    |> max(250)
   end
 
   defp validate_typed_attrs(attrs) do

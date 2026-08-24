@@ -234,19 +234,39 @@ defmodule IexCode.Engine.Agents.ExplorerAgent do
 
     args = %{
       "command" => command,
+      "project_id" => trusted_project_id(state),
+      "run_id" => opts[:run_id],
       "session_id" => state.session_id,
       "agent_name" => "ExplorerAgent",
       "op_id" => opts[:op_id] || state.current_op_id,
       "timeout_ms" => timeout
     }
 
-    res = Tools.execute("run_command", args, project_root, fn _, _ -> :ok end)
+    res =
+      with_workspace_delegation(opts[:workspace_lock_delegation], fn ->
+        Tools.execute("run_command", args, project_root, fn _, _ -> :ok end)
+      end)
+
     {:reply, res, state}
   end
 
   @impl true
   def handle_call(:get_state, _from, %State{} = state) do
     {:reply, state, state}
+  end
+
+  defp trusted_project_id(state) do
+    (state.session && state.session.project_id) ||
+      case IexCode.Sessions.get_session(state.session_id) do
+        %{project_id: project_id} -> project_id
+        _ -> nil
+      end
+  end
+
+  defp with_workspace_delegation(nil, fun), do: fun.()
+
+  defp with_workspace_delegation(delegation, fun) do
+    IexCode.WorkspaceLocks.with_delegation(delegation, fun)
   end
 
   # Search derivation

@@ -124,6 +124,19 @@ defmodule IexCode.SettingsTest do
       assert Settings.search_config(updated).order == []
     end
 
+    test "automatic search selection excludes retired provider adapters" do
+      assert {:ok, updated} =
+               Settings.update_settings(%{
+                 search_providers: %{
+                   "bing" => %{"enabled" => true, "api_key" => "retired-key"},
+                   "duckduckgo" => %{"enabled" => true}
+                 },
+                 search_provider_order: ["bing", "duckduckgo"]
+               })
+
+      assert Settings.search_config(updated).order == ["duckduckgo"]
+    end
+
     test "validates temperature and max_tokens ranges in changeset" do
       settings = Settings.get_settings()
 

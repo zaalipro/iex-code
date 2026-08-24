@@ -8,7 +8,8 @@ defmodule IexCode.Engine.SwarmCoordinator do
   require Logger
   alias IexCode.Engine.AgentSupervisor
   alias IexCode.Engine.Agents.{PlannerAgent, ExplorerAgent, CoderAgent, VerifierAgent}
-  alias IexCode.Tools.{AutoFix, MultiPatch, Git}
+  alias IexCode.Tools
+  alias IexCode.Tools.{AutoFix, MultiPatch}
   alias IexCode.{Runs, Sessions}
   alias Phoenix.PubSub
 
@@ -21,6 +22,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
       :user_prompt,
       :root_op_id,
       :allowed_tools,
+      :workspace_lock_delegation,
       stage: :init,
       iteration: 0,
       max_retries: 3,
@@ -130,7 +132,16 @@ defmodule IexCode.Engine.SwarmCoordinator do
           MultiPatch.Snapshot.list_snapshots(session_id)
         end
 
-      results = Enum.map(snapshots, &MultiPatch.rollback(&1.transaction_id))
+      lock_opts = [
+        project_id: trusted_project_id(state),
+        run_id: run_id,
+        session_id: session_id
+      ]
+
+      results =
+        Enum.map(snapshots, fn snapshot ->
+          Tools.rollback_multi_patch(snapshot.transaction_id, snapshot.project_root, lock_opts)
+        end)
 
       case Enum.filter(results, &match?({:error, _}, &1)) do
         [] -> {:ok, :rolled_back}
@@ -150,8 +161,9 @@ defmodule IexCode.Engine.SwarmCoordinator do
     if project_root != File.cwd!() and git_repo?(project_root) do
       commit_msg = Keyword.get(opts, :message, "chore: session cancelled checkpoint commit")
 
-      with :ok <- Git.stage(project_root, :all),
-           {:ok, _} <- Git.commit(commit_msg, project_root, allow_empty: true) do
+      with :ok <- Tools.git_stage(:all, project_root, opts),
+           {:ok, _} <-
+             Tools.git_commit(commit_msg, project_root, Keyword.put(opts, :allow_empty, true)) do
         {:ok, :committed}
       else
         {:error, reason} -> {:error, reason}
@@ -177,6 +189,15 @@ defmodule IexCode.Engine.SwarmCoordinator do
     end
   rescue
     _ -> false
+  end
+
+  defp trusted_project_id(%State{session: %{project_id: project_id}}), do: project_id
+
+  defp trusted_project_id(%State{session_id: session_id}) do
+    case Sessions.get_session(session_id) do
+      %{project_id: project_id} -> project_id
+      _ -> nil
+    end
   end
 
   @doc """
@@ -235,6 +256,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
       project_root: project_root,
       user_prompt: user_prompt,
       allowed_tools: Keyword.get(opts, :allowed_tools, :all),
+      workspace_lock_delegation: opts[:workspace_lock_delegation],
       max_retries: max_retries,
       start_time_ms: start_time_ms,
       stage_start_ms: start_time_ms,
@@ -661,7 +683,13 @@ defmodule IexCode.Engine.SwarmCoordinator do
         end
 
       :commit ->
-        case perform_commit(project_root, opts) do
+        commit_opts =
+          opts
+          |> Keyword.put(:project_id, trusted_project_id(state))
+          |> Keyword.put(:run_id, state.run_id)
+          |> Keyword.put(:session_id, state.session_id)
+
+        case perform_commit(project_root, commit_opts) do
           {:ok, :committed} ->
             :ok
 
@@ -720,7 +748,8 @@ defmodule IexCode.Engine.SwarmCoordinator do
         project_root: state.project_root,
         run_id: state.run_id,
         steer_directives: state.steer_directives,
-        allowed_tools: state.allowed_tools
+        allowed_tools: state.allowed_tools,
+        workspace_lock_delegation: state.workspace_lock_delegation
       )
 
     plan_text =
@@ -749,7 +778,8 @@ defmodule IexCode.Engine.SwarmCoordinator do
         prompt,
         parent_op_id: root_op_id,
         project_root: state.project_root,
-        allowed_tools: state.allowed_tools
+        allowed_tools: state.allowed_tools,
+        workspace_lock_delegation: state.workspace_lock_delegation
       )
 
     summary_text =
@@ -794,7 +824,8 @@ defmodule IexCode.Engine.SwarmCoordinator do
       context: state.explorer_context,
       diagnostics: state.verifier_result,
       steer_directives: state.steer_directives,
-      allowed_tools: state.allowed_tools
+      allowed_tools: state.allowed_tools,
+      workspace_lock_delegation: state.workspace_lock_delegation
     ]
 
     coder_res = CoderAgent.code(session_id, prompt, coder_opts)
@@ -823,7 +854,9 @@ defmodule IexCode.Engine.SwarmCoordinator do
         session_id,
         parent_op_id: root_op_id,
         project_root: project_root,
-        allowed_tools: state.allowed_tools
+        run_id: state.run_id,
+        allowed_tools: state.allowed_tools,
+        workspace_lock_delegation: state.workspace_lock_delegation
       )
 
     state = check_steering_and_control(state)
@@ -862,6 +895,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
           auto_fix_res =
             AutoFix.apply_auto_fix(project_root, diagnostics,
               session_id: session_id,
+              project_id: trusted_project_id(state),
               run_id: state.run_id,
               allowed_tools: state.allowed_tools
             )
@@ -897,7 +931,9 @@ defmodule IexCode.Engine.SwarmCoordinator do
                   session_id,
                   parent_op_id: root_op_id,
                   project_root: project_root,
-                  allowed_tools: state.allowed_tools
+                  run_id: state.run_id,
+                  allowed_tools: state.allowed_tools,
+                  workspace_lock_delegation: state.workspace_lock_delegation
                 )
 
               case verify_res do

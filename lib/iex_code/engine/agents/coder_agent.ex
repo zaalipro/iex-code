@@ -7,7 +7,7 @@ defmodule IexCode.Engine.Agents.CoderAgent do
   require Logger
   alias IexCode.Engine.{AgentRegistry, OperationManager}
   alias IexCode.{Sessions, Tools, LLM}
-  alias IexCode.Tools.{MultiPatch, AutoFix}
+  alias IexCode.Tools.AutoFix
 
   @outer_timeout 90_000
   @inner_timeout 60_000
@@ -152,6 +152,8 @@ defmodule IexCode.Engine.Agents.CoderAgent do
                    project_root,
                    parent_op_id,
                    opts[:run_id],
+                   trusted_project_id(opts, state),
+                   opts[:workspace_lock_delegation],
                    Keyword.get(opts, :allowed_tools, :all),
                    progress,
                    0
@@ -186,9 +188,18 @@ defmodule IexCode.Engine.Agents.CoderAgent do
 
   @impl true
   def handle_call({:apply_patches, patches, opts}, _from, %State{} = state) do
-    opts = Keyword.put_new(opts, :session_id, state.session_id)
+    opts =
+      opts
+      |> Keyword.put_new(:session_id, state.session_id)
+      |> Keyword.put(:project_id, trusted_project_id(opts, state))
+
     project_root = opts[:project_root] || state.project_root
-    res = MultiPatch.apply_patches(project_root, patches, opts)
+
+    res =
+      with_workspace_delegation(opts[:workspace_lock_delegation], fn ->
+        Tools.multi_patch(patches, project_root, opts)
+      end)
+
     {:reply, res, state}
   end
 
@@ -205,7 +216,9 @@ defmodule IexCode.Engine.Agents.CoderAgent do
     if is_list(patches) and patches != [] do
       progress.(30, "Applying #{length(patches)} atomic patches...")
 
-      case MultiPatch.apply_patches(project_root, patches, opts) do
+      case with_workspace_delegation(opts[:workspace_lock_delegation], fn ->
+             Tools.multi_patch(patches, project_root, opts)
+           end) do
         {:ok, _summary} -> :ok
         {:error, reason} -> {:error, {:patch_application_failed, reason}}
       end
@@ -222,6 +235,8 @@ defmodule IexCode.Engine.Agents.CoderAgent do
          project_root,
          parent_op_id,
          run_id,
+         project_id,
+         workspace_lock_delegation,
          allowed_tools,
          progress,
          iteration
@@ -251,6 +266,8 @@ defmodule IexCode.Engine.Agents.CoderAgent do
                   project_root,
                   parent_op_id,
                   run_id,
+                  project_id,
+                  workspace_lock_delegation,
                   allowed_tools
                 )
               )
@@ -263,6 +280,8 @@ defmodule IexCode.Engine.Agents.CoderAgent do
               project_root,
               parent_op_id,
               run_id,
+              project_id,
+              workspace_lock_delegation,
               allowed_tools,
               progress,
               iteration + 1
@@ -281,7 +300,16 @@ defmodule IexCode.Engine.Agents.CoderAgent do
     end
   end
 
-  defp execute_tool_call(tc, session_id, project_root, parent_op_id, run_id, allowed_tools) do
+  defp execute_tool_call(
+         tc,
+         session_id,
+         project_root,
+         parent_op_id,
+         run_id,
+         project_id,
+         workspace_lock_delegation,
+         allowed_tools
+       ) do
     args =
       if is_map(tc.args) do
         Map.merge(
@@ -289,6 +317,7 @@ defmodule IexCode.Engine.Agents.CoderAgent do
           %{
             "session_id" => session_id,
             "run_id" => run_id,
+            "project_id" => project_id,
             "agent_name" => "CoderAgent",
             "op_id" => parent_op_id
           }
@@ -307,7 +336,9 @@ defmodule IexCode.Engine.Agents.CoderAgent do
           "Coder: Executing #{tc.name}",
           args,
           fn p ->
-            Tools.execute(tc.name, args, project_root, p)
+            with_workspace_delegation(workspace_lock_delegation, fn ->
+              Tools.execute(tc.name, args, project_root, p)
+            end)
           end
         )
       else
@@ -321,6 +352,20 @@ defmodule IexCode.Engine.Agents.CoderAgent do
       end
 
     %{role: "tool", content: content, tool_call_id: tc.id}
+  end
+
+  defp trusted_project_id(_opts, state) do
+    (state.session && state.session.project_id) ||
+      case Sessions.get_session(state.session_id) do
+        %{project_id: project_id} -> project_id
+        _ -> nil
+      end
+  end
+
+  defp with_workspace_delegation(nil, fun), do: fun.()
+
+  defp with_workspace_delegation(delegation, fun) do
+    IexCode.WorkspaceLocks.with_delegation(delegation, fun)
   end
 
   defp assistant_messages(text) when text in [nil, ""], do: []

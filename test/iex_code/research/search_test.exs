@@ -46,8 +46,78 @@ defmodule IexCode.Research.SearchTest do
              "https://other.test"
            ]
 
+    assert [duckduckgo_source, serper_source] =
+             response.results |> hd() |> Map.fetch!(:metadata) |> Map.fetch!("provenance")
+
+    assert duckduckgo_source["provider"] == "duckduckgo"
+    assert duckduckgo_source["snippet"] == "first"
+    assert serper_source["provider"] == "serper"
+    assert serper_source["snippet"] == "second"
+
     assert response.errors == %{"tavily" => :missing_api_key}
     assert response.providers == ["duckduckgo", "serper"]
+  end
+
+  test "interleaves successful providers by rank before callers apply a result budget" do
+    request = fn opts ->
+      body =
+        case opts[:url] do
+          "https://google.serper.dev/search" ->
+            %{
+              "organic" =>
+                for rank <- 1..3 do
+                  %{
+                    "title" => "Serper #{rank}",
+                    "link" => "https://serper.test/#{rank}"
+                  }
+                end
+            }
+
+          "https://api.search.brave.com/res/v1/web/search" ->
+            %{
+              "web" => %{
+                "results" =>
+                  for rank <- 1..2 do
+                    %{
+                      "title" => "Brave #{rank}",
+                      "url" => "https://brave.test/#{rank}"
+                    }
+                  end
+              }
+            }
+
+          "https://api.exa.ai/search" ->
+            %{
+              "results" => [
+                %{"title" => "Exa 1", "url" => "https://exa.test/1"}
+              ]
+            }
+        end
+
+      {:ok, %{status: 200, body: body}}
+    end
+
+    config = %{
+      "serper" => %{"api_key" => "serper-key"},
+      "brave" => %{"api_key" => "brave-key"},
+      "exa" => %{"api_key" => "exa-key"}
+    }
+
+    assert {:ok, response} =
+             Search.search("beam",
+               providers: [:serper, :brave, :exa],
+               config: config,
+               request: request
+             )
+
+    assert Enum.map(response.results, & &1.provider) == [
+             "serper",
+             "brave",
+             "exa",
+             "serper",
+             "brave",
+             "serper"
+           ]
   end
 
   test "reports all-provider failure and validates selection" do
@@ -71,5 +141,43 @@ defmodule IexCode.Research.SearchTest do
              Registry.configured_providers(config)
 
     assert provider_config["api_key"] == "key"
+  end
+
+  test "configuration selection skips retired providers while an explicit list may opt in" do
+    config = %{
+      search_provider_order: ["bing", "brave"],
+      search_providers: %{
+        "bing" => %{"enabled" => true, "api_key" => "old-key"},
+        "brave" => %{"enabled" => true, "api_key" => "key"}
+      }
+    }
+
+    assert [{:brave, IexCode.Research.Providers.Brave, _provider_config}] =
+             Registry.configured(config)
+
+    request = fn opts ->
+      assert opts[:url] == "https://api.bing.microsoft.com/v7.0/search"
+
+      {:ok,
+       %{
+         status: 200,
+         body: %{
+           "webPages" => %{
+             "value" => [
+               %{"name" => "Archived", "url" => "https://archive.test", "snippet" => "old"}
+             ]
+           }
+         }
+       }}
+    end
+
+    assert {:ok, %{providers: ["bing"], results: [result]}} =
+             Search.search("compatibility",
+               providers: [:bing],
+               config: config,
+               request: request
+             )
+
+    assert result.provider == "bing"
   end
 end

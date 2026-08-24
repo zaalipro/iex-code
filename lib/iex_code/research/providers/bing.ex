@@ -1,5 +1,11 @@
 defmodule IexCode.Research.Providers.Bing do
-  @moduledoc "Microsoft Bing Web Search API adapter."
+  @moduledoc """
+  Retired Microsoft Bing Web Search API compatibility adapter.
+
+  Microsoft retired the Bing Search APIs on August 11, 2025. The adapter is
+  retained only for explicit compatibility requests and is never selected by
+  configuration-driven provider discovery.
+  """
   @behaviour IexCode.Research.Provider
 
   alias IexCode.Research.{HTTP, Providers}

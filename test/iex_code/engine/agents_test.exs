@@ -152,7 +152,13 @@ defmodule IexCode.Engine.AgentsTest do
 
   describe "CoderAgent GenServer" do
     @tag :tmp_dir
-    test "generates code and applies atomic patches", %{session: session, tmp_dir: tmp_dir} do
+    test "generates code and applies atomic patches", %{tmp_dir: tmp_dir} do
+      {:ok, project} =
+        Projects.create_project(%{name: "Coder temp workspace", root_path: tmp_dir})
+
+      {:ok, session} =
+        Sessions.create_session(%{project_id: project.id, title: "Coder temp session"})
+
       # No real LLM credentials in the test environment: point the LLM at a local mock server
       {:ok, mock_pid, mock_info} = MockLLMServer.start(scenario: :standard_completion)
 
@@ -205,9 +211,14 @@ defmodule IexCode.Engine.AgentsTest do
   describe "VerifierAgent GenServer" do
     @tag :tmp_dir
     test "checks compilation and returns verification verdict", %{
-      session: session,
       tmp_dir: tmp_dir
     } do
+      {:ok, project} =
+        Projects.create_project(%{name: "Verifier temp workspace", root_path: tmp_dir})
+
+      {:ok, session} =
+        Sessions.create_session(%{project_id: project.id, title: "Verifier temp session"})
+
       File.write!(Path.join(tmp_dir, "lib_val.ex"), "defmodule LibVal do\n  def ok, do: :ok\nend")
 
       {:ok, pid} = AgentSupervisor.start_agent(session.id, :verifier, project_root: tmp_dir)

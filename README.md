@@ -41,10 +41,11 @@ This model is fast and transparent, but it is also powerful. Open only repositor
 you trust, review proposed changes, keep valuable work committed, and do not expose the
 development server to an untrusted network.
 
-> The durable dispatcher allows only one active background run per project. This is
-> coarse dispatcher exclusivity, not a complete workspace lock: interactive editor, terminal,
-> and Git actions can still overlap the run. Avoid manual write-heavy work until the run
-> reaches review or completion.
+> Coding runs now hold a renewable, durable project reservation. Guarded editor,
+> terminal, test, patch, and Git paths acquire compatible project/file/Git resources,
+> wait or fail closed on conflicts, and expose ownership in Mission Control. This is
+> **cooperative IexCode coordination**, not OS isolation: native processes and arbitrary
+> in-process code that bypass the guarded entry points can still write the checkout.
 
 ## Requirements
 
@@ -81,8 +82,11 @@ through a compatible endpoint; direct Gemini and local-model transports remain r
 
 The research gateway is independent of the model transport. It includes normalized
 adapters for **Tavily, Brave, Exa, Serper, Google Programmable Search, Bing, SearxNG,
-and DuckDuckGo**, ordered fallback/fan-out, deterministic URL deduplication, partial
-failure reporting, and bounded concurrency. Public source fetches reject local/private/
+and DuckDuckGo**, descriptor metadata, deterministic round-robin result interleaving,
+URL deduplication with cross-provider provenance, partial failure reporting, and bounded
+concurrency. Bing is a retired compatibility adapter and is used only when explicitly
+requested; Google Programmable Search is marked legacy, and the credential-free
+DuckDuckGo HTML adapter is marked unofficial. Public source fetches reject local/private/
 link-local/reserved destinations, validate every DNS answer and redirect, pin the
 validated address against DNS rebinding, restrict content types, and cap time and bytes.
 
@@ -134,10 +138,12 @@ substitute for running the gate on the current checkout.
   persist every model token/reasoning delta as an event.
 - Approval, command, and artifact records exist; a deny-by-default tool policy and full
   approval inbox are not yet enforced for every LLM tool call.
-- Background runs have worker leases and the dispatcher excludes another active run for
-  the same project. File-level locks and a Git-exclusive coordination gate are not
-  implemented, and interactive host controls can bypass the dispatcher. Durable and
-  interactive work in the same session also shares live steering/terminal channels.
+- Coding runs have worker leases plus renewable project-exclusive workspace reservations.
+  Guarded file, patch, test, terminal, hunk, and Git actions use capability-authorized
+  project/file/Git resources with wait records, heartbeats, fencing generations, and a
+  live ownership view. The plane is cooperative: direct calls to lower-level mutation
+  modules, external editors/processes, filesystem aliases not represented by canonical
+  paths, and orphaned command descendants can bypass or outlive it.
 - Wall-clock budgets are enforced by the dispatcher. Token budgets accumulate and stop
   covered planner/coder/research boundaries when providers report usage; providers that
   omit streaming usage cannot be measured. Cost limits remain display-only until a
@@ -148,7 +154,8 @@ substitute for running the gate on the current checkout.
   a general restart-replayed control consumer and immediate interruption of every
   in-flight provider/tool call are not complete yet.
 - Rollback ownership is durable and run-scoped for MultiPatch/AutoFix mutations. Direct
-  `write_file`, `patch_file`, Git, and terminal effects are not covered by that manifest.
+  file, Git, test, and terminal effects are coordinated while they execute but are not
+  made transactional or added to the rollback manifest.
 - API keys still need OS-keychain/envelope-encrypted storage.
 
 These are the focus of the next phases in [`PROJECT.md`](PROJECT.md).

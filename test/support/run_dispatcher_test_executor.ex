@@ -4,12 +4,19 @@ defmodule IexCode.RunDispatcherTestExecutor do
   @behaviour IexCode.Runs.Executor
 
   @impl true
-  def execute(run, progress) do
+  def execute(run, progress), do: execute(run, progress, [])
+
+  def execute(run, progress, opts) do
     Phoenix.PubSub.subscribe(IexCode.PubSub, "session:#{run.session_id}:steer")
     Phoenix.PubSub.subscribe(IexCode.PubSub, "run:#{run.id}:control")
     progress.(20, "test worker ready")
 
     receiver = Process.whereis(IexCode.RunDispatcherTestReceiver)
+
+    if receiver && opts[:workspace_lock_delegation] do
+      send(receiver, {:test_run_delegation, run.id, :present})
+    end
+
     if receiver, do: send(receiver, {:test_run_started, run.id, self()})
     await_control(run, receiver)
   end
