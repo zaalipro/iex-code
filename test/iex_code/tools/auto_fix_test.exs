@@ -146,6 +146,30 @@ defmodule IexCode.Tools.AutoFixTest do
     end
 
     @tag :tmp_dir
+    test "refuses to mutate files when multi_patch is not allowed", %{tmp_dir: tmp_dir} do
+      file_path = Path.join(tmp_dir, "lib/worker.ex")
+      File.mkdir_p!(Path.dirname(file_path))
+
+      original =
+        "defmodule Worker do\n  def process(item, count) do\n    item * 2\n  end\nend"
+
+      File.write!(file_path, original)
+
+      comp_err = %CompilationError{
+        error_type: "CompileError",
+        file: "lib/worker.ex",
+        line: 2,
+        message:
+          "variable \"count\" is unused (if the variable is not meant to be used, prefix it with an underscore: _count)"
+      }
+
+      assert {:error, {:tool_not_allowed, "multi_patch"}} =
+               AutoFix.apply_auto_fix(tmp_dir, comp_err, allowed_tools: [])
+
+      assert File.read!(file_path) == original
+    end
+
+    @tag :tmp_dir
     test "returns no proposals for undefined-function typos (heuristic not implemented)", %{
       tmp_dir: tmp_dir
     } do

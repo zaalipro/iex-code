@@ -152,6 +152,7 @@ defmodule IexCode.Engine.Agents.CoderAgent do
                    project_root,
                    parent_op_id,
                    opts[:run_id],
+                   Keyword.get(opts, :allowed_tools, :all),
                    progress,
                    0
                  ) do
@@ -221,6 +222,7 @@ defmodule IexCode.Engine.Agents.CoderAgent do
          project_root,
          parent_op_id,
          run_id,
+         allowed_tools,
          progress,
          iteration
        ) do
@@ -233,31 +235,42 @@ defmodule IexCode.Engine.Agents.CoderAgent do
       )
 
       case LLM.chat(messages, system_prompt, session, fn _c -> :ok end,
-             cancelled?: cancelled_fun(session_id)
+             cancelled?: cancelled_fun(session_id),
+             allowed_tools: allowed_tools
            ) do
-        {:ok, %{text: text, tool_calls: tool_calls}} when tool_calls != [] ->
-          progress.(60, "Executing #{length(tool_calls)} tool call(s)...")
+        {:ok, %{text: text, tool_calls: tool_calls} = response} when tool_calls != [] ->
+          with :ok <- persist_run_usage(run_id, response) do
+            progress.(60, "Executing #{length(tool_calls)} tool call(s)...")
 
-          tool_messages =
-            Enum.map(
-              tool_calls,
-              &execute_tool_call(&1, session_id, project_root, parent_op_id, run_id)
+            tool_messages =
+              Enum.map(
+                tool_calls,
+                &execute_tool_call(
+                  &1,
+                  session_id,
+                  project_root,
+                  parent_op_id,
+                  run_id,
+                  allowed_tools
+                )
+              )
+
+            run_tool_loop(
+              session_id,
+              messages ++ assistant_messages(text) ++ tool_messages,
+              system_prompt,
+              session,
+              project_root,
+              parent_op_id,
+              run_id,
+              allowed_tools,
+              progress,
+              iteration + 1
             )
+          end
 
-          run_tool_loop(
-            session_id,
-            messages ++ assistant_messages(text) ++ tool_messages,
-            system_prompt,
-            session,
-            project_root,
-            parent_op_id,
-            run_id,
-            progress,
-            iteration + 1
-          )
-
-        {:ok, %{text: text}} ->
-          {:ok, text || ""}
+        {:ok, %{text: text} = response} ->
+          with :ok <- persist_run_usage(run_id, response), do: {:ok, text || ""}
 
         {:ok, other} ->
           {:error, {:unexpected_llm_response, other}}
@@ -268,7 +281,7 @@ defmodule IexCode.Engine.Agents.CoderAgent do
     end
   end
 
-  defp execute_tool_call(tc, session_id, project_root, parent_op_id, run_id) do
+  defp execute_tool_call(tc, session_id, project_root, parent_op_id, run_id, allowed_tools) do
     args =
       if is_map(tc.args) do
         Map.merge(
@@ -285,17 +298,21 @@ defmodule IexCode.Engine.Agents.CoderAgent do
       end
 
     res =
-      OperationManager.run_sync_operation(
-        session_id,
-        parent_op_id,
-        "CoderAgent",
-        tc.name,
-        "Coder: Executing #{tc.name}",
-        args,
-        fn p ->
-          Tools.execute(tc.name, args, project_root, p)
-        end
-      )
+      if tool_allowed?(tc.name, allowed_tools) do
+        OperationManager.run_sync_operation(
+          session_id,
+          parent_op_id,
+          "CoderAgent",
+          tc.name,
+          "Coder: Executing #{tc.name}",
+          args,
+          fn p ->
+            Tools.execute(tc.name, args, project_root, p)
+          end
+        )
+      else
+        {:error, {:tool_not_allowed, tc.name}}
+      end
 
     content =
       case res do
@@ -323,6 +340,30 @@ defmodule IexCode.Engine.Agents.CoderAgent do
 
   defp format_reason(reason) when is_binary(reason), do: reason
   defp format_reason(reason), do: inspect(reason)
+
+  defp tool_allowed?(_tool_name, :all), do: true
+  defp tool_allowed?(_tool_name, nil), do: true
+
+  defp tool_allowed?(tool_name, allowed_tools) when is_list(allowed_tools),
+    do: to_string(tool_name) in Enum.map(allowed_tools, &to_string/1)
+
+  defp tool_allowed?(_tool_name, _allowed_tools), do: false
+
+  defp persist_run_usage(nil, _response), do: :ok
+
+  defp persist_run_usage(run_id, response) do
+    usage = Map.get(response, :usage) || Map.get(response, "usage")
+
+    if is_map(usage) do
+      case IexCode.Runs.record_usage(run_id, usage, "coder.llm") do
+        {:ok, _run} -> :ok
+        {:error, {:token_budget_exhausted, _run}} -> {:error, :token_budget_exhausted}
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      :ok
+    end
+  end
 
   # Steering / cancellation helpers
 

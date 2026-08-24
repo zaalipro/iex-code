@@ -43,4 +43,14 @@ defmodule IexCode.ToolsTest do
 
     assert String.contains?(output, "hello from elixir")
   end
+
+  test "tool definitions enforce an explicit execution manifest" do
+    all_names = Tools.tool_definitions() |> Enum.map(& &1.name)
+    assert "web_search" in all_names
+    assert "fetch_url" in all_names
+
+    assert [%{name: "web_search"}] = Tools.tool_definitions(["web_search"])
+    assert [] = Tools.tool_definitions([])
+    assert [%{name: "fetch_url"}] = Tools.tool_definitions(MapSet.new(["fetch_url"]))
+  end
 end

@@ -12,17 +12,19 @@ defmodule IexCode.Runs.Executor do
 
   alias IexCode.Engine.SwarmCoordinator
   alias IexCode.Projects
+  alias IexCode.Research.Runner, as: ResearchRunner
   alias IexCode.Runs.Run
+  alias IexCode.Settings
 
   @doc false
   def execute(%Run{} = run, progress) when is_function(progress, 2) do
     with :ok <- supported_run?(run),
          project <- Projects.get_project!(run.project_id) do
-      progress.(5, "Preparing durable coding run")
+      progress.(5, "Preparing durable #{run_label(run)} run")
 
-      result = execute_typed(run, project.root_path)
+      result = execute_typed(run, project.root_path, progress)
 
-      progress.(100, "Coding run finished")
+      progress.(100, "#{String.capitalize(run_label(run))} run finished")
       result
     end
   rescue
@@ -37,23 +39,70 @@ defmodule IexCode.Runs.Executor do
 
   defp supported_run?(%Run{kind: "analysis"}), do: :ok
 
+  defp supported_run?(%Run{kind: "deep_research", mode: mode})
+       when mode in ["research", "workflow", "single"],
+       do: :ok
+
   defp supported_run?(%Run{kind: kind, mode: mode}),
     do: {:error, {:unsupported_run, kind, mode}}
 
-  defp execute_typed(%Run{kind: "coding_swarm"} = run, project_root) do
+  defp execute_typed(%Run{kind: "coding_swarm"} = run, project_root, _progress) do
+    allowed_tools =
+      Map.get(run.metadata || %{}, "allowed_tools") ||
+        Map.get(run.metadata || %{}, :allowed_tools) || :all
+
     run.session_id
     |> SwarmCoordinator.run(run.objective,
       project_root: project_root,
-      run_id: run.id
+      run_id: run.id,
+      allowed_tools: allowed_tools
     )
     |> normalize_swarm_result()
   end
 
-  defp execute_typed(%Run{kind: "analysis"}, project_root) do
+  defp execute_typed(%Run{kind: "analysis"}, project_root, _progress) do
     with {:ok, entries} <- File.ls(project_root) do
       {:ok, %{project_root: project_root, entries: Enum.sort(entries)}}
     end
   end
+
+  defp execute_typed(%Run{kind: "deep_research"} = run, _project_root, progress) do
+    search = Settings.search_config()
+    research = research_metadata(run.metadata)
+
+    ResearchRunner.execute(run, progress,
+      provider_config: search.providers,
+      max_concurrency: search.parallelism,
+      providers: Map.get(research, "providers", search.order),
+      depth: Map.get(research, "depth", search.depth),
+      max_sources: Map.get(research, "max_sources", search.max_sources),
+      fetch_sources: true,
+      cancelled?: fn -> cancelled?(run.id) end
+    )
+  end
+
+  defp research_metadata(metadata) when is_map(metadata) do
+    case Map.get(metadata, "research") || Map.get(metadata, :research) do
+      research when is_map(research) ->
+        Map.new(research, fn {key, value} -> {to_string(key), value} end)
+
+      _ ->
+        %{}
+    end
+  end
+
+  defp research_metadata(_metadata), do: %{}
+
+  defp cancelled?(run_id) do
+    case IexCode.Runs.get_run(run_id) do
+      %Run{status: status} when status in ["cancelled", "interrupted", "failed"] -> true
+      %Run{cancellation_requested_at: %DateTime{}} -> true
+      _ -> false
+    end
+  end
+
+  defp run_label(%Run{kind: "deep_research"}), do: "research"
+  defp run_label(_run), do: "coding"
 
   @doc false
   def normalize_swarm_result({:ok, %{cancelled: true}}), do: {:error, :cancelled}

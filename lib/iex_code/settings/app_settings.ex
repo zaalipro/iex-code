@@ -16,10 +16,40 @@ defmodule IexCode.Settings.AppSettings do
     field :temperature, :float, default: 0.2
     field :max_tokens, :integer, default: 4096
 
+    field :search_providers, :map,
+      default: %{
+        "tavily" => %{"enabled" => false},
+        "brave" => %{"enabled" => false},
+        "exa" => %{"enabled" => false},
+        "serper" => %{"enabled" => false},
+        "google" => %{"enabled" => false},
+        "bing" => %{"enabled" => false},
+        "searxng" => %{"enabled" => false},
+        "duckduckgo" => %{"enabled" => true}
+      }
+
+    field :search_provider_order, {:array, :string},
+      default: ~w(tavily brave exa serper google bing searxng duckduckgo)
+
+    field :research_depth, :string, default: "standard"
+    field :research_max_sources, :integer, default: 12
+    field :research_parallelism, :integer, default: 4
+
     timestamps(type: :utc_datetime)
   end
 
   @model_providers ~w(openai anthropic)
+  @search_provider_ids ~w(tavily brave exa serper google bing searxng duckduckgo)
+  @search_provider_fields ~w(enabled api_key base_url engine_id)
+  @official_search_hosts %{
+    "tavily" => "api.tavily.com",
+    "brave" => "api.search.brave.com",
+    "exa" => "api.exa.ai",
+    "serper" => "google.serper.dev",
+    "google" => "customsearch.googleapis.com",
+    "bing" => "api.bing.microsoft.com",
+    "duckduckgo" => "html.duckduckgo.com"
+  }
 
   def changeset(settings, attrs) do
     settings
@@ -33,7 +63,12 @@ defmodule IexCode.Settings.AppSettings do
       :swarm_agent_count,
       :auto_save,
       :temperature,
-      :max_tokens
+      :max_tokens,
+      :search_providers,
+      :search_provider_order,
+      :research_depth,
+      :research_max_sources,
+      :research_parallelism
     ])
     |> validate_inclusion(:default_model_provider, @model_providers)
     |> validate_number(:swarm_agent_count,
@@ -48,5 +83,85 @@ defmodule IexCode.Settings.AppSettings do
       greater_than_or_equal_to: 1,
       less_than_or_equal_to: 128_000
     )
+    |> validate_inclusion(:research_depth, ~w(quick standard deep))
+    |> validate_number(:research_max_sources,
+      greater_than_or_equal_to: 1,
+      less_than_or_equal_to: 100
+    )
+    |> validate_number(:research_parallelism,
+      greater_than_or_equal_to: 1,
+      less_than_or_equal_to: 16
+    )
+    |> validate_search_providers()
+    |> validate_search_provider_order()
+  end
+
+  defp validate_search_providers(changeset) do
+    case get_field(changeset, :search_providers) do
+      providers when is_map(providers) and map_size(providers) <= 32 ->
+        encoded_size = providers |> Jason.encode!() |> byte_size()
+
+        if encoded_size <= 64_000 and Enum.all?(providers, &valid_provider_config?/1) do
+          changeset
+        else
+          add_error(changeset, :search_providers, "contains an invalid provider configuration")
+        end
+
+      _ ->
+        add_error(changeset, :search_providers, "must be a map with at most 32 providers")
+    end
+  end
+
+  defp valid_provider_config?({id, config}) when is_binary(id) and is_map(config) do
+    keys = Enum.map(Map.keys(config), &to_string/1)
+
+    id in @search_provider_ids and Enum.all?(keys, &(&1 in @search_provider_fields)) and
+      valid_enabled?(Map.get(config, "enabled", Map.get(config, :enabled))) and
+      valid_bounded_string?(Map.get(config, "api_key", Map.get(config, :api_key)), 4_096) and
+      valid_bounded_string?(Map.get(config, "engine_id", Map.get(config, :engine_id)), 500) and
+      valid_provider_url?(id, Map.get(config, "base_url", Map.get(config, :base_url)))
+  end
+
+  defp valid_provider_config?(_), do: false
+
+  defp valid_enabled?(value), do: is_nil(value) or is_boolean(value)
+
+  defp valid_bounded_string?(value, max),
+    do: is_nil(value) or (is_binary(value) and byte_size(value) <= max)
+
+  defp valid_provider_url?(_id, value) when value in [nil, ""], do: true
+
+  defp valid_provider_url?(id, value) when is_binary(value) and byte_size(value) <= 2_048 do
+    case URI.parse(value) do
+      %URI{scheme: scheme, host: host, userinfo: nil}
+      when scheme in ["http", "https"] and is_binary(host) and host != "" ->
+        if id == "searxng" do
+          true
+        else
+          scheme == "https" and Map.get(@official_search_hosts, id) == String.downcase(host)
+        end
+
+      _ ->
+        false
+    end
+  end
+
+  defp valid_provider_url?(_id, _value), do: false
+
+  defp validate_search_provider_order(changeset) do
+    order = get_field(changeset, :search_provider_order)
+    providers = get_field(changeset, :search_providers) || %{}
+
+    if is_list(order) and order != [] and length(order) <= 32 and
+         Enum.all?(order, &(is_binary(&1) and Map.has_key?(providers, &1))) and
+         length(Enum.uniq(order)) == length(order) do
+      changeset
+    else
+      add_error(
+        changeset,
+        :search_provider_order,
+        "must contain unique configured provider identifiers"
+      )
+    end
   end
 end

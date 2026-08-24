@@ -20,6 +20,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
       :project_root,
       :user_prompt,
       :root_op_id,
+      :allowed_tools,
       stage: :init,
       iteration: 0,
       max_retries: 3,
@@ -199,13 +200,23 @@ defmodule IexCode.Engine.SwarmCoordinator do
     # Subscribe to steering topic for mid-flight steering/control
     PubSub.subscribe(IexCode.PubSub, "session:#{session_id}:steer")
 
+    if is_binary(opts[:run_id]) do
+      PubSub.subscribe(IexCode.PubSub, "run:#{opts[:run_id]}:control")
+    end
+
     # Honor a pause requested between task spawn and this subscribe — the early
     # {:pause, _} broadcast had no subscriber yet, so the persisted status is
     # the only reliable signal.
     pre_paused? =
-      case Sessions.get_session(session_id) do
-        %{status: "paused"} -> true
-        _ -> false
+      case opts[:run_id] && Runs.get_run(opts[:run_id]) do
+        %{status: "paused"} ->
+          true
+
+        _ ->
+          case Sessions.get_session(session_id) do
+            %{status: "paused"} -> true
+            _ -> false
+          end
       end
 
     if pre_paused? do
@@ -223,11 +234,12 @@ defmodule IexCode.Engine.SwarmCoordinator do
       session: session,
       project_root: project_root,
       user_prompt: user_prompt,
+      allowed_tools: Keyword.get(opts, :allowed_tools, :all),
       max_retries: max_retries,
       start_time_ms: start_time_ms,
       stage_start_ms: start_time_ms,
       stage: :init,
-      status: :running
+      status: if(pre_paused?, do: :paused, else: :running)
     }
 
     # 1. Root Swarm Operation — created before the guarded region below so the
@@ -264,8 +276,10 @@ defmodule IexCode.Engine.SwarmCoordinator do
       broadcast_stage(state, :init, 5, "Swarm initialized with 4 specialized OTP subagents.")
       # A pause that landed before subscribe: block until resumed (or cancelled;
       # cancellation throws {:swarm_cancelled, _, _} from inside the wait).
+      state = state |> replay_claimed_controls() |> align_durable_control_state()
+
       state =
-        if pre_paused? do
+        if state.status == :paused do
           wait_for_resume_or_cancel(state)
         else
           check_steering_and_control(state)
@@ -333,7 +347,39 @@ defmodule IexCode.Engine.SwarmCoordinator do
   # ============================================================================
 
   defp check_steering_and_control(%State{session_id: session_id} = state) do
+    state = ensure_durable_run_active!(state)
+
     receive do
+      {:run_control, run_id, control_id, :steer, %{"guidance" => steer_text}}
+      when run_id == state.run_id ->
+        next_state =
+          if acknowledge_control(control_id, state, "steer") == :ok,
+            do: ingest_steering(state, steer_text, "durable run control"),
+            else: state
+
+        check_steering_and_control(next_state)
+
+      {:run_control, run_id, control_id, :pause, _payload} when run_id == state.run_id ->
+        if acknowledge_control(control_id, state, "pause") == :ok do
+          Logger.info("[SwarmCoordinator] Durable run #{run_id} paused.")
+          broadcast(session_id, {:session_status_changed, "paused"})
+          wait_for_resume_or_cancel(%State{state | status: :paused})
+        else
+          check_steering_and_control(state)
+        end
+
+      {:run_control, run_id, control_id, :resume, _payload} when run_id == state.run_id ->
+        next_state =
+          if acknowledge_control(control_id, state, "resume") == :ok,
+            do: %State{state | status: :running},
+            else: state
+
+        check_steering_and_control(next_state)
+
+      {:run_control, run_id, :cancel, _payload} when run_id == state.run_id ->
+        Logger.info("[SwarmCoordinator] Durable run #{run_id} cancelled.")
+        handle_cancel_and_terminate(state, action: :rollback)
+
       {:steer_message, steer_text} ->
         Logger.info(
           "[SwarmCoordinator] Ingested steering for session #{session_id}: #{steer_text}"
@@ -394,12 +440,48 @@ defmodule IexCode.Engine.SwarmCoordinator do
         handle_cancel_and_terminate(state, opts)
     after
       0 ->
-        state
+        case state |> replay_claimed_controls() |> align_durable_control_state() do
+          %State{status: :paused} = paused -> wait_for_resume_or_cancel(paused)
+          next_state -> next_state
+        end
     end
   end
 
   defp wait_for_resume_or_cancel(%State{session_id: session_id} = state) do
     receive do
+      {:run_control, run_id, control_id, :resume, _payload} when run_id == state.run_id ->
+        if acknowledge_control(control_id, state, "resume") == :ok do
+          Logger.info("[SwarmCoordinator] Durable run #{run_id} resumed.")
+          broadcast(session_id, {:session_status_changed, "running"})
+
+          case %State{state | status: :running}
+               |> replay_claimed_controls()
+               |> align_durable_control_state() do
+            %State{status: :paused} = paused -> wait_for_resume_or_cancel(paused)
+            resumed -> resumed
+          end
+        else
+          wait_for_resume_or_cancel(state)
+        end
+
+      {:run_control, run_id, control_id, :pause, _payload} when run_id == state.run_id ->
+        acknowledge_control(control_id, state, "pause")
+        wait_for_resume_or_cancel(state)
+
+      {:run_control, run_id, :cancel, _payload} when run_id == state.run_id ->
+        Logger.info("[SwarmCoordinator] Durable run #{run_id} cancelled while paused.")
+        handle_cancel_and_terminate(state, action: :rollback)
+
+      {:run_control, run_id, control_id, :steer, %{"guidance" => steer_text}}
+      when run_id == state.run_id ->
+        if acknowledge_control(control_id, state, "steer") == :ok do
+          state
+          |> ingest_steering(steer_text, "durable run control while paused")
+          |> wait_for_resume_or_cancel()
+        else
+          wait_for_resume_or_cancel(state)
+        end
+
       {:resume, ^session_id} ->
         Logger.info("[SwarmCoordinator] Session #{session_id} resumed.")
         update_db_session_status(session_id, "running")
@@ -459,8 +541,105 @@ defmodule IexCode.Engine.SwarmCoordinator do
           | user_prompt: new_prompt,
             steer_directives: new_directives
         })
+    after
+      200 ->
+        case state |> replay_claimed_controls() |> align_durable_control_state() do
+          %State{status: :running} = resumed -> resumed
+          next_state -> wait_for_resume_or_cancel(next_state)
+        end
     end
   end
+
+  defp ingest_steering(%State{session_id: session_id} = state, steer_text, source) do
+    steer_text = to_string(steer_text)
+    Logger.info("[SwarmCoordinator] Ingested steering from #{source}: #{steer_text}")
+    new_prompt = state.user_prompt <> "\n\n[Real-time User Guidance]: " <> steer_text
+
+    broadcast(
+      session_id,
+      {:swarm_steered,
+       %{session_id: session_id, steering: steer_text, updated_prompt: new_prompt}}
+    )
+
+    %State{
+      state
+      | user_prompt: new_prompt,
+        steer_directives: [steer_text | state.steer_directives]
+    }
+  end
+
+  defp acknowledge_control(control_id, state, action) do
+    case Runs.resolve_control(control_id, "applied", %{
+           "action" => action,
+           "stage" => to_string(state.stage),
+           "acknowledged_by" => "swarm_coordinator"
+         }) do
+      {:ok, _control} -> :ok
+      {:error, _reason} -> :stale
+    end
+  end
+
+  defp replay_claimed_controls(%State{run_id: run_id} = state) when is_binary(run_id) do
+    case Runs.list_controls(run_id, status: "claimed", limit: 1) do
+      [%{kind: "steer", payload: payload} = control] ->
+        guidance = value(payload, "guidance")
+        applied? = acknowledge_control(control.id, state, "steer") == :ok
+
+        next_state =
+          if applied? and is_binary(guidance),
+            do: ingest_steering(state, guidance, "durable control poll"),
+            else: state
+
+        replay_claimed_controls(next_state)
+
+      [%{kind: "pause"} = control] ->
+        next_state =
+          if acknowledge_control(control.id, state, "pause") == :ok,
+            do: %State{state | status: :paused},
+            else: state
+
+        replay_claimed_controls(next_state)
+
+      [%{kind: "resume"} = control] ->
+        next_state =
+          if acknowledge_control(control.id, state, "resume") == :ok,
+            do: %State{state | status: :running},
+            else: state
+
+        replay_claimed_controls(next_state)
+
+      _ ->
+        state
+    end
+  end
+
+  defp replay_claimed_controls(state), do: state
+
+  defp align_durable_control_state(%State{run_id: run_id} = state) when is_binary(run_id) do
+    case Runs.get_run(run_id) do
+      %{status: "paused"} -> %State{state | status: :paused}
+      %{status: "running"} -> %State{state | status: :running}
+      _ -> state
+    end
+  end
+
+  defp align_durable_control_state(state), do: state
+
+  defp ensure_durable_run_active!(%State{run_id: run_id} = state) when is_binary(run_id) do
+    case Runs.get_run(run_id) do
+      %IexCode.Runs.Run{status: status} when status in ["failed", "cancelled", "interrupted"] ->
+        AgentSupervisor.stop_all_agents(state.session_id)
+        _ = perform_rollback(state.project_root, state)
+        throw({:swarm_cancelled, :durable_run_terminal, state})
+
+      _ ->
+        state
+    end
+  end
+
+  defp ensure_durable_run_active!(state), do: state
+
+  defp value(map, key), do: Map.get(map || %{}, key) || Map.get(map || %{}, to_string(key))
 
   defp handle_cancel_and_terminate(%State{session_id: session_id} = state, opts) do
     action = Keyword.get(opts, :action, :rollback)
@@ -539,7 +718,9 @@ defmodule IexCode.Engine.SwarmCoordinator do
         prompt,
         parent_op_id: root_op_id,
         project_root: state.project_root,
-        steer_directives: state.steer_directives
+        run_id: state.run_id,
+        steer_directives: state.steer_directives,
+        allowed_tools: state.allowed_tools
       )
 
     plan_text =
@@ -567,7 +748,8 @@ defmodule IexCode.Engine.SwarmCoordinator do
         session_id,
         prompt,
         parent_op_id: root_op_id,
-        project_root: state.project_root
+        project_root: state.project_root,
+        allowed_tools: state.allowed_tools
       )
 
     summary_text =
@@ -611,7 +793,8 @@ defmodule IexCode.Engine.SwarmCoordinator do
       plan: state.plan,
       context: state.explorer_context,
       diagnostics: state.verifier_result,
-      steer_directives: state.steer_directives
+      steer_directives: state.steer_directives,
+      allowed_tools: state.allowed_tools
     ]
 
     coder_res = CoderAgent.code(session_id, prompt, coder_opts)
@@ -639,7 +822,8 @@ defmodule IexCode.Engine.SwarmCoordinator do
       VerifierAgent.verify(
         session_id,
         parent_op_id: root_op_id,
-        project_root: project_root
+        project_root: project_root,
+        allowed_tools: state.allowed_tools
       )
 
     state = check_steering_and_control(state)
@@ -678,7 +862,8 @@ defmodule IexCode.Engine.SwarmCoordinator do
           auto_fix_res =
             AutoFix.apply_auto_fix(project_root, diagnostics,
               session_id: session_id,
-              run_id: state.run_id
+              run_id: state.run_id,
+              allowed_tools: state.allowed_tools
             )
 
           auto_fix_summary =
@@ -711,7 +896,8 @@ defmodule IexCode.Engine.SwarmCoordinator do
                 VerifierAgent.verify(
                   session_id,
                   parent_op_id: root_op_id,
-                  project_root: project_root
+                  project_root: project_root,
+                  allowed_tools: state.allowed_tools
                 )
 
               case verify_res do

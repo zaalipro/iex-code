@@ -44,9 +44,9 @@ defmodule IexCode.Engine.SessionServer do
   @doc """
   Sends a user prompt to the active session. If session is running, ingests as real-time steering.
   """
-  def send_prompt(session_id, content) do
+  def send_prompt(session_id, content, opts \\ []) do
     ensure_started(session_id)
-    GenServer.cast(via_tuple(session_id), {:send_prompt, content})
+    GenServer.cast(via_tuple(session_id), {:send_prompt, content, opts})
   end
 
   @doc """
@@ -483,7 +483,13 @@ defmodule IexCode.Engine.SessionServer do
   end
 
   @impl true
-  def handle_cast({:send_prompt, raw_prompt}, %{session_id: session_id, session: session} = state) do
+  def handle_cast({:send_prompt, raw_prompt}, state),
+    do: handle_cast({:send_prompt, raw_prompt, []}, state)
+
+  def handle_cast(
+        {:send_prompt, raw_prompt, opts},
+        %{session_id: session_id, session: session} = state
+      ) do
     prompt = String.trim(raw_prompt)
 
     if state.status == :running do
@@ -545,7 +551,9 @@ defmodule IexCode.Engine.SessionServer do
 
       if use_swarm? do
         # Run Swarm Coordinator
-        case SwarmCoordinator.run_swarm(session_id, actual_prompt, project_root) do
+        case SwarmCoordinator.run_swarm(session_id, actual_prompt, project_root,
+               allowed_tools: Keyword.get(opts, :allowed_tools, :all)
+             ) do
           {:ok, task_pid} ->
             task_ref = Process.monitor(task_pid)
 
@@ -565,7 +573,14 @@ defmodule IexCode.Engine.SessionServer do
 
         case Task.Supervisor.start_child(IexCode.TaskSupervisor, fn ->
                allow_sandbox(parent, self())
-               run_single_agent(session_id, current_session, actual_prompt, project_root)
+
+               run_single_agent(
+                 session_id,
+                 current_session,
+                 actual_prompt,
+                 project_root,
+                 Keyword.get(opts, :allowed_tools, :all)
+               )
              end) do
           {:ok, task_pid} ->
             task_ref = Process.monitor(task_pid)
@@ -643,7 +658,7 @@ defmodule IexCode.Engine.SessionServer do
     {:noreply, state}
   end
 
-  defp run_single_agent(session_id, session, user_prompt, project_root) do
+  defp run_single_agent(session_id, session, user_prompt, project_root, allowed_tools) do
     subscribe_steering(session_id)
     broadcast(session_id, {:session_status_changed, "running"})
 
@@ -687,7 +702,8 @@ defmodule IexCode.Engine.SessionServer do
                 )
 
                 LLM.chat(prev_messages, system_prompt, session, fn _c -> :ok end,
-                  cancelled?: cancelled?
+                  cancelled?: cancelled?,
+                  allowed_tools: allowed_tools
                 )
               end
             )
@@ -709,17 +725,24 @@ defmodule IexCode.Engine.SessionServer do
                       throw({:session_cancelled, session_id})
 
                     :go ->
-                      case OperationManager.run_sync_operation(
-                             session_id,
-                             nil,
-                             "AssistantAgent",
-                             tc.name,
-                             "Tool: #{tc.name} (#{Map.get(tc.args, "path", Map.get(tc.args, "command", ""))})",
-                             tc.args,
-                             fn progress ->
-                               Tools.execute(tc.name, tc.args, project_root, progress)
-                             end
-                           ) do
+                      tool_result =
+                        if tool_allowed?(tc.name, allowed_tools) do
+                          OperationManager.run_sync_operation(
+                            session_id,
+                            nil,
+                            "AssistantAgent",
+                            tc.name,
+                            "Tool: #{tc.name} (#{Map.get(tc.args, "path", Map.get(tc.args, "command", ""))})",
+                            tc.args,
+                            fn progress ->
+                              Tools.execute(tc.name, tc.args, project_root, progress)
+                            end
+                          )
+                        else
+                          {:error, {:tool_not_allowed, tc.name}}
+                        end
+
+                      case tool_result do
                         {:ok, out} -> %{name: tc.name, result: out}
                         {:error, err} -> %{name: tc.name, error: err}
                       end
@@ -794,6 +817,14 @@ defmodule IexCode.Engine.SessionServer do
       unsubscribe_steering(session_id)
     end
   end
+
+  defp tool_allowed?(_tool_name, :all), do: true
+  defp tool_allowed?(_tool_name, nil), do: true
+
+  defp tool_allowed?(tool_name, allowed_tools) when is_list(allowed_tools),
+    do: to_string(tool_name) in Enum.map(allowed_tools, &to_string/1)
+
+  defp tool_allowed?(_tool_name, _allowed_tools), do: false
 
   # Blocks while paused and drains control messages. Returns :go or :cancel.
   defp control_checkpoint do

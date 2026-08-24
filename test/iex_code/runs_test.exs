@@ -115,6 +115,64 @@ defmodule IexCode.RunsTest do
     assert Runs.latest_event(run).sequence == 3
   end
 
+  test "provider-reported usage accumulates and emits token-budget exhaustion", %{
+    project: project,
+    session: session
+  } do
+    {:ok, run} = create_run(project, session, %{token_budget: 100})
+
+    assert {:ok, updated} =
+             Runs.record_usage(run, %{prompt_tokens: 30, completion_tokens: 20}, "planner.llm")
+
+    assert updated.input_tokens == 30
+    assert updated.output_tokens == 20
+
+    assert {:error, {:token_budget_exhausted, exhausted}} =
+             Runs.record_usage(
+               run,
+               %{"input_tokens" => 40, "output_tokens" => 20},
+               "coder.llm"
+             )
+
+    assert exhausted.input_tokens == 70
+    assert exhausted.output_tokens == 40
+
+    assert Enum.map(Runs.list_events(run), & &1.type) |> Enum.take(-3) == [
+             "run.usage_recorded",
+             "run.usage_recorded",
+             "run.budget_exhausted"
+           ]
+  end
+
+  test "records total-only provider usage without double counting detailed usage", %{
+    project: project,
+    session: session
+  } do
+    {:ok, bounded} = create_run(project, session, %{token_budget: 40})
+
+    assert {:error, {:token_budget_exhausted, exhausted}} =
+             Runs.record_usage(bounded, %{"total_tokens" => 50})
+
+    assert exhausted.input_tokens == 50
+    assert exhausted.output_tokens == 0
+
+    {:ok, run} = create_run(project, session, %{token_budget: 1_000})
+
+    assert {:ok, total_only} = Runs.record_usage(run, %{"total_tokens" => 50})
+    assert total_only.input_tokens == 50
+    assert total_only.output_tokens == 0
+
+    assert {:ok, detailed} =
+             Runs.record_usage(run, %{
+               "prompt_tokens" => 10,
+               "completion_tokens" => 5,
+               "total_tokens" => 15
+             })
+
+    assert detailed.input_tokens == 60
+    assert detailed.output_tokens == 5
+  end
+
   test "latest event window keeps new events visible after the journal exceeds 500 entries", %{
     project: project,
     session: session
@@ -251,6 +309,50 @@ defmodule IexCode.RunsTest do
     assert [^artifact] = Runs.list_artifacts(run, kind: "patch")
   end
 
+  test "run controls are ordered, idempotent, claimed, resolved, and journaled", %{
+    project: project,
+    session: session
+  } do
+    {:ok, run} = create_run(project, session)
+    :ok = Runs.subscribe(run)
+
+    attrs = %{kind: "steer", payload: %{"guidance" => "Prefer primary sources"}}
+    assert {:ok, pending} = Runs.enqueue_control(run, "ui:steer:one", attrs)
+    assert pending.sequence == 1
+    assert pending.status == "pending"
+
+    assert {:ok, duplicate} =
+             Runs.enqueue_control(run, "ui:steer:one", %{
+               kind: "cancel",
+               payload: %{"unsafe" => true}
+             })
+
+    assert duplicate.id == pending.id
+    assert duplicate.kind == "steer"
+    assert_receive {:run_control_enqueued, %{id: control_id}}
+    assert control_id == pending.id
+
+    assert {:ok, claimed} = Runs.claim_next_control(run, "dispatcher:test")
+    assert claimed.status == "claimed"
+    assert claimed.worker_id == "dispatcher:test"
+    assert claimed.claimed_at
+
+    assert {:ok, applied} =
+             Runs.resolve_control(claimed, "applied", %{"phase" => "research.search"})
+
+    assert applied.status == "applied"
+    assert applied.result == %{"phase" => "research.search"}
+    assert applied.applied_at
+    assert [^applied] = Runs.list_controls(run)
+    assert :none = Runs.claim_next_control(run, "dispatcher:test")
+
+    assert Enum.map(Runs.list_events(run), & &1.type) |> Enum.take(-3) == [
+             "run.control_enqueued",
+             "run.control_claimed",
+             "run.control_applied"
+           ]
+  end
+
   test "cancelled run keeps project lease until its worker exits", %{
     project: project,
     session: session
@@ -323,6 +425,24 @@ defmodule IexCode.RunsTest do
              "run.step_created",
              "run.step_created"
            ]
+  end
+
+  test "retry supersedes controls claimed by a prior attempt", %{
+    project: project,
+    session: session
+  } do
+    {:ok, _run} = create_run(project, session, %{max_attempts: 2})
+    {:ok, claimed_run} = Runs.claim_next_run("dispatcher-a")
+    {:ok, pending} = Runs.enqueue_control(claimed_run, "old:pause", %{kind: "pause"})
+    assert {:ok, claimed_control} = Runs.claim_control(pending, "dispatcher-a")
+    assert {:ok, failed} = Runs.transition_run(claimed_run, "failed")
+
+    assert {:ok, _queued} = Runs.retry_run(failed)
+
+    superseded = Runs.get_control(claimed_control.id)
+    assert superseded.status == "superseded"
+    assert superseded.result == %{"reason" => "run_retried"}
+    assert Enum.any?(Runs.list_events(failed), &(&1.type == "run.control_superseded"))
   end
 
   test "claiming enforces per-project exclusivity, leases, reconciliation, and retry budgets", %{

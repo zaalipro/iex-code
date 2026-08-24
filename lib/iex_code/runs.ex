@@ -12,7 +12,16 @@ defmodule IexCode.Runs do
 
   alias Ecto.Changeset
   alias IexCode.Repo
-  alias IexCode.Runs.{Run, RunApproval, RunArtifact, RunCommand, RunEvent, RunStep}
+
+  alias IexCode.Runs.{
+    Run,
+    RunApproval,
+    RunArtifact,
+    RunCommand,
+    RunControl,
+    RunEvent,
+    RunStep
+  }
 
   @max_event_payload_bytes 256_000
   @max_replay_events 10_000
@@ -196,6 +205,101 @@ defmodule IexCode.Runs do
 
   def record_progress(_run_or_id, _percent, _message, _source),
     do: {:error, :invalid_progress}
+
+  @doc "Atomically records provider-reported token usage and checks the run token budget."
+  def record_usage(run_or_id, usage, source \\ "llm")
+
+  def record_usage(run_or_id, usage, source) when is_map(usage) do
+    with %Run{} = run <- resolve_run(run_or_id) do
+      input = usage_integer(usage, [:prompt_tokens, :input_tokens])
+      output = usage_integer(usage, [:completion_tokens, :output_tokens])
+      total_only = usage_integer(usage, [:total_tokens])
+
+      {input, output} =
+        if input + output == 0 and total_only > 0, do: {total_only, 0}, else: {input, output}
+
+      result =
+        Repo.retry_on_busy(fn ->
+          Repo.transaction(fn ->
+            current = Repo.get!(Run, run.id)
+            new_input = current.input_tokens + input
+            new_output = current.output_tokens + output
+            total = new_input + new_output
+            exhausted? = is_integer(current.token_budget) and total > current.token_budget
+
+            usage_attrs = %{input_tokens: new_input, output_tokens: new_output}
+
+            usage_attrs =
+              if exhausted? and current.status in ["running", "paused"] do
+                Map.merge(usage_attrs, %{
+                  status: "failed",
+                  completed_at: now(),
+                  error_message:
+                    "Run exceeded its #{current.token_budget}-token provider-reported budget",
+                  error_details: %{
+                    "reason" => "budget_exhausted",
+                    "budget" => "tokens",
+                    "limit" => current.token_budget,
+                    "actual" => total
+                  }
+                })
+              else
+                usage_attrs
+              end
+
+            updated = current |> Run.changeset(usage_attrs) |> Repo.update!()
+
+            usage_event =
+              insert_event_in_transaction!(run.id, "run.usage_recorded", to_string(source), %{
+                "input_tokens" => input,
+                "output_tokens" => output,
+                "total_tokens" => total,
+                "token_budget" => current.token_budget
+              })
+
+            budget_event =
+              if exhausted? do
+                insert_event_in_transaction!(run.id, "run.budget_exhausted", "budget", %{
+                  "budget" => "tokens",
+                  "limit" => current.token_budget,
+                  "actual" => total
+                })
+              end
+
+            status_event =
+              if updated.status != current.status do
+                insert_event_in_transaction!(run.id, "run.status_changed", "budget", %{
+                  "from" => current.status,
+                  "to" => updated.status
+                })
+              end
+
+            {updated, usage_event, budget_event, status_event, exhausted?}
+          end)
+        end)
+
+      case result do
+        {:ok, {updated, usage_event, budget_event, status_event, exhausted?}} ->
+          broadcast(updated.id, {:run_updated, updated})
+          broadcast(updated.id, {:run_event, usage_event})
+          if budget_event, do: broadcast(updated.id, {:run_event, budget_event})
+          if status_event, do: broadcast(updated.id, {:run_event, status_event})
+
+          if exhausted? do
+            {:error, {:token_budget_exhausted, updated}}
+          else
+            {:ok, updated}
+          end
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      nil -> {:error, :not_found}
+    end
+  end
+
+  def record_usage(_run_or_id, _usage, _source), do: {:error, :invalid_usage}
 
   @doc """
   Atomically claims the highest-priority due run for `lease_owner`.
@@ -413,6 +517,9 @@ defmodule IexCode.Runs do
                 Repo.rollback(:attempts_exhausted)
 
               true ->
+                {superseded_controls, control_events} =
+                  supersede_controls_in_transaction!(current.id, %{}, "run_retried")
+
                 retry_attrs = %{
                   status: "queued",
                   progress: 0,
@@ -438,15 +545,18 @@ defmodule IexCode.Runs do
                   })
 
                 {initial_steps, step_events} = insert_initial_steps!(updated.id, steps)
-                {Repo.get!(Run, updated.id), initial_steps, [retry_event | step_events]}
+
+                {Repo.get!(Run, updated.id), initial_steps, superseded_controls,
+                 control_events ++ [retry_event | step_events]}
             end
           end)
         end)
 
       case result do
-        {:ok, {updated, initial_steps, events}} ->
+        {:ok, {updated, initial_steps, superseded_controls, events}} ->
           broadcast(updated.id, {:run_updated, updated})
           Enum.each(initial_steps, &broadcast(updated.id, {:run_step_created, &1}))
+          Enum.each(superseded_controls, &broadcast(updated.id, {:run_control_updated, &1}))
           Enum.each(events, &broadcast(updated.id, {:run_event, &1}))
           {:ok, updated}
 
@@ -674,6 +784,377 @@ defmodule IexCode.Runs do
     else
       nil -> {:error, :not_found}
     end
+  end
+
+  # Durable run controls
+
+  @doc "Enqueues a run-scoped control exactly once and appends its journal event atomically."
+  def enqueue_control(run_or_id, idempotency_key, attrs) when is_map(attrs) do
+    with %Run{} = run <- resolve_run(run_or_id),
+         {:ok, payload} <- bounded_payload(attr(attrs, :payload) || %{}) do
+      idempotency_key = to_string(idempotency_key)
+
+      result =
+        Repo.retry_on_busy(fn ->
+          Repo.transaction(fn ->
+            case Repo.get_by(RunControl,
+                   run_id: run.id,
+                   idempotency_key: idempotency_key
+                 ) do
+              %RunControl{} = existing ->
+                {existing, nil}
+
+              nil ->
+                {1, _} =
+                  from(current in Run, where: current.id == ^run.id)
+                  |> Repo.update_all(inc: [control_sequence: 1])
+
+                sequence =
+                  from(current in Run,
+                    where: current.id == ^run.id,
+                    select: current.control_sequence
+                  )
+                  |> Repo.one!()
+
+                control_attrs =
+                  attrs
+                  |> drop_keys([:run_id, :idempotency_key, :sequence, :status, :payload])
+                  |> put_attr(:idempotency_key, idempotency_key)
+                  |> put_attr(:sequence, sequence)
+                  |> put_attr(:status, "pending")
+                  |> put_attr(:payload, payload)
+
+                control =
+                  case %RunControl{run_id: run.id}
+                       |> RunControl.changeset(control_attrs)
+                       |> Repo.insert() do
+                    {:ok, control} -> control
+                    {:error, changeset} -> Repo.rollback(changeset)
+                  end
+
+                event =
+                  insert_event_in_transaction!(run.id, "run.control_enqueued", "control", %{
+                    "control_id" => control.id,
+                    "control_sequence" => control.sequence,
+                    "kind" => control.kind,
+                    "requested_by" => control.requested_by
+                  })
+
+                {control, event}
+            end
+          end)
+        end)
+
+      case result do
+        {:ok, {control, nil}} ->
+          {:ok, control}
+
+        {:ok, {control, event}} ->
+          broadcast(run.id, {:run_control_enqueued, control})
+          broadcast(run.id, {:run_event, event})
+          {:ok, control}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      nil -> {:error, :not_found}
+      {:error, _} = error -> error
+    end
+  end
+
+  def get_control(id) when is_binary(id), do: Repo.get(RunControl, id)
+  def get_control(_id), do: nil
+
+  def get_control_by_idempotency_key(run_or_id, key) do
+    with %Run{} = run <- resolve_run(run_or_id) do
+      Repo.get_by(RunControl, run_id: run.id, idempotency_key: to_string(key))
+    else
+      nil -> nil
+    end
+  end
+
+  def list_controls(run_or_id, opts \\ []) when is_list(opts) do
+    with %Run{} = run <- resolve_run(run_or_id) do
+      RunControl
+      |> where([control], control.run_id == ^run.id)
+      |> maybe_where(:status, opts[:status])
+      |> maybe_where(:kind, opts[:kind])
+      |> order_by([control], asc: control.sequence)
+      |> limit(^bounded_limit(opts[:limit], 200, 1_000))
+      |> Repo.all()
+    else
+      nil -> []
+    end
+  end
+
+  @doc "Supersedes every pending/claimed control owned by a dispatcher identity."
+  def supersede_claimed_controls(worker_id, reason)
+      when is_binary(worker_id) and worker_id != "" and is_binary(reason) do
+    supersede_controls(%{status: "claimed", worker_id: worker_id}, reason)
+  end
+
+  @doc "Supersedes every non-terminal control for one run."
+  def supersede_open_controls(run_or_id, reason) when is_binary(reason) do
+    with %Run{} = run <- resolve_run(run_or_id) do
+      supersede_controls(%{run_id: run.id}, reason)
+    else
+      nil -> {:error, :not_found}
+    end
+  end
+
+  @doc "Claims the next pending control for a run using a conditional state update."
+  def claim_next_control(run_or_id, worker_id) when is_binary(worker_id) and worker_id != "" do
+    with %Run{} = run <- resolve_run(run_or_id) do
+      result =
+        Repo.retry_on_busy(fn ->
+          Repo.transaction(fn ->
+            candidate =
+              RunControl
+              |> where([control], control.run_id == ^run.id and control.status == "pending")
+              |> order_by([control], asc: control.sequence)
+              |> limit(1)
+              |> Repo.one()
+
+            case candidate do
+              nil ->
+                nil
+
+              candidate ->
+                claimed_at = now()
+
+                {count, _} =
+                  from(control in RunControl,
+                    where: control.id == ^candidate.id and control.status == "pending"
+                  )
+                  |> Repo.update_all(
+                    set: [
+                      status: "claimed",
+                      worker_id: worker_id,
+                      claimed_at: claimed_at,
+                      updated_at: claimed_at
+                    ]
+                  )
+
+                if count == 1 do
+                  claimed = Repo.get!(RunControl, candidate.id)
+
+                  event =
+                    insert_event_in_transaction!(run.id, "run.control_claimed", "control", %{
+                      "control_id" => claimed.id,
+                      "control_sequence" => claimed.sequence,
+                      "kind" => claimed.kind,
+                      "worker_id" => worker_id
+                    })
+
+                  {claimed, event}
+                else
+                  Repo.rollback(:claim_race)
+                end
+            end
+          end)
+        end)
+
+      case result do
+        {:ok, nil} ->
+          :none
+
+        {:ok, {control, event}} ->
+          broadcast(run.id, {:run_control_updated, control})
+          broadcast(run.id, {:run_event, event})
+          {:ok, control}
+
+        {:error, :claim_race} ->
+          claim_next_control(run, worker_id)
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      nil -> {:error, :not_found}
+    end
+  end
+
+  def claim_next_control(_run_or_id, _worker_id), do: {:error, :invalid_worker_id}
+
+  @doc "Claims one exact pending control without consuming another caller's request."
+  def claim_control(control_or_id, worker_id) when is_binary(worker_id) and worker_id != "" do
+    control_id =
+      if match?(%RunControl{}, control_or_id), do: control_or_id.id, else: control_or_id
+
+    result =
+      Repo.retry_on_busy(fn ->
+        Repo.transaction(fn ->
+          case Repo.get(RunControl, control_id) do
+            nil ->
+              Repo.rollback(:not_found)
+
+            %RunControl{status: "pending"} = current ->
+              claimed_at = now()
+
+              {count, _} =
+                from(control in RunControl,
+                  where: control.id == ^current.id and control.status == "pending"
+                )
+                |> Repo.update_all(
+                  set: [
+                    status: "claimed",
+                    worker_id: worker_id,
+                    claimed_at: claimed_at,
+                    updated_at: claimed_at
+                  ]
+                )
+
+              if count == 1 do
+                claimed = Repo.get!(RunControl, current.id)
+
+                event =
+                  insert_event_in_transaction!(
+                    claimed.run_id,
+                    "run.control_claimed",
+                    "control",
+                    %{
+                      "control_id" => claimed.id,
+                      "control_sequence" => claimed.sequence,
+                      "kind" => claimed.kind,
+                      "worker_id" => worker_id
+                    }
+                  )
+
+                {claimed, event}
+              else
+                Repo.rollback(:claim_race)
+              end
+
+            %RunControl{} = current ->
+              Repo.rollback({:invalid_transition, current.status, "claimed"})
+          end
+        end)
+      end)
+
+    case result do
+      {:ok, {control, event}} ->
+        broadcast(control.run_id, {:run_control_updated, control})
+        broadcast(control.run_id, {:run_event, event})
+        {:ok, control}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  def claim_control(_control_or_id, _worker_id), do: {:error, :invalid_worker_id}
+
+  @doc "Records the durable outcome of a claimed control."
+  def resolve_control(control_or_id, status, result \\ %{})
+
+  def resolve_control(control_or_id, status, result)
+      when status in ["applied", "rejected", "superseded"] and is_map(result) do
+    control_id =
+      if match?(%RunControl{}, control_or_id), do: control_or_id.id, else: control_or_id
+
+    transaction =
+      Repo.retry_on_busy(fn ->
+        Repo.transaction(fn ->
+          case Repo.get(RunControl, control_id) do
+            nil ->
+              Repo.rollback(:not_found)
+
+            %RunControl{status: current_status} = current
+            when current_status == "claimed" or
+                   (status == "superseded" and current_status == "pending") ->
+              attrs = %{status: status, applied_at: now(), result: result}
+
+              updated =
+                case current |> RunControl.changeset(attrs) |> Repo.update() do
+                  {:ok, updated} -> updated
+                  {:error, changeset} -> Repo.rollback(changeset)
+                end
+
+              event =
+                insert_event_in_transaction!(
+                  updated.run_id,
+                  "run.control_#{status}",
+                  "control",
+                  %{
+                    "control_id" => updated.id,
+                    "control_sequence" => updated.sequence,
+                    "kind" => updated.kind,
+                    "result" => result
+                  }
+                )
+
+              {updated, event}
+
+            %RunControl{} = current ->
+              Repo.rollback({:invalid_transition, current.status, status})
+          end
+        end)
+      end)
+
+    case transaction do
+      {:ok, {control, event}} ->
+        broadcast(control.run_id, {:run_control_updated, control})
+        broadcast(control.run_id, {:run_event, event})
+        {:ok, control}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  def resolve_control(_control_or_id, status, _result),
+    do: {:error, {:invalid_control_status, status}}
+
+  defp supersede_controls(filters, reason) do
+    result =
+      Repo.retry_on_busy(fn ->
+        Repo.transaction(fn ->
+          supersede_controls_in_transaction!(filters[:run_id], filters, reason)
+        end)
+      end)
+
+    case result do
+      {:ok, {controls, events}} ->
+        Enum.each(controls, &broadcast(&1.run_id, {:run_control_updated, &1}))
+        Enum.each(events, &broadcast(&1.run_id, {:run_event, &1}))
+        {:ok, controls}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp supersede_controls_in_transaction!(run_id, filters, reason) do
+    query =
+      RunControl
+      |> where([control], control.status in ["pending", "claimed"])
+      |> maybe_where(:run_id, run_id)
+      |> maybe_where(:status, filters[:status])
+      |> maybe_where(:worker_id, filters[:worker_id])
+      |> order_by([control], asc: control.run_id, asc: control.sequence)
+
+    Enum.map_reduce(Repo.all(query), [], fn control, events ->
+      updated =
+        control
+        |> RunControl.changeset(%{
+          status: "superseded",
+          applied_at: now(),
+          result: %{"reason" => reason}
+        })
+        |> Repo.update!()
+
+      event =
+        insert_event_in_transaction!(updated.run_id, "run.control_superseded", "control", %{
+          "control_id" => updated.id,
+          "control_sequence" => updated.sequence,
+          "kind" => updated.kind,
+          "result" => updated.result
+        })
+
+      {updated, [event | events]}
+    end)
+    |> then(fn {controls, reversed_events} -> {controls, Enum.reverse(reversed_events)} end)
   end
 
   # Commands
@@ -1250,8 +1731,7 @@ defmodule IexCode.Runs do
       status in ~w(completed failed skipped) ->
         attrs
         |> Map.put(:completed_at, now)
-        |> Map.put(:lease_owner, nil)
-        |> Map.put(:lease_expires_at, nil)
+        |> maybe_clear_terminal_lease()
         |> maybe_complete_progress(status)
 
       status == "cancelled" ->
@@ -1269,6 +1749,14 @@ defmodule IexCode.Runs do
 
   defp maybe_complete_progress(attrs, "completed"), do: Map.put(attrs, :progress, 100)
   defp maybe_complete_progress(attrs, _status), do: attrs
+
+  defp maybe_clear_terminal_lease(attrs) do
+    if Map.has_key?(attrs, :lease_owner) do
+      attrs
+    else
+      attrs |> Map.put(:lease_owner, nil) |> Map.put(:lease_expires_at, nil)
+    end
+  end
 
   defp active_lease?(%Run{lease_owner: nil}, _now), do: false
   defp active_lease?(%Run{lease_expires_at: nil}, _now), do: true
@@ -1404,6 +1892,13 @@ defmodule IexCode.Runs do
 
   defp nonnegative(value, _default) when is_integer(value) and value >= 0, do: value
   defp nonnegative(_value, default), do: default
+
+  defp usage_integer(usage, keys) do
+    Enum.find_value(keys, 0, fn key ->
+      value = Map.get(usage, key) || Map.get(usage, Atom.to_string(key))
+      if is_integer(value) and value >= 0, do: value
+    end)
+  end
 
   defp now, do: DateTime.utc_now() |> DateTime.truncate(:second)
 

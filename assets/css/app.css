@@ -52,7 +52,7 @@ body.phx-disconnected::after {
   border-bottom: 1px solid #f43f5e;
 }
 
-/* Rainbow border gradient glow for Prompt Box */
+/* Quiet operational focus ring for the prompt composer. */
 .rainbow-box-wrapper {
   position: relative;
   background: #11151c;
@@ -65,7 +65,7 @@ body.phx-disconnected::after {
   inset: -1px;
   border-radius: 1.25rem;
   padding: 1px;
-  background: linear-gradient(135deg, rgba(255, 126, 95, 0.45), rgba(254, 180, 123, 0.35), rgba(118, 178, 254, 0.35), rgba(182, 158, 254, 0.45), rgba(80, 227, 194, 0.35));
+  background: linear-gradient(115deg, rgba(255, 126, 95, 0.6), rgba(66, 77, 91, 0.55) 55%, rgba(255, 126, 95, 0.22));
   mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
   -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
   -webkit-mask-composite: xor;
@@ -73,8 +73,8 @@ body.phx-disconnected::after {
   pointer-events: none;
 }
 .rainbow-box-wrapper:focus-within::before {
-  background: linear-gradient(135deg, #ff7e5f, #feb47b, #76b2fe, #b69efe, #50e3c2);
-  box-shadow: 0 0 20px rgba(118, 178, 254, 0.15);
+  background: linear-gradient(115deg, #ff7e5f, #feb47b 42%, #4b5563);
+  box-shadow: 0 0 18px rgba(255, 126, 95, 0.12);
 }
 
 /* Card active top neon border */
@@ -131,7 +131,9 @@ body.phx-disconnected::after {
 
 /* Subtle smooth fade transitions */
 .transition-smooth {
-  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  transition-property: color, background-color, border-color, opacity, box-shadow, transform;
+  transition-duration: 0.2s;
+  transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 /* Kanban Accordion Columns (Matching Reference Image) */

@@ -1060,11 +1060,25 @@
               events={@run_event_rows}
               approvals={@run_approvals}
               artifacts={@run_artifacts}
+              controls={@run_controls}
+              run_manifest={@run_manifest}
               stats={@run_dispatcher_stats}
             />
 
             <!-- Swarm Coach Hero Card -->
             <div class="bg-[#11151c] border border-[#21262d] rounded-3xl p-6 shadow-2xl relative overflow-hidden">
+              <div class="mb-4 flex items-start gap-3 border border-amber-500/20 bg-amber-500/[0.05] px-3 py-2.5">
+                <.icon name="hero-signal" class="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
+                <div>
+                  <p class="font-mono text-[10px] font-semibold uppercase tracking-wider text-amber-200">
+                    Interactive session plane
+                  </p>
+                  <p class="mt-1 text-[11px] leading-5 text-gray-500">
+                    These legacy session controls do not target the durable run selected above.
+                    Use Mission Control for run-scoped pause, stop, retry, and steering.
+                  </p>
+                </div>
+              </div>
               <div class="bg-[#161b22]/70 border border-[#21262d] rounded-2xl p-5 mb-4 relative">
                 <!-- Status Badge Top Right -->
                 <div class="absolute top-5 right-5 flex items-center gap-1.5 text-xs font-mono font-semibold">
@@ -1116,19 +1130,22 @@
                       EXECUTIVE CODING HARNESS ASSISTANT
                     </div>
 
-                    <!-- Integration Badges -->
+                    <!-- Native harness capabilities -->
                     <div class="flex items-center gap-2 flex-wrap">
                       <span class="px-2.5 py-1 rounded-xl bg-[#11151c] border border-[#21262d] text-xs font-mono text-gray-300 flex items-center gap-1.5">
-                        <span class="text-red-400">✉</span> Gmail
+                        <.icon name="hero-command-line" class="h-3 w-3 text-cyan-400" />
+                        Native terminal
                       </span>
                       <span class="px-2.5 py-1 rounded-xl bg-[#11151c] border border-[#21262d] text-xs font-mono text-gray-300 flex items-center gap-1.5">
-                        <span class="text-blue-400">📅</span> Google Calendar
+                        <.icon name="hero-calendar-days" class="h-3 w-3 text-blue-400" />
+                        Scheduler
                       </span>
                       <span class="px-2.5 py-1 rounded-xl bg-[#11151c] border border-[#21262d] text-xs font-mono text-gray-300 flex items-center gap-1.5">
-                        <span class="text-gray-300">📓</span> Notion
+                        <.icon name="hero-code-bracket-square" class="h-3 w-3 text-emerald-400" />
+                        Git + tests
                       </span>
                       <span class="px-2 py-1 rounded-xl bg-[#11151c] border border-[#21262d] text-xs font-mono text-gray-400 font-semibold">
-                        +2
+                        SQLite journal
                       </span>
                     </div>
                   </div>
@@ -1297,7 +1314,7 @@
                 </div>
 
                 <div class="flex items-center gap-3">
-                  <span class="text-gray-500 text-[11px]">LAST ACTIVE: JUST NOW</span>
+                  <span class="text-gray-500 text-[11px]">SESSION-SCOPED CONTROLS</span>
                   <button
                     phx-click="switch_tab"
                     phx-value-tab="kanban"
@@ -2478,11 +2495,163 @@
                 Interactive mode · keep this session open for live conversation
               <% end %>
             </span>
+            <button
+              id="toggle-run-setup"
+              type="button"
+              phx-click="toggle_run_setup"
+              aria-expanded={@run_setup_open?}
+              aria-controls="run-setup-panel"
+              class="ml-auto inline-flex items-center gap-1.5 border border-[#30363d] bg-[#10151b] px-2.5 py-1 font-mono text-[10px] text-gray-300 transition-colors hover:border-[#ff7e5f]/50 hover:text-white"
+            >
+              <.icon name="hero-adjustments-horizontal" class="h-3 w-3 text-[#ff8a68]" />
+              Run setup
+            </button>
           </div>
 
           <!-- Rainbow Border Glow Container -->
           <div class="rainbow-box-wrapper shadow-2xl">
             <div class="bg-[#11151c] rounded-[1.2rem] p-3">
+              <.form
+                :if={@run_setup_open?}
+                for={@run_setup_form}
+                id="run-setup-panel"
+                phx-change="update_run_setup"
+                class="mb-3 border-b border-[#29313a] pb-3"
+              >
+                <div class="mb-3 flex items-start justify-between gap-4">
+                  <div>
+                    <p class="font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-[#ff8a68]">
+                      Durable execution manifest
+                    </p>
+                    <p class="mt-1 text-[11px] leading-5 text-gray-500">
+                      Persist mode, evidence providers, retry policy, enforced limits, and a display-only cost target.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    phx-click="toggle_run_setup"
+                    aria-label="Close run setup"
+                    class="p-1 text-gray-500 transition-colors hover:text-white"
+                  >
+                    <.icon name="hero-x-mark" class="h-4 w-4" />
+                  </button>
+                </div>
+
+                <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  <.input
+                    field={@run_setup_form[:mode]}
+                    id="run-setup-mode"
+                    type="select"
+                    label="Mission type"
+                    options={[Code: "code", "Deep research": "research"]}
+                    value={@run_setup_mode}
+                    class="w-full border border-[#30363d] bg-[#0b0f14] px-2.5 py-2 text-xs text-white outline-none focus:border-[#ff7e5f]/60"
+                  />
+                  <.input
+                    field={@run_setup_form[:priority]}
+                    id="run-setup-priority"
+                    type="select"
+                    label="Queue priority"
+                    options={[Low: "low", Normal: "normal", High: "high", Critical: "critical"]}
+                    value={@run_setup_priority}
+                    class="w-full border border-[#30363d] bg-[#0b0f14] px-2.5 py-2 text-xs text-white outline-none focus:border-[#ff7e5f]/60"
+                  />
+                  <.input
+                    field={@run_setup_form[:max_attempts]}
+                    id="run-setup-max-attempts"
+                    type="number"
+                    min="1"
+                    max="10"
+                    label="Max attempts"
+                    value={@run_setup_max_attempts}
+                    class="w-full border border-[#30363d] bg-[#0b0f14] px-2.5 py-2 text-xs text-white outline-none focus:border-[#ff7e5f]/60"
+                  />
+                  <.input
+                    field={@run_setup_form[:time_budget_minutes]}
+                    id="run-setup-time-budget"
+                    type="number"
+                    min="1"
+                    max="10080"
+                    label="Time budget (min)"
+                    value={@run_setup_time_budget_minutes}
+                    placeholder="Unset"
+                    class="w-full border border-[#30363d] bg-[#0b0f14] px-2.5 py-2 text-xs text-white outline-none focus:border-[#ff7e5f]/60"
+                  />
+                  <.input
+                    field={@run_setup_form[:token_budget]}
+                    id="run-setup-token-budget"
+                    type="number"
+                    min="1"
+                    label="Token budget"
+                    value={@run_setup_token_budget}
+                    placeholder="Unset"
+                    class="w-full border border-[#30363d] bg-[#0b0f14] px-2.5 py-2 text-xs text-white outline-none focus:border-[#ff7e5f]/60"
+                  />
+                  <.input
+                    field={@run_setup_form[:cost_budget_cents]}
+                    id="run-setup-cost-budget"
+                    type="number"
+                    min="1"
+                    label="Cost target (¢ · display only)"
+                    value={@run_setup_cost_budget_cents}
+                    placeholder="Unset"
+                    class="w-full border border-[#30363d] bg-[#0b0f14] px-2.5 py-2 text-xs text-white outline-none focus:border-[#ff7e5f]/60"
+                  />
+                  <.input
+                    field={@run_setup_form[:research_depth]}
+                    id="run-setup-research-depth"
+                    type="select"
+                    label="Research depth"
+                    options={[Quick: "quick", Standard: "standard", Deep: "deep"]}
+                    value={@run_setup_research_depth}
+                    class="w-full border border-[#30363d] bg-[#0b0f14] px-2.5 py-2 text-xs text-white outline-none focus:border-violet-500/60"
+                  />
+                  <.input
+                    field={@run_setup_form[:research_max_sources]}
+                    id="run-setup-research-sources"
+                    type="number"
+                    min="1"
+                    max="100"
+                    label="Maximum sources"
+                    value={@run_setup_research_sources}
+                    class="w-full border border-[#30363d] bg-[#0b0f14] px-2.5 py-2 text-xs text-white outline-none focus:border-violet-500/60"
+                  />
+                </div>
+
+                <fieldset
+                  id="run-setup-providers"
+                  class={[
+                    "mt-2 border border-[#252c35] bg-[#0b0f14] px-3 py-2",
+                    @run_setup_mode == "code" && "opacity-40"
+                  ]}
+                >
+                  <legend class="px-1 font-mono text-[9px] font-semibold uppercase tracking-wider text-gray-500">
+                    Federated providers · ordered fan-out
+                  </legend>
+                  <div class="flex flex-wrap gap-x-4 gap-y-1">
+                    <label
+                      :for={provider <- @settings.search_provider_order || ["duckduckgo"]}
+                      class="inline-flex cursor-pointer items-center gap-1.5 font-mono text-[10px] text-gray-400"
+                    >
+                      <input
+                        type="hidden"
+                        name={"run_setup[providers][#{provider}]"}
+                        value="false"
+                      />
+                      <input
+                        id={"run-setup-provider-#{provider}"}
+                        type="checkbox"
+                        name={"run_setup[providers][#{provider}]"}
+                        value="true"
+                        checked={provider in @run_setup_providers}
+                        class="h-3.5 w-3.5 border-[#3b4551] bg-[#11161d] accent-violet-400"
+                      />
+                      {provider |> String.replace("_", " ") |> String.capitalize()}
+                    </label>
+                  </div>
+                </fieldset>
+              </.form>
+
               <.form
                 for={@prompt_form}
                 id="prompt-form"
@@ -2502,6 +2671,19 @@
                 <div class="flex min-w-0 items-center justify-between gap-2 pt-2 border-t border-[#21262d] px-1">
                   <!-- Left Tool / Model Badges -->
                   <div class="flex min-w-0 items-center gap-1.5 sm:gap-2">
+                    <button
+                      id="toggle-run-setup-mobile"
+                      type="button"
+                      phx-click="toggle_run_setup"
+                      aria-expanded={@run_setup_open?}
+                      aria-controls="run-setup-panel"
+                      aria-label={
+                        if @run_setup_open?, do: "Close run setup", else: "Open run setup"
+                      }
+                      class="inline-flex h-7 w-7 shrink-0 items-center justify-center border border-[#30363d] bg-[#10151b] text-[#ff8a68] sm:hidden"
+                    >
+                      <.icon name="hero-adjustments-horizontal" class="h-3.5 w-3.5" />
+                    </button>
                     <div
                       id="dispatch-mode-switcher"
                       class="flex shrink-0 items-center border border-[#30363d] bg-[#11161d] p-0.5"
@@ -2676,7 +2858,7 @@
                           Live Web Search
                         </div>
                         <div class="flex items-center justify-between text-[11px] font-mono text-gray-400 pt-1 border-t border-white/10">
-                          <span class="text-gray-300">Tavily & Documentation</span>
+                          <span class="text-gray-300">Federated providers & safe fetch</span>
                           <span class="text-emerald-400 font-semibold">{if MapSet.member?(
                                                                              @active_tools,
                                                                              "web_search"
@@ -3037,26 +3219,20 @@
         </div>
 
         <!-- Top Section: Credits Used & Tally Bar -->
-        <% used_credits =
-          if @session_tokens > 0,
-            do: @session_tokens,
-            else: length(@operations) * 1500 + length(@messages) * 800
-
-        used_pct = min(100.0, Float.round(used_credits / 1_000_000 * 100, 1))
-        remaining_credits = max(0, 100_000_000 - used_credits)
-        active_credit_ticks = min(65, max(1, round(used_pct * 0.65))) %>
+        <% observed_tokens = max(@session_tokens || 0, 0)
+        active_credit_ticks = 0 %>
         <div class="bg-[#161b22]/70 border border-[#21262d] rounded-2xl p-5 relative">
           <div class="flex items-start justify-between mb-2">
             <div>
               <div class="text-[11px] font-mono text-gray-400 font-semibold tracking-wider uppercase mb-1">
-                CREDITS USED
+                OBSERVED SESSION TOKENS
               </div>
               <div class="text-3xl font-bold text-white tracking-tight">
-                {used_pct}%
+                {observed_tokens}
               </div>
             </div>
             <div class="text-[10px] font-mono text-gray-500 uppercase tracking-wider text-right">
-              AUTO-SWITCH TO CHEAPER MODEL AT LIMIT
+              NO FABRICATED USAGE · NO GLOBAL BUDGET
             </div>
           </div>
 
@@ -3073,8 +3249,8 @@
           </div>
 
           <div class="flex items-center justify-between font-mono text-xs text-gray-400 pt-1">
-            <span class="text-gray-300 font-medium">{Float.round(used_credits / 1_000_000, 1)}M / 100M CREDITS</span>
-            <span>{Float.round(remaining_credits / 1_000_000, 1)}M REMAINING</span>
+            <span class="text-gray-300 font-medium">Provider-reported telemetry only</span>
+            <span>Unset budget</span>
           </div>
         </div>
 
@@ -3138,6 +3314,7 @@
           </h4>
           <.form
             for={@settings_form}
+            id="settings-form"
             phx-submit="save_settings"
             class="space-y-4 font-mono text-xs"
           >
@@ -3230,6 +3407,149 @@
                   value={@settings.anthropic_base_url}
                   class="w-full bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-2 text-white font-mono text-[11px] focus:border-cyan-500 focus:outline-none"
                 />
+              </div>
+            </div>
+
+            <!-- Federated Research Providers -->
+            <div id="settings-search-providers" class="space-y-3 border-t border-[#21262d] pt-3">
+              <div class="flex items-start justify-between gap-4">
+                <div>
+                  <div class="text-[11px] font-bold uppercase tracking-wider text-gray-300">
+                    Federated Search & Deep Research
+                  </div>
+                  <p class="mt-1 max-w-[64ch] text-[10px] leading-5 text-gray-500">
+                    Fan out across enabled providers, retain source URLs, and synthesize cited reports.
+                    DuckDuckGo works without a key; private provider credentials stay in the local SQLite settings row.
+                  </p>
+                </div>
+                <span class="shrink-0 border border-violet-500/20 bg-violet-500/[0.06] px-2 py-1 text-[9px] uppercase tracking-wider text-violet-300">
+                  8 adapters
+                </span>
+              </div>
+
+              <div class="grid gap-2 sm:grid-cols-2">
+                <div
+                  :for={provider <- @settings.search_provider_order || ["duckduckgo"]}
+                  id={"settings-search-provider-#{provider}"}
+                  class="border border-[#2a313a] bg-[#0d1117] p-3"
+                >
+                  <% config = search_provider_config(@settings, provider) %>
+                  <div class="mb-2 flex items-center justify-between gap-2">
+                    <span class="font-mono text-[10px] font-semibold uppercase tracking-wider text-gray-300">
+                      {provider |> String.replace("_", " ")}
+                    </span>
+                    <label class="inline-flex cursor-pointer items-center gap-1.5 text-[9px] uppercase tracking-wider text-gray-500">
+                      <input
+                        type="hidden"
+                        name={"settings[search_providers][#{provider}][enabled]"}
+                        value="false"
+                      />
+                      <input
+                        id={"settings-provider-enabled-#{provider}"}
+                        type="checkbox"
+                        name={"settings[search_providers][#{provider}][enabled]"}
+                        value="true"
+                        checked={Map.get(config, "enabled", false)}
+                        class="h-3.5 w-3.5 border-[#3a424c] bg-[#11161d] accent-violet-400"
+                      /> Enabled
+                    </label>
+                  </div>
+                  <div :if={provider not in ["duckduckgo", "searxng"]} class="mb-2">
+                    <label
+                      for={"settings-provider-key-#{provider}"}
+                      class="mb-1 block text-[9px] uppercase tracking-wider text-gray-600"
+                    >
+                      API key
+                    </label>
+                    <input
+                      id={"settings-provider-key-#{provider}"}
+                      type="password"
+                      name={"settings[search_providers][#{provider}][api_key]"}
+                      value=""
+                      placeholder={masked_secret(Map.get(config, "api_key"))}
+                      autocomplete="off"
+                      class="w-full border border-[#30363d] bg-[#090d12] px-2.5 py-1.5 font-mono text-[10px] text-white outline-none focus:border-violet-500/60"
+                    />
+                  </div>
+                  <div>
+                    <label
+                      for={"settings-provider-url-#{provider}"}
+                      class="mb-1 block text-[9px] uppercase tracking-wider text-gray-600"
+                    >
+                      {if provider == "searxng", do: "Instance URL", else: "Base URL"}
+                    </label>
+                    <input
+                      id={"settings-provider-url-#{provider}"}
+                      type="url"
+                      name={"settings[search_providers][#{provider}][base_url]"}
+                      value={Map.get(config, "base_url", "")}
+                      placeholder={
+                        if provider == "searxng",
+                          do: "https://search.example",
+                          else: "Provider default"
+                      }
+                      class="w-full border border-[#30363d] bg-[#090d12] px-2.5 py-1.5 font-mono text-[10px] text-white outline-none focus:border-violet-500/60"
+                    />
+                  </div>
+                  <div :if={provider == "google"} class="mt-2">
+                    <label
+                      for="settings-provider-engine-google"
+                      class="mb-1 block text-[9px] uppercase tracking-wider text-gray-600"
+                    >
+                      Search engine ID
+                    </label>
+                    <input
+                      id="settings-provider-engine-google"
+                      type="text"
+                      name="settings[search_providers][google][engine_id]"
+                      value={Map.get(config, "engine_id", "")}
+                      class="w-full border border-[#30363d] bg-[#090d12] px-2.5 py-1.5 font-mono text-[10px] text-white outline-none focus:border-violet-500/60"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div class="grid gap-2 sm:grid-cols-3">
+                <label class="text-[9px] uppercase tracking-wider text-gray-600">
+                  Default depth
+                  <select
+                    id="settings-research-depth"
+                    name="settings[research_depth]"
+                    class="mt-1 w-full border border-[#30363d] bg-[#090d12] px-2 py-1.5 text-[10px] normal-case text-white outline-none"
+                  >
+                    <option
+                      :for={depth <- ~w(quick standard deep)}
+                      value={depth}
+                      selected={@settings.research_depth == depth}
+                    >
+                      {String.capitalize(depth)}
+                    </option>
+                  </select>
+                </label>
+                <label class="text-[9px] uppercase tracking-wider text-gray-600">
+                  Max sources
+                  <input
+                    id="settings-research-max-sources"
+                    type="number"
+                    name="settings[research_max_sources]"
+                    min="1"
+                    max="100"
+                    value={@settings.research_max_sources || 12}
+                    class="mt-1 w-full border border-[#30363d] bg-[#090d12] px-2 py-1.5 text-[10px] normal-case text-white outline-none"
+                  />
+                </label>
+                <label class="text-[9px] uppercase tracking-wider text-gray-600">
+                  Parallelism
+                  <input
+                    id="settings-research-parallelism"
+                    type="number"
+                    name="settings[research_parallelism]"
+                    min="1"
+                    max="16"
+                    value={@settings.research_parallelism || 4}
+                    class="mt-1 w-full border border-[#30363d] bg-[#090d12] px-2 py-1.5 text-[10px] normal-case text-white outline-none"
+                  />
+                </label>
               </div>
             </div>
 

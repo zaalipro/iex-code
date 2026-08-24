@@ -30,6 +30,7 @@ defmodule IexCodeWeb.WorkspaceLiveAsyncRunsTest do
     assert run.status == "queued"
     assert run.kind == "coding_swarm"
     assert run.mode == "swarm"
+    refute Map.has_key?(run.metadata, "research")
     assert run.event_sequence >= 3
 
     assert Enum.map(Runs.list_steps(run), &{&1.key, &1.status}) == [
@@ -41,6 +42,7 @@ defmodule IexCodeWeb.WorkspaceLiveAsyncRunsTest do
     assert has_element?(view, "#async-run-detail")
     assert has_element?(view, "#async-run-step-#{hd(Runs.list_steps(run)).id}")
     assert has_element?(view, "#run-event-#{Runs.latest_event(run).id}")
+    refute has_element?(view, "#async-run-research-manifest")
   end
 
   test "interactive mode keeps the legacy live-session path explicit", %{
@@ -55,6 +57,95 @@ defmodule IexCodeWeb.WorkspaceLiveAsyncRunsTest do
 
     assert has_element?(view, "#dispatch-mode-interactive")
     assert render(view) =~ "Interactive mode"
+    assert Runs.list_runs(session_id: session.id) == []
+  end
+
+  test "persists a configured deep-research mission and renders its manifest", %{
+    conn: conn,
+    workspace_path: path
+  } do
+    project = create_project_fixture(%{root_path: path})
+    session = create_session_fixture(project)
+    {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+    view |> element("#toggle-run-setup") |> render_click()
+    assert has_element?(view, "#run-setup-panel")
+
+    view
+    |> form("#run-setup-panel", %{
+      "run_setup" => %{
+        "mode" => "research",
+        "priority" => "high",
+        "max_attempts" => "4",
+        "token_budget" => "25000",
+        "cost_budget_cents" => "500",
+        "time_budget_minutes" => "45",
+        "research_depth" => "deep",
+        "research_max_sources" => "18",
+        "providers" => %{"duckduckgo" => "true"}
+      }
+    })
+    |> render_change()
+
+    view
+    |> form("#prompt-form", %{"prompt" => "/research compare durable agent control planes"})
+    |> render_submit()
+
+    [run] = Runs.list_runs(session_id: session.id)
+    assert run.kind == "deep_research"
+    assert run.mode == "research"
+    assert run.priority == "high"
+    assert run.max_attempts == 4
+    assert run.token_budget == 25_000
+    assert run.cost_budget_cents == 500
+    assert run.time_budget_ms == 2_700_000
+
+    assert run.metadata["research"]["mode"] == "research"
+    assert run.metadata["research"]["depth"] == "deep"
+    assert run.metadata["research"]["max_sources"] == 18
+    assert "duckduckgo" in run.metadata["research"]["providers"]
+
+    assert Enum.map(Runs.list_steps(run), & &1.key) == [
+             "prepare",
+             "execute",
+             "research.plan",
+             "research.search",
+             "research.fetch",
+             "research.synthesize"
+           ]
+
+    assert has_element?(view, "#async-run-research-manifest")
+    assert has_element?(view, "#async-run-token-budget[data-budget-limit='25000']")
+    assert has_element?(view, "#async-run-cost-budget", "Cost · reported only")
+  end
+
+  test "requires an explicit provider for a deep-research mission", %{
+    conn: conn,
+    workspace_path: path
+  } do
+    project = create_project_fixture(%{root_path: path})
+    session = create_session_fixture(project)
+    {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+    view |> element("#toggle-run-setup") |> render_click()
+
+    view
+    |> form("#run-setup-panel", %{
+      "run_setup" => %{
+        "mode" => "research",
+        "providers" =>
+          Map.new(~w(tavily brave exa serper google bing searxng duckduckgo), &{&1, "false"})
+      }
+    })
+    |> render_change()
+
+    refute has_element?(view, "#run-setup-provider-duckduckgo[checked]")
+
+    view
+    |> form("#prompt-form", %{"prompt" => "/research durable agent control planes"})
+    |> render_submit()
+
+    assert has_element?(view, "#run-setup-panel")
     assert Runs.list_runs(session_id: session.id) == []
   end
 

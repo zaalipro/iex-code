@@ -60,7 +60,13 @@ defmodule IexCode.LLM.StreamClient do
     provider = Map.get(opts_map, :provider, "openai")
     url = Map.fetch!(opts_map, :url)
     headers = Map.get(opts_map, :headers, [])
-    body = Map.fetch!(opts_map, :body) |> Map.put("stream", true)
+
+    body =
+      opts_map
+      |> Map.fetch!(:body)
+      |> Map.put("stream", true)
+      |> maybe_request_openai_usage(provider)
+
     receive_timeout = Map.get(opts_map, :receive_timeout, 60_000)
     # A nil value (key present, no fun provided) must behave like an absent key.
     cancelled? = Map.get(opts_map, :cancelled?) || fn -> false end
@@ -293,12 +299,34 @@ defmodule IexCode.LLM.StreamClient do
         }
       end)
 
-    %{
+    response = %{
       text: state.text_io |> Enum.reverse() |> IO.iodata_to_binary(),
       tool_calls: final_tool_calls,
       reasoning: state.reasoning_io |> Enum.reverse() |> IO.iodata_to_binary(),
       stop_reason: state.stop_reason || if(state.cancelled?, do: :cancelled),
       raw: raw_map(state.usage)
+    }
+
+    if is_map(state.usage),
+      do: Map.put(response, :usage, normalize_usage(state.usage)),
+      else: response
+  end
+
+  defp maybe_request_openai_usage(body, "openai"),
+    do: Map.put_new(body, "stream_options", %{"include_usage" => true})
+
+  defp maybe_request_openai_usage(body, _provider), do: body
+
+  defp normalize_usage(usage) do
+    prompt = usage["prompt_tokens"] || usage["input_tokens"] || usage[:prompt_tokens] || 0
+
+    completion =
+      usage["completion_tokens"] || usage["output_tokens"] || usage[:completion_tokens] || 0
+
+    %{
+      prompt_tokens: prompt,
+      completion_tokens: completion,
+      total_tokens: usage["total_tokens"] || usage[:total_tokens] || prompt + completion
     }
   end
 

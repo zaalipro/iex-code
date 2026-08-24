@@ -90,9 +90,9 @@ defmodule IexCodeWeb.EmpiricalDeadAssignChallengeTest do
       render_click(view, "toggle_settings_modal")
       settings_html = render(view)
 
-      assert settings_html =~ "CREDITS USED"
-      assert settings_html =~ "/ 100M CREDITS"
-      assert settings_html =~ "REMAINING"
+      assert settings_html =~ "OBSERVED SESSION TOKENS"
+      assert settings_html =~ "Provider-reported telemetry only"
+      assert settings_html =~ "Unset budget"
       # Verify tally tick classes are present
       assert settings_html =~ "tally-tick"
 

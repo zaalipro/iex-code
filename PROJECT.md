@@ -7,10 +7,11 @@ developer delegate work to supervised agents, observe every operation, inspect a
 edit artifacts, run verification, and decide what reaches Git without leaving one
 Phoenix LiveView workspace.
 
-The application now includes the first implemented slice of a **durable asynchronous
-run system**: runs are queued in SQLite, claimed with leases, serialized per project,
-and recorded in an ordered event journal. The next phases generalize the persisted
-two-step graph into dependency-aware parallel execution, approvals, and checkpoints.
+The application includes a **durable asynchronous run system**: coding and deep-research
+runs are queued in SQLite, claimed with leases, serialized per project, and recorded in
+an ordered event journal. Run-scoped controls, research evidence, and citation-bearing
+reports are durable. The next phases generalize these typed workflows into dependency-aware
+parallel execution, governed tools, and resumable checkpoints.
 
 “Asynchronous” does not mean “unobservable.” A run must always expose its plan,
 dependencies, current owners, tool activity, artifacts, verification, cost, and the
@@ -80,11 +81,11 @@ background run per project.
 | Message | Role, content, tool-call metadata, token/cost fields |
 | Operation | Parent, agent, type, progress, result/error, PID string, timings |
 | Kanban task | Workflow state, priority, assignee, subtasks, schedule, metadata |
-| App settings | Provider endpoints/keys and basic generation/swarm preferences |
+| App settings | Model endpoints/keys plus eight search adapters, provider order, and research defaults |
 | Run | Objective, typed executor, lifecycle, priority, progress, budgets, attempts, lease, timings |
-| Run step | Typed `prepare`/`execute` graph nodes, dependencies, attempts, result/error |
+| Run step | Typed coding nodes plus research plan/search/fetch/synthesis nodes, dependencies, attempts, result/error |
 | Run event | Per-run monotonic sequence, type, source, bounded payload, occurrence time |
-| Run command/approval/artifact | Command idempotency keys plus persistence APIs for review decisions and artifact metadata |
+| Run command/control/approval/artifact | Tool command idempotency, ordered run controls, review decisions, cited reports, and artifact metadata |
 | Mutation snapshot | Durable native-workspace rollback manifest, mirrored in ETS |
 
 The current graph is deliberately small. General fan-out/fan-in DAG planning, durable
@@ -96,7 +97,7 @@ work.
 | Surface | Implemented today |
 | --- | --- |
 | Kanban | CRUD, eight states, drag/move actions, filters, assignees, priorities, subtasks, and scheduling fields |
-| Swarm | Durable run ledger and bounded event-journal view plus four supervised agents, self-correction, progress, steering, pause/resume/cancel |
+| Swarm | Mission Control with coding/deep-research manifests, budgets, ordered controls, evidence/report preview, plus the fixed four-agent coding swarm |
 | Calendar | Month navigation, task editing/run-now, plus a supervised UTC cron scheduler with atomic claims, stable occurrence keys, recurrence, and stale recovery |
 | Changes/Git | Status rails, inline/split diffs, stage/unstage, hunk operations, branches, fetch/pull, commit generation and commit |
 | Tests/AutoFix | Async test subprocess, ANSI cleanup, structured failures, heuristic proposals, preview/apply/rollback and re-verification |
@@ -117,6 +118,8 @@ work.
 - `IexCode.Tools.TerminalServer`: supervised native interactive terminal facade.
 - `IexCode.LLM`: OpenAI-compatible and Anthropic streaming, retry, fallback,
   circuit breaking, SSE parsing, and UTF-8 boundary handling.
+- `IexCode.Research`: normalized Tavily/Brave/Exa/Serper/Google/Bing/SearxNG/
+  DuckDuckGo federation, hardened public fetching, evidence retention, and cited synthesis.
 
 ### Current lifecycle
 
@@ -148,16 +151,16 @@ workspace effects from being replayed blindly.
 | Durable messages and operation summaries | Current | Rehydrated by LiveView |
 | Native PTY and developer tools | Current | Execute in the real project root |
 | Atomic MultiPatch rollback | Current | Applies only to writes performed through MultiPatch |
-| Pause/resume/cancel/steer | Current | Live process control; not a durable command inbox |
+| Pause/resume/cancel/steer | Current | Ordered run-scoped control records and isolated delivery; restart replay/in-flight interruption remain partial |
 | Fixed four-agent correction loop | Current | Sequential domain workflow, not a general scheduler |
 | LLM streaming transport | Current | Parser/callback support exists |
 | Token-by-token durable chat events | Partial | Normal session flow currently publishes the completed message |
 | Calendar recurrence | Current | Supervised UTC polling, due claims, recurrence, stale recovery, and durable run enqueue |
-| Model providers | Partial | OpenAI-compatible and Anthropic adapters only |
+| Model providers | Partial | OpenAI-compatible and Anthropic model transports; eight first-class web-search adapters are separate and current |
 | Configurable swarm-agent count | Partial | Setting persists, but engine topology remains four canonical roles |
 | Durable run/event model | Current | Transactional run/step/event/command/approval/artifact records; checkpoints remain planned |
-| Run budgets | Partial | Token/cost/time fields persist; executor-side hard enforcement remains planned |
-| Dependency-aware parallel DAG | Planned | Includes budgets, retries, fan-out/fan-in, and locks |
+| Run budgets | Partial | Wall time and provider-reported tokens enforced at covered boundaries; cost/pricing enforcement remains planned |
+| Dependency-aware parallel DAG | Partial | Research has typed plan/search/fetch/synthesis nodes and provider fan-out; arbitrary DAG scheduling/locks remain planned |
 | Native workspace coordination | Partial | Dispatcher excludes a second active run per project; interactive/file/Git locks remain planned |
 | Approval and durable command records | Partial | Command idempotency keys and approval records exist; policy enforcement/inbox UX remain planned |
 | Restart reconciliation | Partial | Expired workers become interrupted; safe checkpoint resume is not implemented |
@@ -217,8 +220,9 @@ the target scheduler. Items explicitly marked planned are not current behavior.
 - A typed unit of agent or tool work.
 - Stores dependencies, params, result/error, attempts, progress, timestamps, and status.
   Per-step leases/timeouts and general ready-node scheduling are planned.
-- The dispatcher currently executes a fixed `prepare → execute` graph; it does not yet
-  schedule an arbitrary dependency DAG.
+- Coding dispatch currently executes a fixed `prepare → execute` graph. Research adds
+  durable plan/search/fetch/synthesis nodes and concurrent provider fan-out, but the
+  dispatcher does not yet schedule an arbitrary dependency DAG.
 
 #### Run event
 
@@ -233,11 +237,12 @@ the target scheduler. Items explicitly marked planned are not current behavior.
 - Checksums and arbitrary metadata are supported; enforced workspace revision and
   lifecycle status are planned.
 
-#### Run command and approval
+#### Run command, control, and approval
 
 - Run commands have per-run idempotency keys; approval request/decision persistence APIs exist.
-- Dispatcher pause/resume/cancel and swarm steering currently use direct GenServer and
-  PubSub control paths; they are not yet consumed from a durable control inbox.
+- Run controls have per-run monotonic sequences and idempotency keys, are claimed and
+  resolved durably, and are delivered over run-isolated PubSub topics. A general replaying
+  consumer for pending controls after dispatcher restart is not yet implemented.
 
 #### Workspace lease and file lock
 
@@ -292,12 +297,12 @@ storage replay is implemented; cursor-driven LiveView pagination remains in A5.
 
 ### A2 — Dispatcher and recovery
 
-**State: leasing/reconciliation implemented; durable controls and checkpoint resume planned**
+**State: leasing/reconciliation and ordered run controls implemented; checkpoint resume planned**
 
 - Claim queued runs with renewable leases.
 - Reconcile expired run/step claims on boot.
-- Persist pause/resume/cancel/steer commands and acknowledgements instead of relying
-  only on live GenServer/PubSub control.
+- Replay pending pause/resume/cancel/steer controls safely after dispatcher restart and
+  add acknowledgement checkpoints inside every long provider/tool call.
 - The current executor passes the run id into the four-agent coordinator and records
   progress; extend that integration for durable controls and checkpoint recovery.
 
@@ -345,11 +350,13 @@ lost deltas.
 
 ### A6 — Scheduled and provider-complete operation
 
-**State: core scheduler implemented; dead-letter/notification and provider expansion planned**
+**State: core scheduler and eight-provider research federation implemented; model transport expansion planned**
 
 - Supervised due-task claims, recurrence, stale recovery, and durable run creation are implemented.
 - Add explicit retry policy, notification, and dead-letter workflows.
-- Add first-class direct Gemini and local-provider adapters only when their transport,
+- Maintain shared conformance tests for Tavily, Brave, Exa, Serper, Google, Bing,
+  SearxNG, and DuckDuckGo; add more providers through the registry contract.
+- Add first-class direct Gemini and local-model adapters only when their transport,
   cancellation, usage, and error behavior meet the same contracts.
 - Add encrypted/keychain-backed secret storage before shared or remote deployment.
 

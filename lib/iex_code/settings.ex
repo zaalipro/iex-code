@@ -15,6 +15,7 @@ defmodule IexCode.Settings do
   @default_openai_base "https://cli.llmotions.com/v1"
   @default_provider "openai"
   @default_model "gemini-3.7-flash-high"
+  @search_provider_order ~w(tavily brave exa serper google bing searxng duckduckgo)
 
   @doc """
   Returns the active application settings.
@@ -86,6 +87,26 @@ defmodule IexCode.Settings do
     AppSettings.changeset(settings, attrs)
   end
 
+  @doc "Returns the normalized, ordered configuration consumed by the research gateway."
+  def search_config(%AppSettings{} = settings \\ get_settings()) do
+    providers = settings.search_providers || default_search_providers()
+    configured_order = settings.search_provider_order || @search_provider_order
+
+    order =
+      Enum.filter(configured_order, fn provider ->
+        config = Map.get(providers, provider, %{})
+        Map.get(config, "enabled", Map.get(config, :enabled, false)) == true
+      end)
+
+    %{
+      providers: providers,
+      order: Enum.filter(order, &Map.has_key?(providers, &1)),
+      depth: settings.research_depth || "standard",
+      max_sources: settings.research_max_sources || 12,
+      parallelism: settings.research_parallelism || 4
+    }
+  end
+
   defp default_settings_attrs do
     %{
       anthropic_api_key: System.get_env("ANTHROPIC_API_KEY") || "",
@@ -97,9 +118,45 @@ defmodule IexCode.Settings do
       swarm_agent_count: 4,
       auto_save: true,
       temperature: 0.2,
-      max_tokens: 4096
+      max_tokens: 4096,
+      search_providers: default_search_providers(),
+      search_provider_order: @search_provider_order,
+      research_depth: "standard",
+      research_max_sources: 12,
+      research_parallelism: 4
     }
   end
+
+  defp default_search_providers do
+    %{
+      "tavily" => provider_config("TAVILY_API_KEY", "https://api.tavily.com"),
+      "brave" => provider_config("BRAVE_SEARCH_API_KEY", "https://api.search.brave.com/res/v1"),
+      "exa" => provider_config("EXA_API_KEY", "https://api.exa.ai"),
+      "serper" => provider_config("SERPER_API_KEY", "https://google.serper.dev"),
+      "google" =>
+        provider_config("GOOGLE_SEARCH_API_KEY", "https://customsearch.googleapis.com")
+        |> Map.put("engine_id", System.get_env("GOOGLE_SEARCH_ENGINE_ID") || ""),
+      "bing" => provider_config("BING_SEARCH_API_KEY", "https://api.bing.microsoft.com/v7.0"),
+      "searxng" => %{
+        "enabled" => present_env?("SEARXNG_BASE_URL"),
+        "base_url" => System.get_env("SEARXNG_BASE_URL") || ""
+      },
+      "duckduckgo" => %{
+        "enabled" => true,
+        "base_url" => "https://html.duckduckgo.com"
+      }
+    }
+  end
+
+  defp provider_config(key_env, base_url) do
+    %{
+      "enabled" => present_env?(key_env),
+      "api_key" => System.get_env(key_env) || "",
+      "base_url" => base_url
+    }
+  end
+
+  defp present_env?(name), do: System.get_env(name) not in [nil, ""]
 
   # Unpersisted defaults used only when the database cannot be reached.
   defp volatile_defaults do
@@ -197,7 +254,35 @@ defmodule IexCode.Settings do
           if(is_nil(settings.default_model) or settings.default_model == "",
             do: @default_model,
             else: settings.default_model
-          )
+          ),
+        search_providers:
+          if(is_map(settings.search_providers) and map_size(settings.search_providers) > 0,
+            do: hydrate_search_providers(settings.search_providers),
+            else: default_search_providers()
+          ),
+        search_provider_order:
+          normalize_search_provider_order(
+            settings.search_provider_order,
+            settings.search_providers || default_search_providers()
+          ),
+        research_depth: settings.research_depth || "standard",
+        research_max_sources: settings.research_max_sources || 12,
+        research_parallelism: settings.research_parallelism || 4
     }
+  end
+
+  defp normalize_search_provider_order(order, providers) do
+    existing = if is_list(order), do: order, else: []
+    known = Enum.filter(@search_provider_order, &Map.has_key?(providers, &1))
+    Enum.uniq(existing ++ known)
+  end
+
+  defp hydrate_search_providers(stored) do
+    Map.merge(default_search_providers(), stored, fn _provider, defaults, current ->
+      # Stored values are authoritative. Defaults only fill fields added by a
+      # newer release; in particular, an explicit `enabled: false` must never
+      # be replaced by an environment-derived/default `true` value.
+      Map.merge(defaults, current)
+    end)
   end
 end

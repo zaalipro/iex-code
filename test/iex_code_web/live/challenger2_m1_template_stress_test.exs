@@ -48,13 +48,13 @@ defmodule IexCodeWeb.Challenger2M1TemplateStressTest do
 
       # Open settings modal
       html = render_click(view, "toggle_settings_modal")
-      assert html =~ "CREDITS USED"
-      assert html =~ "REMAINING"
-      assert html =~ "100M CREDITS"
+      assert html =~ "OBSERVED SESSION TOKENS"
+      assert html =~ "Provider-reported telemetry only"
+      assert html =~ "Unset budget"
 
       # Re-toggle to close
       html = render_click(view, "toggle_settings_modal")
-      refute html =~ "CREDITS USED"
+      refute html =~ "OBSERVED SESSION TOKENS"
     end
 
     test "handles coach and swarm dynamic progress calculation under boundary parameters", %{

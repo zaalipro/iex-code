@@ -137,6 +137,37 @@ defmodule IexCode.Engine.AgentSupervisor do
   end
 
   @doc """
+  Stops all in-flight autonomous work associated with a session.
+
+  The terminal is restarted only when an agent currently owns the PTY, so an
+  agent command and its process tree are killed without interrupting an idle
+  user shell. Agent processes are then terminated, which also closes in-flight
+  HTTP connections and ports owned by those GenServers.
+  """
+  def cancel_session_activity(session_id) when is_binary(session_id) do
+    restart_agent_terminal(session_id)
+    :ok = stop_all_agents(session_id)
+    :ok
+  end
+
+  defp restart_agent_terminal(session_id) do
+    case IexCode.Tools.TerminalServer.get_state(session_id) do
+      {:ok, %{occupant: occupant}} when is_tuple(occupant) and elem(occupant, 0) == :agent ->
+        case IexCode.Tools.TerminalServer.restart(session_id) do
+          {:ok, _pid} -> :ok
+          {:error, _reason} -> IexCode.Tools.TerminalServer.kill(session_id)
+        end
+
+      _other ->
+        :ok
+    end
+  rescue
+    _error -> :ok
+  catch
+    _kind, _reason -> :ok
+  end
+
+  @doc """
   Finds the PID of a subagent process for a given session and agent type.
   """
   def find_agent(session_id, agent_type) do

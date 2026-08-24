@@ -113,16 +113,28 @@ defmodule IexCode.Runs.RunDispatcherTest do
     assert Enum.at(Runs.list_steps(run), 1).status == "paused"
     assert Process.alive?(worker_pid)
 
+    assert {:ok, steered} =
+             RunDispatcher.steer(run, "Keep public APIs backwards compatible", @dispatcher)
+
+    assert steered.id == run.id
+    assert_receive {:test_run_steered, ^run_id, "Keep public APIs backwards compatible"}, 2_000
+
     assert {:ok, resumed} = RunDispatcher.resume(run, @dispatcher)
     assert resumed.status == "running"
     assert_receive {:test_run_resumed, ^run_id}, 2_000
     assert Enum.at(Runs.list_steps(run), 1).status == "running"
+
+    assert [%{kind: "pause"}, %{kind: "steer"}, %{kind: "resume"}] =
+             Runs.list_controls(run)
+
     {:ok, task} = linked_task(context, Runs.get_run!(run_id))
 
     assert {:ok, cancelled} = RunDispatcher.cancel(run, @dispatcher)
     assert cancelled.status == "cancelled"
     assert cancelled.cancellation_requested_at != nil
     assert_receive {:test_run_cancelled, ^run_id}, 2_000
+
+    assert List.last(Runs.list_controls(run)).kind == "cancel"
 
     ref = Process.monitor(worker_pid)
     assert_receive {:DOWN, ^ref, :process, ^worker_pid, _reason}, 2_000
@@ -175,6 +187,22 @@ defmodule IexCode.Runs.RunDispatcherTest do
     assert_receive {:async_run_updated, %Run{id: ^run_id, status: "completed"}}, 2_000
   end
 
+  test "enforces the durable wall-clock budget and journals exhaustion", context do
+    attrs = run_attrs(context, "bounded run") |> Map.put(:time_budget_ms, 30)
+    assert {:ok, run} = RunDispatcher.enqueue(attrs, @dispatcher)
+    run_id = run.id
+    assert_receive {:test_run_started, ^run_id, worker_pid}, 2_000
+
+    ref = Process.monitor(worker_pid)
+    assert_receive {:run_updated, %Run{id: ^run_id, status: "failed"}}, 2_000
+    assert_receive {:DOWN, ^ref, :process, ^worker_pid, _reason}, 2_000
+
+    failed = Runs.get_run!(run_id)
+    assert failed.error_details["reason"] == "budget_exhausted"
+    assert failed.error_details["budget"] == "time"
+    assert Enum.any?(Runs.list_events(run), &(&1.type == "run.budget_exhausted"))
+  end
+
   test "an abnormal monitored worker exit is persisted as interrupted", context do
     {:ok, run} = enqueue(context, "crashing run")
     run_id = run.id
@@ -194,6 +222,39 @@ defmodule IexCode.Runs.RunDispatcherTest do
     assert projected.latest_summary =~ "interrupted"
     assert projected.latest_summary =~ "killed"
     refute_receive {:test_run_started, ^run_id, _pid}, 100
+  end
+
+  test "an interrupted research worker terminalizes pending descendants", context do
+    attrs =
+      context
+      |> run_attrs("interrupted research")
+      |> Map.merge(%{kind: "deep_research", mode: "research"})
+
+    assert {:ok, run} = RunDispatcher.enqueue(attrs, @dispatcher)
+    run_id = run.id
+    assert_receive {:test_run_started, ^run_id, worker_pid}, 2_000
+
+    ref = Process.monitor(worker_pid)
+    Process.exit(worker_pid, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^worker_pid, :killed}, 2_000
+    assert_receive {:async_run_updated, %Run{id: ^run_id, status: "interrupted"}}, 2_000
+
+    refute Enum.any?(Runs.list_steps(run), fn step ->
+             step.status in ~w(pending ready running paused waiting_approval blocked)
+           end)
+  end
+
+  test "startup supersedes controls claimed by the previous dispatcher", context do
+    stop_supervised!(RunDispatcher)
+    {:ok, run} = create_run(context, "claimed before restart")
+    {:ok, pending} = Runs.enqueue_control(run, "restart:steer", %{kind: "steer"})
+    assert {:ok, claimed} = Runs.claim_control(pending, "dispatcher-test")
+
+    start_supervised!({RunDispatcher, dispatcher_options()})
+
+    superseded = Runs.get_control(claimed.id)
+    assert superseded.status == "superseded"
+    assert superseded.result == %{"reason" => "dispatcher_restarted"}
   end
 
   test "rejects untyped executable payloads before persistence", context do

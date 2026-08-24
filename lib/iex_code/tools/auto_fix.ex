@@ -101,18 +101,38 @@ defmodule IexCode.Tools.AutoFix do
   @spec apply_auto_fix(Path.t(), diagnostic(), keyword()) ::
           {:ok, MultiPatch.patch_summary()} | {:error, term()}
   def apply_auto_fix(project_root, diagnostic, opts \\ []) do
-    case generate_patch_proposals(project_root, diagnostic, opts) do
-      {:ok, []} ->
-        {:error, :no_applicable_patches}
+    with :ok <- authorize_write(opts) do
+      case generate_patch_proposals(project_root, diagnostic, opts) do
+        {:ok, []} ->
+          {:error, :no_applicable_patches}
 
-      {:ok, patches} ->
-        MultiPatch.apply_patches(project_root, patches, opts)
+        {:ok, patches} ->
+          MultiPatch.apply_patches(project_root, patches, opts)
 
-      {:error, reason} ->
-        {:error, reason}
+        {:error, reason} ->
+          {:error, reason}
+      end
     end
   rescue
     e -> {:error, "Failed to apply auto fix: #{Exception.message(e)}"}
+  end
+
+  defp authorize_write(opts) do
+    case Keyword.get(opts, :allowed_tools, :all) do
+      :all ->
+        :ok
+
+      nil ->
+        :ok
+
+      allowed_tools when is_list(allowed_tools) ->
+        if "multi_patch" in Enum.map(allowed_tools, &to_string/1),
+          do: :ok,
+          else: {:error, {:tool_not_allowed, "multi_patch"}}
+
+      _other ->
+        {:error, {:tool_not_allowed, "multi_patch"}}
+    end
   end
 
   @doc """

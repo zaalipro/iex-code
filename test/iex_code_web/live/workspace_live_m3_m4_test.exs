@@ -256,7 +256,7 @@ defmodule IexCodeWeb.WorkspaceLiveM3M4Test do
 
       # Toggle usage history
       render_click(view, "toggle_all_usage_modal")
-      assert render(view) =~ "Usage History" or render(view) =~ "CREDITS USED"
+      assert render(view) =~ "Usage History" or render(view) =~ "OBSERVED SESSION TOKENS"
     end
 
     test "executes terminal commands, handles replay and stop", %{view: view} do

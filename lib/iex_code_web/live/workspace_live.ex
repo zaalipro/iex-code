@@ -50,6 +50,7 @@ defmodule IexCodeWeb.WorkspaceLive do
     run_events = if selected_run, do: Runs.list_latest_events(selected_run, limit: 500), else: []
     run_steps = if selected_run, do: Runs.list_steps(selected_run), else: []
     run_approvals = if selected_run, do: Runs.list_approvals(selected_run), else: []
+    run_controls = if selected_run, do: Runs.list_controls(selected_run), else: []
     pending_approval_count = Runs.count_pending_approvals(session.id)
     run_artifacts = if selected_run, do: Runs.list_artifacts(selected_run), else: []
     settings = Settings.get_settings()
@@ -92,6 +93,8 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:selected_run, selected_run)
       |> assign(:run_steps, run_steps)
       |> assign(:run_approvals, run_approvals)
+      |> assign(:run_controls, run_controls)
+      |> assign(:run_manifest, run_manifest(selected_run))
       |> assign(:run_artifacts, run_artifacts)
       |> assign(:run_rows, durable_runs)
       |> assign(:run_event_rows, run_events)
@@ -99,6 +102,16 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:run_counts, run_counts(durable_runs, pending_approval_count))
       |> assign(:run_dispatcher_stats, safe_dispatcher_stats())
       |> assign(:dispatch_mode, "background")
+      |> assign(:run_setup_open?, false)
+      |> assign(:run_setup_mode, "code")
+      |> assign(:run_setup_priority, "normal")
+      |> assign(:run_setup_max_attempts, 3)
+      |> assign(:run_setup_token_budget, nil)
+      |> assign(:run_setup_cost_budget_cents, nil)
+      |> assign(:run_setup_time_budget_minutes, nil)
+      |> assign(:run_setup_research_depth, settings.research_depth || "standard")
+      |> assign(:run_setup_research_sources, settings.research_max_sources || 12)
+      |> assign(:run_setup_providers, enabled_search_providers(settings))
       |> assign(:expanded_ops, MapSet.new())
       |> assign(:active_agent, nil)
       |> assign(:active_stage, :init)
@@ -171,7 +184,7 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:active_worker_pid, nil)
       |> assign(:swarm_iteration, 1)
       |> assign(:max_retries, 3)
-      |> assign(:active_tools, MapSet.new())
+      |> assign(:active_tools, MapSet.new(["ast_search", "swarm"]))
       # Dropdown & Modal state
       |> assign(:open_dropdown, nil)
       |> assign(:show_settings_modal, false)
@@ -201,6 +214,7 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:open_modal_dropdown, nil)
       # Forms
       |> assign(:prompt_form, to_form(%{"prompt" => ""}))
+      |> assign(:run_setup_form, to_form(run_setup_defaults(settings), as: :run_setup))
       |> assign(
         :goal_form,
         to_form(%{"title" => "", "description" => "", "auto_start" => "true"})
@@ -2419,6 +2433,72 @@ defmodule IexCodeWeb.WorkspaceLive do
   end
 
   @impl true
+  def handle_event("steer_async_run", params, socket) do
+    run_id = params["run_id"]
+    guidance = String.trim(params["steering"] || "")
+
+    case Runs.get_run(run_id) do
+      %Runs.Run{session_id: session_id} = run
+      when session_id == socket.assigns.session.id and guidance != "" ->
+        case RunDispatcher.steer(run, guidance) do
+          {:ok, updated} ->
+            {:noreply,
+             socket
+             |> select_run_projection(updated)
+             |> put_flash(:info, "Run-scoped guidance dispatched and journaled")}
+
+          {:error, reason} ->
+            {:noreply,
+             put_flash(socket, :error, "Run steering failed: #{format_run_error(reason)}")}
+        end
+
+      _ ->
+        {:noreply, put_flash(socket, :error, "Select an active run and enter guidance")}
+    end
+  catch
+    :exit, _ -> {:noreply, put_flash(socket, :error, "The run dispatcher is not available")}
+  end
+
+  @impl true
+  def handle_event("toggle_run_setup", _params, socket) do
+    {:noreply, assign(socket, :run_setup_open?, !socket.assigns.run_setup_open?)}
+  end
+
+  @impl true
+  def handle_event("update_run_setup", %{"run_setup" => params}, socket) do
+    providers =
+      params
+      |> Map.get("providers", %{})
+      |> Enum.filter(fn {_provider, enabled} -> enabled in ["true", "on", "1"] end)
+      |> Enum.map(&elem(&1, 0))
+
+    {:noreply,
+     socket
+     |> assign(:run_setup_mode, normalize_run_mode(params["mode"]))
+     |> assign(:run_setup_priority, normalize_run_priority(params["priority"]))
+     |> assign(:run_setup_max_attempts, bounded_integer(params["max_attempts"], 3, 1, 10))
+     |> assign(:run_setup_token_budget, optional_integer(params["token_budget"], 1, 10_000_000))
+     |> assign(
+       :run_setup_cost_budget_cents,
+       optional_integer(params["cost_budget_cents"], 1, 10_000_000)
+     )
+     |> assign(
+       :run_setup_time_budget_minutes,
+       optional_integer(params["time_budget_minutes"], 1, 10_080)
+     )
+     |> assign(:run_setup_research_depth, normalize_research_depth(params["research_depth"]))
+     |> assign(
+       :run_setup_research_sources,
+       bounded_integer(params["research_max_sources"], 12, 1, 100)
+     )
+     |> assign(
+       :run_setup_providers,
+       providers
+     )
+     |> assign(:run_setup_form, to_form(params, as: :run_setup))}
+  end
+
+  @impl true
   def handle_event(
         "decide_run_approval",
         %{"id" => approval_id, "decision" => decision},
@@ -2470,31 +2550,74 @@ defmodule IexCodeWeb.WorkspaceLive do
             &if(&1 == "", do: "Analyze the workspace and propose the next safe change", else: &1)
           )
 
+        research_command? = String.starts_with?(text, "/research")
+        selected_mode = if research_command?, do: "research", else: socket.assigns.run_setup_mode
+        deep_research? = selected_mode == "research"
+
+        objective =
+          if research_command? do
+            text
+            |> String.replace_prefix("/research", "")
+            |> String.trim()
+            |> then(
+              &if(&1 == "", do: "Research the requested topic with cited evidence", else: &1)
+            )
+          else
+            objective
+          end
+
+        research_manifest = %{
+          "mode" => selected_mode,
+          "providers" => socket.assigns.run_setup_providers,
+          "depth" => socket.assigns.run_setup_research_depth,
+          "max_sources" => socket.assigns.run_setup_research_sources
+        }
+
+        metadata = %{
+          "source" => "workspace_composer",
+          "original_prompt" => text,
+          "allowed_tools" => enabled_tools(socket.assigns.active_tools)
+        }
+
+        metadata =
+          if deep_research?, do: Map.put(metadata, "research", research_manifest), else: metadata
+
         attrs = %{
           project_id: socket.assigns.project.id,
           session_id: socket.assigns.session.id,
           objective: objective,
-          kind: "coding_swarm",
-          mode: "swarm",
-          priority: "normal",
-          metadata: %{"source" => "workspace_composer", "original_prompt" => text}
+          kind: if(deep_research?, do: "deep_research", else: "coding_swarm"),
+          mode: if(deep_research?, do: "research", else: "swarm"),
+          priority: socket.assigns.run_setup_priority,
+          max_attempts: socket.assigns.run_setup_max_attempts,
+          token_budget: socket.assigns.run_setup_token_budget,
+          cost_budget_cents: socket.assigns.run_setup_cost_budget_cents,
+          time_budget_ms: minutes_to_ms(socket.assigns.run_setup_time_budget_minutes),
+          metadata: metadata
         }
 
-        case RunDispatcher.enqueue(attrs) do
-          {:ok, run} ->
-            {:noreply,
-             socket
-             |> assign(:active_tab, "swarm")
-             |> assign(:prompt_form, to_form(%{"prompt" => ""}))
-             |> select_run_projection(run)
-             |> put_flash(:info, "Background run queued. It will continue if you disconnect.")}
+        if deep_research? and socket.assigns.run_setup_providers == [] do
+          {:noreply, put_flash(socket, :error, "Select at least one research provider")}
+        else
+          case RunDispatcher.enqueue(attrs) do
+            {:ok, run} ->
+              {:noreply,
+               socket
+               |> assign(:active_tab, "swarm")
+               |> assign(:run_setup_open?, false)
+               |> assign(:prompt_form, to_form(%{"prompt" => ""}))
+               |> select_run_projection(run)
+               |> put_flash(:info, "Background run queued. It will continue if you disconnect.")}
 
-          {:error, reason} ->
-            {:noreply,
-             put_flash(socket, :error, "Could not queue run: #{format_run_error(reason)}")}
+            {:error, reason} ->
+              {:noreply,
+               put_flash(socket, :error, "Could not queue run: #{format_run_error(reason)}")}
+          end
         end
       else
-        SessionServer.send_prompt(socket.assigns.session.id, text)
+        SessionServer.send_prompt(socket.assigns.session.id, text,
+          allowed_tools: enabled_tools(socket.assigns.active_tools)
+        )
 
         {:noreply,
          socket
@@ -2784,16 +2907,27 @@ defmodule IexCodeWeb.WorkspaceLive do
       params
       |> then(fn p ->
         case p["openai_api_key"] do
-          key when is_binary(key) and key != "" -> p
-          _ -> Map.delete(p, "openai_api_key")
+          key when is_binary(key) ->
+            if String.trim(key) == "",
+              do: Map.delete(p, "openai_api_key"),
+              else: Map.put(p, "openai_api_key", String.trim(key))
+
+          _ ->
+            Map.delete(p, "openai_api_key")
         end
       end)
       |> then(fn p ->
         case p["anthropic_api_key"] do
-          key when is_binary(key) and key != "" -> p
-          _ -> Map.delete(p, "anthropic_api_key")
+          key when is_binary(key) ->
+            if String.trim(key) == "",
+              do: Map.delete(p, "anthropic_api_key"),
+              else: Map.put(p, "anthropic_api_key", String.trim(key))
+
+          _ ->
+            Map.delete(p, "anthropic_api_key")
         end
       end)
+      |> merge_search_provider_settings(socket.assigns.settings)
       |> sanitize_settings_params()
 
     case Settings.update_settings(clean_params) do
@@ -2803,6 +2937,7 @@ defmodule IexCodeWeb.WorkspaceLive do
          |> assign(:settings, updated)
          |> assign(:usage_history, Sessions.list_usage_history(10))
          |> assign(:settings_form, Settings.change_settings(updated) |> to_form())
+         |> refresh_run_setup_settings(updated)
          |> assign(:show_settings_modal, false)
          |> put_flash(:info, "Settings saved successfully")}
 
@@ -3411,7 +3546,9 @@ defmodule IexCodeWeb.WorkspaceLive do
              :run_command_updated,
              :run_approval_requested,
              :run_approval_decided,
-             :run_artifact_created
+             :run_artifact_created,
+             :run_control_enqueued,
+             :run_control_updated
            ] do
     cond do
       socket.assigns.selected_run && entity.run_id == socket.assigns.selected_run.id ->
@@ -4088,6 +4225,8 @@ defmodule IexCodeWeb.WorkspaceLive do
     |> assign(:selected_run, selected)
     |> assign(:run_steps, if(selected, do: Runs.list_steps(selected), else: []))
     |> assign(:run_approvals, approvals)
+    |> assign(:run_controls, if(selected, do: Runs.list_controls(selected), else: []))
+    |> assign(:run_manifest, run_manifest(selected))
     |> assign(:run_artifacts, if(selected, do: Runs.list_artifacts(selected), else: []))
     |> assign(:run_rows, runs)
     |> assign(
@@ -4108,6 +4247,8 @@ defmodule IexCodeWeb.WorkspaceLive do
     |> assign(:selected_run, run)
     |> assign(:run_steps, Runs.list_steps(run))
     |> assign(:run_approvals, approvals)
+    |> assign(:run_controls, Runs.list_controls(run))
+    |> assign(:run_manifest, run_manifest(run))
     |> assign(:run_artifacts, Runs.list_artifacts(run))
     |> assign(:run_rows, session_runs)
     |> assign(:run_event_rows, Runs.list_latest_events(run, limit: 500))
@@ -4379,9 +4520,169 @@ defmodule IexCodeWeb.WorkspaceLive do
     params
     |> maybe_parse_int("swarm_agent_count")
     |> maybe_parse_int("max_tokens")
+    |> maybe_parse_int("research_max_sources")
+    |> maybe_parse_int("research_parallelism")
     |> maybe_parse_float("temperature")
     |> maybe_parse_bool("auto_save")
   end
+
+  defp merge_search_provider_settings(params, settings) do
+    case Map.get(params, "search_providers") do
+      submitted when is_map(submitted) ->
+        existing = settings.search_providers || %{}
+
+        merged =
+          Map.new(submitted, fn {provider, raw_config} ->
+            previous = Map.get(existing, provider, %{})
+            raw_config = if is_map(raw_config), do: raw_config, else: %{}
+
+            config =
+              previous
+              |> Map.merge(
+                raw_config
+                |> Enum.reject(fn {_key, value} ->
+                  is_binary(value) and String.trim(value) == ""
+                end)
+                |> Map.new()
+              )
+              |> Map.put("enabled", Map.get(raw_config, "enabled") in ["true", "1", "on", true])
+
+            {provider, config}
+          end)
+
+        Map.put(params, "search_providers", Map.merge(existing, merged))
+
+      _ ->
+        params
+    end
+  end
+
+  defp run_setup_defaults(settings) do
+    %{
+      "mode" => "code",
+      "priority" => "normal",
+      "max_attempts" => "3",
+      "token_budget" => "",
+      "cost_budget_cents" => "",
+      "time_budget_minutes" => "",
+      "research_depth" => settings.research_depth || "standard",
+      "research_max_sources" => to_string(settings.research_max_sources || 12),
+      "providers" =>
+        settings
+        |> enabled_search_providers()
+        |> Map.new(&{&1, "true"})
+    }
+  end
+
+  defp enabled_search_providers(settings) do
+    providers = settings.search_providers || %{}
+    order = settings.search_provider_order || Map.keys(providers)
+
+    enabled =
+      Enum.filter(order, fn provider ->
+        config = Map.get(providers, provider, %{})
+        Map.get(config, "enabled", Map.get(config, :enabled, false)) == true
+      end)
+
+    enabled
+  end
+
+  defp refresh_run_setup_settings(socket, settings) do
+    providers = enabled_search_providers(settings)
+    depth = settings.research_depth || "standard"
+    sources = settings.research_max_sources || 12
+
+    params = %{
+      "mode" => socket.assigns.run_setup_mode,
+      "priority" => socket.assigns.run_setup_priority,
+      "max_attempts" => socket.assigns.run_setup_max_attempts,
+      "token_budget" => socket.assigns.run_setup_token_budget,
+      "cost_budget_cents" => socket.assigns.run_setup_cost_budget_cents,
+      "time_budget_minutes" => socket.assigns.run_setup_time_budget_minutes,
+      "research_depth" => depth,
+      "research_max_sources" => sources,
+      "providers" => Map.new(providers, &{&1, "true"})
+    }
+
+    socket
+    |> assign(:run_setup_research_depth, depth)
+    |> assign(:run_setup_research_sources, sources)
+    |> assign(:run_setup_providers, providers)
+    |> assign(:run_setup_form, to_form(params, as: :run_setup))
+  end
+
+  defp search_provider_config(settings, provider) do
+    settings.search_providers
+    |> Kernel.||(%{})
+    |> Map.get(provider, %{})
+  end
+
+  defp masked_secret(secret) when is_binary(secret) and byte_size(secret) >= 4,
+    do: "Configured ·•••• #{String.slice(secret, -4, 4)}"
+
+  defp masked_secret(_secret), do: "Not configured"
+
+  defp run_manifest(nil), do: %{}
+
+  defp run_manifest(%{kind: "deep_research"} = run) do
+    metadata = run.metadata || %{}
+    research = Map.get(metadata, "research") || Map.get(metadata, :research) || %{}
+
+    research
+    |> Map.new(fn {key, value} -> {to_string(key), value} end)
+    |> Map.put_new("mode", if(run.kind == "deep_research", do: "research", else: run.mode))
+  end
+
+  defp run_manifest(_run), do: %{}
+
+  defp enabled_tools(active_tools) do
+    core =
+      ~w(read_file write_file patch_file multi_patch list_dir grep_search run_tests run_command git_status git_diff git_stage git_commit git_generate_commit)
+
+    optional =
+      active_tools
+      |> MapSet.to_list()
+      |> Enum.flat_map(fn
+        "ast_search" -> ["ast_search"]
+        "web_search" -> ["web_search", "fetch_url"]
+        _ -> []
+      end)
+
+    Enum.uniq(core ++ optional)
+  end
+
+  defp normalize_run_mode(mode) when mode in ["code", "research"], do: mode
+  defp normalize_run_mode(_mode), do: "code"
+
+  defp normalize_run_priority(priority) when priority in ~w(low normal high critical),
+    do: priority
+
+  defp normalize_run_priority(_priority), do: "normal"
+
+  defp normalize_research_depth(depth) when depth in ~w(quick standard deep), do: depth
+  defp normalize_research_depth(_depth), do: "standard"
+
+  defp optional_integer(value, minimum, maximum) do
+    case value do
+      integer when is_integer(integer) ->
+        integer |> max(minimum) |> min(maximum)
+
+      binary when is_binary(binary) ->
+        case Integer.parse(String.trim(binary)) do
+          {integer, ""} -> integer |> max(minimum) |> min(maximum)
+          _ -> nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp bounded_integer(value, default, minimum, maximum),
+    do: optional_integer(value, minimum, maximum) || default
+
+  defp minutes_to_ms(nil), do: nil
+  defp minutes_to_ms(minutes) when is_integer(minutes), do: minutes * 60_000
 
   defp maybe_parse_int(map, key) do
     case Map.get(map, key) do

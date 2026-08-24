@@ -6,6 +6,7 @@ defmodule IexCode.RunDispatcherTestExecutor do
   @impl true
   def execute(run, progress) do
     Phoenix.PubSub.subscribe(IexCode.PubSub, "session:#{run.session_id}:steer")
+    Phoenix.PubSub.subscribe(IexCode.PubSub, "run:#{run.id}:control")
     progress.(20, "test worker ready")
 
     receiver = Process.whereis(IexCode.RunDispatcherTestReceiver)
@@ -28,6 +29,26 @@ defmodule IexCode.RunDispatcherTestExecutor do
 
       {:cancel, session_id, _opts} when session_id == run.session_id ->
         if receiver, do: send(receiver, {:test_run_cancelled, run.id})
+        await_control(run, receiver)
+
+      {:run_control, run_id, control_id, :pause, _payload} when run_id == run.id ->
+        _ = IexCode.Runs.resolve_control(control_id, "applied", %{"worker" => "test"})
+        if receiver, do: send(receiver, {:test_run_paused, run.id})
+        await_control(run, receiver)
+
+      {:run_control, run_id, control_id, :resume, _payload} when run_id == run.id ->
+        _ = IexCode.Runs.resolve_control(control_id, "applied", %{"worker" => "test"})
+        if receiver, do: send(receiver, {:test_run_resumed, run.id})
+        await_control(run, receiver)
+
+      {:run_control, run_id, :cancel, _payload} when run_id == run.id ->
+        if receiver, do: send(receiver, {:test_run_cancelled, run.id})
+        await_control(run, receiver)
+
+      {:run_control, run_id, control_id, :steer, %{"guidance" => guidance}}
+      when run_id == run.id ->
+        _ = IexCode.Runs.resolve_control(control_id, "applied", %{"worker" => "test"})
+        if receiver, do: send(receiver, {:test_run_steered, run.id, guidance})
         await_control(run, receiver)
     end
   end

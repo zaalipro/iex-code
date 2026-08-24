@@ -28,6 +28,53 @@ defmodule IexCode.LLM.StreamClientTest do
           {:ok, conn} = chunk(conn, chunk3)
           conn
 
+        "/openai/usage" ->
+          {:ok, body, conn} = read_body(conn)
+          request = Jason.decode!(body)
+          send(Process.whereis(:stream_usage_test), {:stream_request, request})
+
+          conn =
+            conn
+            |> put_resp_header("content-type", "text/event-stream")
+            |> send_chunked(200)
+
+          {:ok, conn} =
+            chunk(
+              conn,
+              "data: {\"choices\":[{\"delta\":{\"content\":\"Measured\"},\"finish_reason\":null}]}\n\n"
+            )
+
+          {:ok, conn} =
+            chunk(
+              conn,
+              "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":8,\"total_tokens\":20}}\n\n"
+            )
+
+          {:ok, conn} = chunk(conn, "data: [DONE]\n\n")
+          conn
+
+        "/openai/usage-total-only" ->
+          {:ok, body, conn} = read_body(conn)
+          request = Jason.decode!(body)
+          send(Process.whereis(:stream_total_usage_test), {:stream_request, request})
+
+          conn =
+            conn
+            |> put_resp_header("content-type", "text/event-stream")
+            |> send_chunked(200)
+
+          {:ok, conn} =
+            chunk(
+              conn,
+              "data: {\"choices\":[{\"delta\":{\"content\":\"Total only\"},\"finish_reason\":null}]}\n\n"
+            )
+
+          {:ok, conn} =
+            chunk(conn, "data: {\"choices\":[],\"usage\":{\"total_tokens\":50}}\n\n")
+
+          {:ok, conn} = chunk(conn, "data: [DONE]\n\n")
+          conn
+
         "/anthropic/stream" ->
           conn =
             conn
@@ -120,6 +167,58 @@ defmodule IexCode.LLM.StreamClientTest do
       assert tc.id == "call_ant"
       assert tc.name == "write_file"
       assert tc.args == %{"path" => "foo.ex"}
+    end
+
+    test "requests and surfaces provider-reported OpenAI stream usage", %{port: port} do
+      Process.register(self(), :stream_usage_test)
+
+      on_exit(fn ->
+        if Process.whereis(:stream_usage_test) == self(),
+          do: Process.unregister(:stream_usage_test)
+      end)
+
+      request_opts = [
+        provider: "openai",
+        url: "http://127.0.0.1:#{port}/openai/usage",
+        body: %{"model" => "gpt-4o", "messages" => []}
+      ]
+
+      assert {:ok, response} = StreamClient.stream(request_opts)
+      assert response.text == "Measured"
+      assert response.usage == %{prompt_tokens: 12, completion_tokens: 8, total_tokens: 20}
+      assert response.raw["usage"]["total_tokens"] == 20
+
+      assert_receive {:stream_request, request}
+      assert request["stream_options"] == %{"include_usage" => true}
+    end
+
+    test "preserves total-only provider usage at the top level", %{port: port} do
+      Process.register(self(), :stream_total_usage_test)
+
+      on_exit(fn ->
+        if Process.whereis(:stream_total_usage_test) == self(),
+          do: Process.unregister(:stream_total_usage_test)
+      end)
+
+      request_opts = [
+        provider: "openai",
+        url: "http://127.0.0.1:#{port}/openai/usage-total-only",
+        body: %{"model" => "compatible-model", "messages" => []}
+      ]
+
+      assert {:ok, response} = StreamClient.stream(request_opts)
+      assert response.text == "Total only"
+
+      assert response.usage == %{
+               prompt_tokens: 0,
+               completion_tokens: 0,
+               total_tokens: 50
+             }
+
+      assert response.raw["usage"] == %{"total_tokens" => 50}
+
+      assert_receive {:stream_request, request}
+      assert request["stream_options"] == %{"include_usage" => true}
     end
 
     test "handles HTTP error status codes", %{port: port} do

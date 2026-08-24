@@ -102,23 +102,30 @@ defmodule IexCode.Engine.Agents.PlannerAgent do
           progress.(15, "Analyzing user request and workspace architecture...")
 
           # Inspect top-level workspace structure and feed it into the prompt
+          dir_result =
+            if tool_allowed?("list_dir", Keyword.get(opts, :allowed_tools, :all)) do
+              OperationManager.run_sync_operation(
+                session_id,
+                parent_op_id,
+                "PlannerAgent",
+                "list_dir",
+                "Planner: Inspecting workspace directory",
+                %{path: ""},
+                fn p ->
+                  Tools.execute(
+                    "list_dir",
+                    %{"path" => "", "recursive" => false},
+                    project_root,
+                    p
+                  )
+                end
+              )
+            else
+              {:error, {:tool_not_allowed, "list_dir"}}
+            end
+
           dir_summary =
-            case OperationManager.run_sync_operation(
-                   session_id,
-                   parent_op_id,
-                   "PlannerAgent",
-                   "list_dir",
-                   "Planner: Inspecting workspace directory",
-                   %{path: ""},
-                   fn p ->
-                     Tools.execute(
-                       "list_dir",
-                       %{"path" => "", "recursive" => false},
-                       project_root,
-                       p
-                     )
-                   end
-                 ) do
+            case dir_result do
               {:ok, listing} when is_binary(listing) -> listing
               {:ok, other} -> inspect(other)
               {:error, reason} -> "(workspace listing unavailable: #{format_reason(reason)})"
@@ -142,11 +149,15 @@ defmodule IexCode.Engine.Agents.PlannerAgent do
           ]
 
           case LLM.chat(messages, system_prompt, session, fn _c -> :ok end,
-                 cancelled?: cancelled_fun(session_id)
+                 cancelled?: cancelled_fun(session_id),
+                 allowed_tools: Keyword.get(opts, :allowed_tools, :all)
                ) do
-            {:ok, %{text: plan_text}} when is_binary(plan_text) and byte_size(plan_text) > 0 ->
-              progress.(100, "Plan ready")
-              {:ok, plan_text}
+            {:ok, %{text: plan_text} = response}
+            when is_binary(plan_text) and byte_size(plan_text) > 0 ->
+              with :ok <- persist_run_usage(Keyword.get(opts, :run_id), response) do
+                progress.(100, "Plan ready")
+                {:ok, plan_text}
+              end
 
             _ ->
               fallback_plan =
@@ -188,6 +199,30 @@ defmodule IexCode.Engine.Agents.PlannerAgent do
 
   defp format_reason(reason) when is_binary(reason), do: reason
   defp format_reason(reason), do: inspect(reason)
+
+  defp persist_run_usage(nil, _response), do: :ok
+
+  defp persist_run_usage(run_id, response) do
+    usage = Map.get(response, :usage) || Map.get(response, "usage")
+
+    if is_map(usage) do
+      case IexCode.Runs.record_usage(run_id, usage, "planner.llm") do
+        {:ok, _run} -> :ok
+        {:error, {:token_budget_exhausted, _run}} -> {:error, :token_budget_exhausted}
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      :ok
+    end
+  end
+
+  defp tool_allowed?(_tool_name, :all), do: true
+  defp tool_allowed?(_tool_name, nil), do: true
+
+  defp tool_allowed?(tool_name, allowed_tools) when is_list(allowed_tools),
+    do: tool_name in Enum.map(allowed_tools, &to_string/1)
+
+  defp tool_allowed?(_tool_name, _allowed_tools), do: false
 
   # Steering / cancellation helpers
 

@@ -109,6 +109,7 @@ defmodule IexCode.Engine.Agents.ExplorerAgent do
     session_id = state.session_id
     project_root = opts[:project_root] || state.project_root
     parent_op_id = opts[:parent_op_id]
+    allowed_tools = Keyword.get(opts, :allowed_tools, :all)
 
     explore_res =
       OperationManager.run_sync_operation(
@@ -132,18 +133,22 @@ defmodule IexCode.Engine.Agents.ExplorerAgent do
 
             # Run grep operation for the derived query
             grep_res =
-              OperationManager.run_sync_operation(
-                session_id,
-                parent_op_id,
-                "ExplorerAgent",
-                "grep_search",
-                "Explorer: Grepping for modules and definitions",
-                %{query: query},
-                fn p ->
-                  Tools.execute("grep_search", %{"query" => query}, project_root, p)
-                end,
-                Keyword.get(opts, :inner_timeout, @inner_timeout)
-              )
+              if tool_allowed?("grep_search", allowed_tools) do
+                OperationManager.run_sync_operation(
+                  session_id,
+                  parent_op_id,
+                  "ExplorerAgent",
+                  "grep_search",
+                  "Explorer: Grepping for modules and definitions",
+                  %{query: query},
+                  fn p ->
+                    Tools.execute("grep_search", %{"query" => query}, project_root, p)
+                  end,
+                  Keyword.get(opts, :inner_timeout, @inner_timeout)
+                )
+              else
+                {:error, {:tool_not_allowed, "grep_search"}}
+              end
 
             if cancelled_fun(session_id).() do
               {:error, :cancelled}
@@ -152,9 +157,13 @@ defmodule IexCode.Engine.Agents.ExplorerAgent do
 
               # Run AST search for key symbols if specified
               ast_symbols =
-                case ASTSearch.search(project_root, %{type: "module"}) do
-                  {:ok, syms} -> syms
-                  _ -> []
+                if tool_allowed?("ast_search", allowed_tools) do
+                  case ASTSearch.search(project_root, %{type: "module"}) do
+                    {:ok, syms} -> syms
+                    _ -> []
+                  end
+                else
+                  []
                 end
 
               progress.(80, "Synthesizing codebase context...")
@@ -257,6 +266,14 @@ defmodule IexCode.Engine.Agents.ExplorerAgent do
       words -> Enum.map_join(words, "|", &Regex.escape/1)
     end
   end
+
+  defp tool_allowed?(_tool_name, :all), do: true
+  defp tool_allowed?(_tool_name, nil), do: true
+
+  defp tool_allowed?(tool_name, allowed_tools) when is_list(allowed_tools),
+    do: tool_name in Enum.map(allowed_tools, &to_string/1)
+
+  defp tool_allowed?(_tool_name, _allowed_tools), do: false
 
   # Steering / cancellation helpers
 

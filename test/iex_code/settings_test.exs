@@ -68,6 +68,62 @@ defmodule IexCode.SettingsTest do
       assert fetched.max_tokens == 8192
     end
 
+    test "persists validated federated search and research defaults" do
+      providers = %{
+        "tavily" => %{
+          "enabled" => true,
+          "api_key" => "tvly-test",
+          "base_url" => "https://api.tavily.com"
+        },
+        "duckduckgo" => %{"enabled" => true}
+      }
+
+      assert {:ok, updated} =
+               Settings.update_settings(%{
+                 search_providers: providers,
+                 search_provider_order: ["tavily", "duckduckgo"],
+                 research_depth: "deep",
+                 research_max_sources: 24,
+                 research_parallelism: 6
+               })
+
+      assert updated.search_providers["tavily"] == providers["tavily"]
+      assert updated.search_providers["duckduckgo"]["enabled"] == true
+
+      assert updated.search_providers["duckduckgo"]["base_url"] ==
+               "https://html.duckduckgo.com"
+
+      assert Map.has_key?(updated.search_providers, "brave")
+      assert updated.search_provider_order == ["tavily", "duckduckgo"]
+
+      assert Settings.search_config(updated) == %{
+               providers: updated.search_providers,
+               order: ["tavily", "duckduckgo"],
+               depth: "deep",
+               max_sources: 24,
+               parallelism: 6
+             }
+
+      invalid = Settings.change_settings(updated, %{search_provider_order: ["unknown"]})
+      refute invalid.valid?
+      assert %{search_provider_order: _} = errors_on(invalid)
+    end
+
+    test "provider hydration preserves an explicit disabled value" do
+      assert {:ok, updated} =
+               Settings.update_settings(%{
+                 search_providers: %{"duckduckgo" => %{"enabled" => false}},
+                 search_provider_order: ["duckduckgo"]
+               })
+
+      assert updated.search_providers["duckduckgo"]["enabled"] == false
+
+      assert updated.search_providers["duckduckgo"]["base_url"] ==
+               "https://html.duckduckgo.com"
+
+      assert Settings.search_config(updated).order == []
+    end
+
     test "validates temperature and max_tokens ranges in changeset" do
       settings = Settings.get_settings()
 

@@ -60,6 +60,49 @@ defmodule IexCode.Engine.AgentsTest do
       assert :ok = AgentSupervisor.stop_all_agents(session.id)
       assert AgentRegistry.list_agents(session.id) == []
     end
+
+    test "cancel_session_activity stops agents and releases an agent-owned terminal", %{
+      session: session,
+      project: project
+    } do
+      assert {:ok, planner_pid} =
+               AgentSupervisor.start_agent(session.id, :planner, project_root: project.root_path)
+
+      assert {:ok, _terminal_pid} =
+               IexCode.Tools.TerminalServer.ensure_started(session.id,
+                 workspace_path: project.root_path
+               )
+
+      on_exit(fn -> IexCode.Tools.TerminalServer.kill(session.id) end)
+
+      assert :ok =
+               IexCode.Tools.TerminalSession.set_occupant(
+                 session.id,
+                 {:agent, "PlannerAgent", "cancel-test"}
+               )
+
+      ref = Process.monitor(planner_pid)
+      assert :ok = AgentSupervisor.cancel_session_activity(session.id)
+      assert_receive {:DOWN, ^ref, :process, ^planner_pid, _reason}
+      assert AgentRegistry.list_agents(session.id) == []
+      assert {:ok, %{occupant: :user}} = IexCode.Tools.TerminalServer.get_state(session.id)
+    end
+
+    test "cancel_session_activity does not restart an idle user terminal", %{
+      session: session,
+      project: project
+    } do
+      assert {:ok, terminal_pid} =
+               IexCode.Tools.TerminalServer.ensure_started(session.id,
+                 workspace_path: project.root_path
+               )
+
+      on_exit(fn -> IexCode.Tools.TerminalServer.kill(session.id) end)
+
+      assert :ok = AgentSupervisor.cancel_session_activity(session.id)
+      assert IexCode.Tools.TerminalServer.whereis(session.id) == terminal_pid
+      assert Process.alive?(terminal_pid)
+    end
   end
 
   describe "PlannerAgent GenServer" do

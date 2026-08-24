@@ -16,7 +16,7 @@ The main LiveView exposes nine connected tools:
 | Area | Current capability |
 | --- | --- |
 | Kanban | Task CRUD, eight workflow states, priorities, assignees, filters, schedules, and subtasks |
-| Swarm | Planner, Explorer, Coder, and Verifier processes; progress telemetry; pause, resume, steer, and cancel |
+| Swarm | Durable Mission Control for coding and deep-research runs, with budgets, provider manifests, cited artifacts, and run-scoped pause/resume/steer/cancel |
 | Calendar | Monthly task view, task inspection/editing, manual “run now,” and supervised UTC schedule dispatch |
 | Changes | Staged, unstaged, and untracked rails; inline/split diffs; hunk actions; branches and commits |
 | Tests | Asynchronous ExUnit runs, parsed failures, AutoFix proposals, preview, apply, and rollback |
@@ -74,11 +74,22 @@ installs npm dependencies, and builds the assets.
 
 ### Model providers
 
-Open **Settings** in the application to configure an OpenAI-compatible or Anthropic
-endpoint, API key, default model, temperature, and token limit. The current gateway has
-first-class OpenAI-compatible and Anthropic adapters. A Gemini model may be used only
-when exposed through a compatible endpoint; direct Gemini and local-provider adapters
-are roadmap work.
+Open **Settings** to configure an OpenAI-compatible or Anthropic endpoint, API key,
+default model, temperature, and token limit. The model gateway has first-class
+OpenAI-compatible and Anthropic adapters. A Gemini model may be used when exposed
+through a compatible endpoint; direct Gemini and local-model transports remain roadmap work.
+
+The research gateway is independent of the model transport. It includes normalized
+adapters for **Tavily, Brave, Exa, Serper, Google Programmable Search, Bing, SearxNG,
+and DuckDuckGo**, ordered fallback/fan-out, deterministic URL deduplication, partial
+failure reporting, and bounded concurrency. Public source fetches reject local/private/
+link-local/reserved destinations, validate every DNS answer and redirect, pin the
+validated address against DNS rebinding, restrict content types, and cap time and bytes.
+
+Use **Run setup** in the composer or the `/research` command to queue a deep-research
+mission. Research runs persist plan, federated-search, safe-fetch, and synthesis stages,
+the normalized evidence manifest, and a citation-indexed Markdown report. No-key or
+all-provider failure is reported honestly; the harness does not invent a report.
 
 API keys are currently persisted in the local SQLite settings row. They are not stored
 in an operating-system keychain or encrypted vault. Protect the database file and do
@@ -112,9 +123,9 @@ substitute for running the gate on the current checkout.
 - Durable background runs survive LiveView disconnects and preserve their journal across
   application restarts. An orphaned active run becomes `interrupted`; automatic
   checkpoint resume is intentionally not implemented yet.
-- The dispatcher persists a small `prepare → execute` graph and serializes active runs by
-  project. The four-agent swarm inside `execute` remains a fixed workflow rather than a
-  general parallel DAG.
+- Coding runs retain a fixed `prepare → execute` shell and the four-agent swarm remains
+  sequential. Deep-research runs add persisted plan/search/fetch/synthesis nodes, but the
+  harness is not yet a general arbitrary parallel DAG scheduler.
 - Calendar work now has a supervised UTC cron scheduler with atomic claims, stable
   occurrence keys, recurrence, existing-run recovery, and stale-claim recovery. Rich
   notification and dead-letter workflows remain future work.
@@ -127,9 +138,15 @@ substitute for running the gate on the current checkout.
   the same project. File-level locks and a Git-exclusive coordination gate are not
   implemented, and interactive host controls can bypass the dispatcher. Durable and
   interactive work in the same session also shares live steering/terminal channels.
-- Token, cost, and time budgets are persisted for future policy enforcement but are not
-  yet hard execution limits. Forced cancellation stops the supervised BEAM worker; a
-  tool-spawned external descendant may still require OS-level cleanup.
+- Wall-clock budgets are enforced by the dispatcher. Token budgets accumulate and stop
+  covered planner/coder/research boundaries when providers report usage; providers that
+  omit streaming usage cannot be measured. Cost limits remain display-only until a
+  versioned pricing ledger exists. Forced cancellation stops the supervised BEAM worker;
+  a tool-spawned external descendant may still require OS-level cleanup.
+- Pause, resume, cancel, and steer are now ordered run-scoped control records with journal
+  outcomes and a Mission Control timeline. They are delivered on a run-only channel, but
+  a general restart-replayed control consumer and immediate interruption of every
+  in-flight provider/tool call are not complete yet.
 - Rollback ownership is durable and run-scoped for MultiPatch/AutoFix mutations. Direct
   `write_file`, `patch_file`, Git, and terminal effects are not covered by that manifest.
 - API keys still need OS-keychain/envelope-encrypted storage.

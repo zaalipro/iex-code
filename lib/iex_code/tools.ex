@@ -5,6 +5,8 @@ defmodule IexCode.Tools do
   """
   require Logger
 
+  alias IexCode.Research.{Fetcher, Search}
+  alias IexCode.Settings
   alias IexCode.Tools.{ASTSearch, Git, MultiPatch, TerminalServer, TestRunner}
   alias IexCode.WorkspacePath
 
@@ -14,8 +16,8 @@ defmodule IexCode.Tools do
   @doc """
   Returns tool specifications formatted for Anthropic and OpenAI tool calls.
   """
-  def tool_definitions do
-    [
+  def tool_definitions(allowlist \\ :all) do
+    definitions = [
       %{
         name: "read_file",
         description: "Read contents of a file from the workspace filesystem.",
@@ -231,16 +233,41 @@ defmodule IexCode.Tools do
       },
       %{
         name: "web_search",
-        description: "Search the web or fetch a web page for documentation or information.",
+        description:
+          "Federated public web search with normalized titles, URLs, snippets, providers, and citation-ready source identifiers.",
         parameters: %{
           type: "object",
           properties: %{
-            query: %{type: "string", description: "Search query or URL to fetch"}
+            query: %{type: "string", description: "Search query"},
+            providers: %{
+              type: "array",
+              items: %{type: "string"},
+              description:
+                "Optional configured providers (Tavily, Brave, Exa, Serper, Google, Bing, SearxNG, DuckDuckGo)"
+            },
+            max_results: %{
+              type: "integer",
+              description: "Maximum normalized results to return (1-50)"
+            }
           },
           required: ["query"]
         }
+      },
+      %{
+        name: "fetch_url",
+        description:
+          "Fetch readable text from a public HTTP(S) source with DNS, redirect, MIME, timeout, and response-size safety checks.",
+        parameters: %{
+          type: "object",
+          properties: %{
+            url: %{type: "string", description: "Public HTTP(S) URL to fetch"}
+          },
+          required: ["url"]
+        }
       }
     ]
+
+    filter_tool_definitions(definitions, allowlist)
   end
 
   # --- Direct Delegations ---
@@ -762,83 +789,48 @@ defmodule IexCode.Tools do
     end
   end
 
-  defp do_execute("web_search", %{"query" => query}, _root_path, on_progress) do
-    on_progress.(20, "Connecting to search/fetch: #{query}")
+  defp do_execute("web_search", %{"query" => query} = args, _root_path, on_progress) do
+    search_config = Settings.search_config()
+    requested_providers = Map.get(args, "providers")
 
-    if String.starts_with?(query, "http://") or String.starts_with?(query, "https://") do
-      case Req.get(query, receive_timeout: 10_000, retry: false) do
-        {:ok, %{status: 200, body: body}} when is_binary(body) ->
-          on_progress.(70, "Parsing HTML body...")
+    providers =
+      if requested_providers in [nil, []], do: search_config.order, else: requested_providers
 
-          clean_text =
-            case Floki.parse_document(body) do
-              {:ok, document} ->
-                document
-                |> Floki.find("body")
-                |> Floki.text()
-                |> String.replace(~r/\s+/, " ")
-                |> String.slice(0, 4000)
+    max_results = args |> Map.get("max_results", 10) |> normalize_search_limit()
 
-              _ ->
-                String.slice(body, 0, 4000)
-            end
+    on_progress.(15, "Searching #{Enum.join(providers, ", ")}...")
 
-          on_progress.(100, "Fetched #{byte_size(clean_text)} bytes")
-          {:ok, clean_text}
+    case Search.search(query,
+           providers: providers,
+           config: search_config,
+           limit: max_results,
+           max_concurrency: search_config.parallelism
+         ) do
+      {:ok, response} ->
+        results = Enum.take(response.results, max_results)
 
-        {:ok, %{status: status}} ->
-          {:error, "HTTP request returned status #{status}"}
+        on_progress.(
+          100,
+          "Found #{length(results)} sources across #{length(response.providers)} providers"
+        )
 
-        {:error, reason} ->
-          {:error, "HTTP request failed: #{inspect(reason)}"}
-      end
-    else
-      # Simple DuckDuckGo HTML search / fallback
-      search_url = "https://html.duckduckgo.com/html/?q=#{URI.encode(query)}"
+        {:ok, format_search_results(query, results, response.errors)}
 
-      case Req.get(
-             search_url,
-             headers: [{"user-agent", "Mozilla/5.0"}],
-             receive_timeout: 10_000,
-             retry: false
-           ) do
-        {:ok, %{status: 200, body: body}} ->
-          on_progress.(80, "Extracting search results...")
+      {:error, reason} ->
+        {:error, "Federated search failed: #{inspect(reason)}"}
+    end
+  end
 
-          case Floki.parse_document(body) do
-            {:ok, doc} ->
-              results =
-                doc
-                |> Floki.find(".result__snippet")
-                |> Enum.take(5)
-                |> Enum.map(&Floki.text/1)
-                |> Enum.join("\n- ")
+  defp do_execute("fetch_url", %{"url" => url}, _root_path, on_progress) do
+    on_progress.(15, "Validating public source URL...")
 
-              if results == "" do
-                {:error, "No search results found for '#{query}'"}
-              else
-                on_progress.(100, "Search completed")
-                {:ok, "Search results for '#{query}':\n- #{results}"}
-              end
+    case Fetcher.fetch(url) do
+      {:ok, fetched} ->
+        on_progress.(100, "Fetched #{fetched.bytes} bounded bytes")
+        {:ok, "Source: #{fetched.url}\nContent-Type: #{fetched.content_type}\n\n#{fetched.text}"}
 
-            # Parse failed: surface real page text rather than fabricating results.
-            _ ->
-              text =
-                body
-                |> String.replace(~r/<[^>]*>/, " ")
-                |> String.replace(~r/\s+/, " ")
-                |> String.slice(0, 4000)
-
-              on_progress.(100, "Search completed (unparsed page text)")
-              {:ok, "Search results for '#{query}' (raw page text):\n#{text}"}
-          end
-
-        {:ok, %{status: status}} ->
-          {:error, "Search request returned status #{status}"}
-
-        {:error, reason} ->
-          {:error, "Search request failed: #{inspect(reason)}"}
-      end
+      {:error, reason} ->
+        {:error, "Public source fetch rejected: #{inspect(reason)}"}
     end
   end
 
@@ -944,6 +936,48 @@ defmodule IexCode.Tools do
         take = max(@max_command_output - byte_size(acc), 0)
         {acc <> binary_part(data, 0, take), true}
     end
+  end
+
+  defp filter_tool_definitions(definitions, :all), do: definitions
+  defp filter_tool_definitions(definitions, nil), do: definitions
+
+  defp filter_tool_definitions(definitions, %MapSet{} = allowlist) do
+    filter_tool_definitions(definitions, MapSet.to_list(allowlist))
+  end
+
+  defp filter_tool_definitions(definitions, allowlist) when is_list(allowlist) do
+    allowed = MapSet.new(Enum.map(allowlist, &to_string/1))
+    Enum.filter(definitions, &MapSet.member?(allowed, &1.name))
+  end
+
+  defp filter_tool_definitions(_definitions, _allowlist), do: []
+
+  defp normalize_search_limit(value) when is_integer(value), do: value |> max(1) |> min(50)
+
+  defp normalize_search_limit(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {parsed, ""} -> normalize_search_limit(parsed)
+      _ -> 10
+    end
+  end
+
+  defp normalize_search_limit(_value), do: 10
+
+  defp format_search_results(query, results, errors) do
+    sources =
+      results
+      |> Enum.with_index(1)
+      |> Enum.map_join("\n\n", fn {result, index} ->
+        "[#{index}] #{result.title}\nURL: #{result.url}\nProvider: #{result.provider}\nSnippet: #{result.snippet || "(no snippet)"}"
+      end)
+
+    provider_notes =
+      errors
+      |> Enum.map_join("; ", fn {provider, reason} -> "#{provider}=#{inspect(reason)}" end)
+      |> then(&if(&1 == "", do: "none", else: &1))
+
+    "Federated search results for #{inspect(query)}\nProvider errors: #{provider_notes}\n\n#{sources}"
+    |> IexCode.Sessions.sanitize_utf8()
   end
 
   defp add_opt_from_map(opts, map, map_key, opt_key) do

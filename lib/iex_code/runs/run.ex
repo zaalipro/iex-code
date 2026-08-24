@@ -8,8 +8,8 @@ defmodule IexCode.Runs.Run do
   @foreign_key_type :binary_id
 
   @statuses ~w(queued running paused completed failed cancelled interrupted)
-  @modes ~w(single swarm workflow)
-  @kinds ~w(coding_swarm analysis)
+  @modes ~w(single swarm workflow research)
+  @kinds ~w(coding_swarm analysis deep_research)
   @priorities ~w(low normal high critical)
 
   schema "runs" do
@@ -20,6 +20,7 @@ defmodule IexCode.Runs.Run do
     field :priority, :string, default: "normal"
     field :progress, :integer, default: 0
     field :event_sequence, :integer, default: 0
+    field :control_sequence, :integer, default: 0
     field :token_budget, :integer
     field :cost_budget_cents, :integer
     field :time_budget_ms, :integer
@@ -46,6 +47,7 @@ defmodule IexCode.Runs.Run do
     has_many :commands, IexCode.Runs.RunCommand
     has_many :approvals, IexCode.Runs.RunApproval
     has_many :artifacts, IexCode.Runs.RunArtifact
+    has_many :controls, IexCode.Runs.RunControl
 
     timestamps(type: :utc_datetime)
   end

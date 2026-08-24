@@ -288,8 +288,9 @@ defmodule IexCodeWeb.WorkspaceLiveUIControlsTest do
       # 1. Open settings modal
       html = render_click(view, "toggle_settings_modal")
       assert html =~ "API &amp; Usage History" or html =~ "API & Usage History"
-      assert html =~ "CREDITS USED"
-      assert html =~ "%"
+      assert html =~ "OBSERVED SESSION TOKENS"
+      assert html =~ "NO FABRICATED USAGE"
+      assert has_element?(view, "#settings-search-providers")
 
       # 2. Save new settings
       html =
@@ -309,6 +310,72 @@ defmodule IexCodeWeb.WorkspaceLiveUIControlsTest do
       stored = Settings.get_settings()
       assert stored.openai_base_url == "https://cli.llmotions.com/v1"
       assert stored.default_model == "gemini-3.7-flash-high"
+    end
+
+    test "saving research settings refreshes composer defaults and preserves blank secrets", %{
+      conn: conn,
+      workspace_path: path
+    } do
+      assert {:ok, _settings} =
+               Settings.update_settings(%{
+                 openai_api_key: "openai-preserved",
+                 anthropic_api_key: "anthropic-preserved",
+                 search_providers: %{
+                   "tavily" => %{
+                     "enabled" => false,
+                     "api_key" => "tavily-preserved",
+                     "base_url" => "https://api.tavily.com"
+                   },
+                   "duckduckgo" => %{
+                     "enabled" => true,
+                     "base_url" => "https://html.duckduckgo.com"
+                   }
+                 },
+                 search_provider_order: ["tavily", "duckduckgo"]
+               })
+
+      project = create_project_fixture(%{root_path: path})
+      session = create_session_fixture(project)
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      view |> element("#toggle-run-setup") |> render_click()
+      assert has_element?(view, "#run-setup-provider-duckduckgo[checked]")
+
+      render_click(view, "toggle_settings_modal")
+
+      view
+      |> form("#settings-form", %{
+        "settings" => %{
+          "openai_api_key" => "   ",
+          "anthropic_api_key" => "",
+          "research_depth" => "deep",
+          "research_max_sources" => "7",
+          "search_providers" => %{
+            "tavily" => %{
+              "enabled" => "true",
+              "api_key" => "",
+              "base_url" => "https://api.tavily.com"
+            },
+            "duckduckgo" => %{
+              "enabled" => "false",
+              "base_url" => "https://html.duckduckgo.com"
+            }
+          }
+        }
+      })
+      |> render_submit()
+
+      stored = Settings.get_settings()
+      assert stored.openai_api_key == "openai-preserved"
+      assert stored.anthropic_api_key == "anthropic-preserved"
+      assert stored.search_providers["tavily"]["api_key"] == "tavily-preserved"
+      assert stored.search_providers["tavily"]["enabled"] == true
+      assert stored.search_providers["duckduckgo"]["enabled"] == false
+
+      assert has_element?(view, "#run-setup-provider-tavily[checked]")
+      refute has_element?(view, "#run-setup-provider-duckduckgo[checked]")
+      assert has_element?(view, "#run-setup-research-depth option[value='deep'][selected]")
+      assert has_element?(view, "#run-setup-research-sources[value='7']")
     end
   end
 

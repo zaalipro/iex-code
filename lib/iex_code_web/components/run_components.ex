@@ -16,10 +16,14 @@ defmodule IexCodeWeb.RunComponents do
   attr :steps, :list, default: []
   attr :approvals, :list, default: []
   attr :artifacts, :list, default: []
+  attr :controls, :list, default: []
+  attr :run_manifest, :map, default: %{}
   attr :events, :any, required: true
   attr :stats, :map, default: %{}
 
   def run_control_plane(assigns) do
+    assigns = assign(assigns, :steering_form, to_form(%{"steering" => ""}))
+
     ~H"""
     <section id="async-run-control" aria-labelledby="async-run-heading" class="space-y-4">
       <div class="flex flex-col gap-4 border-b border-[#21262d] pb-5 lg:flex-row lg:items-end lg:justify-between">
@@ -234,7 +238,120 @@ defmodule IexCodeWeb.RunComponents do
                 </div>
               </div>
 
-              <div class="mt-5 grid grid-cols-2 gap-px border border-[#21262d] bg-[#21262d] sm:grid-cols-4">
+              <div class="mt-5 grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,0.72fr)]">
+                <.form
+                  for={@steering_form}
+                  id="async-run-steering-form"
+                  phx-submit="steer_async_run"
+                  class="border border-[#29313a] bg-[#10151b] p-3"
+                >
+                  <.input
+                    type="hidden"
+                    id="async-run-steering-run-id"
+                    name="run_id"
+                    value={@selected_run.id}
+                  />
+                  <div class="mb-2 flex items-center justify-between gap-3">
+                    <div>
+                      <h4 class="text-[10px] font-semibold uppercase tracking-[0.16em] text-gray-300">
+                        Live steering
+                      </h4>
+                      <p class="mt-0.5 text-[10px] text-gray-600">
+                        Appended durably to this run's control log
+                      </p>
+                    </div>
+                    <span class="font-mono text-[9px] text-gray-600">
+                      #{String.slice(@selected_run.id, 0, 7)}
+                    </span>
+                  </div>
+                  <div class="flex items-end gap-2">
+                    <div class="min-w-0 flex-1">
+                      <.input
+                        field={@steering_form[:steering]}
+                        id="async-run-steering-input"
+                        name="steering"
+                        type="text"
+                        label="Steering instruction"
+                        placeholder="Refine scope, redirect research, or add a constraint…"
+                        disabled={@selected_run.status not in ["running", "paused"]}
+                        class="block w-full border border-[#303844] bg-[#0b0f14] px-3 py-2 text-xs text-gray-100 outline-none transition-colors placeholder:text-gray-600 focus:border-cyan-500/60 disabled:cursor-not-allowed disabled:opacity-50"
+                      />
+                    </div>
+                    <button
+                      id="async-run-steering-submit"
+                      type="submit"
+                      disabled={@selected_run.status not in ["running", "paused"]}
+                      class="mb-0.5 inline-flex h-9 shrink-0 items-center gap-1.5 bg-cyan-400 px-3 font-mono text-[10px] font-semibold uppercase tracking-wider text-[#071014] transition-colors hover:bg-cyan-300 disabled:cursor-not-allowed disabled:bg-gray-700 disabled:text-gray-500"
+                    >
+                      <.icon name="hero-arrow-up-right" class="h-3.5 w-3.5" /> Steer
+                    </button>
+                  </div>
+                </.form>
+
+                <div
+                  :if={@selected_run.kind == "deep_research"}
+                  id="async-run-research-manifest"
+                  class="border border-[#29313a] bg-[#10151b] p-3"
+                >
+                  <div class="mb-3 flex items-center justify-between gap-3">
+                    <div>
+                      <h4 class="text-[10px] font-semibold uppercase tracking-[0.16em] text-gray-300">
+                        Research manifest
+                      </h4>
+                      <p class="mt-0.5 text-[10px] text-gray-600">Committed execution intent</p>
+                    </div>
+                    <span class={[
+                      "h-1.5 w-1.5 rounded-full",
+                      manifest_enabled?(@run_manifest) && "bg-violet-400",
+                      !manifest_enabled?(@run_manifest) && "bg-gray-700"
+                    ]}></span>
+                  </div>
+                  <div class="grid grid-cols-3 gap-px bg-[#252c35]">
+                    <.manifest_fact
+                      label="Mode"
+                      value={manifest_value(@run_manifest, :mode, "Not requested")}
+                    />
+                    <.manifest_fact
+                      label="Provider"
+                      value={manifest_providers(@run_manifest)}
+                    />
+                    <.manifest_fact
+                      label="Depth"
+                      value={manifest_value(@run_manifest, :depth, "Unset")}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div
+                id="async-run-budget-meters"
+                class="mt-3 grid gap-px border border-[#21262d] bg-[#21262d] md:grid-cols-3"
+              >
+                <.budget_meter
+                  id="async-run-token-budget"
+                  label="Tokens"
+                  actual={(@selected_run.input_tokens || 0) + (@selected_run.output_tokens || 0)}
+                  limit={@selected_run.token_budget}
+                  unit="tokens"
+                />
+                <.budget_meter
+                  id="async-run-cost-budget"
+                  label="Cost · reported only"
+                  actual={@selected_run.cost_cents || 0}
+                  limit={@selected_run.cost_budget_cents}
+                  unit="cost"
+                  limit_prefix="target"
+                />
+                <.budget_meter
+                  id="async-run-time-budget"
+                  label="Elapsed"
+                  actual={elapsed_ms(@selected_run)}
+                  limit={@selected_run.time_budget_ms}
+                  unit="time"
+                />
+              </div>
+
+              <div class="mt-3 grid grid-cols-2 gap-px border border-[#21262d] bg-[#21262d] sm:grid-cols-4">
                 <.run_fact label="Progress" value={"#{@selected_run.progress || 0}%"} />
                 <.run_fact
                   label="Attempt"
@@ -301,6 +418,55 @@ defmodule IexCodeWeb.RunComponents do
                         </div>
                       </div>
                     </div>
+                  </div>
+                </div>
+
+                <div id="async-run-control-timeline" class="mt-5 border-t border-[#21262d] pt-4">
+                  <div class="mb-3 flex items-center justify-between gap-3">
+                    <div>
+                      <h4 class="text-xs font-semibold uppercase tracking-wider text-gray-300">
+                        Durable controls
+                      </h4>
+                      <p class="mt-1 text-[10px] text-gray-600">
+                        Ordered operator interventions and lifecycle commands
+                      </p>
+                    </div>
+                    <span class="font-mono text-[10px] tabular-nums text-gray-600">
+                      {length(@controls)} entries
+                    </span>
+                  </div>
+                  <div class="relative border-l border-[#303844] pl-4">
+                    <div
+                      :if={@controls == []}
+                      id="async-run-controls-empty"
+                      class="border border-dashed border-[#30363d] px-3 py-5 text-center text-xs text-gray-500"
+                    >
+                      No operator controls have been recorded.
+                    </div>
+                    <article
+                      :for={control <- @controls}
+                      id={"async-run-control-entry-#{control_value(control, :id, control_fingerprint(control))}"}
+                      data-status={control_value(control, :status, "recorded")}
+                      class="relative mb-2 border border-[#252c35] bg-[#11161d] px-3 py-3 last:mb-0"
+                    >
+                      <span class={[
+                        "absolute -left-[1.28rem] top-4 h-2 w-2 rounded-full ring-4 ring-[#0d1117]",
+                        control_tone(control_value(control, :status, "recorded"))
+                      ]}></span>
+                      <div class="flex items-start justify-between gap-3">
+                        <div class="min-w-0">
+                          <p class="truncate text-xs font-medium text-gray-200">
+                            {control_title(control)}
+                          </p>
+                          <p class="mt-1 line-clamp-3 text-[11px] leading-5 text-gray-500">
+                            {control_summary(control)}
+                          </p>
+                        </div>
+                        <span class="shrink-0 font-mono text-[9px] uppercase tracking-wider text-gray-500">
+                          {control_value(control, :status, "recorded")}
+                        </span>
+                      </div>
+                    </article>
                   </div>
                 </div>
 
@@ -396,19 +562,86 @@ defmodule IexCodeWeb.RunComponents do
                   </article>
                 </div>
 
-                <div :if={@artifacts != []} class="mt-5 border-t border-[#21262d] pt-4">
-                  <h4 class="mb-3 text-xs font-semibold uppercase tracking-wider text-gray-300">
-                    Artifacts
-                  </h4>
-                  <div class="flex flex-wrap gap-2">
-                    <span
+                <div
+                  :if={@artifacts != []}
+                  id="async-run-artifacts"
+                  class="mt-5 border-t border-[#21262d] pt-4"
+                >
+                  <div class="mb-3 flex items-center justify-between gap-3">
+                    <h4 class="text-xs font-semibold uppercase tracking-wider text-gray-300">
+                      Evidence & artifacts
+                    </h4>
+                    <span class="font-mono text-[10px] text-gray-600">{length(@artifacts)} saved</span>
+                  </div>
+                  <div class="space-y-2">
+                    <article
                       :for={artifact <- @artifacts}
                       id={"async-run-artifact-#{artifact.id}"}
-                      class="inline-flex items-center gap-1.5 border border-[#30363d] bg-[#151a21] px-2.5 py-1.5 text-[10px] text-gray-300"
+                      class="border border-[#30363d] bg-[#11161d] p-3"
                     >
-                      <.icon name="hero-paper-clip" class="h-3 w-3 text-cyan-400" />
-                      {artifact.name}
-                    </span>
+                      <div class="flex items-start justify-between gap-3">
+                        <div class="flex min-w-0 items-center gap-2">
+                          <span class="flex h-6 w-6 shrink-0 items-center justify-center border border-cyan-500/20 bg-cyan-500/[0.05]">
+                            <.icon name="hero-paper-clip" class="h-3 w-3 text-cyan-400" />
+                          </span>
+                          <div class="min-w-0">
+                            <p class="truncate text-[11px] font-medium text-gray-200">
+                              {artifact.name}
+                            </p>
+                            <p class="mt-0.5 font-mono text-[9px] uppercase tracking-wider text-gray-600">
+                              {artifact.kind}
+                            </p>
+                          </div>
+                        </div>
+                        <span
+                          :if={artifact_provider(artifact)}
+                          class="shrink-0 border border-violet-500/20 bg-violet-500/[0.05] px-1.5 py-0.5 font-mono text-[9px] text-violet-300"
+                        >
+                          {artifact_provider(artifact)}
+                        </span>
+                      </div>
+
+                      <p
+                        :if={artifact_preview(artifact)}
+                        id={"async-run-artifact-preview-#{artifact.id}"}
+                        class="mt-3 line-clamp-5 border-l border-cyan-500/30 pl-3 text-[11px] leading-5 text-gray-400"
+                      >
+                        {artifact_preview(artifact)}
+                      </p>
+
+                      <details
+                        :if={artifact_content(artifact)}
+                        id={"async-run-artifact-detail-#{artifact.id}"}
+                        class="mt-3 border border-[#29313a] bg-[#0b0f14]"
+                      >
+                        <summary class="cursor-pointer px-3 py-2 font-mono text-[9px] font-semibold uppercase tracking-wider text-cyan-300">
+                          Open full artifact
+                        </summary>
+                        <pre class="max-h-96 overflow-auto whitespace-pre-wrap border-t border-[#29313a] p-3 font-mono text-[10px] leading-5 text-gray-300">{artifact_content(artifact)}</pre>
+                      </details>
+
+                      <div
+                        :if={artifact_sources(artifact) != []}
+                        id={"async-run-artifact-sources-#{artifact.id}"}
+                        class="mt-3 border-t border-[#252c35] pt-2"
+                      >
+                        <p class="mb-1.5 text-[9px] font-semibold uppercase tracking-wider text-gray-600">
+                          Sources
+                        </p>
+                        <div class="flex flex-wrap gap-1.5">
+                          <a
+                            :for={{source, index} <- Enum.with_index(artifact_sources(artifact))}
+                            id={"async-run-artifact-source-#{artifact.id}-#{index}"}
+                            href={source_url(source)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            class="max-w-full truncate border border-[#2c3540] bg-[#0c1117] px-2 py-1 font-mono text-[9px] text-gray-400"
+                          >
+                            {source_label(source)}
+                          </a>
+                        </div>
+                      </div>
+                    </article>
                   </div>
                 </div>
               </div>
@@ -417,6 +650,68 @@ defmodule IexCodeWeb.RunComponents do
         </div>
       </div>
     </section>
+    """
+  end
+
+  attr :label, :string, required: true
+  attr :value, :string, required: true
+
+  defp manifest_fact(assigns) do
+    ~H"""
+    <div class="min-w-0 bg-[#0c1117] px-2.5 py-2">
+      <p class="text-[8px] uppercase tracking-wider text-gray-600">{@label}</p>
+      <p class="mt-1 truncate font-mono text-[10px] text-gray-300" title={@value}>{@value}</p>
+    </div>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :label, :string, required: true
+  attr :actual, :integer, required: true
+  attr :limit, :integer, default: nil
+  attr :unit, :string, required: true
+  attr :limit_prefix, :string, default: "limit"
+
+  defp budget_meter(assigns) do
+    assigns =
+      assigns
+      |> assign(:percent, budget_percent(assigns.actual, assigns.limit))
+      |> assign(:actual_label, budget_value(assigns.actual, assigns.unit))
+      |> assign(:limit_label, budget_limit(assigns.limit, assigns.unit))
+
+    ~H"""
+    <div
+      id={@id}
+      data-budget-actual={@actual}
+      data-budget-limit={@limit || "unset"}
+      class="bg-[#10151b] px-3 py-3"
+    >
+      <div class="flex items-start justify-between gap-3">
+        <div>
+          <p class="text-[9px] font-semibold uppercase tracking-[0.14em] text-gray-500">{@label}</p>
+          <p class="mt-1 font-mono text-xs tabular-nums text-gray-200">{@actual_label}</p>
+        </div>
+        <span class="font-mono text-[9px] text-gray-600">{@limit_prefix} {@limit_label}</span>
+      </div>
+      <div class="mt-2 h-1 overflow-hidden bg-[#252c35]">
+        <div
+          role="progressbar"
+          aria-label={"#{@label} budget used"}
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow={@percent}
+          class={[
+            "h-full transition-[width] duration-300",
+            @limit == nil && "bg-gray-600",
+            @limit != nil && @percent < 80 && "bg-cyan-400",
+            @limit != nil && @percent >= 80 && @percent < 100 && "bg-amber-400",
+            @limit != nil && @percent >= 100 && "bg-rose-400"
+          ]}
+          style={"width: #{@percent}%"}
+        >
+        </div>
+      </div>
+    </div>
     """
   end
 
@@ -477,6 +772,265 @@ defmodule IexCodeWeb.RunComponents do
     </span>
     """
   end
+
+  defp budget_percent(_actual, nil), do: 0
+  defp budget_percent(_actual, limit) when not is_integer(limit) or limit <= 0, do: 0
+
+  defp budget_percent(actual, limit) do
+    actual
+    |> Kernel.*(100)
+    |> div(limit)
+    |> min(100)
+    |> max(0)
+  end
+
+  defp budget_limit(nil, _unit), do: "unset"
+  defp budget_limit(value, unit), do: budget_value(value, unit)
+
+  defp budget_value(value, "cost"), do: format_cost(value)
+
+  defp budget_value(value, "time") do
+    seconds = div(max(value || 0, 0), 1_000)
+
+    cond do
+      seconds >= 3_600 -> "#{div(seconds, 3_600)}h #{div(rem(seconds, 3_600), 60)}m"
+      seconds >= 60 -> "#{div(seconds, 60)}m #{rem(seconds, 60)}s"
+      true -> "#{seconds}s"
+    end
+  end
+
+  defp budget_value(value, _unit) when is_integer(value) do
+    value
+    |> Integer.to_string()
+    |> add_digit_separators()
+  end
+
+  defp budget_value(_value, _unit), do: "0"
+
+  defp add_digit_separators(value) do
+    value
+    |> String.reverse()
+    |> String.graphemes()
+    |> Enum.chunk_every(3)
+    |> Enum.map_join(",", &Enum.join/1)
+    |> String.reverse()
+  end
+
+  defp elapsed_ms(%{started_at: nil}), do: 0
+
+  defp elapsed_ms(%{started_at: started_at} = run) do
+    finished_at = Map.get(run, :completed_at) || DateTime.utc_now()
+    max(DateTime.diff(finished_at, started_at, :millisecond), 0)
+  end
+
+  defp elapsed_ms(_run), do: 0
+
+  defp manifest_enabled?(manifest) when map_size(manifest) == 0, do: false
+
+  defp manifest_enabled?(manifest) do
+    research = manifest_section(manifest)
+    manifest_get(research, :enabled) != false and map_size(research) > 0
+  end
+
+  defp manifest_value(manifest, key, fallback) do
+    research = manifest_section(manifest)
+
+    flat_key =
+      case key do
+        :mode -> :research_mode
+        :depth -> :research_depth
+        _other -> key
+      end
+
+    value = manifest_get(research, key) || manifest_get(manifest, flat_key)
+
+    display_value(value, fallback)
+  end
+
+  defp manifest_providers(manifest) do
+    research = manifest_section(manifest)
+
+    providers =
+      manifest_get(research, :providers) || manifest_get(research, :provider) ||
+        manifest_get(manifest, :research_providers)
+
+    case providers do
+      [] -> "Automatic"
+      values when is_list(values) -> Enum.map_join(values, ", ", &display_value(&1, ""))
+      value -> display_value(value, "Automatic")
+    end
+  end
+
+  defp manifest_section(manifest) do
+    case manifest_get(manifest, :research) do
+      research when is_map(research) -> research
+      _other -> manifest
+    end
+  end
+
+  defp manifest_get(map, key) when is_map(map) do
+    case Map.fetch(map, key) do
+      {:ok, value} -> value
+      :error -> Map.get(map, Atom.to_string(key))
+    end
+  end
+
+  defp manifest_get(_value, _key), do: nil
+
+  defp display_value(nil, fallback), do: fallback
+  defp display_value("", fallback), do: fallback
+
+  defp display_value(value, _fallback) when is_atom(value),
+    do: value |> Atom.to_string() |> String.replace("_", " ")
+
+  defp display_value(value, _fallback) when is_binary(value), do: String.replace(value, "_", " ")
+  defp display_value(value, _fallback), do: to_string(value)
+
+  defp control_value(control, key, fallback) do
+    case manifest_get(control, key) do
+      nil -> fallback
+      value -> value
+    end
+  end
+
+  defp control_fingerprint(control), do: :erlang.phash2(control)
+
+  defp control_title(control) do
+    control_value(control, :action, nil) ||
+      control_value(control, :kind, nil) ||
+      control_value(control, :type, nil) ||
+      control_value(control, :tool_name, "Operator control")
+      |> display_value("Operator control")
+  end
+
+  defp control_summary(control) do
+    value =
+      control_value(control, :instruction, nil) ||
+        control_value(control, :message, nil) ||
+        control_value(control, :reason, nil) ||
+        control_value(control, :summary, nil) ||
+        control_value(control, :output, nil)
+
+    display_value(value, "Persisted in the run control journal.")
+  end
+
+  defp control_tone(status)
+       when status in ["completed", "applied", "approved", :completed, :applied, :approved],
+       do: "bg-emerald-400"
+
+  defp control_tone(status)
+       when status in [
+              "failed",
+              "denied",
+              "rejected",
+              "cancelled",
+              :failed,
+              :denied,
+              :rejected,
+              :cancelled
+            ],
+       do: "bg-rose-400"
+
+  defp control_tone(status)
+       when status in ["queued", "pending", "recorded", :queued, :pending, :recorded],
+       do: "bg-blue-400"
+
+  defp control_tone(status) when status in ["superseded", :superseded], do: "bg-gray-500"
+  defp control_tone(_status), do: "bg-amber-400"
+
+  defp artifact_provider(artifact) do
+    metadata = Map.get(artifact, :metadata, %{}) || %{}
+    provider = manifest_get(metadata, :provider) || manifest_get(metadata, :providers)
+
+    case provider do
+      providers when is_list(providers) -> Enum.map_join(providers, ", ", &display_value(&1, ""))
+      value -> display_optional(value)
+    end
+  end
+
+  defp artifact_preview(artifact) do
+    metadata = Map.get(artifact, :metadata, %{}) || %{}
+
+    [:report_preview, :preview, :excerpt, :summary, :report, :content]
+    |> Enum.find_value(&manifest_get(metadata, &1))
+    |> preview_content()
+  end
+
+  defp artifact_content(artifact) do
+    metadata = Map.get(artifact, :metadata, %{}) || %{}
+
+    case manifest_get(metadata, :content) do
+      content when is_binary(content) and content != "" -> String.slice(content, 0, 250_000)
+      _ -> nil
+    end
+  end
+
+  defp artifact_sources(artifact) do
+    metadata = Map.get(artifact, :metadata, %{}) || %{}
+    decoded = decode_metadata_content(metadata)
+
+    case manifest_get(metadata, :sources) || manifest_get(metadata, :source) ||
+           manifest_get(decoded, :sources) do
+      sources when is_list(sources) -> Enum.take(sources, 8)
+      nil -> []
+      source -> [source]
+    end
+  end
+
+  defp decode_metadata_content(metadata) do
+    case manifest_get(metadata, :content) do
+      content when is_binary(content) ->
+        case Jason.decode(content) do
+          {:ok, decoded} when is_map(decoded) -> decoded
+          _other -> %{}
+        end
+
+      _other ->
+        %{}
+    end
+  end
+
+  defp preview_content(nil), do: nil
+
+  defp preview_content(content) when is_binary(content) do
+    case Jason.decode(content) do
+      {:ok, decoded} when is_map(decoded) ->
+        manifest_get(decoded, :summary) ||
+          case manifest_get(decoded, :sources) do
+            sources when is_list(sources) ->
+              "#{length(sources)} normalized research sources preserved."
+
+            _other ->
+              String.slice(content, 0, 1_200)
+          end
+
+      _other ->
+        String.slice(content, 0, 1_200)
+    end
+  end
+
+  defp preview_content(content), do: display_optional(content)
+
+  defp source_label(source) when is_map(source) do
+    manifest_get(source, :title) || manifest_get(source, :name) || manifest_get(source, :url) ||
+      manifest_get(source, :uri) || "Recorded source"
+  end
+
+  defp source_label(source), do: display_value(source, "Recorded source")
+
+  defp source_url(source) when is_map(source) do
+    case manifest_get(source, :url) || manifest_get(source, :uri) do
+      "https://" <> _ = url -> url
+      "http://" <> _ = url -> url
+      _ -> "#"
+    end
+  end
+
+  defp source_url(_source), do: "#"
+
+  defp display_optional(nil), do: nil
+  defp display_optional(""), do: nil
+  defp display_optional(value), do: display_value(value, "")
 
   defp event_summary(event) do
     payload = event.payload || %{}

@@ -14,6 +14,7 @@ defmodule IexCode.Runs.RunDispatcher do
   require Logger
 
   alias IexCode.{Kanban, Projects, Runs, Sessions}
+  alias IexCode.Engine.AgentSupervisor
   alias IexCode.Runs.Run
 
   @default_poll_interval 1_000
@@ -77,6 +78,11 @@ defmodule IexCode.Runs.RunDispatcher do
     GenServer.call(server, {:resume, run_id(run_or_id)})
   end
 
+  @doc "Persists run-scoped guidance and delivers it only to the selected worker."
+  def steer(run_or_id, guidance, server \\ __MODULE__) when is_binary(guidance) do
+    GenServer.call(server, {:steer, run_id(run_or_id), guidance})
+  end
+
   def get_stats(server \\ __MODULE__), do: GenServer.call(server, :get_stats)
   def active_runs(server \\ __MODULE__), do: GenServer.call(server, :active_runs)
   def subscribe(run_or_id), do: Runs.subscribe(run_or_id)
@@ -126,7 +132,8 @@ defmodule IexCode.Runs.RunDispatcher do
         expired_before: owned_cutoff
       ) ++ Runs.reconcile_orphaned_runs([])
 
-    Enum.each(interrupted, &interrupt_running_steps/1)
+    _ = Runs.supersede_claimed_controls(state.worker_id, "dispatcher_restarted")
+    Enum.each(interrupted, &terminalize_interrupted_steps/1)
     Enum.each(interrupted, &project_terminal_task/1)
     schedule_poll(state.poll_interval)
     schedule_heartbeat(state.heartbeat_interval)
@@ -179,16 +186,24 @@ defmodule IexCode.Runs.RunDispatcher do
       %Run{} = run ->
         active? = Map.has_key?(state.run_refs, run_id)
 
-        with {:ok, requested} <- Runs.request_cancellation(run),
-             :ok <- maybe_broadcast_cancel(active?, requested),
-             {:ok, cancelled} <- Runs.transition_run(requested, "cancelled") do
-          cancel_open_steps(cancelled)
-          project_terminal_task(cancelled)
-          new_state = begin_worker_cancellation(state, run_id)
-          send(self(), :drain)
-          {:reply, {:ok, cancelled}, new_state}
-        else
-          error -> {:reply, error, state}
+        case persist_and_claim_control(run, "cancel", %{}, state.worker_id) do
+          {:ok, control} ->
+            case apply_cancellation(run, active?, control) do
+              {:ok, cancelled} ->
+                if active?, do: AgentSupervisor.cancel_session_activity(cancelled.session_id)
+                cancel_open_steps(cancelled)
+                project_terminal_task(cancelled)
+                new_state = begin_worker_cancellation(state, run_id)
+                send(self(), :drain)
+                {:reply, {:ok, cancelled}, new_state}
+
+              {:error, reason} = error ->
+                _ = Runs.resolve_control(control, "rejected", %{"reason" => inspect(reason)})
+                {:reply, error, state}
+            end
+
+          {:error, _} = error ->
+            {:reply, error, state}
         end
     end
   end
@@ -208,12 +223,33 @@ defmodule IexCode.Runs.RunDispatcher do
   end
 
   def handle_call({:pause, run_id}, _from, state) do
-    result = transition_controlled_run(state, run_id, "paused", {:pause, session_id(run_id)})
+    result = transition_controlled_run(state, run_id, "paused", :pause)
     {:reply, result, state}
   end
 
   def handle_call({:resume, run_id}, _from, state) do
-    result = transition_controlled_run(state, run_id, "running", {:resume, session_id(run_id)})
+    result = transition_controlled_run(state, run_id, "running", :resume)
+    {:reply, result, state}
+  end
+
+  def handle_call({:steer, run_id, guidance}, _from, state) do
+    guidance = String.trim(guidance)
+
+    result =
+      with %Run{} = run <- Runs.get_run(run_id),
+           true <- Map.has_key?(state.run_refs, run_id),
+           true <- run.status in ["running", "paused"],
+           true <- guidance != "",
+           {:ok, control} <-
+             persist_and_claim_control(run, "steer", %{"guidance" => guidance}, state.worker_id),
+           :ok <- broadcast_run_control(run, control, :steer, %{"guidance" => guidance}) do
+        {:ok, Runs.get_run!(run.id)}
+      else
+        nil -> {:error, :not_found}
+        false -> {:error, :not_active}
+        {:error, _} = error -> error
+      end
+
     {:reply, result, state}
   end
 
@@ -225,7 +261,7 @@ defmodule IexCode.Runs.RunDispatcher do
   def handle_info(:poll, state) do
     schedule_poll(state.poll_interval)
     interrupted = Runs.reconcile_orphaned_runs([])
-    Enum.each(interrupted, &interrupt_running_steps/1)
+    Enum.each(interrupted, &terminalize_interrupted_steps/1)
     Enum.each(interrupted, &project_terminal_task/1)
     {:noreply, drain_capacity(state)}
   end
@@ -275,6 +311,47 @@ defmodule IexCode.Runs.RunDispatcher do
     {:noreply, state}
   end
 
+  def handle_info({:run_time_budget_exceeded, run_id, pid}, state) do
+    ref = Map.get(state.run_refs, run_id)
+
+    case {ref && Map.get(state.workers, ref), Runs.get_run(run_id)} do
+      {%{pid: ^pid}, %Run{status: status} = run} when status in ["running", "paused"] ->
+        _ =
+          Runs.append_event(
+            run,
+            "run.budget_exhausted",
+            %{"budget" => "time", "limit_ms" => run.time_budget_ms},
+            "dispatcher"
+          )
+
+        case Runs.transition_run(run, "failed", %{
+               error_message: "Run exceeded its #{run.time_budget_ms}ms time budget",
+               error_details: %{
+                 "reason" => "budget_exhausted",
+                 "budget" => "time",
+                 "limit_ms" => run.time_budget_ms
+               },
+               lease_owner: run.lease_owner,
+               lease_expires_at: run.lease_expires_at
+             }) do
+          {:ok, failed} ->
+            AgentSupervisor.cancel_session_activity(failed.session_id)
+            fail_open_steps(failed)
+            project_terminal_task(failed)
+            broadcast_run_control(failed, :cancel, %{"reason" => "time_budget_exhausted"})
+
+          _ ->
+            :ok
+        end
+
+        new_state = begin_worker_cancellation(state, run_id)
+        {:noreply, new_state}
+
+      _ ->
+        {:noreply, state}
+    end
+  end
+
   def handle_info(_message, state), do: {:noreply, state}
 
   defp drain_capacity(state) do
@@ -318,7 +395,8 @@ defmodule IexCode.Runs.RunDispatcher do
           run_id: run.id,
           project_id: run.project_id,
           pid: task.pid,
-          execute_step_id: execute_step.id
+          execute_step_id: execute_step.id,
+          budget_timer: schedule_time_budget(run, task.pid)
         }
 
         workers = Map.put(state.workers, task.ref, worker)
@@ -358,38 +436,56 @@ defmodule IexCode.Runs.RunDispatcher do
   end
 
   defp finish_worker(state, ref, worker, result) do
+    if worker[:budget_timer], do: Process.cancel_timer(worker.budget_timer)
     run = Runs.get_run(worker.run_id)
     cancelling? = MapSet.member?(state.cancelling, worker.run_id)
 
-    unless is_nil(run) or cancelling? or run.status == "cancelled" do
-      {status, attrs} = terminal_result(result)
-      finish_execute_step(worker.execute_step_id, status, attrs)
+    cond do
+      is_nil(run) or cancelling? or run.status == "cancelled" ->
+        :ok
 
-      attrs =
-        case attrs do
-          %{metadata: result_metadata} ->
-            %{attrs | metadata: Map.merge(run.metadata || %{}, result_metadata)}
+      run.status == "failed" ->
+        finish_execute_step(worker.execute_step_id, "failed", %{
+          error_message: run.error_message,
+          error_details: run.error_details
+        })
 
-          _ ->
-            attrs
+        project_terminal_task(run)
+        broadcast_session(run, {:async_run_updated, run})
+
+      true ->
+        {status, attrs} = terminal_result(result)
+        finish_execute_step(worker.execute_step_id, status, attrs)
+        if status == "failed", do: fail_open_steps(run)
+        if status == "interrupted", do: terminalize_interrupted_steps(run)
+
+        attrs =
+          case attrs do
+            %{metadata: result_metadata} ->
+              %{attrs | metadata: Map.merge(run.metadata || %{}, result_metadata)}
+
+            _ ->
+              attrs
+          end
+
+        case Runs.transition_run(run, status, attrs) do
+          {:ok, updated} ->
+            project_terminal_task(updated)
+            broadcast_session(updated, {:async_run_updated, updated})
+
+          {:error, {:invalid_transition, _, _}} ->
+            :ok
+
+          {:error, reason} ->
+            Logger.warning("RunDispatcher finalization failed: #{inspect(reason)}")
         end
-
-      case Runs.transition_run(run, status, attrs) do
-        {:ok, updated} ->
-          project_terminal_task(updated)
-          broadcast_session(updated, {:async_run_updated, updated})
-
-        {:error, {:invalid_transition, _, _}} ->
-          :ok
-
-        {:error, reason} ->
-          Logger.warning("RunDispatcher finalization failed: #{inspect(reason)}")
-      end
     end
 
     if run && run.lease_owner == state.worker_id do
       _ = Runs.release_lease(run.id, state.worker_id)
     end
+
+    if run, do: reject_unapplied_controls(run)
 
     %{
       state
@@ -436,14 +532,22 @@ defmodule IexCode.Runs.RunDispatcher do
     end
   end
 
-  defp transition_controlled_run(state, run_id, status, control) do
+  defp transition_controlled_run(state, run_id, status, kind) do
     with %Run{} = run <- Runs.get_run(run_id),
          true <- Map.has_key?(state.run_refs, run_id),
-         {:ok, updated} <- Runs.transition_run(run, status) do
-      broadcast_control(updated, control)
-      transition_active_step(updated, status)
-      broadcast_session(updated, {:async_run_updated, updated})
-      {:ok, updated}
+         {:ok, control} <-
+           persist_and_claim_control(run, Atom.to_string(kind), %{}, state.worker_id) do
+      case Runs.transition_run(run, status) do
+        {:ok, updated} ->
+          :ok = broadcast_run_control(updated, control, kind, %{})
+          transition_active_step(updated, status)
+          broadcast_session(updated, {:async_run_updated, updated})
+          {:ok, updated}
+
+        {:error, reason} = error ->
+          _ = Runs.resolve_control(control, "rejected", %{"reason" => inspect(reason)})
+          error
+      end
     else
       nil -> {:error, :not_found}
       false -> {:error, :not_active}
@@ -484,26 +588,63 @@ defmodule IexCode.Runs.RunDispatcher do
   defp run_id(id) when is_binary(id), do: id
   defp run_id(_), do: nil
 
-  defp session_id(run_id) do
-    case Runs.get_run(run_id) do
-      %Run{session_id: id} -> id
-      _ -> nil
-    end
-  end
-
   defp maybe_broadcast_cancel(true, %Run{} = run) do
-    broadcast_control(run, {:cancel, run.session_id, [action: :rollback]})
+    broadcast_run_control(run, :cancel, %{"action" => "rollback"})
   end
 
   defp maybe_broadcast_cancel(false, %Run{}), do: :ok
 
-  defp broadcast_control(%Run{} = run, message), do: broadcast_control(run.session_id, message)
-
-  defp broadcast_control(session_id, message) when is_binary(session_id) do
-    Phoenix.PubSub.broadcast(IexCode.PubSub, "session:#{session_id}:steer", message)
+  defp apply_cancellation(run, active?, control) do
+    with {:ok, requested} <- Runs.request_cancellation(run),
+         :ok <- maybe_broadcast_cancel(active?, requested),
+         {:ok, cancelled} <- Runs.transition_run(requested, "cancelled"),
+         {:ok, _control} <-
+           Runs.resolve_control(control, "applied", %{
+             "run_status" => "cancelled",
+             "worker_active" => active?
+           }) do
+      {:ok, cancelled}
+    end
   end
 
-  defp broadcast_control(_, _), do: :ok
+  defp broadcast_run_control(%Run{} = run, kind, payload) do
+    Phoenix.PubSub.broadcast(
+      IexCode.PubSub,
+      "run:#{run.id}:control",
+      {:run_control, run.id, kind, payload}
+    )
+  end
+
+  defp broadcast_run_control(%Run{} = run, control, kind, payload) do
+    Phoenix.PubSub.broadcast(
+      IexCode.PubSub,
+      "run:#{run.id}:control",
+      {:run_control, run.id, control.id, kind, payload}
+    )
+  end
+
+  defp persist_and_claim_control(%Run{} = run, kind, payload, worker_id) do
+    idempotency_key =
+      "dispatcher:#{kind}:#{System.unique_integer([:positive, :monotonic])}"
+
+    with {:ok, pending} <-
+           Runs.enqueue_control(run, idempotency_key, %{
+             kind: kind,
+             payload: payload,
+             requested_by: "local-user"
+           }),
+         {:ok, claimed} <- Runs.claim_control(pending, worker_id) do
+      {:ok, claimed}
+    end
+  end
+
+  defp reject_unapplied_controls(run) do
+    run
+    |> Runs.list_controls(status: "claimed")
+    |> Enum.each(fn control ->
+      _ = Runs.resolve_control(control, "rejected", %{"reason" => "run_terminated_before_ack"})
+    end)
+  end
 
   defp broadcast_session(%Run{} = run, event) do
     Phoenix.PubSub.broadcast(IexCode.PubSub, "session:#{run.session_id}", event)
@@ -514,6 +655,13 @@ defmodule IexCode.Runs.RunDispatcher do
 
   defp schedule_poll(interval), do: Process.send_after(self(), :poll, interval)
   defp schedule_heartbeat(interval), do: Process.send_after(self(), :heartbeat, interval)
+
+  defp schedule_time_budget(%Run{id: run_id, time_budget_ms: budget_ms}, pid)
+       when is_integer(budget_ms) and budget_ms >= 0 do
+    Process.send_after(self(), {:run_time_budget_exceeded, run_id, pid}, budget_ms)
+  end
+
+  defp schedule_time_budget(_run, _pid), do: nil
 
   defp positive(value, _default) when is_integer(value) and value > 0, do: value
   defp positive(_value, default), do: default
@@ -532,9 +680,10 @@ defmodule IexCode.Runs.RunDispatcher do
 
   defp retry_attempt_steps(%Run{} = run) do
     {prepare_key, execute_key} = attempt_step_keys(run)
-    base_position = run.attempt * 2
+    attempt_width = if run.kind == "deep_research", do: 6, else: 2
+    base_position = run.attempt * attempt_width
 
-    [
+    base_steps = [
       %{
         key: prepare_key,
         kind: "prepare",
@@ -551,12 +700,18 @@ defmodule IexCode.Runs.RunDispatcher do
         depends_on: [prepare_key]
       }
     ]
+
+    if run.kind == "deep_research" do
+      base_steps ++ research_steps(run.attempt + 1, prepare_key, base_position + 2)
+    else
+      base_steps
+    end
   end
 
   defp initial_steps(attrs) do
     kind = Map.get(attrs, :kind) || Map.get(attrs, "kind") || metadata_kind(attrs)
 
-    [
+    base_steps = [
       %{
         key: "prepare",
         kind: "prepare",
@@ -571,6 +726,54 @@ defmodule IexCode.Runs.RunDispatcher do
         status: "pending",
         position: 1,
         depends_on: ["prepare"]
+      }
+    ]
+
+    if kind == "deep_research" do
+      base_steps ++ research_steps(1, "prepare", 2)
+    else
+      base_steps
+    end
+  end
+
+  defp research_steps(attempt, prepare_key, position) do
+    suffix = if attempt > 1, do: ".#{attempt}", else: ""
+    plan = "research.plan#{suffix}"
+    search = "research.search#{suffix}"
+    fetch = "research.fetch#{suffix}"
+
+    [
+      %{
+        key: plan,
+        kind: "research_plan",
+        title: "Plan research strategy",
+        status: "pending",
+        position: position,
+        depends_on: [prepare_key]
+      },
+      %{
+        key: search,
+        kind: "research_search",
+        title: "Federate evidence search",
+        status: "pending",
+        position: position + 1,
+        depends_on: [plan]
+      },
+      %{
+        key: fetch,
+        kind: "research_fetch",
+        title: "Fetch public sources safely",
+        status: "pending",
+        position: position + 2,
+        depends_on: [search]
+      },
+      %{
+        key: "research.synthesize#{suffix}",
+        kind: "research_synthesize",
+        title: "Synthesize cited report",
+        status: "pending",
+        position: position + 3,
+        depends_on: [fetch]
       }
     ]
   end
@@ -667,11 +870,34 @@ defmodule IexCode.Runs.RunDispatcher do
     |> Enum.each(&Runs.transition_step(&1, "cancelled"))
   end
 
-  defp interrupt_running_steps(run) do
+  defp fail_open_steps(run) do
     run
     |> Runs.list_steps()
-    |> Enum.filter(&(&1.status in ~w(running paused)))
-    |> Enum.each(&Runs.transition_step(&1, "interrupted"))
+    |> Enum.filter(&(&1.status not in ~w(completed failed cancelled skipped interrupted)))
+    |> Enum.each(fn step ->
+      status =
+        cond do
+          step.status == "running" -> "failed"
+          step.status in ["paused", "waiting_approval"] -> "cancelled"
+          true -> "skipped"
+        end
+
+      _ = Runs.transition_step(step, status, %{error_message: "Upstream run failed"})
+    end)
+  end
+
+  defp terminalize_interrupted_steps(run) do
+    run
+    |> Runs.list_steps()
+    |> Enum.filter(&(&1.status not in ~w(completed failed cancelled skipped interrupted)))
+    |> Enum.each(fn step ->
+      status =
+        if step.status in ["running", "paused", "waiting_approval"],
+          do: "interrupted",
+          else: "skipped"
+
+      _ = Runs.transition_step(step, status, %{error_message: "Run interrupted"})
+    end)
   end
 
   defp transition_active_step(run, status) do

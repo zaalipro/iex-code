@@ -45,7 +45,8 @@ defmodule IexCode.LLM do
          raw_model
        ) do
     temperature = Keyword.get(opts, :temperature) || (session && session.temperature) || 0.2
-    tools = IexCode.Tools.tool_definitions()
+    tools = IexCode.Tools.tool_definitions(Keyword.get(opts, :allowed_tools, :all))
+    max_tokens = Keyword.get(opts, :max_tokens) || settings.max_tokens
 
     # Route GPT/o1/o3 model families to OpenAI even when the provider is set to
     # anthropic. Model names are otherwise passed through to the provider as-is.
@@ -65,7 +66,8 @@ defmodule IexCode.LLM do
 
     passthrough_opts =
       opts
-      |> Keyword.take([:cancelled?, :max_tokens, :receive_timeout])
+      |> Keyword.take([:cancelled?, :receive_timeout])
+      |> Keyword.put(:max_tokens, max_tokens)
       |> Enum.reject(fn {_k, v} -> is_nil(v) end)
 
     openai_fn = fn ->
