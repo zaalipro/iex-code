@@ -61,6 +61,103 @@ defmodule IexCodeWeb.WorkspaceLiveAsyncRunsTest do
     assert Runs.list_runs(session_id: session.id) == []
   end
 
+  test "queues a validated typed DAG and reconnects to its strict projection", %{
+    conn: conn,
+    workspace_path: path
+  } do
+    File.write!(Path.join(path, "README.md"), "receipt-payload-must-not-render")
+    File.write!(Path.join(path, "PROJECT.md"), "private-result-must-not-render")
+    project = create_project_fixture(%{root_path: path})
+    session = create_session_fixture(project)
+    {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+    view |> element("#toggle-run-setup") |> render_click()
+
+    view
+    |> form("#run-setup-panel", %{"run_setup" => %{"mode" => "dag"}})
+    |> render_change()
+
+    view
+    |> form("#run-setup-panel", %{
+      "run_setup" => %{
+        "mode" => "dag",
+        "dag_manifest_json" => Jason.encode!(typed_dag_manifest())
+      }
+    })
+    |> render_change()
+
+    assert has_element?(view, "#run-setup-dag-manifest-json")
+
+    view
+    |> form("#prompt-form", %{"prompt" => "Inspect this project through a typed DAG"})
+    |> render_submit()
+
+    [run] = Runs.list_runs(session_id: session.id)
+    assert run.execution_engine == "dag_v1"
+    assert run.kind == "analysis"
+    assert run.mode == "workflow"
+    assert is_binary(run.manifest_hash)
+    assert length(Runs.list_steps(run)) == 4
+
+    assert has_element?(view, "#async-run-#{run.id}")
+    assert has_element?(view, "#async-run-dag-projection")
+    assert has_element?(view, "#dag-execution-projection[data-engine='dag_v1']")
+    assert has_element?(view, "#async-run-graph-and-controls[data-graph-mode='dag']")
+    assert has_element?(view, "#async-run-control-timeline")
+    refute has_element?(view, "#async-run-steps")
+
+    {:ok, reconnected, _html} = live(conn, ~p"/sessions/#{session.id}")
+    reconnected |> element("#tab-btn-swarm") |> render_click()
+
+    assert has_element?(reconnected, "#async-run-dag-projection")
+    assert has_element?(reconnected, "#dag-node-#{hd(Runs.list_steps(run)).id}-desktop")
+
+    html = render(reconnected)
+    refute html =~ "receipt-payload-must-not-render"
+    refute html =~ "private-result-must-not-render"
+  end
+
+  test "rejects malformed cyclic and unsupported DAG manifests without inserting a run", %{
+    conn: conn,
+    workspace_path: path
+  } do
+    project = create_project_fixture(%{root_path: path})
+    session = create_session_fixture(project)
+    {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+    view |> element("#toggle-run-setup") |> render_click()
+
+    view
+    |> form("#run-setup-panel", %{"run_setup" => %{"mode" => "dag"}})
+    |> render_change()
+
+    invalid_manifests = [
+      "{malformed",
+      Jason.encode!([
+        dag_node("a", "aggregate", ["b"], %{}),
+        dag_node("b", "aggregate", ["a"], %{})
+      ]),
+      Jason.encode!([dag_node("shell", "run_command", [], %{})])
+    ]
+
+    for manifest <- invalid_manifests do
+      view
+      |> form("#run-setup-panel", %{
+        "run_setup" => %{"mode" => "dag", "dag_manifest_json" => manifest}
+      })
+      |> render_change()
+
+      html =
+        view
+        |> form("#prompt-form", %{"prompt" => "This invalid DAG must fail closed"})
+        |> render_submit()
+
+      assert html =~ "Could not queue DAG"
+      assert has_element?(view, "#run-setup-dag-manifest-json")
+      assert has_element?(view, "#run-setup-dag-manifest-json", manifest)
+      assert Runs.list_runs(session_id: session.id) == []
+    end
+  end
+
   test "persists a configured deep-research mission and renders its manifest", %{
     conn: conn,
     workspace_path: path
@@ -118,6 +215,26 @@ defmodule IexCodeWeb.WorkspaceLiveAsyncRunsTest do
     assert has_element?(view, "#async-run-research-manifest")
     assert has_element?(view, "#async-run-token-budget[data-budget-limit='25000']")
     assert has_element?(view, "#async-run-cost-budget", "Cost · reported only")
+  end
+
+  defp typed_dag_manifest do
+    [
+      dag_node("inventory", "project_inventory", [], %{"path" => "."}),
+      dag_node("read_readme", "read_file", ["inventory"], %{"path" => "README.md"}),
+      dag_node("read_project", "read_file", ["inventory"], %{"path" => "PROJECT.md"}),
+      dag_node("aggregate", "aggregate", ["read_readme", "read_project"], %{})
+    ]
+  end
+
+  defp dag_node(key, kind, dependencies, params) do
+    %{
+      "key" => key,
+      "kind" => kind,
+      "title" => key |> String.replace("_", " ") |> String.capitalize(),
+      "depends_on" => dependencies,
+      "params" => params,
+      "max_attempts" => 2
+    }
   end
 
   test "requires an explicit provider for a deep-research mission", %{

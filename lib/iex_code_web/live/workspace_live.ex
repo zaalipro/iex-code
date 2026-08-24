@@ -3,7 +3,7 @@ defmodule IexCodeWeb.WorkspaceLive do
   require Logger
   alias IexCode.{Projects, Runs, Sessions, Settings, Kanban, WorkspaceLocks, WorkspacePath}
   alias IexCode.Engine.SessionServer
-  alias IexCode.Runs.RunDispatcher
+  alias IexCode.Runs.{DagProjection, DagScheduler, RunDispatcher}
   alias IexCode.Research.Registry, as: SearchRegistry
   alias IexCode.Tools.Git
   alias IexCode.Tools.Git.{DiffParser, HunkOps}
@@ -15,6 +15,45 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   # Terminal output is capped to the last N lines (ring buffer)
   @terminal_output_max_lines 500
+  @max_dag_manifest_json_bytes 256_000
+  @dag_manifest_sample Jason.encode_to_iodata!(
+                         [
+                           %{
+                             "key" => "inventory",
+                             "kind" => "project_inventory",
+                             "title" => "Inventory project root",
+                             "depends_on" => [],
+                             "params" => %{"path" => "."},
+                             "max_attempts" => 2
+                           },
+                           %{
+                             "key" => "read_readme",
+                             "kind" => "read_file",
+                             "title" => "Read README",
+                             "depends_on" => ["inventory"],
+                             "params" => %{"path" => "README.md"},
+                             "max_attempts" => 2
+                           },
+                           %{
+                             "key" => "read_project",
+                             "kind" => "read_file",
+                             "title" => "Read project plan",
+                             "depends_on" => ["inventory"],
+                             "params" => %{"path" => "PROJECT.md"},
+                             "max_attempts" => 2
+                           },
+                           %{
+                             "key" => "aggregate",
+                             "kind" => "aggregate",
+                             "title" => "Aggregate project evidence",
+                             "depends_on" => ["read_readme", "read_project"],
+                             "params" => %{},
+                             "max_attempts" => 1
+                           }
+                         ],
+                         pretty: true
+                       )
+                       |> IO.iodata_to_binary()
   @workspace_tabs ~w(kanban swarm calendar changes tests ast chat files terminal)
 
   @impl true
@@ -100,6 +139,7 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:run_approvals, run_approvals)
       |> assign(:run_controls, run_controls)
       |> assign(:run_manifest, run_manifest(selected_run))
+      |> assign(:dag_projection, strict_dag_projection(selected_run, run_steps))
       |> assign(:run_artifacts, run_artifacts)
       |> assign(:run_agent_count, length(run_agents))
       |> assign(:run_fleet_summary, run_fleet_summary(run_agents))
@@ -120,6 +160,8 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:run_setup_token_budget, nil)
       |> assign(:run_setup_cost_budget_cents, nil)
       |> assign(:run_setup_time_budget_minutes, nil)
+      |> assign(:run_setup_dag_manifest_json, @dag_manifest_sample)
+      |> assign(:run_setup_dag_error, nil)
       |> assign(:run_setup_research_depth, settings.research_depth || "standard")
       |> assign(:run_setup_research_sources, settings.research_max_sources || 12)
       |> assign(:run_setup_providers, enabled_search_providers(settings))
@@ -2620,6 +2662,13 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> Enum.filter(fn {_provider, enabled} -> enabled in ["true", "on", "1"] end)
       |> Enum.map(&elem(&1, 0))
 
+    {dag_manifest_json, dag_manifest_error} =
+      bounded_dag_manifest_input(
+        Map.get(params, "dag_manifest_json", socket.assigns.run_setup_dag_manifest_json)
+      )
+
+    params = Map.put(params, "dag_manifest_json", dag_manifest_json)
+
     {:noreply,
      socket
      |> assign(:run_setup_mode, normalize_run_mode(params["mode"]))
@@ -2643,6 +2692,8 @@ defmodule IexCodeWeb.WorkspaceLive do
        :run_setup_providers,
        providers
      )
+     |> assign(:run_setup_dag_manifest_json, dag_manifest_json)
+     |> assign(:run_setup_dag_error, dag_manifest_error)
      |> assign(:run_setup_form, to_form(params, as: :run_setup))}
   end
 
@@ -2701,6 +2752,7 @@ defmodule IexCodeWeb.WorkspaceLive do
         research_command? = String.starts_with?(text, "/research")
         selected_mode = if research_command?, do: "research", else: socket.assigns.run_setup_mode
         deep_research? = selected_mode == "research"
+        dag_run? = selected_mode == "dag"
 
         objective =
           if research_command? do
@@ -2734,8 +2786,18 @@ defmodule IexCodeWeb.WorkspaceLive do
           project_id: socket.assigns.project.id,
           session_id: socket.assigns.session.id,
           objective: objective,
-          kind: if(deep_research?, do: "deep_research", else: "coding_swarm"),
-          mode: if(deep_research?, do: "research", else: "swarm"),
+          kind:
+            cond do
+              deep_research? -> "deep_research"
+              dag_run? -> "analysis"
+              true -> "coding_swarm"
+            end,
+          mode:
+            cond do
+              deep_research? -> "research"
+              dag_run? -> "workflow"
+              true -> "swarm"
+            end,
           priority: socket.assigns.run_setup_priority,
           max_attempts: socket.assigns.run_setup_max_attempts,
           token_budget: socket.assigns.run_setup_token_budget,
@@ -2744,23 +2806,28 @@ defmodule IexCodeWeb.WorkspaceLive do
           metadata: metadata
         }
 
-        if deep_research? and socket.assigns.run_setup_providers == [] do
-          {:noreply, put_flash(socket, :error, "Select at least one research provider")}
-        else
-          case RunDispatcher.enqueue(attrs) do
-            {:ok, run} ->
-              {:noreply,
-               socket
-               |> assign(:active_tab, "swarm")
-               |> assign(:run_setup_open?, false)
-               |> assign(:prompt_form, to_form(%{"prompt" => ""}))
-               |> select_run_projection(run)
-               |> put_flash(:info, "Background run queued. It will continue if you disconnect.")}
+        cond do
+          deep_research? and socket.assigns.run_setup_providers == [] ->
+            {:noreply, put_flash(socket, :error, "Select at least one research provider")}
 
-            {:error, reason} ->
-              {:noreply,
-               put_flash(socket, :error, "Could not queue run: #{format_run_error(reason)}")}
-          end
+          dag_run? ->
+            queue_dag_run(socket, attrs)
+
+          true ->
+            case RunDispatcher.enqueue(attrs) do
+              {:ok, run} ->
+                {:noreply,
+                 socket
+                 |> assign(:active_tab, "swarm")
+                 |> assign(:run_setup_open?, false)
+                 |> assign(:prompt_form, to_form(%{"prompt" => ""}))
+                 |> select_run_projection(run)
+                 |> put_flash(:info, "Background run queued. It will continue if you disconnect.")}
+
+              {:error, reason} ->
+                {:noreply,
+                 put_flash(socket, :error, "Could not queue run: #{format_run_error(reason)}")}
+            end
         end
       else
         SessionServer.send_prompt(socket.assigns.session.id, text,
@@ -3697,10 +3764,15 @@ defmodule IexCodeWeb.WorkspaceLive do
   @impl true
   def handle_info({:run_event, event}, socket) do
     if socket.assigns.selected_run && event.run_id == socket.assigns.selected_run.id do
-      updated_run = Runs.get_run(event.run_id) || socket.assigns.selected_run
+      if socket.assigns.selected_run.execution_engine == "dag_v1" do
+        {:noreply, refresh_selected_run(socket)}
+      else
+        updated_run = Runs.get_run(event.run_id) || socket.assigns.selected_run
+        events = Runs.list_latest_events(updated_run, limit: 500)
 
-      events = Runs.list_latest_events(updated_run, limit: 500)
-      {:noreply, socket |> assign(:selected_run, updated_run) |> assign(:run_event_rows, events)}
+        {:noreply,
+         socket |> assign(:selected_run, updated_run) |> assign(:run_event_rows, events)}
+      end
     else
       {:noreply, socket}
     end
@@ -4616,10 +4688,12 @@ defmodule IexCodeWeb.WorkspaceLive do
     approvals = if selected, do: Runs.list_approvals(selected), else: []
     pending_approval_count = Runs.count_pending_approvals(session_id)
     agents = if selected, do: Runs.list_run_agents(selected, limit: 100), else: []
+    steps = if(selected, do: Runs.list_steps(selected), else: [])
 
     socket
     |> assign(:selected_run, selected)
-    |> assign(:run_steps, if(selected, do: Runs.list_steps(selected), else: []))
+    |> assign(:run_steps, steps)
+    |> assign(:dag_projection, strict_dag_projection(selected, steps))
     |> assign(:run_approvals, approvals)
     |> assign(:run_controls, if(selected, do: Runs.list_controls(selected), else: []))
     |> assign(:run_manifest, run_manifest(selected))
@@ -4645,6 +4719,7 @@ defmodule IexCodeWeb.WorkspaceLive do
     session_runs = Runs.list_runs(session_id: socket.assigns.session.id, limit: 100)
     pending_approval_count = Runs.count_pending_approvals(socket.assigns.session.id)
     agents = Runs.list_run_agents(run, limit: 100)
+    steps = Runs.list_steps(run)
 
     agent_guidance =
       case socket.assigns.selected_run do
@@ -4654,7 +4729,8 @@ defmodule IexCodeWeb.WorkspaceLive do
 
     socket
     |> assign(:selected_run, run)
-    |> assign(:run_steps, Runs.list_steps(run))
+    |> assign(:run_steps, steps)
+    |> assign(:dag_projection, strict_dag_projection(run, steps))
     |> assign(:run_approvals, approvals)
     |> assign(:run_controls, Runs.list_controls(run))
     |> assign(:run_manifest, run_manifest(run))
@@ -5036,6 +5112,7 @@ defmodule IexCodeWeb.WorkspaceLive do
       "token_budget" => "",
       "cost_budget_cents" => "",
       "time_budget_minutes" => "",
+      "dag_manifest_json" => @dag_manifest_sample,
       "research_depth" => settings.research_depth || "standard",
       "research_max_sources" => to_string(settings.research_max_sources || 12),
       "providers" =>
@@ -5072,6 +5149,7 @@ defmodule IexCodeWeb.WorkspaceLive do
       "token_budget" => socket.assigns.run_setup_token_budget,
       "cost_budget_cents" => socket.assigns.run_setup_cost_budget_cents,
       "time_budget_minutes" => socket.assigns.run_setup_time_budget_minutes,
+      "dag_manifest_json" => socket.assigns.run_setup_dag_manifest_json,
       "research_depth" => depth,
       "research_max_sources" => sources,
       "providers" => Map.new(providers, &{&1, "true"})
@@ -5141,6 +5219,93 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   defp run_manifest(_run), do: %{}
 
+  defp queue_dag_run(socket, attrs) do
+    raw = socket.assigns.run_setup_dag_manifest_json
+
+    result =
+      with nil <- socket.assigns.run_setup_dag_error,
+           {:ok, steps} when is_list(steps) <- Jason.decode(raw),
+           {:ok, run} <- RunDispatcher.enqueue_dag(attrs, steps) do
+        {:ok, run}
+      else
+        {:ok, _not_a_list} -> {:error, :dag_manifest_must_be_a_json_array}
+        {:error, %Jason.DecodeError{}} -> {:error, :malformed_dag_manifest_json}
+        {:error, _reason} = error -> error
+        reason -> {:error, reason}
+      end
+
+    case result do
+      {:ok, run} ->
+        {:noreply,
+         socket
+         |> assign(:active_tab, "swarm")
+         |> assign(:run_setup_open?, false)
+         |> assign(:prompt_form, to_form(%{"prompt" => ""}))
+         |> select_run_projection(run)
+         |> put_flash(:info, "Typed DAG queued with an immutable validated manifest")}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:run_setup_open?, true)
+         |> put_flash(:error, "Could not queue DAG: #{format_run_error(reason)}")}
+    end
+  end
+
+  defp bounded_dag_manifest_input(value) when is_binary(value) do
+    if byte_size(value) <= @max_dag_manifest_json_bytes do
+      {value, nil}
+    else
+      {binary_prefix(value, @max_dag_manifest_json_bytes), :dag_manifest_json_too_large}
+    end
+  end
+
+  defp bounded_dag_manifest_input(_value), do: {@dag_manifest_sample, :invalid_dag_manifest_json}
+
+  defp binary_prefix(value, maximum) do
+    prefix = binary_part(value, 0, maximum)
+
+    if String.valid?(prefix) do
+      prefix
+    else
+      binary_prefix(value, maximum - 1)
+    end
+  end
+
+  defp strict_dag_projection(nil, _steps), do: nil
+  defp strict_dag_projection(%{execution_engine: engine}, _steps) when engine != "dag_v1", do: nil
+
+  defp strict_dag_projection(run, steps) do
+    attempts = DagScheduler.list_attempts(run, limit: 1_000)
+
+    case DagProjection.build(run, steps, attempts) do
+      {:ok, projection} ->
+        projection
+
+      {:error, reason} ->
+        %{
+          engine: "dag_v1",
+          available?: false,
+          revision: run.event_sequence || 0,
+          summary: %{},
+          layers: [],
+          error_code: dag_projection_error_code(reason)
+        }
+    end
+  end
+
+  defp dag_projection_error_code(:cyclic_dag_projection), do: "projection_cycle_detected"
+
+  defp dag_projection_error_code({:missing_dependencies, _key, _missing}),
+    do: "projection_dependency_missing"
+
+  defp dag_projection_error_code({:dag_step_scope_mismatch, _id}), do: "projection_scope_mismatch"
+
+  defp dag_projection_error_code({:dag_attempt_scope_mismatch, _id}),
+    do: "projection_scope_mismatch"
+
+  defp dag_projection_error_code(_reason), do: "projection_unavailable"
+
   defp enabled_tools(active_tools) do
     core =
       ~w(read_file write_file patch_file multi_patch list_dir grep_search run_tests run_command git_status git_diff git_stage git_commit git_generate_commit)
@@ -5157,7 +5322,7 @@ defmodule IexCodeWeb.WorkspaceLive do
     Enum.uniq(core ++ optional)
   end
 
-  defp normalize_run_mode(mode) when mode in ["code", "research"], do: mode
+  defp normalize_run_mode(mode) when mode in ["code", "research", "dag"], do: mode
   defp normalize_run_mode(_mode), do: "code"
 
   defp normalize_run_priority(priority) when priority in ~w(low normal high critical),

@@ -15,7 +15,7 @@ defmodule IexCode.Runs.RunDispatcher do
 
   alias IexCode.{Kanban, Projects, Runs, Sessions, WorkspaceLocks}
   alias IexCode.Engine.{AgentRegistry, FleetManager, FleetSupervisor}
-  alias IexCode.Runs.Run
+  alias IexCode.Runs.{DagRunner, DagScheduler, Run}
   alias IexCode.Runs.ExecutionEngine
 
   @default_poll_interval 1_000
@@ -37,6 +37,10 @@ defmodule IexCode.Runs.RunDispatcher do
     :cancel_grace_ms,
     :workspace_lock_retry_interval,
     :workspace_lock_lease_seconds,
+    :execution_engines,
+    :dag_runner,
+    :dag_runner_opts,
+    :dag_max_concurrency,
     workers: %{},
     lock_waiters: %{},
     run_refs: %{},
@@ -61,6 +65,26 @@ defmodule IexCode.Runs.RunDispatcher do
       {:ok, run}
     end
   end
+
+  @doc "Persists an immutable DAG run when the dag_v1 engine is available."
+  def enqueue_dag(attrs, steps, server \\ __MODULE__)
+
+  def enqueue_dag(attrs, steps, server) when is_map(attrs) and is_list(steps) do
+    attrs = attrs |> Map.delete("execution_engine") |> Map.put(:execution_engine, "dag_v1")
+
+    with :ok <- execution_engine_available("dag_v1"),
+         :ok <- validate_typed_attrs(attrs),
+         :ok <- ExecutionEngine.validate_manifest(attrs, steps),
+         {:ok, run} <- Runs.create_run_with_steps(attrs, steps) do
+      dispatch(server)
+      {:ok, run}
+    else
+      false -> {:error, {:execution_engine_unavailable, "dag_v1"}}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  def enqueue_dag(_attrs, _steps, _server), do: {:error, :invalid_dag_run}
 
   @doc "Wakes the dispatcher without blocking the caller."
   def dispatch(server \\ __MODULE__) do
@@ -143,7 +167,11 @@ defmodule IexCode.Runs.RunDispatcher do
             @default_workspace_lock_lease_seconds
           ),
           @default_workspace_lock_lease_seconds
-        )
+        ),
+      execution_engines: ExecutionEngine.available_ids(),
+      dag_runner: Keyword.get(opts, :dag_runner, DagRunner),
+      dag_runner_opts: Keyword.get(opts, :dag_runner_opts, []),
+      dag_max_concurrency: positive(Keyword.get(opts, :dag_max_concurrency, 4), 4) |> min(32)
     }
 
     # A new dispatcher identity cannot safely resume writes abandoned by an old
@@ -153,6 +181,8 @@ defmodule IexCode.Runs.RunDispatcher do
       |> DateTime.add(state.lease_ms, :millisecond)
       |> DateTime.truncate(:second)
 
+    _ = DagScheduler.reconcile_expired()
+
     interrupted =
       Runs.reconcile_orphaned_runs(
         lease_owner: state.worker_id,
@@ -160,6 +190,7 @@ defmodule IexCode.Runs.RunDispatcher do
       ) ++ Runs.reconcile_orphaned_runs([])
 
     _ = Runs.supersede_claimed_controls(state.worker_id, "dispatcher_restarted")
+    Enum.each(interrupted, &reconcile_terminal_dag/1)
     Enum.each(interrupted, &terminalize_interrupted_steps/1)
     Enum.each(interrupted, &project_terminal_task/1)
     schedule_poll(state.poll_interval)
@@ -217,7 +248,10 @@ defmodule IexCode.Runs.RunDispatcher do
             case apply_cancellation(run, active?, control) do
               {:ok, cancelled} ->
                 if active?, do: stop_durable_fleet(cancelled.id, "cancelled")
-                cancel_open_steps(cancelled)
+
+                if cancelled.execution_engine != "dag_v1" or not active?,
+                  do: cancel_open_steps(cancelled)
+
                 project_terminal_task(cancelled)
 
                 new_state =
@@ -244,9 +278,12 @@ defmodule IexCode.Runs.RunDispatcher do
   def handle_call({:retry, run_id}, _from, state) do
     result =
       with %Run{} = run <- Runs.get_run(run_id) do
-        steps = retry_attempt_steps(run)
+        steps = if run.execution_engine == "dag_v1", do: [], else: retry_attempt_steps(run)
 
-        with :ok <- ExecutionEngine.validate_manifest(run, steps) do
+        validation_steps =
+          if run.execution_engine == "dag_v1", do: persisted_manifest(run), else: steps
+
+        with :ok <- ExecutionEngine.validate_manifest(run, validation_steps) do
           Runs.retry_run(run, steps: steps)
         end
       else
@@ -272,6 +309,7 @@ defmodule IexCode.Runs.RunDispatcher do
 
     result =
       with %Run{} = run <- Runs.get_run(run_id),
+           :ok <- dag_steering_supported(run),
            true <- Map.has_key?(state.run_refs, run_id),
            true <- run.status in ["running", "paused"],
            true <- guidance != "",
@@ -295,7 +333,9 @@ defmodule IexCode.Runs.RunDispatcher do
 
   def handle_info(:poll, state) do
     schedule_poll(state.poll_interval)
+    _ = DagScheduler.reconcile_expired()
     interrupted = Runs.reconcile_orphaned_runs([])
+    Enum.each(interrupted, &reconcile_terminal_dag/1)
     Enum.each(interrupted, &terminalize_interrupted_steps/1)
     Enum.each(interrupted, &project_terminal_task/1)
     {:noreply, drain_capacity(state)}
@@ -350,9 +390,7 @@ defmodule IexCode.Runs.RunDispatcher do
               {:worker_exit, reason}
           end
 
-        state = finish_worker(state, ref, worker, result)
-        send(self(), :drain)
-        {:noreply, state}
+        finish_worker_or_retry(state, ref, worker, result)
 
       :error ->
         {:noreply, state}
@@ -365,6 +403,10 @@ defmodule IexCode.Runs.RunDispatcher do
     end
 
     {:noreply, state}
+  end
+
+  def handle_info({:retry_finish_worker, ref, worker, result}, state) do
+    finish_worker_or_retry(state, ref, worker, result)
   end
 
   def handle_info({:retry_workspace_lock, run_id}, state) do
@@ -427,19 +469,24 @@ defmodule IexCode.Runs.RunDispatcher do
             "dispatcher"
           )
 
-        case Runs.transition_run(run, "failed", %{
-               error_message: "Run exceeded its #{run.time_budget_ms}ms time budget",
-               error_details: %{
-                 "reason" => "budget_exhausted",
-                 "budget" => "time",
-                 "limit_ms" => run.time_budget_ms
-               },
-               lease_owner: run.lease_owner,
-               lease_expires_at: run.lease_expires_at
-             }) do
+        transition =
+          with :ok <- normalize_dag_terminalization(terminalize_dag_before_parent(run, "failed")) do
+            Runs.transition_run(run, "failed", %{
+              error_message: "Run exceeded its #{run.time_budget_ms}ms time budget",
+              error_details: %{
+                "reason" => "budget_exhausted",
+                "budget" => "time",
+                "limit_ms" => run.time_budget_ms
+              },
+              lease_owner: run.lease_owner,
+              lease_expires_at: run.lease_expires_at
+            })
+          end
+
+        case transition do
           {:ok, failed} ->
             stop_durable_fleet(failed.id, "failed")
-            fail_open_steps(failed)
+            if failed.execution_engine != "dag_v1", do: fail_open_steps(failed)
             project_terminal_task(failed)
             broadcast_run_control(failed, :cancel, %{"reason" => "time_budget_exhausted"})
 
@@ -462,7 +509,7 @@ defmodule IexCode.Runs.RunDispatcher do
       opts = [
         lease_ms: state.lease_ms,
         exclude_project_ids: active_project_ids(state),
-        execution_engines: ExecutionEngine.available_ids()
+        execution_engines: state.execution_engines
       ]
 
       case Runs.claim_next_run(state.worker_id, opts) do
@@ -482,7 +529,9 @@ defmodule IexCode.Runs.RunDispatcher do
   end
 
   defp start_validated_claimed_run(state, %Run{} = run) do
-    case ExecutionEngine.validate_manifest(run, Runs.list_steps(run)) do
+    manifest = persisted_manifest(run)
+
+    case validate_claimed_manifest_hash(run, manifest) do
       :ok ->
         start_claimed_run(state, run)
 
@@ -490,6 +539,32 @@ defmodule IexCode.Runs.RunDispatcher do
         fail_claimed_run(state, run, {:invalid_execution_manifest, reason})
     end
   end
+
+  defp validate_claimed_manifest_hash(run, manifest) do
+    with :ok <- ExecutionEngine.validate_manifest(run, manifest),
+         {:ok, prepared} <- ExecutionEngine.prepare_manifest(run, manifest),
+         true <- prepared.manifest_hash == run.manifest_hash || {:error, :manifest_drift} do
+      :ok
+    end
+  end
+
+  defp persisted_manifest(%Run{execution_engine: "dag_v1"} = run) do
+    Enum.map(Runs.list_steps(run), fn step ->
+      %{
+        key: step.key,
+        kind: step.kind,
+        title: step.title,
+        depends_on: step.depends_on,
+        params: step.params,
+        max_attempts: step.max_attempts
+      }
+    end)
+  end
+
+  defp persisted_manifest(%Run{} = run), do: Runs.list_steps(run)
+
+  defp start_claimed_run(state, %Run{execution_engine: "dag_v1"} = run),
+    do: start_dag_worker(state, run)
 
   defp start_claimed_run(state, %Run{kind: "coding_swarm"} = run) do
     case acquire_coding_lock(state, run) do
@@ -500,6 +575,50 @@ defmodule IexCode.Runs.RunDispatcher do
   end
 
   defp start_claimed_run(state, %Run{} = run), do: start_worker(state, run, nil)
+
+  defp start_dag_worker(state, run) do
+    project = Projects.get_project!(run.project_id)
+    dag_runner = state.dag_runner
+
+    task =
+      Task.Supervisor.async(state.task_supervisor, fn ->
+        dag_runner.run(
+          run,
+          Keyword.merge(
+            state.dag_runner_opts,
+            lease_owner: state.worker_id,
+            lease_generation: run.lease_generation,
+            project_root: project.root_path,
+            lease_ms: state.lease_ms,
+            heartbeat_ms: min(state.heartbeat_interval, max(div(state.lease_ms, 3), 1)),
+            max_concurrency: state.dag_max_concurrency
+          )
+        )
+      end)
+
+    worker = %{
+      engine: "dag_v1",
+      run_id: run.id,
+      run_generation: run.lease_generation,
+      project_id: run.project_id,
+      pid: task.pid,
+      execute_step_id: nil,
+      budget_timer: schedule_time_budget(run, task.pid),
+      lock_handle: nil,
+      lock_delegation: nil,
+      lock_id: nil
+    }
+
+    broadcast_session(run, {:async_run_started, run, task.pid})
+
+    %{
+      state
+      | workers: Map.put(state.workers, task.ref, worker),
+        run_refs: Map.put(state.run_refs, run.id, task.ref)
+    }
+  rescue
+    error -> fail_claimed_run(state, run, {:dag_worker_start_failed, error})
+  end
 
   defp start_worker(state, run, lock_handle) do
     case prepare_claimed_run(run) do
@@ -617,7 +736,12 @@ defmodule IexCode.Runs.RunDispatcher do
   end
 
   defp fail_claimed_run(state, run, reason) do
-    case Runs.transition_run(run, "failed", error_attrs(reason)) do
+    attrs =
+      if run.execution_engine == "dag_v1",
+        do: dag_preflight_attrs(reason),
+        else: error_attrs(reason)
+
+    case Runs.transition_run(run, "failed", attrs) do
       {:ok, failed} ->
         fail_open_steps(failed)
         project_terminal_task(failed)
@@ -652,6 +776,48 @@ defmodule IexCode.Runs.RunDispatcher do
     else
       error -> exit({:run_lease_lost, error})
     end
+  end
+
+  defp finish_worker(state, ref, %{engine: "dag_v1"} = worker, result) do
+    if worker[:budget_timer], do: Process.cancel_timer(worker.budget_timer)
+    run = Runs.get_run(worker.run_id)
+    cancelling? = MapSet.member?(state.cancelling, worker.run_id)
+
+    cond do
+      is_nil(run) or cancelling? ->
+        :ok
+
+      run.status in ["completed", "failed", "cancelled", "interrupted"] ->
+        project_terminal_task(run)
+        broadcast_session(run, {:async_run_updated, run})
+
+      true ->
+        _ = terminalize_dag_before_parent(run, "interrupted")
+
+        attrs = dag_interruption_attrs(result)
+
+        case Runs.transition_run(run, "interrupted", attrs) do
+          {:ok, interrupted} ->
+            project_terminal_task(interrupted)
+            broadcast_session(interrupted, {:async_run_updated, interrupted})
+
+          {:error, reason} ->
+            Logger.warning("DAG run interruption failed: #{inspect(reason)}")
+        end
+    end
+
+    if run && run.lease_owner == state.worker_id do
+      _ = Runs.release_lease(run.id, state.worker_id)
+    end
+
+    if run, do: reject_unapplied_controls(run)
+
+    %{
+      state
+      | workers: Map.delete(state.workers, ref),
+        run_refs: Map.delete(state.run_refs, worker.run_id),
+        cancelling: MapSet.delete(state.cancelling, worker.run_id)
+    }
   end
 
   defp finish_worker(state, ref, worker, result) do
@@ -714,6 +880,29 @@ defmodule IexCode.Runs.RunDispatcher do
         run_refs: Map.delete(state.run_refs, worker.run_id),
         cancelling: MapSet.delete(state.cancelling, worker.run_id)
     }
+  end
+
+  defp finish_worker_or_retry(state, ref, worker, result) do
+    try do
+      next_state = finish_worker(state, ref, worker, result)
+      send(self(), :drain)
+      {:noreply, next_state}
+    rescue
+      error in [DBConnection.ConnectionError, Exqlite.Error] ->
+        retry_worker_finalization(state, ref, worker, result, Exception.message(error))
+    catch
+      :exit, reason ->
+        retry_worker_finalization(state, ref, worker, result, inspect(reason))
+    end
+  end
+
+  defp retry_worker_finalization(state, ref, worker, result, reason) do
+    Logger.warning(
+      "Run #{worker.run_id} finalization hit a transient database disconnect: #{reason}"
+    )
+
+    Process.send_after(self(), {:retry_finish_worker, ref, worker, result}, 25)
+    {:noreply, state}
   end
 
   defp status_for_fleet(%Run{status: status}, _result)
@@ -793,11 +982,15 @@ defmodule IexCode.Runs.RunDispatcher do
            persist_and_claim_control(run, Atom.to_string(kind), %{}, state.worker_id) do
       case Runs.transition_run(run, status) do
         {:ok, updated} ->
-          :ok = broadcast_run_control(updated, control, kind, %{})
-          signal_fleet_control(updated.id, kind)
-          transition_active_step(updated, status)
-          broadcast_session(updated, {:async_run_updated, updated})
-          {:ok, updated}
+          case apply_execution_control(state, updated, control, kind) do
+            :ok ->
+              broadcast_session(updated, {:async_run_updated, updated})
+              {:ok, updated}
+
+            {:error, reason} = error ->
+              _ = resolve_owned_control(control, "rejected", %{"reason" => inspect(reason)})
+              error
+          end
 
         {:error, reason} = error ->
           _ = resolve_owned_control(control, "rejected", %{"reason" => inspect(reason)})
@@ -915,6 +1108,12 @@ defmodule IexCode.Runs.RunDispatcher do
     end
   end
 
+  defp execution_engine_available(engine) do
+    if engine in ExecutionEngine.available_ids(),
+      do: :ok,
+      else: {:error, {:execution_engine_unavailable, engine}}
+  end
+
   defp metadata_kind(attrs) do
     metadata = Map.get(attrs, :metadata) || Map.get(attrs, "metadata") || %{}
     Map.get(metadata, :kind) || Map.get(metadata, "kind")
@@ -933,6 +1132,7 @@ defmodule IexCode.Runs.RunDispatcher do
   defp apply_cancellation(run, active?, control) do
     with {:ok, requested} <- Runs.request_cancellation(run),
          :ok <- maybe_broadcast_cancel(active?, requested),
+         :ok <- maybe_terminalize_active_dag(requested, active?, "cancelled"),
          {:ok, cancelled} <- Runs.transition_run(requested, "cancelled"),
          {:ok, _control} <-
            resolve_owned_control(control, "applied", %{
@@ -1012,6 +1212,54 @@ defmodule IexCode.Runs.RunDispatcher do
 
   defp positive(value, _default) when is_integer(value) and value > 0, do: value
   defp positive(_value, default), do: default
+
+  defp dag_steering_supported(%Run{execution_engine: "dag_v1"}),
+    do: {:error, :dag_steering_unsupported}
+
+  defp dag_steering_supported(%Run{}), do: :ok
+
+  defp terminalize_dag_before_parent(%Run{execution_engine: "dag_v1"} = run, status) do
+    DagScheduler.terminalize_active(run, run.lease_owner, run.lease_generation, status)
+  end
+
+  defp terminalize_dag_before_parent(%Run{}, _status), do: :ok
+
+  defp maybe_terminalize_active_dag(run, true, status),
+    do: normalize_dag_terminalization(terminalize_dag_before_parent(run, status))
+
+  defp maybe_terminalize_active_dag(_run, false, _status), do: :ok
+
+  defp normalize_dag_terminalization(:ok), do: :ok
+  defp normalize_dag_terminalization({:ok, _summary}), do: :ok
+  defp normalize_dag_terminalization({:error, _reason} = error), do: error
+
+  defp dag_interruption_attrs(result) do
+    code =
+      case result do
+        {:worker_exit, _reason} -> "dag_worker_exit"
+        {:error, _reason} -> "dag_runner_error"
+        _other -> "dag_runner_stopped_without_terminal_parent"
+      end
+
+    %{
+      error_message: "DAG execution interrupted before durable parent terminalization",
+      error_details: %{"reason" => code}
+    }
+  end
+
+  defp dag_preflight_attrs({:invalid_execution_manifest, :manifest_drift}) do
+    %{
+      error_message: "DAG manifest no longer matches its immutable digest",
+      error_details: %{"reason" => "dag_manifest_drift"}
+    }
+  end
+
+  defp dag_preflight_attrs(_reason) do
+    %{
+      error_message: "DAG execution failed its typed preflight checks",
+      error_details: %{"reason" => "dag_preflight_failed"}
+    }
+  end
 
   defp default_worker_id do
     incarnation = Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
@@ -1248,6 +1496,13 @@ defmodule IexCode.Runs.RunDispatcher do
     end)
   end
 
+  defp reconcile_terminal_dag(%Run{execution_engine: "dag_v1"} = run) do
+    _ = DagScheduler.reconcile_terminal_run(run)
+    :ok
+  end
+
+  defp reconcile_terminal_dag(%Run{}), do: :ok
+
   defp transition_active_step(run, status) do
     step_status = if status == "paused", do: "paused", else: "running"
 
@@ -1257,6 +1512,47 @@ defmodule IexCode.Runs.RunDispatcher do
     |> case do
       nil -> :ok
       step -> Runs.transition_step(step, step_status)
+    end
+  end
+
+  defp apply_execution_control(state, %Run{execution_engine: "dag_v1"} = run, control, kind)
+       when kind in [:pause, :resume] do
+    paused? = kind == :pause
+
+    with {:ok, _summary} <-
+           DagScheduler.set_paused(run, state.worker_id, run.lease_generation, paused?),
+         {:ok, _resolved} <-
+           resolve_owned_control(control, "applied", %{
+             "run_status" => run.status,
+             "engine" => "dag_v1"
+           }) do
+      :ok
+    else
+      {:error, reason} ->
+        _ = compensate_dag_pause(state, run, paused?)
+        {:error, {:dag_pause_control_failed, reason}}
+    end
+  end
+
+  defp apply_execution_control(_state, %Run{} = run, control, kind) do
+    :ok = broadcast_run_control(run, control, kind, %{})
+    signal_fleet_control(run.id, kind)
+    transition_active_step(run, run.status)
+    :ok
+  end
+
+  defp compensate_dag_pause(state, run, attempted_pause?) do
+    rollback_status = if attempted_pause?, do: "running", else: "paused"
+
+    with {:ok, rolled_back} <- Runs.transition_run(run, rollback_status),
+         {:ok, _summary} <-
+           DagScheduler.set_paused(
+             rolled_back,
+             state.worker_id,
+             rolled_back.lease_generation,
+             not attempted_pause?
+           ) do
+      :ok
     end
   end
 end

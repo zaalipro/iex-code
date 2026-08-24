@@ -1,8 +1,9 @@
-# Durable Run Fleet Security Model
+# Durable Run Fleet and DAG Security Model
 
 This document describes the security properties implemented by the durable, run-scoped agent
-fleet and the limits that still apply. SQLite is the durable authority. OTP processes execute
-that state; they are not durable identity or authorization by themselves.
+fleet and static `dag_v1` scheduler, plus the limits that still apply. SQLite is the durable
+authority. OTP processes execute that state; they are not durable identity or authorization by
+themselves.
 
 ## Trust boundaries
 
@@ -15,8 +16,8 @@ and modify the selected checkout.
 - Model output, repository content, tool arguments, command output, and imported metadata are
   untrusted. The server derives the run's session, project, and root from persisted records;
   they are not selected by model/tool data.
-- SQLite is the source of truth for fleet identity, generations, leases, controls, outcomes,
-  usage, and event order.
+- SQLite is the source of truth for fleet and DAG-attempt identity, generations, leases,
+  controls, outcomes, manifest hashes, usage, and event order.
 - Registry names, PIDs, monitors, atomics, task links, and PubSub are node-local runtime
   mechanisms. They can disappear, duplicate, or become stale.
 - Workspace locks coordinate cooperating IexCode paths. They do not create operating-system
@@ -48,14 +49,54 @@ validated against the expected PID, role, and generation after startup. A confli
 occupant fails closed. PIDs are runtime routing values only and are not persisted in fleet
 control results.
 
-The run's objective, kind, mode, and execution-engine identifier are accepted through the
-create changeset only. Application lifecycle changesets reject later changes to those fields.
-Durable creation and retry validate the supplied manifest through its selected engine; claim
-queries filter to engine identifiers whose adapters are currently available, and the dispatcher
-revalidates the persisted manifest after claim but before preparation. The reserved `dag_v1`
-identifier therefore remains stored as an explicit boundary without becoming eligible for
-dispatch or silently executing through `legacy_v1`. Generic post-creation step insertion cannot
-mutate a persisted `dag_v1` manifest.
+The run's objective, kind, mode, execution-engine identifier, and DAG manifest hash are accepted
+through the create changeset only. Application lifecycle changesets reject later changes to
+those fields. Durable creation and retry validate the supplied manifest through its selected
+engine; claim queries filter to available engines, and the dispatcher recomputes and compares
+the canonical hash after claim. `dag_v1` is dispatchable for explicit static workflows and
+cannot fall through to `legacy_v1`. Generic post-creation step insertion cannot mutate its
+persisted manifest.
+
+### Static DAG manifest and handler authority
+
+`dag_v1` accepts a non-empty plain JSON graph with no executable closure or persisted MFA/module
+configuration. Literal strings in bounded params may name paths or resemble modules, but they
+never select executable code. The validator rejects unknown fields or handlers, ambiguous
+atom/string aliases, missing/self/duplicate/cyclic dependencies, secret-shaped params,
+oversized JSON, and graphs above 128 nodes, 512 edges, 32 dependencies per node, or 32 levels.
+Each node permits at most five attempts. Canonical ordering includes the handler descriptor and
+produces a SHA-256 manifest hash stored on the run; handler version, effect class, replay policy,
+resource contract, timeout, and graph fields become changeset-immutable step data.
+
+The closed production registry contains only version-one `project_inventory`, `read_file`, and
+`aggregate`. Inventory returns at most 2,000 immediate entries; file reads require a contained,
+regular, valid UTF-8 file no larger than 256 KB; aggregation packages bounded completed
+dependency results. All are pure/read-only, replay-safe, default to a 30-second timeout, and
+limit output to 256 KB. Unknown handler or descriptor drift fails before claim or settlement.
+The separate research DAG adapter emits unregistered research kinds and is not executable.
+
+### DAG step-attempt fencing
+
+Every claim appends a `run_step_attempts` row bound to the run attempt and generation, manifest
+hash, logical step, step attempt/generation, execution key, and a snapshot of its handler
+contract. Run, claim, and live lease owners are stored as redacted SHA-256 hashes. Database
+constraints and triggers enforce lifecycle shape, immutable authority fields, unique attempt
+identity/execution keys, and same-run step scope.
+
+Ready-node selection and claim occur in one SQLite transaction. Heartbeat, checkpoint,
+completion, failure, pause, and terminalization require the current unexpired parent lease,
+parent generation, step lease owner/generation, manifest hash, and handler descriptor. Params,
+checkpoint-callback values, results, and error details use bounded, secret-rejecting JSON
+contracts; completed results receive a durable digest. A stale or foreign worker cannot complete
+an attempt, and PubSub remains notification only.
+
+Independent ready nodes run concurrently through a per-run task supervisor (four by default,
+bounded to 32). A dependent is promoted only after every declared predecessor is durably
+completed. Safe failures and expired step leases use exponential backoff from 250 ms up to 30
+seconds while attempts remain; exhaustion fails the node and skips descendants. Run-wide pause
+prevents new claims, marks attempts paused, and pauses cooperative tokens; a short built-in read
+may still settle before observing a checkpoint. Resume reopens tokens, and cancel closes active
+attempts before the parent becomes terminal. `dag_v1` steering is rejected.
 
 ### Hashed lease credentials and generation fencing
 
@@ -163,6 +204,14 @@ interruption-and-explicit-retry policy; it does not silently resume the fleet.
 Recovery does not replay arbitrary in-flight agent code. An uncheckpointed operation is
 interrupted, and an explicit control/retry is required where the durable contract permits it.
 
+For `dag_v1`, an expired replay-safe step may be interrupted and scheduled as a new attempt only
+while the same parent run attempt/generation, manifest, owner, and lease remain current. A stale
+reconciliation cutoff cannot overwrite a renewed step lease. Completed results are immutable
+within their attempt. Process/application loss still interrupts the outer run; explicit run
+retry advances its generation, retains append-only attempt history, and resets the same static
+logical graph. There is no automatic checkpoint resume: a bounded checkpoint receipt does not
+resume arbitrary code at the instruction where it stopped.
+
 ### Redaction and notification boundaries
 
 Fleet config, metadata, results, errors, and control payloads/results are size bounded and
@@ -192,6 +241,11 @@ enforces its configured worker wall-time limit. When a fleet usage settlement cr
 reported threshold, the manager cancels the sibling control tokens, stops the run-local agent
 children, and terminalizes every remaining fleet row as failed so the durable projection does
 not show a live sibling after its parent run has failed.
+
+The current DAG handlers do not call models or providers and do not report token/cost usage;
+their dispatcher wall-clock budget still applies. Provider-bearing DAG handlers remain
+unregistered until they can settle fenced usage and cost. Existing coding/research accounting
+is post-use, not a reserve-before-claim hard ceiling.
 
 ## Remaining limitations
 
@@ -232,6 +286,20 @@ tool, filesystem, Git, terminal, and native effects do not yet have a universal 
 idempotency contract. Recovery must continue to interrupt rather than automatically replay an
 uncertain mutation.
 
+### DAG v1 is static and read-only
+
+The scheduler's `project_read_v1` resource contract is immutable handler metadata, not a
+per-step workspace-lock acquisition or OS capability. This is sufficient only because every
+registered production handler is a contained read or pure aggregation. No coding agent,
+filesystem mutation, Git, terminal/native command, model, search-provider, or research handler
+is registered. Such handlers require real resource admission, generation-bound delegation,
+effect idempotency, usage settlement, and terminal cleanup before activation.
+
+Graphs cannot expand after creation. There is no automatic checkpoint resume, per-node operator
+control, manual approval-gate handler, or DAG steering. Pause/resume/cancel and retry are
+run-wide. The research DAG adapter is an integration design and deliberately fails closed
+against the current registry.
+
 ### Actor authorization remains local-user scoped
 
 `requested_by` is audit data, not authentication. The current product assumes its protected
@@ -267,8 +335,21 @@ authorization policy before exposing fleet controls.
 - [x] Reported token or cost exhaustion gates new runtime work and terminalizes the run fleet.
 - [x] Streaming success/error collection is bounded and supplied auth-header credentials are
       redacted from returned transport errors.
+- [x] DAG manifests are bounded, acyclic, canonical-hashed, changeset-immutable, and restricted
+      to a closed read-only handler registry.
+- [x] DAG claims, heartbeats, checkpoints, settlement, and terminalization reject foreign or
+      stale parent/step owners and generations.
+- [x] Concurrent claims create one attempt; dependency fan-in waits for completed predecessors;
+      retry exhaustion fails the node and skips descendants.
+- [x] Expired safe attempts retry only under current parent authority; terminal parents leave no
+      active DAG attempt.
+- [x] DAG params/checkpoints/results reject secret-shaped or oversized JSON, and public
+      projections omit owners, results, checkpoint bodies, and execution keys.
 - [ ] Add agent-generation-bound workspace subdelegation and revocation.
 - [ ] Prove or quarantine uncertain native descendants before declaring cleanup complete.
 - [ ] Add atomic hierarchical token/cost/time reservations before provider/tool dispatch.
 - [ ] Add explicit checkpoint/idempotency contracts before replaying general mutations.
 - [ ] Add authenticated actor authorization before supporting remote multi-user control.
+- [ ] Add DAG mutation/provider/research handlers only with real resource, idempotency, usage,
+      artifact, and cleanup contracts.
+- [ ] Add authorized manual gates, per-node controls, and bounded dynamic graph expansion.

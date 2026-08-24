@@ -1,11 +1,12 @@
 defmodule IexCode.Runs.ExecutionEngines.DagV1 do
   @moduledoc """
-  Reserved, fail-closed adapter for the future dependency-aware scheduler.
+  Available adapter for finite, immutable, dependency-aware workflows.
 
-  `dag_v1` is intentionally unavailable until ready-node claims, per-step
-  attempts, leases, fencing, typed executors, and checkpoint policy are all
-  implemented. Persisting or dispatching it must return an explicit error rather
-  than silently falling back to legacy execution.
+  Version one executes only handlers in the closed read-only registry. The
+  durable scheduler owns ready-node claims, bounded fan-out, append-only step
+  attempts, leases, generation fencing, checkpoint receipts, retry backoff, and
+  terminal recovery. Unknown or future handler kinds remain fail-closed and
+  existing `legacy_v1` runs are never reinterpreted as DAGs.
   """
 
   @behaviour IexCode.Runs.ExecutionEngine
@@ -14,9 +15,16 @@ defmodule IexCode.Runs.ExecutionEngines.DagV1 do
   def id, do: "dag_v1"
 
   @impl true
-  def available?, do: false
+  def available?, do: true
 
   @impl true
-  def validate_manifest(_run_or_attrs, _steps),
-    do: {:error, {:execution_engine_unavailable, "dag_v1"}}
+  def validate_manifest(_run_or_attrs, steps), do: IexCode.Runs.DagManifest.validate(steps)
+
+  @impl true
+  def prepare_manifest(_run_or_attrs, steps) do
+    with {:ok, prepared} <- IexCode.Runs.DagManifest.persistence_steps(steps),
+         {:ok, hash} <- IexCode.Runs.DagManifest.hash(steps) do
+      {:ok, %{steps: prepared, manifest_hash: hash}}
+    end
+  end
 end

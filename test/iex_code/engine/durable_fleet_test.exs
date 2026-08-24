@@ -311,14 +311,15 @@ defmodule IexCode.Engine.DurableFleetTest do
     assert_receive {:DOWN, ^child_ref, :process, ^child, _reason}, 2_000
   end
 
-  test "direct dag_v1 ledger rows never fall through to the legacy executor", ctx do
+  test "direct dag_v1 ledger rows never fall through to legacy-only executor or fleet", ctx do
     {:ok, run} =
       %Run{project_id: ctx.project.id, session_id: ctx.session.id}
       |> Run.create_changeset(%{
-        objective: "unavailable dag",
+        objective: "direct dag ledger row",
         kind: "coding_swarm",
         mode: "swarm",
-        execution_engine: "dag_v1"
+        execution_engine: "dag_v1",
+        manifest_hash: String.duplicate("0", 64)
       })
       |> Repo.insert()
 

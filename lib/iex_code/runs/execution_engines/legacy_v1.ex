@@ -42,6 +42,14 @@ defmodule IexCode.Runs.ExecutionEngines.LegacyV1 do
 
   def validate_manifest(_run_or_attrs, _steps), do: {:error, :invalid_manifest}
 
+  @impl true
+  def prepare_manifest(run_or_attrs, steps) do
+    case validate_manifest(run_or_attrs, steps) do
+      :ok -> {:ok, %{steps: steps, manifest_hash: nil}}
+      {:error, _reason} = error -> error
+    end
+  end
+
   defp duplicate_keys?(steps) do
     keys = Enum.map(steps, &value(&1, :key))
     length(keys) != MapSet.size(MapSet.new(keys))

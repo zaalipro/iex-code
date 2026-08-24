@@ -128,15 +128,48 @@ The persisted objective, run kind/mode, and execution-engine identifier form an 
 manifest that application changesets do not permit later lifecycle updates to rewrite.
 Creation and retry validate the supplied manifest through its selected engine, claims select
 only engines that are currently available, and the dispatcher revalidates a claimed manifest
-before preparation or execution. `dag_v1` therefore remains durable but unclaimable and
-fail-closed; existing `legacy_v1` rows are never silently reinterpreted as a DAG. Within a
-live legacy run, agent calls resolve the current PID and lease generation from the run fleet
+before preparation or execution. `dag_v1` is available for finite, immutable workflows whose
+kinds exist in its closed read-only registry; unknown provider, mutation, and research kinds fail
+closed. Existing `legacy_v1` rows are never silently reinterpreted as DAGs. Within a live legacy
+run, agent calls resolve the current PID and lease generation from the run fleet
 immediately before invocation. An operator restart after an agent crash can advance the
 generation and let a later phase bind to the replacement, while the abandoned generation
 remains unable to report state or usage.
 
 The older interactive-session cards remain clearly labeled role templates and are not used
 as durable fleet truth.
+
+### Typed DAG workflows
+
+Run setup also exposes an explicit **Typed DAG (read-only)** mission. `dag_v1` accepts a
+static JSON manifest, canonicalizes and hashes it before persistence, and schedules dependency
+roots and fan-in nodes from SQLite. Independent ready nodes run concurrently through a bounded
+runner (four by default, configurable up to 32); append-only step-attempt rows record the run
+generation, step generation, lease, heartbeat, retry timing, checkpoint receipt, and terminal
+outcome. Claims and completions are generation-fenced, and Mission Control rehydrates a layered
+graph with readiness, dependencies, attempts, retry state, lease health, and checkpoint timing.
+
+Version one intentionally has a small closed handler catalog:
+
+- `project_inventory` lists at most 2,000 immediate entries below a contained project path.
+- `read_file` reads one contained, regular UTF-8 file up to 256 KB.
+- `aggregate` combines the bounded durable results of one or more dependencies.
+
+All three handlers are replay-safe and either pure or read-only. Their default timeout and
+maximum result are 30 seconds and 256 KB. A manifest may contain at most 128 nodes, 512 edges,
+32 dependencies per node, 32 topological levels, and five attempts per node. Step params are
+bounded JSON maps and checkpoint callbacks accept bounded JSON values (64 KB, depth 12, at most
+512 items per collection); both reject secret-shaped keys. Handler kind is resolved only through
+the closed registry—persisted module/MFA/closure configuration is not executable. The Run setup
+editor accepts at most 256 KB of raw JSON before stricter canonical manifest checks run.
+
+Run-wide pause/resume marks active attempts and cooperative tokens paused and stops new claims;
+a short built-in read may still reach settlement before observing a checkpoint. Cancel
+terminalizes current attempts; safe handler failures use durable exponential retry backoff; and
+explicit run retry retains attempt history while resetting the same immutable logical graph
+under a new run generation. Steering is not supported for `dag_v1`. Existing coding and
+deep-research runs remain on `legacy_v1`; their descriptive dependency labels are never
+reinterpreted by the DAG scheduler.
 
 ## Verification
 
@@ -164,12 +197,15 @@ substitute for running the gate on the current checkout.
 ## Current limitations
 
 - Durable background runs survive LiveView disconnects and preserve their journal across
-  application restarts. An orphaned active run becomes `interrupted`; automatic
-  checkpoint resume is intentionally not implemented yet.
-- Coding runs retain a fixed `prepare → execute` shell and fixed role phases. Their fleet
-  topology is durable and dynamic, with bounded parallel explorers, but this is not yet a
-  general arbitrary parallel DAG scheduler. Existing dependency labels remain descriptive
-  under the explicit `legacy_v1` engine; reserved `dag_v1` runs fail closed.
+  application restarts. An orphaned active run still becomes `interrupted`; `dag_v1` can
+  retry an expired replay-safe step while its parent run lease remains current, but process/app
+  loss does not automatically resume the outer run. Explicit run retry starts a new generation.
+- Legacy coding runs retain a fixed `prepare → execute` shell and fixed role phases. Their fleet
+  topology is durable and dynamic, with bounded parallel explorers, and their dependency labels
+  remain descriptive. Separately, `dag_v1` schedules finite immutable graphs of allowlisted
+  read-only `project_inventory`, `read_file`, and `aggregate` nodes with durable attempts,
+  parallel readiness, leases, fencing, checkpoints, retries, and controls. It is not yet a
+  general provider/mutation/research DAG; every unregistered kind fails closed.
 - Calendar work now has a supervised UTC cron scheduler with atomic claims, stable
   occurrence keys, recurrence, existing-run recovery, and stale-claim recovery. Rich
   notification and dead-letter workflows remain future work.
@@ -184,6 +220,11 @@ substitute for running the gate on the current checkout.
   live ownership view. The plane is cooperative: direct calls to lower-level mutation
   modules, external editors/processes, filesystem aliases not represented by canonical
   paths, and orphaned command descendants can bypass or outlive it.
+- `dag_v1` handler descriptors currently declare a `project_read_v1` resource contract, but
+  v1 does not acquire per-step workspace-lock permits. Its production effects are limited to
+  contained reads and pure aggregation. Mutation handlers require real resource admission and
+  generation-bound delegation before they can be registered; the native workspace boundary
+  remains cooperative rather than an OS sandbox.
 - Wall-clock budgets are enforced by the dispatcher. Token budgets accumulate and stop
   covered planner/coder/research boundaries when providers report usage. Durable fleet
   cost thresholds likewise fail a run after reported `cost_cents` crosses the configured
@@ -199,6 +240,18 @@ substitute for running the gate on the current checkout.
   integrated agent/provider/tool paths; OS-native descendants and replay of a control
   interrupted between an uncheckpointed effect and acknowledgement still require the
   conservative recovery rules documented in `docs/RUN_FLEET_SECURITY.md`.
+- DAG pause/resume/cancel and whole-run retry are supported, but per-node operator controls,
+  manual approval-gate handlers, steering, and dynamic graph expansion are not. Checkpoint
+  rows are fenced and bounded; there is no automatic checkpoint resume. Current recovery is
+  limited to starting a new attempt for the closed replay-safe handlers, not resuming arbitrary
+  code at an instruction boundary.
+- The current DAG catalog performs no model/provider calls and therefore reports no token or
+  provider cost usage. Its dispatcher wall-clock budget is enforced. Where coding/research
+  providers report token or cost usage, accounting still occurs after the response and can
+  overshoot through already in-flight work; there is no shared reserve-before-claim ledger.
+- `IexCode.Research.DagAdapter` can construct a bounded static research graph design, but its
+  research handler kinds are deliberately absent from the executable registry. Deep research
+  continues through the durable `legacy_v1` research runner.
 - Rollback ownership is durable and run-scoped for MultiPatch/AutoFix mutations. Direct
   file, Git, test, and terminal effects are coordinated while they execute but are not
   made transactional or added to the rollback manifest.

@@ -105,12 +105,18 @@ defmodule IexCode.Runs do
          {:ok, session_id} <- required_id(attrs, :session_id),
          :ok <- validate_session_project(session_id, project_id),
          :ok <- ExecutionEngine.validate_manifest(attrs, steps),
+         {:ok, prepared} <- ExecutionEngine.prepare_manifest(attrs, steps),
          {:ok, payload} <-
            bounded_payload(%{
              "objective" => attr(attrs, :objective),
              "execution_engine" => attr(attrs, :execution_engine) || "legacy_v1"
            }) do
-      attrs = drop_keys(attrs, [:project_id, :session_id])
+      steps = prepared.steps
+
+      attrs =
+        attrs
+        |> drop_keys([:project_id, :session_id])
+        |> put_attr(:manifest_hash, prepared.manifest_hash)
 
       result =
         Repo.retry_on_busy(fn ->
@@ -136,7 +142,7 @@ defmodule IexCode.Runs do
 
                 step =
                   case %RunStep{run_id: run.id}
-                       |> RunStep.changeset(step_attrs)
+                       |> RunStep.create_changeset(step_attrs)
                        |> Repo.insert() do
                     {:ok, step} -> step
                     {:error, changeset} -> Repo.rollback(changeset)
@@ -440,7 +446,7 @@ defmodule IexCode.Runs do
                     started_at: candidate.started_at || now,
                     updated_at: now
                   ],
-                  inc: [attempt: 1]
+                  inc: [attempt: 1, lease_generation: 1]
                 )
 
               if updated_count == 1 do
@@ -562,13 +568,14 @@ defmodule IexCode.Runs do
     with %Run{} = run <- resolve_run(run_or_id) do
       steps = opts[:steps] || []
 
-      with :ok <- ExecutionEngine.validate_manifest(run, steps) do
+      with :ok <- ExecutionEngine.validate_manifest(run, retry_validation_steps(run, steps)),
+           {:ok, retry_manifest} <- prepare_retry_manifest(run, steps) do
         result =
           Repo.retry_on_busy(fn ->
             Repo.transaction(fn ->
               current = Repo.get!(Run, run.id)
 
-              case ExecutionEngine.validate_manifest(current, steps) do
+              case validate_retry_manifest_in_transaction(current, retry_manifest) do
                 :ok -> :ok
                 {:error, reason} -> Repo.rollback(reason)
               end
@@ -611,18 +618,22 @@ defmodule IexCode.Runs do
                       "max_attempts" => updated.max_attempts
                     })
 
-                  {initial_steps, step_events} = insert_initial_steps!(updated.id, steps)
+                  {reset_steps, reset_events} = reset_dag_steps_for_retry!(updated)
 
-                  {Repo.get!(Run, updated.id), initial_steps, superseded_controls,
-                   control_events ++ [retry_event | step_events]}
+                  {initial_steps, step_events} =
+                    insert_initial_steps!(updated.id, retry_manifest.insert_steps)
+
+                  {Repo.get!(Run, updated.id), initial_steps, reset_steps, superseded_controls,
+                   control_events ++ [retry_event | reset_events ++ step_events]}
               end
             end)
           end)
 
         case result do
-          {:ok, {updated, initial_steps, superseded_controls, events}} ->
+          {:ok, {updated, initial_steps, reset_steps, superseded_controls, events}} ->
             broadcast(updated.id, {:run_updated, updated})
             Enum.each(initial_steps, &broadcast(updated.id, {:run_step_created, &1}))
+            Enum.each(reset_steps, &broadcast(updated.id, {:run_step_updated, &1}))
             Enum.each(superseded_controls, &broadcast(updated.id, {:run_control_updated, &1}))
             Enum.each(events, &broadcast(updated.id, {:run_event, &1}))
             {:ok, updated}
@@ -680,7 +691,7 @@ defmodule IexCode.Runs do
               true ->
                 step =
                   case %RunStep{run_id: current_run.id}
-                       |> RunStep.changeset(attrs)
+                       |> RunStep.create_changeset(attrs)
                        |> Repo.insert() do
                     {:ok, step} -> step
                     {:error, changeset} -> Repo.rollback(changeset)
@@ -3708,7 +3719,7 @@ defmodule IexCode.Runs do
 
       step =
         case %RunStep{run_id: run_id}
-             |> RunStep.changeset(step_attrs)
+             |> RunStep.create_changeset(step_attrs)
              |> Repo.insert() do
           {:ok, step} -> step
           {:error, changeset} -> Repo.rollback(changeset)
@@ -3724,6 +3735,96 @@ defmodule IexCode.Runs do
       {step, [event | events]}
     end)
     |> then(fn {steps, reversed_events} -> {steps, Enum.reverse(reversed_events)} end)
+  end
+
+  defp prepare_retry_manifest(%Run{execution_engine: "dag_v1"} = run, []) do
+    steps = run |> list_steps() |> Enum.map(&dag_manifest_step/1)
+
+    with {:ok, prepared} <- ExecutionEngine.prepare_manifest(run, steps),
+         true <- prepared.manifest_hash == run.manifest_hash or {:error, :manifest_drift} do
+      {:ok, %{manifest_hash: prepared.manifest_hash, insert_steps: []}}
+    end
+  end
+
+  defp prepare_retry_manifest(%Run{execution_engine: "dag_v1"} = run, steps) do
+    with {:ok, prepared} <- ExecutionEngine.prepare_manifest(run, steps),
+         true <- prepared.manifest_hash == run.manifest_hash or {:error, :manifest_drift} do
+      {:ok, %{manifest_hash: prepared.manifest_hash, insert_steps: []}}
+    end
+  end
+
+  defp prepare_retry_manifest(%Run{} = run, steps) do
+    with {:ok, prepared} <- ExecutionEngine.prepare_manifest(run, steps) do
+      {:ok, %{manifest_hash: nil, insert_steps: prepared.steps}}
+    end
+  end
+
+  defp retry_validation_steps(%Run{execution_engine: "dag_v1"} = run, []),
+    do: run |> list_steps() |> Enum.map(&dag_manifest_step/1)
+
+  defp retry_validation_steps(%Run{}, steps), do: steps
+
+  defp reset_dag_steps_for_retry!(%Run{execution_engine: "dag_v1"} = run) do
+    run
+    |> list_steps()
+    |> Enum.map_reduce([], fn step, events ->
+      status = if step.depends_on == [], do: "ready", else: "pending"
+
+      reset =
+        step
+        |> RunStep.changeset(%{
+          status: status,
+          progress: 0,
+          attempt: 0,
+          result: nil,
+          error_message: nil,
+          error_details: nil,
+          started_at: nil,
+          heartbeat_at: nil,
+          completed_at: nil
+        })
+        |> update_or_rollback!()
+
+      event =
+        insert_event_in_transaction!(run.id, "run.step_reset", "dag", %{
+          "step_id" => reset.id,
+          "key" => reset.key,
+          "status" => reset.status
+        })
+
+      {reset, [event | events]}
+    end)
+    |> then(fn {steps, events} -> {steps, Enum.reverse(events)} end)
+  end
+
+  defp reset_dag_steps_for_retry!(%Run{}), do: {[], []}
+
+  defp validate_retry_manifest_in_transaction(%Run{execution_engine: "dag_v1"} = run, retry) do
+    persisted = run |> list_steps() |> Enum.map(&dag_manifest_step/1)
+
+    with {:ok, prepared} <- ExecutionEngine.prepare_manifest(run, persisted),
+         true <- prepared.manifest_hash == run.manifest_hash or {:error, :manifest_drift},
+         true <- prepared.manifest_hash == retry.manifest_hash or {:error, :manifest_drift} do
+      :ok
+    end
+  end
+
+  defp validate_retry_manifest_in_transaction(%Run{} = run, retry) do
+    case ExecutionEngine.prepare_manifest(run, retry.insert_steps) do
+      {:ok, _prepared} -> :ok
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp dag_manifest_step(step) do
+    %{
+      key: step.key,
+      kind: step.kind,
+      title: step.title,
+      depends_on: step.depends_on,
+      params: step.params,
+      max_attempts: step.max_attempts
+    }
   end
 
   # Run-agent internal helpers

@@ -4,8 +4,9 @@ defmodule IexCode.Runs.ExecutionEngine do
 
   Existing coding and research manifests are descriptive fixed workflows. They
   are owned by `legacy_v1` and must never be reinterpreted as generic DAGs merely
-  because their steps contain `depends_on` values. A future scheduler may opt in
-  only through a run persisted with `execution_engine: "dag_v1"`.
+  because their steps contain `depends_on` values. The dependency-aware scheduler
+  is selected only through a run persisted with `execution_engine: "dag_v1"` and
+  accepts only kinds in its closed read-only registry.
   """
 
   alias IexCode.Runs.Run
@@ -16,6 +17,9 @@ defmodule IexCode.Runs.ExecutionEngine do
   @callback id() :: String.t()
   @callback validate_manifest(map() | Run.t(), manifest()) ::
               :ok | {:error, validation_error()}
+  @callback prepare_manifest(map() | Run.t(), manifest()) ::
+              {:ok, %{steps: manifest(), manifest_hash: String.t() | nil}}
+              | {:error, validation_error()}
   @callback available?() :: boolean()
 
   @engines %{
@@ -45,6 +49,18 @@ defmodule IexCode.Runs.ExecutionEngine do
   end
 
   def validate_manifest(_run_or_attrs, _steps), do: {:error, :invalid_manifest}
+
+  @doc "Canonicalizes a manifest for durable storage through its selected engine."
+  def prepare_manifest(run_or_attrs, steps) when is_list(steps) do
+    engine = engine_id(run_or_attrs)
+
+    case fetch(engine) do
+      {:ok, module} -> module.prepare_manifest(run_or_attrs, steps)
+      :error -> {:error, {:unknown_execution_engine, engine}}
+    end
+  end
+
+  def prepare_manifest(_run_or_attrs, _steps), do: {:error, :invalid_manifest}
 
   @doc "Lists stable engine identifiers and whether they can currently execute."
   @spec descriptors() :: [%{id: String.t(), available: boolean()}]

@@ -9,6 +9,8 @@ defmodule IexCodeWeb.RunComponents do
 
   use IexCodeWeb, :html
 
+  alias IexCodeWeb.DagComponents
+
   attr :runs, :list, required: true
   attr :run_count, :integer, default: 0
   attr :run_counts, :map, default: %{active: 0, queued: 0, attention: 0, approvals: 0}
@@ -30,6 +32,7 @@ defmodule IexCodeWeb.RunComponents do
   attr :fleet_loading, :boolean, default: false
   attr :agent_guidance, :map, default: %{}
   attr :agent_receipts, :map, default: %{}
+  attr :dag_projection, :map, default: nil
 
   def run_control_plane(assigns) do
     active_workspace_locks =
@@ -455,6 +458,7 @@ defmodule IexCodeWeb.RunComponents do
 
               <div class="mt-5 grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,0.72fr)]">
                 <.form
+                  :if={@selected_run.execution_engine != "dag_v1"}
                   for={@steering_form}
                   id="async-run-steering-form"
                   phx-submit="steer_async_run"
@@ -587,16 +591,37 @@ defmodule IexCodeWeb.RunComponents do
               />
             </div>
 
+            <div
+              :if={@selected_run.execution_engine == "dag_v1" and @dag_projection}
+              id="async-run-dag-projection"
+              class="border-b border-[#21262d] p-4 md:p-5"
+            >
+              <DagComponents.dag_projection projection={@dag_projection} />
+            </div>
+
             <div class="grid min-w-0 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
-              <div class="border-b border-[#21262d] p-4 md:p-5 lg:border-b-0 lg:border-r">
-                <div class="mb-4 flex items-center justify-between">
+              <div
+                id="async-run-graph-and-controls"
+                data-graph-mode={
+                  if @selected_run.execution_engine == "dag_v1", do: "dag", else: "legacy"
+                }
+                class="border-b border-[#21262d] p-4 md:p-5 lg:border-b-0 lg:border-r"
+              >
+                <div
+                  :if={@selected_run.execution_engine != "dag_v1"}
+                  class="mb-4 flex items-center justify-between"
+                >
                   <h4 class="text-xs font-semibold uppercase tracking-wider text-gray-300">
                     Execution graph
                   </h4>
                   <span class="font-mono text-[10px] text-gray-600">{length(@steps)} nodes</span>
                 </div>
 
-                <div id="async-run-steps" class="space-y-2">
+                <div
+                  :if={@selected_run.execution_engine != "dag_v1"}
+                  id="async-run-steps"
+                  class="space-y-2"
+                >
                   <div
                     :if={@steps == []}
                     class="border border-dashed border-[#30363d] px-3 py-6 text-center text-xs text-gray-500"

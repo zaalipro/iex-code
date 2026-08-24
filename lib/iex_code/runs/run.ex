@@ -17,7 +17,8 @@ defmodule IexCode.Runs.Run do
     :objective,
     :kind,
     :mode,
-    :execution_engine
+    :execution_engine,
+    :manifest_hash
   ]
 
   @mutable_fields [
@@ -41,7 +42,8 @@ defmodule IexCode.Runs.Run do
     :cancellation_requested_at,
     :not_before,
     :attempt,
-    :max_attempts
+    :max_attempts,
+    :lease_generation
   ]
 
   schema "runs" do
@@ -51,6 +53,8 @@ defmodule IexCode.Runs.Run do
     field :mode, :string, default: "swarm"
     field :priority, :string, default: "normal"
     field :execution_engine, :string, default: "legacy_v1"
+    field :manifest_hash, :string
+    field :lease_generation, :integer, default: 0
     field :progress, :integer, default: 0
     field :event_sequence, :integer, default: 0
     field :control_sequence, :integer, default: 0
@@ -83,6 +87,7 @@ defmodule IexCode.Runs.Run do
     has_many :controls, IexCode.Runs.RunControl
     has_many :agents, IexCode.Runs.RunAgent
     has_many :agent_controls, IexCode.Runs.RunAgentControl
+    has_many :step_attempts, IexCode.Runs.RunStepAttempt
 
     timestamps(type: :utc_datetime)
   end
@@ -125,6 +130,9 @@ defmodule IexCode.Runs.Run do
     |> validate_inclusion(:kind, @kinds)
     |> validate_inclusion(:priority, @priorities)
     |> validate_inclusion(:execution_engine, @execution_engines)
+    |> require_dag_manifest_hash()
+    |> validate_length(:manifest_hash, is: 64)
+    |> validate_format(:manifest_hash, ~r/^[0-9a-f]{64}$/)
     |> validate_number(:progress, greater_than_or_equal_to: 0, less_than_or_equal_to: 100)
     |> validate_nonnegative_optional(:token_budget)
     |> validate_nonnegative_optional(:cost_budget_cents)
@@ -134,10 +142,13 @@ defmodule IexCode.Runs.Run do
     |> validate_number(:cost_cents, greater_than_or_equal_to: 0)
     |> validate_number(:attempt, greater_than_or_equal_to: 0)
     |> validate_number(:max_attempts, greater_than_or_equal_to: 1, less_than_or_equal_to: 100)
+    |> validate_number(:lease_generation, greater_than_or_equal_to: 0)
     |> validate_attempts()
     |> foreign_key_constraint(:project_id)
     |> foreign_key_constraint(:session_id)
     |> check_constraint(:execution_engine, name: :runs_execution_engine_check)
+    |> check_constraint(:manifest_hash, name: :runs_manifest_hash_shape)
+    |> check_constraint(:lease_generation, name: :runs_lease_generation_nonnegative)
   end
 
   def statuses, do: @statuses
@@ -167,6 +178,15 @@ defmodule IexCode.Runs.Run do
 
     if is_integer(attempt) and is_integer(max_attempts) and attempt > max_attempts do
       add_error(changeset, :attempt, "cannot exceed max_attempts")
+    else
+      changeset
+    end
+  end
+
+  defp require_dag_manifest_hash(changeset) do
+    if get_field(changeset, :execution_engine) == "dag_v1" and
+         is_nil(get_field(changeset, :manifest_hash)) do
+      add_error(changeset, :manifest_hash, "is required for dag_v1")
     else
       changeset
     end

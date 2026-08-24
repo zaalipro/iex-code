@@ -1070,6 +1070,7 @@
               fleet_loading={@run_fleet_loading?}
               agent_guidance={@run_agent_guidance}
               agent_receipts={@run_agent_receipts}
+              dag_projection={@dag_projection}
             />
 
             <!-- Swarm Coach Hero Card -->
@@ -2580,7 +2581,11 @@
                     id="run-setup-mode"
                     type="select"
                     label="Mission type"
-                    options={[Code: "code", "Deep research": "research"]}
+                    options={[
+                      Code: "code",
+                      "Deep research": "research",
+                      "Typed DAG (read-only)": "dag"
+                    ]}
                     value={@run_setup_mode}
                     class="w-full border border-[#30363d] bg-[#0b0f14] px-2.5 py-2 text-xs text-white outline-none focus:border-[#ff7e5f]/60"
                   />
@@ -2655,11 +2660,50 @@
                   />
                 </div>
 
+                <div
+                  :if={@run_setup_mode == "dag"}
+                  id="run-setup-dag-manifest"
+                  class="mt-3 border border-cyan-500/20 bg-cyan-500/[0.03] p-3"
+                >
+                  <div class="mb-2 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+                    <div>
+                      <p class="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-cyan-300">
+                        Immutable typed manifest
+                      </p>
+                      <p class="mt-1 max-w-2xl text-[11px] leading-5 text-gray-500">
+                        Editable sample for common Phoenix repositories. Missing files fail visibly;
+                        only bounded, registered read-only node kinds execute.
+                      </p>
+                    </div>
+                    <span class="font-mono text-[9px] uppercase tracking-wider text-gray-600">
+                      256 KB raw limit · 128 nodes
+                    </span>
+                  </div>
+                  <.input
+                    field={@run_setup_form[:dag_manifest_json]}
+                    id="run-setup-dag-manifest-json"
+                    type="textarea"
+                    rows="16"
+                    label="DAG manifest JSON"
+                    value={@run_setup_dag_manifest_json}
+                    spellcheck="false"
+                    class="block min-h-72 w-full resize-y border border-[#303844] bg-[#090d12] px-3 py-2.5 font-mono text-xs leading-5 text-gray-200 outline-none transition-colors placeholder:text-gray-700 focus:border-cyan-500/60 focus-visible:ring-2 focus-visible:ring-cyan-400/30"
+                  />
+                  <p
+                    :if={@run_setup_dag_error}
+                    id="run-setup-dag-manifest-error"
+                    role="alert"
+                    class="mt-2 text-xs text-rose-300"
+                  >
+                    Manifest JSON exceeds the safe editor boundary. Shorten it before queueing.
+                  </p>
+                </div>
+
                 <fieldset
                   id="run-setup-providers"
                   class={[
                     "mt-2 border border-[#252c35] bg-[#0b0f14] px-3 py-2",
-                    @run_setup_mode == "code" && "opacity-40"
+                    @run_setup_mode != "research" && "opacity-40"
                   ]}
                 >
                   <legend class="px-1 font-mono text-[9px] font-semibold uppercase tracking-wider text-gray-500">

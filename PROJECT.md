@@ -7,11 +7,12 @@ developer delegate work to supervised agents, observe every operation, inspect a
 edit artifacts, run verification, and decide what reaches Git without leaving one
 Phoenix LiveView workspace.
 
-The application includes a **durable asynchronous run system**: coding and deep-research
-runs are queued in SQLite, claimed with leases, serialized per project, and recorded in
-an ordered event journal. Run-scoped controls, research evidence, and citation-bearing
-reports are durable. The next phases generalize these typed workflows into dependency-aware
-parallel execution, governed tools, and resumable checkpoints.
+The application includes a **durable asynchronous run system**: coding, deep-research, and
+opt-in typed DAG runs are queued in SQLite, claimed with leases, and recorded in an ordered
+event journal. Run-scoped controls, research evidence, citation-bearing reports, static DAG
+manifests, and fenced DAG step attempts are durable. The current DAG catalog is deliberately
+read-only; the next phases extend it into governed mutation/provider workflows and broader
+checkpoint contracts.
 
 “Asynchronous” does not mean “unobservable.” A run must always expose its plan,
 dependencies, current owners, tool activity, artifacts, verification, cost, and the
@@ -67,6 +68,8 @@ IexCode.Application
 ├── TerminalSupervisor (DynamicSupervisor)
 │   └── TerminalSession per active terminal
 ├── RunDispatcher (leased durable background workers)
+│   └── DagRunner per active `dag_v1` run
+│       └── bounded Task.Supervisor children for ready nodes
 ├── Kanban.Scheduler (due/recurring task claims)
 ├── MultiPatch Snapshot Owner (durable SQLite + ETS cache)
 └── IexCodeWeb.Endpoint
@@ -81,7 +84,9 @@ and can iterate after failed verification; this is not an arbitrary DAG schedule
 monitors crashes, and broadcasts telemetry. LiveView subscribes to session and terminal
 topics and rehydrates messages, operations, durable runs, steps, and sequenced events
 when it mounts. `RunDispatcher` is independent of the socket and allows only one active
-background run per project.
+background run per project. Explicit `dag_v1` runs use `DagRunner` instead of the fixed
+legacy executor; it atomically claims ready steps and runs up to four concurrently by default
+(bounded to 32).
 
 ### Persisted records
 
@@ -95,22 +100,24 @@ background run per project.
 | App settings | Model endpoints/keys plus twelve ranked-search adapters, provider order, fleet size, and research defaults |
 | Run | Changeset-immutable objective/kind/mode/engine manifest, typed executor, lifecycle, priority, progress, budgets, attempts, lease, timings |
 | Run agent/control | Run-attempt identity, role/ordinal, lifecycle, desired state, fenced lease generation, task/progress/usage, ordered targeted controls, and bounded UI receipts |
-| Run step | Typed coding nodes plus research plan/search/fetch/synthesis nodes, dependencies, attempts, result/error |
+| Run step | Immutable DAG handler contract plus typed legacy nodes, dependencies, logical lifecycle, bounded params/result, and timeout |
+| Run step attempt | Append-only run/step attempt identity, manifest and handler snapshot, hashed owners, fenced generations, lease/heartbeat, retry, checkpoint, result digest, and outcome |
 | Run event | Per-run monotonic sequence, type, source, bounded payload, occurrence time |
 | Run command/control/approval/artifact | Tool command idempotency, ordered run controls, review decisions, cited reports, and artifact metadata |
 | Mutation snapshot | Durable native-workspace rollback manifest, mirrored in ETS |
 | Workspace lock | Canonical resource, mode, owner/run/session, batch wait state, lease, and fencing generation; capability stored only as a hash |
 
-The current graph is deliberately small. General fan-out/fan-in DAG planning, durable
-model-token deltas, enforced approval policy, and resumable checkpoints remain future
-work.
+The activated DAG graph is deliberately small and static. It supports durable fan-out/fan-in
+for `project_inventory`, `read_file`, and `aggregate`; arbitrary coding/mutation/provider
+handlers, dynamic graph expansion, durable model-token deltas, enforced approval gates, and
+general resumable checkpoints remain future work.
 
 ### Workspace surface
 
 | Surface | Implemented today |
 | --- | --- |
 | Kanban | CRUD, eight states, drag/move actions, filters, assignees, priorities, subtasks, and scheduling fields |
-| Swarm | Mission Control for coding/deep-research runs; coding adds dynamic persisted fleet cards and targeted controls, while research adds provider manifests, evidence, and report preview |
+| Swarm | Mission Control for coding/deep-research/DAG runs; coding adds persisted fleets and targeted controls, research adds provider evidence/report preview, and DAG runs add a layered durable node/attempt projection |
 | Calendar | Month navigation, task editing/run-now, plus a supervised UTC cron scheduler with atomic claims, stable occurrence keys, recurrence, and stale recovery |
 | Changes/Git | Status rails, inline/split diffs, stage/unstage, hunk operations, branches, fetch/pull, commit generation and commit |
 | Tests/AutoFix | Async test subprocess, ANSI cleanup, structured failures, heuristic proposals, preview/apply/rollback and re-verification |
@@ -140,6 +147,11 @@ work.
   OpenAI Responses, Anthropic Messages, and Gemini Interactions, with citations, hosted
   search-call evidence, bounded transport, cooperative cancellation checkpoints, and explicit
   provider provenance. It is a programmatic plane, not the ranked federation used by research runs.
+- `IexCode.Runs.DagManifest`, `DagScheduler`, and `DagRunner`: canonical static graph
+  validation, manifest hashing, atomic ready-node claims, bounded fan-out/fan-in, append-only
+  fenced attempts, retry backoff, pause/cancel, terminal recovery, and redacted UI projection.
+- `IexCode.Runs.DagStepRegistry`: closed v1 catalog containing only bounded
+  `project_inventory`, `read_file`, and `aggregate` handlers.
 
 ### Current lifecycle
 
@@ -181,7 +193,7 @@ workspace effects from being replayed blindly.
 | Configurable swarm-agent count | Current | Drives the durable legacy coding fleet, bounded to 4–32 with extra capacity assigned to explorers |
 | Durable run/event model | Current | Transactional run/step/event/command/approval/artifact records; checkpoints remain planned |
 | Run budgets | Partial | Wall time and provider-reported tokens are enforced at covered boundaries; token/cost exhaustion terminalizes the whole durable fleet after reported use, while pre-use reservation and universal versioned pricing remain planned |
-| Dependency-aware parallel DAG | Partial | Research has typed plan/search/fetch/synthesis nodes and provider fan-out; arbitrary DAG scheduling/locks remain planned |
+| Dependency-aware parallel DAG | Current/partial | `dag_v1` runs finite immutable graphs of closed-registry read-only handlers with durable attempts, readiness, leases, fencing, checkpoints, retries, and controls; provider/mutation/research kinds and general resource locks remain planned |
 | Native workspace coordination | Current cooperative baseline | Durable batched project/file/Git resources, FIFO-oriented waits, capability checks, heartbeats, fencing, dispatcher ownership, guarded UI/tools/terminal, and Mission Control; native bypass/physical-alias hardening remain |
 | Approval and durable command records | Partial | Command idempotency keys and approval records exist; policy enforcement/inbox UX remain planned |
 | Restart reconciliation | Partial | Expired workers become interrupted; safe checkpoint resume is not implemented |
@@ -238,17 +250,24 @@ the target scheduler. Items explicitly marked planned are not current behavior.
 - Application changesets do not permit lifecycle updates to rewrite its objective, kind, mode,
   or execution-engine identifier after creation. The durable create/retry boundaries validate
   the supplied manifest through that engine, claim queries select only engines advertised as
-  available, and the dispatcher revalidates a claimed manifest before executing it. Reserved
-  `dag_v1` rows remain unclaimable instead of falling through to `legacy_v1`.
+  available, and the dispatcher recomputes its canonical manifest hash after claim. `dag_v1`
+  rows are claimable only when every immutable step kind exists in the closed read-only registry;
+  unsupported provider, mutation, and research kinds fail validation instead of falling through
+  to `legacy_v1`.
 
 #### Run step
 
 - A typed unit of agent or tool work.
-- Stores dependencies, params, result/error, attempts, progress, timestamps, and status.
-  Per-step leases/timeouts and general ready-node scheduling are planned.
-- Coding dispatch currently executes a fixed `prepare → execute` graph. Research adds
-  durable plan/search/fetch/synthesis nodes and concurrent provider fan-out, but the
-  dispatcher does not yet schedule an arbitrary dependency DAG.
+- Stores dependencies, immutable handler/version/effect/replay/resource/timeout policy,
+  bounded params/result, attempts, progress, timestamps, and status. `dag_v1` adds append-only
+  attempt rows with run/step generations, hashed owners, leases/heartbeats, checkpoint receipts,
+  retry timing, result digests, and terminal outcomes; legacy steps retain compatibility behavior.
+- Legacy coding dispatch still executes a fixed `prepare → execute` graph, and legacy research
+  owns its plan/search/fetch/synthesis workflow. Separately, the `dag_v1` scheduler runs arbitrary
+  finite dependency graphs only for currently registered read-only handlers; provider effects,
+  mutations, approvals, and research handlers remain fail-closed.
+- V1 manifests are non-empty and limited to 128 nodes, 512 edges, 32 dependencies per node,
+  32 topological levels, and five attempts per node. They cannot expand after creation.
 
 #### Run agent and targeted control
 
@@ -329,7 +348,9 @@ the target scheduler. Items explicitly marked planned are not current behavior.
 7. **Recovery is deterministic.** Current expired run leases become `interrupted`, their
    open run controls are superseded, and they require explicit retry. A restarted agent can
    rebind later invocations to its new generation, but future checkpoints may resume an
-   interrupted effect only where a tool contract permits.
+   interrupted effect only where a tool contract permits. Within a still-current `dag_v1`
+   parent lease, an expired safe read attempt is fenced, recorded, and retried with backoff;
+   outer-run recovery remains explicit.
 8. **History is bounded in memory, complete on disk.** The database journal is durable;
    cursor pagination and a windowed LiveView stream remain planned.
 
@@ -346,10 +367,11 @@ the target scheduler. Items explicitly marked planned are not current behavior.
 
 ### A1 — Durable run ledger
 
-**State: run/step/event ledger implemented; checkpoints planned**
+**State: run/step/event and DAG step-attempt ledgers implemented; broader checkpoints planned**
 
 - Run, step, event, artifact, command, and approval persistence is implemented.
-- Add explicit checkpoint persistence and recovery contracts.
+- DAG attempts persist bounded checkpoint receipts. Add effect-specific checkpoint recovery
+  contracts before registering mutation or provider handlers.
 - Centralize validated state transitions.
 - Append events transactionally with their corresponding state change.
 - Build session-history migration/adapters without breaking existing sessions.
@@ -359,7 +381,7 @@ storage replay is implemented; cursor-driven LiveView pagination remains in A5.
 
 ### A2 — Dispatcher and recovery
 
-**State: leasing/reconciliation and ordered run controls implemented; checkpoint resume planned**
+**State: leasing/reconciliation, ordered controls, and safe DAG-step retry implemented; broader checkpoint resume planned**
 
 - Claim queued runs with renewable leases.
 - Reconcile expired run/step claims on boot and supersede orphaned run controls.
@@ -369,6 +391,8 @@ storage replay is implemented; cursor-driven LiveView pagination remains in A5.
   agent progress/usage, resolves the live generation before phase invocation, isolates
   targeted controls, and terminalizes the fleet on reported token/cost exhaustion; extend
   the same contracts to checkpoint-safe recovery of explicitly idempotent work.
+- The DAG runner supports run-wide pause/resume/cancel and explicit retry of the same static
+  manifest. Steering, per-node operator control, and automatic outer-run resume are not current.
 
 **Exit:** disconnecting the browser has no effect on execution, and restarting the app
 recovers a run according to its checkpoint and tool capabilities.
@@ -393,17 +417,23 @@ cannot occur until an expired native holder is confirmed stopped or quarantined.
 
 ### A4 — Dependency-aware execution
 
-**State: durable dynamic fleet current; generic DAG planned and fail-closed**
+**State: finite read-only DAG current; effectful and research DAG contracts fail-closed**
 
-- Replace the fixed pipeline as the only orchestration option with a persisted DAG.
-- Dispatch independent ready steps concurrently within run/workspace/provider budgets.
-- Support fan-out/fan-in, typed outputs, retry policies, deadlines, cycle validation,
-  and manual gates.
-- Extend the current persisted fleet policy beyond the legacy role workflow only after
-  typed step attempts, scheduler leases, checkpoints, and resource declarations exist.
+- The explicit `dag_v1` engine now persists immutable, cycle-validated read-only graphs and
+  dispatches independent ready nodes concurrently with bounded output, retries, timeouts,
+  append-only attempts, leases, generation fencing, checkpoint receipts, and terminal recovery.
+- The production registry is intentionally limited to `project_inventory`, `read_file`, and
+  `aggregate`. It executes no agent, coding tool, mutation, Git/native command, model, search
+  provider, or research-adapter node.
+- Add enforced workspace/provider resource acquisition and hierarchical budget reservation
+  before registering effectful handler kinds.
+- Add versioned typed evidence/artifact settlement and manual approval gates.
+- Keep provider, mutation, and research handler kinds unregistered until their idempotency,
+  cancellation, checkpoint, budget, and recovery contracts pass the same fail-closed boundary.
 
-**Exit:** a run can prove parallel execution of independent read/analysis steps while
-serializing conflicting mutations and verification prerequisites.
+**Current baseline exit:** a run proves parallel execution of independent contained reads and
+waits for durable prerequisites before fan-in. Serialization of conflicting mutations and
+verification prerequisites remains a later exit because v1 exposes no mutation handler.
 
 ### A5 — Event-native LiveView console
 
@@ -411,8 +441,9 @@ serializing conflicting mutations and verification prerequisites.
 
 - Tail and replay sequenced events with cursor pagination, LiveView streams, and bounded memory.
 - Publish real response/reasoning/tool deltas instead of only completed messages.
-- Show DAG state, lock ownership, queue position, retries, approvals, tokens, cost, and
-  latency from recorded data.
+- DAG layers, dependency/readiness state, attempts, retry timing, lease health, and checkpoint
+  timing are current. Add lock ownership, queue position, approvals, tokens, cost, latency,
+  and artifact review where corresponding DAG handlers record them.
 - Provide artifact-centric plan, patch, test, terminal, and commit review.
 
 **Exit:** reload/reconnect produces the same run view without fabricated metrics or
@@ -454,6 +485,7 @@ supported provider passes a shared conformance suite.
 lib/iex_code/
 ├── application.ex              # supervision tree
 ├── engine/                     # sessions, agents, operations, swarm coordination
+├── runs/                       # durable ledgers, dispatcher, DAG scheduler and handlers
 ├── llm/                        # provider clients, SSE, UTF-8, retry/fallback
 ├── tools/                      # files, AST, patches, tests, Git, terminal
 ├── projects.ex / projects/     # native workspaces

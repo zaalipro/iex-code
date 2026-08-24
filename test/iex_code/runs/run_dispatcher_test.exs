@@ -4,7 +4,7 @@ defmodule IexCode.Runs.RunDispatcherTest do
   import Ecto.Query
 
   alias IexCode.{Projects, Repo, Runs, Sessions, WorkspaceLocks}
-  alias IexCode.Runs.{Run, RunDispatcher, RunStep}
+  alias IexCode.Runs.{DagScheduler, ExecutionEngine, Run, RunDispatcher, RunStep}
 
   @dispatcher IexCode.RunDispatcherUnderTest
 
@@ -433,6 +433,197 @@ defmodule IexCode.Runs.RunDispatcherTest do
     assert Runs.list_runs(session_id: context.session.id) == []
   end
 
+  test "dag enqueue persists the explicit immutable engine manifest", context do
+    manifest = dag_manifest()
+    attrs = run_attrs(context, "reserved DAG") |> Map.put(:mode, "workflow")
+
+    assert "dag_v1" in ExecutionEngine.available_ids()
+
+    assert {:ok, %Run{execution_engine: "dag_v1"}} =
+             RunDispatcher.enqueue_dag(attrs, manifest, @dispatcher)
+  end
+
+  test "available dag runs fan out, pause, resume and finalize without legacy shell steps",
+       context do
+    attrs = run_attrs(context, "dispatch DAG") |> Map.put(:mode, "workflow")
+    assert {:ok, run} = RunDispatcher.enqueue_dag(attrs, dag_manifest(), @dispatcher)
+    assert_receive {:async_run_started, %Run{id: run_id}, runner_pid}, 2_000
+    assert run_id == run.id
+
+    first = assert_dag_step_started()
+    second = assert_dag_step_started()
+    refute first.key == second.key
+
+    assert {:error, :dag_steering_unsupported} =
+             RunDispatcher.steer(run, "unsupported guidance", @dispatcher)
+
+    assert Runs.list_controls(run, kind: "steer") == []
+    assert {:ok, paused} = RunDispatcher.pause(run, @dispatcher)
+    assert paused.status == "paused"
+    assert Enum.all?(DagScheduler.list_attempts(run), &(&1.status == "paused"))
+
+    send(first.pid, :release)
+    send(second.pid, :release)
+    refute_receive {:dag_step_started, "join", _pid}, 50
+    assert Process.alive?(runner_pid)
+
+    assert {:ok, resumed} = RunDispatcher.resume(run, @dispatcher)
+    assert resumed.status == "running"
+    join = assert_dag_step_started()
+    assert join.key == "join"
+    send(join.pid, :release)
+
+    assert_receive {:async_run_updated, %Run{id: ^run_id, status: "completed"}}, 2_000
+    assert Enum.all?(Runs.list_steps(run), &(&1.status == "completed"))
+    refute Enum.any?(Runs.list_steps(run), &(&1.kind in ["prepare", "execute"]))
+    assert Runs.list_workspace_locks(project_id: context.project.id, status: "held") == []
+  end
+
+  test "available dag cancellation and abnormal runner exit terminalize child attempts",
+       context do
+    attrs = run_attrs(context, "cancel DAG") |> Map.put(:mode, "workflow")
+
+    assert {:ok, cancel_run} =
+             RunDispatcher.enqueue_dag(attrs, [hd(dag_manifest())], @dispatcher)
+
+    assert_receive {:async_run_started, %Run{id: cancel_id}, cancel_runner}, 2_000
+    assert cancel_id == cancel_run.id
+    started = assert_dag_step_started()
+    step_ref = Process.monitor(started.pid)
+    runner_ref = Process.monitor(cancel_runner)
+    assert {:ok, %Run{status: "cancelled"}} = RunDispatcher.cancel(cancel_run, @dispatcher)
+    assert_receive {:DOWN, ^step_ref, :process, _, _}, 2_000
+    assert_receive {:DOWN, ^runner_ref, :process, ^cancel_runner, _}, 2_000
+    assert Runs.get_run!(cancel_id).status == "cancelled"
+    refute Enum.any?(DagScheduler.list_attempts(cancel_run), &(&1.status == "running"))
+
+    crash_root =
+      Path.join(System.tmp_dir!(), "dag-dispatch-crash-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(crash_root)
+    on_exit(fn -> File.rm_rf(crash_root) end)
+
+    {:ok, other_project} =
+      Projects.create_project(%{
+        name: "dag-crash-#{System.unique_integer([:positive])}",
+        root_path: crash_root
+      })
+
+    {:ok, other_session} =
+      Sessions.create_session(%{project_id: other_project.id, title: "DAG crash"})
+
+    :ok = Runs.subscribe_session(other_session.id)
+
+    crash_context = %{project: other_project, session: other_session}
+    crash_attrs = run_attrs(crash_context, "crash DAG") |> Map.put(:mode, "workflow")
+    stop_supervised!(RunDispatcher)
+
+    start_supervised!(
+      {RunDispatcher,
+       Keyword.put(dispatcher_options(), :dag_runner, IexCode.RunDispatcherTestDagRunner)}
+    )
+
+    assert {:ok, crash_run} =
+             RunDispatcher.enqueue_dag(crash_attrs, [hd(dag_manifest())], @dispatcher)
+
+    assert_receive {:async_run_started, %Run{id: crash_id}, crash_runner}, 2_000
+    assert crash_id == crash_run.id
+    _started = assert_dag_step_started()
+    ref = Process.monitor(crash_runner)
+    Process.exit(crash_runner, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^crash_runner, :killed}, 2_000
+    assert_receive {:async_run_updated, %Run{id: ^crash_id, status: "interrupted"}}, 2_000
+    refute Enum.any?(DagScheduler.list_attempts(crash_run), &(&1.status == "running"))
+  end
+
+  test "claimed dag manifest drift fails preflight before any handler starts", context do
+    stop_supervised!(RunDispatcher)
+    attrs = run_attrs(context, "corrupt DAG") |> Map.put(:mode, "workflow")
+    assert {:ok, run} = RunDispatcher.enqueue_dag(attrs, dag_manifest(), self())
+    assert_receive {:"$gen_cast", :dispatch}
+
+    {1, _} =
+      from(step in RunStep, where: step.run_id == ^run.id and step.key == "left")
+      |> Repo.update_all(set: [title: "tampered title"])
+
+    start_supervised!({RunDispatcher, dispatcher_options()})
+    refute_receive {:dag_step_started, _, _}, 100
+    assert_receive {:async_run_updated, %Run{id: run_id, status: "failed"}}, 2_000
+    assert run_id == run.id
+    assert Runs.get_run!(run.id).error_details["reason"] == "dag_manifest_drift"
+  end
+
+  test "malformed forged dag fails without head-of-line blocking valid legacy work", context do
+    stop_supervised!(RunDispatcher)
+
+    {:ok, forged} =
+      %Run{project_id: context.project.id, session_id: context.session.id}
+      |> Run.create_changeset(%{
+        objective: "forged empty DAG",
+        kind: "analysis",
+        mode: "workflow",
+        priority: "critical",
+        execution_engine: "dag_v1",
+        manifest_hash: String.duplicate("0", 64)
+      })
+      |> Repo.insert()
+
+    legacy_attrs = run_attrs(context, "valid work after forged DAG") |> Map.put(:priority, "low")
+
+    assert {:ok, legacy} =
+             Runs.create_run_with_steps(legacy_attrs, [
+               %{
+                 key: "prepare",
+                 kind: "prepare",
+                 title: "Validate durable run inputs",
+                 status: "ready"
+               },
+               %{
+                 key: "execute",
+                 kind: "execute",
+                 title: "Execute analysis",
+                 depends_on: ["prepare"]
+               }
+             ])
+
+    start_supervised!({RunDispatcher, dispatcher_options()})
+
+    assert_receive {:async_run_updated, %Run{id: forged_id, status: "failed"}}, 2_000
+    assert forged_id == forged.id
+    assert_receive {:test_run_started, legacy_id, legacy_worker}, 2_000
+    assert legacy_id == legacy.id
+    send(legacy_worker, {:finish, legacy.id, {:ok, :done}})
+  end
+
+  test "dispatcher restart reconciles expired dag attempts under an orphaned parent", context do
+    attrs = run_attrs(context, "orphan DAG") |> Map.put(:mode, "workflow")
+    assert {:ok, run} = RunDispatcher.enqueue_dag(attrs, [hd(dag_manifest())], @dispatcher)
+    assert_receive {:async_run_started, %Run{id: run_id}, _runner}, 2_000
+    assert run_id == run.id
+    started = assert_dag_step_started()
+    ref = Process.monitor(started.pid)
+    past = DateTime.utc_now() |> DateTime.add(-60, :second) |> DateTime.truncate(:microsecond)
+
+    from(candidate in Run, where: candidate.id == ^run.id)
+    |> Repo.update_all(set: [lease_expires_at: past])
+
+    from(attempt in IexCode.Runs.RunStepAttempt, where: attempt.run_id == ^run.id)
+    |> Repo.update_all(set: [lease_expires_at: past])
+
+    stop_supervised!(RunDispatcher)
+    assert_receive {:DOWN, ^ref, :process, _, _}, 2_000
+    start_supervised!({RunDispatcher, dispatcher_options()})
+
+    assert Runs.get_run!(run.id).status == "interrupted"
+
+    refute Enum.any?(
+             DagScheduler.list_attempts(run),
+             &(&1.status in ["running", "paused"])
+           )
+
+    refute Enum.any?(Runs.list_steps(run), &(&1.status in ["running", "paused", "ready"]))
+  end
+
   test "claimed manifests are revalidated before legacy preparation or execution", context do
     stop_supervised!(RunDispatcher)
 
@@ -611,7 +802,59 @@ defmodule IexCode.Runs.RunDispatcherTest do
       lease_ms: 120_000,
       cancel_grace_ms: 20,
       workspace_lock_retry_interval: 20,
-      workspace_lock_lease_seconds: 60
+      workspace_lock_lease_seconds: 60,
+      dag_max_concurrency: 2,
+      dag_runner_opts: [
+        poll_ms: 10,
+        heartbeat_ms: 10,
+        internal_step_executor: &dag_test_executor/2
+      ]
     ]
+  end
+
+  defp dag_manifest do
+    [
+      %{
+        key: "left",
+        kind: "project_inventory",
+        title: "Left root",
+        params: %{},
+        depends_on: [],
+        max_attempts: 1
+      },
+      %{
+        key: "right",
+        kind: "project_inventory",
+        title: "Right root",
+        params: %{},
+        depends_on: [],
+        max_attempts: 1
+      },
+      %{
+        key: "join",
+        kind: "aggregate",
+        title: "Join roots",
+        params: %{},
+        depends_on: ["left", "right"],
+        max_attempts: 1
+      }
+    ]
+  end
+
+  defp dag_test_executor(claim, context) do
+    receiver = Process.whereis(IexCode.RunDispatcherTestReceiver)
+    send(receiver, {:dag_step_started, claim.step.key, self()})
+
+    receive do
+      :release ->
+        with {:ok, _attempt} <- context.checkpoint_callback.(%{"released" => true}, 50) do
+          {:ok, %{"key" => claim.step.key}}
+        end
+    end
+  end
+
+  defp assert_dag_step_started do
+    assert_receive {:dag_step_started, key, pid}, 2_000
+    %{key: key, pid: pid}
   end
 end

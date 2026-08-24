@@ -24,15 +24,28 @@ defmodule IexCode.RunsTest do
     Runs.create_run(Map.merge(base, attrs))
   end
 
-  defp insert_unavailable_dag(project, session, objective) do
+  defp insert_forged_dag(project, session, objective) do
     %Run{project_id: project.id, session_id: session.id}
     |> Run.create_changeset(%{
       objective: objective,
       kind: "analysis",
       mode: "single",
-      execution_engine: "dag_v1"
+      execution_engine: "dag_v1",
+      manifest_hash: String.duplicate("0", 64)
     })
     |> Repo.insert()
+  end
+
+  defp dag_steps do
+    [
+      %{key: "inventory", kind: "project_inventory", title: "Inventory"},
+      %{
+        key: "join",
+        kind: "aggregate",
+        title: "Join",
+        depends_on: ["inventory"]
+      }
+    ]
   end
 
   test "creation commits a sequence-one event before broadcasting on run and session topics", %{
@@ -82,14 +95,28 @@ defmodule IexCode.RunsTest do
     assert Runs.get_run!(run.id).event_sequence == 3
   end
 
-  test "durable creation rejects unavailable engines before inserting a run", %{
+  test "durable DAG creation rejects empty graphs and persists a canonical hash", %{
     project: project,
     session: session
   } do
-    assert {:error, {:execution_engine_unavailable, "dag_v1"}} =
+    assert {:error, :empty_dag_manifest} =
              create_run(project, session, %{execution_engine: "dag_v1"})
 
     assert Runs.list_runs(session_id: session.id) == []
+
+    attrs = %{
+      project_id: project.id,
+      session_id: session.id,
+      objective: "Canonical DAG",
+      kind: "analysis",
+      mode: "workflow",
+      execution_engine: "dag_v1"
+    }
+
+    assert {:ok, run} = Runs.create_run_with_steps(attrs, Enum.reverse(dag_steps()))
+    assert byte_size(run.manifest_hash) == 64
+    assert Enum.map(Runs.list_steps(run), & &1.key) == ["inventory", "join"]
+    assert Enum.map(Runs.list_steps(run), & &1.status) == ["ready", "pending"]
   end
 
   test "durable creation validates the legacy manifest before any insert", %{
@@ -160,7 +187,7 @@ defmodule IexCode.RunsTest do
     project: project,
     session: session
   } do
-    {:ok, run} = insert_unavailable_dag(project, session, "immutable graph")
+    {:ok, run} = insert_forged_dag(project, session, "immutable graph")
 
     assert {:error, :dag_manifest_immutable} =
              Runs.create_step(run, %{key: "late", kind: "analysis", title: "Late node"})
@@ -177,38 +204,62 @@ defmodule IexCode.RunsTest do
     assert Runs.list_steps(run) == []
   end
 
-  test "run claims skip unavailable engines without blocking dispatchable work", %{
+  test "run claims include canonical dag_v1 work", %{
     project: project,
     session: session
   } do
-    {:ok, unavailable} = insert_unavailable_dag(project, session, "higher priority dag")
+    attrs = %{
+      project_id: project.id,
+      session_id: session.id,
+      objective: "higher priority dag",
+      kind: "analysis",
+      mode: "workflow",
+      execution_engine: "dag_v1",
+      priority: "high"
+    }
+
+    {:ok, dag} = Runs.create_run_with_steps(attrs, dag_steps())
 
     {:ok, legacy} =
       create_run(project, session, %{objective: "dispatchable legacy", priority: "low"})
 
     assert {:ok, claimed} = Runs.claim_next_run("engine-aware-dispatcher")
-    assert claimed.id == legacy.id
-    assert claimed.execution_engine == "legacy_v1"
-    assert Runs.get_run!(unavailable.id).status == "queued"
+    assert claimed.id == dag.id
+    assert claimed.execution_engine == "dag_v1"
+    assert claimed.lease_generation == 1
+    assert Runs.get_run!(legacy.id).status == "queued"
 
-    assert :none =
-             Runs.claim_next_run("unsupported-dispatcher", execution_engines: ["dag_v1"])
+    assert :none = Runs.claim_next_run("second-dispatcher", execution_engines: ["dag_v1"])
   end
 
-  test "retry validates the persisted engine at the durable boundary", %{
+  test "DAG retry rejects forged manifest hash drift at the durable boundary", %{
     project: project,
     session: session
   } do
-    {:ok, unavailable} = insert_unavailable_dag(project, session, "unavailable retry")
+    attrs = %{
+      project_id: project.id,
+      session_id: session.id,
+      objective: "forged retry",
+      kind: "analysis",
+      mode: "workflow",
+      execution_engine: "dag_v1"
+    }
+
+    {:ok, run} = Runs.create_run_with_steps(attrs, dag_steps())
 
     {1, _} =
-      from(run in Run, where: run.id == ^unavailable.id)
-      |> Repo.update_all(set: [status: "failed", completed_at: DateTime.utc_now()])
+      from(current in Run, where: current.id == ^run.id)
+      |> Repo.update_all(
+        set: [
+          status: "failed",
+          completed_at: DateTime.utc_now(),
+          manifest_hash: String.duplicate("0", 64)
+        ]
+      )
 
-    assert {:error, {:execution_engine_unavailable, "dag_v1"}} =
-             Runs.retry_run(unavailable)
+    assert {:error, :manifest_drift} = Runs.retry_run(run)
 
-    assert Runs.get_run!(unavailable.id).status == "failed"
+    assert Runs.get_run!(run.id).status == "failed"
   end
 
   test "retry rejects an invalid next-attempt manifest before changing the run", %{
