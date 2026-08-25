@@ -449,12 +449,12 @@ defmodule IexCodeWeb.WorkspaceLiveTest do
     html = render_click(view, "apply_time_picker")
     assert html =~ "Scheduled for"
     assert html =~ "11:30 AM - 12:00 PM"
-    refute html =~ "Set focus time"
+    refute has_element?(view, "#time-picker-modal")
 
     # 6. Test cancel button closes modal
     render_click(view, "open_time_picker")
-    html = render_click(view, "close_time_picker")
-    refute html =~ "Set focus time"
+    render_click(view, "close_time_picker")
+    refute has_element?(view, "#time-picker-modal")
   end
 
   # ============================================================================

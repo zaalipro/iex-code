@@ -14,13 +14,28 @@ defmodule IexCodeWeb.WorkspaceLiveCommandPaletteTest do
       session = create_session_fixture(project)
       {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
 
-      # Initially palette is closed
+      # The persistent hook receives Cmd/Ctrl+K even while the dialog is closed.
+      assert has_element?(view, "#command-palette-controller[phx-hook='CommandPalette']")
       refute has_element?(view, "#command-palette-modal")
 
       # Open command palette
       render_click(view, "toggle_command_palette")
       assert has_element?(view, "#command-palette-modal")
       assert has_element?(view, "#command-palette-input")
+      assert has_element?(view, "#command-palette-dialog[role='dialog'][aria-modal='true']")
+
+      assert has_element?(
+               view,
+               "#command-palette-input[role='combobox'][aria-controls='command-palette-results']"
+             )
+
+      assert has_element?(view, "#command-palette-results[role='listbox']")
+      assert has_element?(view, "#palette-item-0[role='option']")
+
+      assert has_element?(
+               view,
+               "#command-palette-input[aria-activedescendant='palette-item-0']"
+             )
 
       # Close command palette
       render_click(view, "close_command_palette")
@@ -264,6 +279,25 @@ defmodule IexCodeWeb.WorkspaceLiveCommandPaletteTest do
 
       refute has_element?(view, "#command-palette-modal")
       assert render(view) =~ "Terminal" or render(view) =~ "terminal"
+    end
+
+    test "Toggle Swarm Mode action dispatches the real swarm event", %{
+      conn: conn,
+      workspace_path: path
+    } do
+      project = create_project_fixture(%{root_path: path})
+      session = create_session_fixture(project, %{swarm_mode: false})
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      assert has_element?(view, "#workspace-header-actions", "Swarm: OFF")
+
+      render_click(view, "toggle_command_palette")
+      render_click(view, "command_palette_set_category", %{"category" => "actions"})
+      render_change(view, "command_palette_search", %{"query" => "Toggle Swarm Mode"})
+      render_click(view, "command_palette_select_item", %{"index" => "0"})
+
+      refute has_element?(view, "#command-palette-modal")
+      assert has_element?(view, "#workspace-header-actions", "Swarm: ON")
     end
   end
 end

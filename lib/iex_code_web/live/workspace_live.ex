@@ -132,8 +132,10 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:page_title, "#{session.title} · #{project.name}")
       |> assign(:project, project)
       |> assign(:projects, projects)
+      |> assign(:all_projects, projects)
       |> assign(:session, session)
       |> assign(:sessions, sessions)
+      |> assign(:all_sessions, sessions)
       |> assign(:messages, messages)
       |> assign(:all_messages, messages)
       |> assign(:operations, operations)
@@ -258,6 +260,15 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:show_time_picker, false)
       |> assign(:selected_time_slot, "10:30 AM - 11:00 AM")
       |> assign(:selected_schedule_status, "Available")
+      |> assign(:time_picker_initial_slot, "10:30 AM - 11:00 AM")
+      |> assign(:time_picker_initial_status, "Available")
+      |> assign(:time_picker_initial_custom_time, "")
+      |> assign(:time_picker_initial_availability, "Available")
+      |> assign(
+        :time_picker_initial_availability_subtext,
+        "Instant notifications & swarm active"
+      )
+      |> assign(:custom_time, "")
       |> assign(:show_custom_time_input, false)
       |> assign(:show_scheduled_task_modal, false)
       |> assign(:show_edit_scheduled_task_modal, false)
@@ -275,10 +286,15 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:new_task_status, "scheduled")
       |> assign(:task_schedule_type, "scheduled")
       |> assign(:usage_history, Sessions.list_usage_history(10))
+      |> assign(:all_usage_history, [])
+      |> assign(:show_all_usage_modal, false)
       |> assign(:new_task_priority, "medium")
       |> assign(:new_task_assignee, "default")
       |> assign(:open_modal_dropdown, nil)
       # Forms
+      |> assign(:workspace_search_form, to_form(%{"query" => ""}))
+      |> assign(:file_filter_form, to_form(%{"filter" => ""}))
+      |> assign(:custom_time_form, to_form(%{"custom_time" => ""}))
       |> assign(:prompt_form, to_form(%{"prompt" => ""}))
       |> assign(
         :research_form,
@@ -421,6 +437,7 @@ defmodule IexCodeWeb.WorkspaceLive do
 
               messages = Sessions.list_messages(new_session.id)
               operations = Sessions.list_operations(new_session.id)
+              projects = Projects.list_projects()
               sessions = Sessions.list_sessions_for_project(project.id)
               files = list_project_files(project.root_path)
               tasks = Kanban.list_tasks(project.id)
@@ -441,13 +458,19 @@ defmodule IexCodeWeb.WorkspaceLive do
                 socket
                 |> assign(:session, new_session)
                 |> assign(:project, project)
+                |> assign(:projects, projects)
+                |> assign(:all_projects, projects)
                 |> assign(:sessions, sessions)
+                |> assign(:all_sessions, sessions)
                 |> assign(:project_files, files)
                 |> assign(:tasks, tasks)
                 |> assign(:page_title, "#{new_session.title} · #{project.name}")
                 |> assign(:messages, messages)
                 |> assign(:all_messages, messages)
                 |> assign(:workspace_search, "")
+                |> assign(:workspace_search_form, to_form(%{"query" => ""}))
+                |> assign(:file_filter, "")
+                |> assign(:file_filter_form, to_form(%{"filter" => ""}))
                 |> assign(:operations, operations)
                 |> assign(:terminal_running?, terminal_status in [:ready, :running])
                 |> assign(:terminal_status, terminal_status)
@@ -553,6 +576,16 @@ defmodule IexCodeWeb.WorkspaceLive do
   end
 
   @impl true
+  def handle_event("close_branch_menu", _params, socket) do
+    {:noreply, assign(socket, :show_branch_menu, false)}
+  end
+
+  @impl true
+  def handle_event("close_modal_dropdowns", _params, socket) do
+    {:noreply, assign(socket, :open_modal_dropdown, nil)}
+  end
+
+  @impl true
   def handle_event("toggle_coach_menu", _params, socket) do
     new_state = if socket.assigns.open_dropdown == "coach_menu", do: nil, else: "coach_menu"
     {:noreply, assign(socket, :open_dropdown, new_state)}
@@ -574,7 +607,23 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("toggle_all_usage_modal", _params, socket) do
+    show? = !socket.assigns.show_all_usage_modal
+
+    socket =
+      if show? do
+        socket
+        |> assign(:all_usage_history, Sessions.list_usage_history(100))
+        |> assign(:show_all_usage_modal, true)
+      else
+        assign(socket, :show_all_usage_modal, false)
+      end
+
     {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event("close_all_usage_modal", _params, socket) do
+    {:noreply, assign(socket, :show_all_usage_modal, false)}
   end
 
   @impl true
@@ -603,6 +652,8 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("change_model", %{"provider" => provider, "model" => model}, socket) do
+    provider = normalize_model_provider(provider, model)
+
     case Sessions.update_session(socket.assigns.session, %{
            model_provider: provider,
            model_name: model
@@ -621,12 +672,18 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("change_model", %{"model" => model_name}, socket) do
-    case Sessions.update_session(socket.assigns.session, %{model_name: model_name}) do
+    provider = provider_for_model(model_name)
+
+    case Sessions.update_session(socket.assigns.session, %{
+           model_provider: provider,
+           model_name: model_name
+         }) do
       {:ok, session} ->
         {:noreply,
          socket
          |> assign(:session, session)
-         |> assign(:open_dropdown, nil)}
+         |> assign(:open_dropdown, nil)
+         |> put_flash(:info, "Model set to #{model_name} (#{provider})")}
 
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Failed to set model: #{inspect(reason)}")}
@@ -640,22 +697,50 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("search_workspace", %{"query" => q}, socket) do
-    messages = filter_history_messages(socket.assigns.all_messages, q)
+    projects = filter_workspace_items(socket.assigns.all_projects, q, [:name, :root_path])
+    sessions = filter_workspace_items(socket.assigns.all_sessions, q, [:title, :model_name])
 
     {:noreply,
      socket
      |> assign(:workspace_search, q)
-     |> assign(:messages, messages)}
+     |> assign(:workspace_search_form, to_form(%{"query" => q}))
+     |> assign(:projects, projects)
+     |> assign(:sessions, sessions)}
   end
 
   @impl true
   def handle_event("open_time_picker", _params, socket) do
-    {:noreply, assign(socket, :show_time_picker, true)}
+    {:noreply,
+     socket
+     |> assign(:time_picker_initial_slot, socket.assigns.selected_time_slot)
+     |> assign(:time_picker_initial_status, socket.assigns.selected_schedule_status)
+     |> assign(:time_picker_initial_custom_time, socket.assigns.custom_time)
+     |> assign(:time_picker_initial_availability, socket.assigns.user_availability)
+     |> assign(
+       :time_picker_initial_availability_subtext,
+       socket.assigns.user_availability_subtext
+     )
+     |> assign(:show_time_picker, true)}
   end
 
   @impl true
   def handle_event("close_time_picker", _params, socket) do
-    {:noreply, assign(socket, :show_time_picker, false)}
+    {:noreply,
+     socket
+     |> assign(:selected_time_slot, socket.assigns.time_picker_initial_slot)
+     |> assign(:selected_schedule_status, socket.assigns.time_picker_initial_status)
+     |> assign(:custom_time, socket.assigns.time_picker_initial_custom_time)
+     |> assign(
+       :custom_time_form,
+       to_form(%{"custom_time" => socket.assigns.time_picker_initial_custom_time})
+     )
+     |> assign(:user_availability, socket.assigns.time_picker_initial_availability)
+     |> assign(
+       :user_availability_subtext,
+       socket.assigns.time_picker_initial_availability_subtext
+     )
+     |> assign(:show_custom_time_input, false)
+     |> assign(:show_time_picker, false)}
   end
 
   @impl true
@@ -665,20 +750,11 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("select_schedule_status", %{"status" => status}, socket) do
-    subtext =
-      case status do
-        "Available" -> "Instant notifications & swarm active"
-        "Busy" -> "Deep focus · autonomous background mode"
-        "In-meeting" -> "Collaboration window · batched summaries"
-        "Offline" -> "Away · automated scheduled cron only"
-        _ -> "Active"
-      end
-
-    {:noreply,
-     socket
-     |> assign(:selected_schedule_status, status)
-     |> assign(:user_availability, status)
-     |> assign(:user_availability_subtext, subtext)}
+    if status in ["Available", "Busy", "In-meeting", "Offline"] do
+      {:noreply, assign(socket, :selected_schedule_status, status)}
+    else
+      {:noreply, socket}
+    end
   end
 
   @impl true
@@ -782,19 +858,54 @@ defmodule IexCodeWeb.WorkspaceLive do
   end
 
   @impl true
-  def handle_event("apply_time_picker", _params, socket) do
-    slot = socket.assigns.selected_time_slot
-    status = socket.assigns.selected_schedule_status
-    date = socket.assigns.new_task_date
+  def handle_event("update_custom_time", params, socket) do
+    custom_time =
+      params["custom_time"] ||
+        params["query"] ||
+        params["value"] ||
+        get_in(params, ["time_picker", "custom_time"]) || ""
 
     {:noreply,
      socket
-     |> assign(:show_time_picker, false)
-     |> assign(:user_availability, status)
-     |> put_flash(
-       :info,
-       "Scheduled for #{date} · #{slot} (#{status}) · Focus presence updated: #{status}"
-     )}
+     |> assign(:custom_time, custom_time)
+     |> assign(:custom_time_form, to_form(%{"custom_time" => custom_time}))}
+  end
+
+  @impl true
+  def handle_event("apply_time_picker", _params, socket) do
+    status = socket.assigns.selected_schedule_status
+    date = socket.assigns.new_task_date
+
+    custom? =
+      socket.assigns.show_custom_time_input and String.trim(socket.assigns.custom_time) != ""
+
+    slot = if custom?, do: socket.assigns.custom_time, else: socket.assigns.selected_time_slot
+
+    case normalize_time_slot(slot) do
+      {:ok, normalized_slot, _start_time} ->
+        {:noreply,
+         socket
+         |> assign(:show_time_picker, false)
+         |> assign(:show_custom_time_input, false)
+         |> assign(:selected_time_slot, normalized_slot)
+         |> assign(:time_picker_initial_slot, normalized_slot)
+         |> assign(:time_picker_initial_status, status)
+         |> assign(:time_picker_initial_custom_time, socket.assigns.custom_time)
+         |> assign(:user_availability, status)
+         |> assign(:user_availability_subtext, availability_subtext(status))
+         |> put_flash(
+           :info,
+           "Scheduled for #{date} · #{normalized_slot} (#{status}) · Focus presence updated: #{status}"
+         )}
+
+      :error ->
+        {:noreply,
+         put_flash(
+           socket,
+           :error,
+           "Enter a valid time interval, for example 03:15 PM - 04:00 PM"
+         )}
+    end
   end
 
   @impl true
@@ -1045,7 +1156,10 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("filter_files", %{"filter" => filter}, socket) do
-    {:noreply, assign(socket, :file_filter, filter)}
+    {:noreply,
+     socket
+     |> assign(:file_filter, filter)
+     |> assign(:file_filter_form, to_form(%{"filter" => filter}))}
   end
 
   @impl true
@@ -1378,7 +1492,7 @@ defmodule IexCodeWeb.WorkspaceLive do
     new_show = !socket.assigns.show_command_palette
     query = if new_show, do: "", else: socket.assigns.command_palette_query
     files = socket.assigns[:project_files] || []
-    sessions = socket.assigns[:sessions] || []
+    sessions = socket.assigns[:all_sessions] || []
 
     results =
       if new_show,
@@ -1404,7 +1518,7 @@ defmodule IexCodeWeb.WorkspaceLive do
   @impl true
   def handle_event("command_palette_search", %{"query" => query}, socket) do
     files = socket.assigns[:project_files] || []
-    sessions = socket.assigns[:sessions] || []
+    sessions = socket.assigns[:all_sessions] || []
 
     results =
       CommandPalette.search(query, files, sessions, socket.assigns.command_palette_category)
@@ -1419,7 +1533,7 @@ defmodule IexCodeWeb.WorkspaceLive do
   @impl true
   def handle_event("command_palette_set_category", %{"category" => category}, socket) do
     files = socket.assigns[:project_files] || []
-    sessions = socket.assigns[:sessions] || []
+    sessions = socket.assigns[:all_sessions] || []
 
     results =
       CommandPalette.search(socket.assigns.command_palette_query, files, sessions, category)
@@ -2166,6 +2280,11 @@ defmodule IexCodeWeb.WorkspaceLive do
     params = params["task"] || params[:task] || params
     title = params["title"] || params[:title] || ""
     sched_date = params["scheduled_at_date"] || params[:scheduled_at_date]
+
+    time_slot =
+      params["scheduled_at_time_slot"] || params[:scheduled_at_time_slot] ||
+        socket.assigns.selected_time_slot
+
     status = params["status"] || params[:status] || socket.assigns.new_task_status || "ready"
 
     priority =
@@ -2179,60 +2298,52 @@ defmodule IexCodeWeb.WorkspaceLive do
     tag = params["tag"] || params[:tag]
 
     if String.trim(to_string(title)) != "" do
-      scheduled_at =
-        if sched_date && to_string(sched_date) != "" do
-          case Date.from_iso8601(to_string(sched_date)) do
-            {:ok, date} -> DateTime.new!(date, ~T[10:30:00], "Etc/UTC")
-            _ -> nil
+      case scheduled_at_for_task(sched_date, time_slot, status) do
+        {:ok, scheduled_at} ->
+          steps_count =
+            case Integer.parse(to_string(steps_total)) do
+              {n, _} when n > 0 -> n
+              _ -> 4
+            end
+
+          attrs = %{
+            project_id: socket.assigns.project.id,
+            session_id: socket.assigns.session.id,
+            title: String.trim(to_string(title)),
+            description: params["description"] || params[:description],
+            priority: priority,
+            assignee: assignee,
+            status: status,
+            scheduled_at: scheduled_at,
+            cron_expression: cron_expr,
+            steps_total: steps_count,
+            steps_completed: 0,
+            tags: if(tag && to_string(tag) != "", do: [to_string(tag)], else: ["Task"])
+          }
+
+          case Kanban.create_task(attrs) do
+            {:ok, task} ->
+              tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
+
+              {:noreply,
+               socket
+               |> assign(:tasks, tasks)
+               |> assign(:selected_task, task)
+               |> assign(:show_new_task_modal, false)
+               |> put_flash(:info, "Task created")}
+
+            {:error, changeset} ->
+              {:noreply,
+               socket
+               |> assign(:show_new_task_modal, false)
+               |> put_flash(
+                 :error,
+                 "Failed to create task: #{inspect(translated_errors(changeset))}"
+               )}
           end
-        else
-          if status == "scheduled" do
-            DateTime.utc_now() |> DateTime.add(3600 * 24, :second)
-          else
-            nil
-          end
-        end
 
-      steps_count =
-        case Integer.parse(to_string(steps_total)) do
-          {n, _} when n > 0 -> n
-          _ -> 4
-        end
-
-      attrs = %{
-        project_id: socket.assigns.project.id,
-        session_id: socket.assigns.session.id,
-        title: String.trim(to_string(title)),
-        description: params["description"] || params[:description],
-        priority: priority,
-        assignee: assignee,
-        status: status,
-        scheduled_at: scheduled_at,
-        cron_expression: cron_expr,
-        steps_total: steps_count,
-        steps_completed: 0,
-        tags: if(tag && to_string(tag) != "", do: [to_string(tag)], else: ["Task"])
-      }
-
-      case Kanban.create_task(attrs) do
-        {:ok, task} ->
-          tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
-
-          {:noreply,
-           socket
-           |> assign(:tasks, tasks)
-           |> assign(:selected_task, task)
-           |> assign(:show_new_task_modal, false)
-           |> put_flash(:info, "Task created")}
-
-        {:error, changeset} ->
-          {:noreply,
-           socket
-           |> assign(:show_new_task_modal, false)
-           |> put_flash(
-             :error,
-             "Failed to create task: #{inspect(translated_errors(changeset))}"
-           )}
+        {:error, message} ->
+          {:noreply, put_flash(socket, :error, message)}
       end
     else
       {:noreply, socket}
@@ -2848,6 +2959,7 @@ defmodule IexCodeWeb.WorkspaceLive do
      |> assign(:settings, settings)
      |> assign(:settings_form, Settings.change_settings(settings) |> to_form(as: :settings))
      |> assign(:usage_history, Sessions.list_usage_history(10))
+     |> assign(:show_all_usage_modal, false)
      |> assign(:show_settings_modal, true)}
   end
 
@@ -3021,7 +3133,7 @@ defmodule IexCodeWeb.WorkspaceLive do
   @impl true
   def handle_event("new_session", _params, socket) do
     project = socket.assigns.project
-    count = length(socket.assigns.sessions) + 1
+    count = length(socket.assigns.all_sessions) + 1
 
     case Sessions.create_session(%{
            project_id: project.id,
@@ -3031,9 +3143,13 @@ defmodule IexCodeWeb.WorkspaceLive do
            model_name: socket.assigns.session.model_name
          }) do
       {:ok, session} ->
+        sessions = Sessions.list_sessions_for_project(project.id)
+
         {:noreply,
          socket
-         |> assign(:sessions, Sessions.list_sessions_for_project(project.id))
+         |> assign(:sessions, sessions)
+         |> assign(:all_sessions, sessions)
+         |> assign(:workspace_search, "")
          |> push_patch(to: ~p"/sessions/#{session.id}?project_id=#{project.id}")}
 
       {:error, reason} ->
@@ -3231,7 +3347,12 @@ defmodule IexCodeWeb.WorkspaceLive do
   def handle_event("toggle_settings_modal", _params, socket) do
     show? = !socket.assigns.show_settings_modal
     usage = if show?, do: Sessions.list_usage_history(10), else: socket.assigns.usage_history
-    {:noreply, socket |> assign(:show_settings_modal, show?) |> assign(:usage_history, usage)}
+
+    {:noreply,
+     socket
+     |> assign(:show_settings_modal, show?)
+     |> assign(:show_all_usage_modal, false)
+     |> assign(:usage_history, usage)}
   end
 
   @impl true
@@ -3277,6 +3398,7 @@ defmodule IexCodeWeb.WorkspaceLive do
          |> refresh_run_setup_settings(updated)
          |> refresh_research_launch_settings(updated)
          |> assign(:show_settings_modal, false)
+         |> assign(:show_all_usage_modal, false)
          |> put_flash(:info, "Settings saved successfully")}
 
       {:error, changeset} ->
@@ -3379,7 +3501,7 @@ defmodule IexCodeWeb.WorkspaceLive do
     {:noreply,
      socket
      |> assign(:all_messages, all_messages)
-     |> assign(:messages, filter_history_messages(all_messages, socket.assigns.workspace_search))}
+     |> assign(:messages, all_messages)}
   end
 
   @impl true
@@ -4355,7 +4477,7 @@ defmodule IexCodeWeb.WorkspaceLive do
             handle_event("new_session", %{}, socket)
 
           "toggle_swarm" ->
-            handle_event("toggle_swarm_mode", %{}, socket)
+            handle_event("toggle_swarm", %{}, socket)
 
           "open_settings" ->
             handle_event("toggle_settings_modal", %{}, socket)
@@ -4405,18 +4527,110 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   defp parse_terminal_dimension(_val, default), do: default
 
-  # -- History search ----------------------------------------------------------
+  # -- Workspace search --------------------------------------------------------
 
-  defp filter_history_messages(messages, query) do
+  defp filter_workspace_items(items, query, fields) do
     q = query |> to_string() |> String.trim() |> String.downcase()
 
     if q == "" do
-      messages
+      items
     else
-      Enum.filter(messages, fn msg ->
-        String.contains?(String.downcase(to_string(msg.content)), q) or
-          String.contains?(String.downcase(to_string(msg.agent_name)), q)
+      Enum.filter(items, fn item ->
+        Enum.any?(fields, fn field ->
+          item
+          |> Map.get(field)
+          |> to_string()
+          |> String.downcase()
+          |> String.contains?(q)
+        end)
       end)
+    end
+  end
+
+  defp provider_for_model(model_name) do
+    if String.starts_with?(String.downcase(to_string(model_name)), "claude"),
+      do: "anthropic",
+      else: "openai"
+  end
+
+  defp normalize_model_provider(provider, model_name) do
+    normalized_model = String.downcase(to_string(model_name))
+
+    cond do
+      String.starts_with?(normalized_model, "claude") -> "anthropic"
+      String.starts_with?(normalized_model, ["gpt", "gemini", "o1", "o3", "o4"]) -> "openai"
+      String.downcase(to_string(provider)) == "anthropic" -> "anthropic"
+      true -> "openai"
+    end
+  end
+
+  defp availability_subtext("Available"), do: "Instant notifications & swarm active"
+  defp availability_subtext("Busy"), do: "Deep focus · autonomous background mode"
+  defp availability_subtext("In-meeting"), do: "Collaboration window · batched summaries"
+  defp availability_subtext("Offline"), do: "Away · automated scheduled cron only"
+  defp availability_subtext(_status), do: "Active"
+
+  defp scheduled_at_for_task(scheduled_date, time_slot, status) do
+    scheduled_date = scheduled_date |> to_string() |> String.trim()
+
+    cond do
+      scheduled_date != "" ->
+        with {:ok, date} <- Date.from_iso8601(scheduled_date),
+             {:ok, _normalized_slot, start_time} <- normalize_time_slot(time_slot) do
+          {:ok, DateTime.new!(date, start_time, "Etc/UTC")}
+        else
+          {:error, _reason} -> {:error, "Choose a valid scheduled date"}
+          :error -> {:error, "Choose a valid scheduled time interval"}
+        end
+
+      status == "scheduled" ->
+        case normalize_time_slot(time_slot) do
+          {:ok, _normalized_slot, start_time} ->
+            {:ok, DateTime.new!(Date.add(Date.utc_today(), 1), start_time, "Etc/UTC")}
+
+          :error ->
+            {:error, "Choose a valid scheduled time interval"}
+        end
+
+      true ->
+        {:ok, nil}
+    end
+  end
+
+  defp normalize_time_slot(slot) do
+    regex =
+      ~r/\A\s*(\d{1,2}):(\d{2})\s*([AaPp][Mm])\s*-\s*(\d{1,2}):(\d{2})\s*([AaPp][Mm])\s*\z/
+
+    with [_, start_hour, start_minute, start_period, end_hour, end_minute, end_period] <-
+           Regex.run(regex, to_string(slot)),
+         {:ok, start_time} <- twelve_hour_time(start_hour, start_minute, start_period),
+         {:ok, end_time} <- twelve_hour_time(end_hour, end_minute, end_period),
+         false <- start_time == end_time do
+      normalized_slot =
+        Calendar.strftime(start_time, "%I:%M %p") <>
+          " - " <> Calendar.strftime(end_time, "%I:%M %p")
+
+      {:ok, normalized_slot, start_time}
+    else
+      _ -> :error
+    end
+  end
+
+  defp twelve_hour_time(hour, minute, period) do
+    with {hour, ""} <- Integer.parse(hour),
+         {minute, ""} <- Integer.parse(minute),
+         true <- hour in 1..12,
+         true <- minute in 0..59 do
+      hour =
+        case {hour, String.upcase(period)} do
+          {12, "AM"} -> 0
+          {hour, "PM"} when hour < 12 -> hour + 12
+          {hour, _period} -> hour
+        end
+
+      Time.new(hour, minute, 0)
+    else
+      _ -> :error
     end
   end
 
@@ -4713,13 +4927,25 @@ defmodule IexCodeWeb.WorkspaceLive do
       root_path
       |> Path.join("**/*")
       |> Path.wildcard()
-      |> Enum.reject(&String.contains?(&1, ["_build", "deps", ".git", ".elixir_ls", ".agents"]))
       |> Enum.filter(&File.regular?/1)
       |> Enum.map(&Path.relative_to(&1, root_path))
+      |> Enum.reject(&generated_or_sensitive_workspace_file?/1)
       |> Enum.sort()
     else
       []
     end
+  end
+
+  defp generated_or_sensitive_workspace_file?(relative_path) do
+    excluded_directories =
+      MapSet.new(["_build", "deps", ".git", ".elixir_ls", ".agents", "node_modules", "tmp"])
+
+    segments = Path.split(relative_path)
+    basename = Path.basename(relative_path)
+
+    Enum.any?(segments, &MapSet.member?(excluded_directories, &1)) or
+      basename == "erl_crash.dump" or
+      Regex.match?(~r/\.(?:db|sqlite|sqlite3)(?:-(?:wal|shm))?\z/i, basename)
   end
 
   defp seed_initial_messages(session_id) do
@@ -5421,8 +5647,7 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   defp calendar_grid_cells(year, month, selected_date_str) do
     first_date = Date.new!(year, month, 1)
-    day_of_week = Date.day_of_week(first_date)
-    sunday_offset = if day_of_week == 7, do: 0, else: day_of_week
+    leading_day_count = Date.day_of_week(first_date) - 1
     days_in_current = Date.days_in_month(first_date)
 
     {prev_year, prev_month} =
@@ -5439,8 +5664,8 @@ defmodule IexCodeWeb.WorkspaceLive do
     today = Date.utc_today()
 
     prev_cells =
-      if sunday_offset > 0 do
-        start_day = days_in_prev - sunday_offset + 1
+      if leading_day_count > 0 do
+        start_day = days_in_prev - leading_day_count + 1
 
         for d <- start_day..days_in_prev do
           cell_date = Date.new!(prev_year, prev_month, d)

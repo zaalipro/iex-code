@@ -37,14 +37,137 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
   if (document.documentElement.dataset.themeSource === "system") setTheme("system")
 })
 
+// LiveView may replace the focused trigger before a conditionally rendered
+// dialog hook mounts. Capture the interaction target first so focus can still
+// return to the control that opened the dialog.
+let lastInteractionTarget = null
+document.addEventListener("click", (event) => {
+  if (!(event.target instanceof Element)) return
+
+  const target = event.target.closest(
+    "button, a[href], input, select, textarea, [role='button'], [tabindex]:not([tabindex='-1'])"
+  )
+  if (target instanceof HTMLElement) lastInteractionTarget = target
+}, true)
+
 const Hooks = {
   TerminalHook,
+  ModalFocus: {
+    mounted() {
+      const activeElement = document.activeElement
+      this.previouslyFocused = activeElement instanceof HTMLElement && activeElement !== document.body
+        ? activeElement
+        : lastInteractionTarget?.isConnected ? lastInteractionTarget : null
+      this.previouslyFocusedId = this.previouslyFocused?.id || null
+      this.background = document.getElementById("workspace-shell")
+      if (this.background) this.background.inert = true
+      this.background?.setAttribute("aria-hidden", "true")
+
+      this.focusableSelector = [
+        "a[href]",
+        "button:not([disabled])",
+        "input:not([disabled]):not([type='hidden'])",
+        "select:not([disabled])",
+        "textarea:not([disabled])",
+        "[tabindex]:not([tabindex='-1'])"
+      ].join(",")
+
+      this.visibleFocusableElements = () => Array.from(
+        this.el.querySelectorAll(this.focusableSelector)
+      ).filter((element) => element.getClientRects().length > 0 && !element.inert)
+
+      this.topmostModal = () => {
+        const dialogs = Array.from(document.querySelectorAll("[data-modal-focus]"))
+          .filter((dialog) => dialog.getClientRects().length > 0)
+        return dialogs.at(-1)
+      }
+
+      this.focusInitialElement = () => {
+        let preferred = null
+        const selector = this.el.dataset.initialFocus
+
+        if (selector) {
+          try {
+            preferred = this.el.querySelector(selector)
+          } catch (_error) {
+            // A malformed optional selector should not make the dialog unusable.
+          }
+        }
+
+        const target = preferred || this.visibleFocusableElements()[0] || this.el
+        target.focus({preventScroll: true})
+      }
+
+      this.handleKeyDown = (event) => {
+        // The command palette is rendered after workspace dialogs and owns its
+        // keyboard interaction while open.
+        if (document.getElementById("command-palette-dialog")) return
+        if (this.topmostModal() !== this.el) return
+
+        if (event.key === "Escape") {
+          const cancelEvent = this.el.dataset.cancelEvent
+          if (!cancelEvent || this.closing) return
+
+          event.preventDefault()
+          event.stopPropagation()
+          this.closing = true
+          this.pushEvent(cancelEvent, {})
+          return
+        }
+
+        if (event.key !== "Tab") return
+
+        const focusable = this.visibleFocusableElements()
+        if (focusable.length === 0) {
+          event.preventDefault()
+          this.el.focus()
+          return
+        }
+
+        const first = focusable[0]
+        const last = focusable[focusable.length - 1]
+
+        if (!this.el.contains(document.activeElement)) {
+          event.preventDefault()
+          ;(event.shiftKey ? last : first).focus()
+        } else if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault()
+          last.focus()
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault()
+          first.focus()
+        }
+      }
+
+      document.addEventListener("keydown", this.handleKeyDown, true)
+      this.initialFocusFrame = requestAnimationFrame(this.focusInitialElement)
+    },
+    destroyed() {
+      document.removeEventListener("keydown", this.handleKeyDown, true)
+      cancelAnimationFrame(this.initialFocusFrame)
+      const previouslyFocused = this.previouslyFocused
+      const previouslyFocusedId = this.previouslyFocusedId
+
+      requestAnimationFrame(() => {
+        const openModal = document.querySelector("[data-modal-focus]")
+        if (!openModal && this.background) {
+          this.background.inert = false
+          this.background.removeAttribute("aria-hidden")
+        }
+
+        const focusTarget = previouslyFocused?.isConnected
+          ? previouslyFocused
+          : previouslyFocusedId && document.getElementById(previouslyFocusedId)
+        focusTarget?.focus({preventScroll: true})
+      })
+    }
+  },
   KeyboardSubmit: {
     mounted() {
       this.el.addEventListener("keydown", (e) => {
         if (e.key === "Enter" && !e.shiftKey) {
           e.preventDefault()
-          this.el.form.dispatchEvent(new Event("submit", {bubbles: true, cancelable: true}))
+          this.el.form.requestSubmit()
         }
       })
     }
@@ -55,15 +178,22 @@ const Hooks = {
       // can be restored without destroying child elements such as SVG icons.
       this.originalHTML = this.el.innerHTML
       this.resetTimer = null
-      this.el.addEventListener("click", () => {
+      this.el.setAttribute("aria-live", "polite")
+      this.showCopyStatus = (message) => {
+        this.el.textContent = message
+        clearTimeout(this.resetTimer)
+        this.resetTimer = setTimeout(() => {
+          this.el.innerHTML = this.originalHTML
+        }, 2000)
+      }
+      this.el.addEventListener("click", async () => {
         const text = this.el.getAttribute("data-code") || ""
-        navigator.clipboard.writeText(text).then(() => {
-          this.el.innerHTML = "Copied!"
-          clearTimeout(this.resetTimer)
-          this.resetTimer = setTimeout(() => {
-            this.el.innerHTML = this.originalHTML
-          }, 2000)
-        })
+        try {
+          await navigator.clipboard.writeText(text)
+          this.showCopyStatus("Copied")
+        } catch (_error) {
+          this.showCopyStatus("Copy failed")
+        }
       })
     },
     destroyed() {
@@ -72,27 +202,35 @@ const Hooks = {
   },
   CommandPalette: {
     mounted() {
+      this.lastFocusedElement = null
+      this.paletteWasOpen = this.paletteIsOpen()
+
       this.handleKeyDown = (e) => {
         // Cmd+K or Ctrl+K opens/toggles the palette
         if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {
           e.preventDefault()
+
+          if (!this.paletteIsOpen()) this.rememberFocus()
+
           this.pushEvent("toggle_command_palette", {})
           return
         }
 
-        const palette = document.getElementById("command-palette-modal")
-        if (!palette) return
+        const dialog = this.paletteDialog()
+        if (!dialog) return
 
         if (e.key === "Escape") {
           e.preventDefault()
           this.pushEvent("close_command_palette", {})
+        } else if (e.key === "Tab") {
+          this.trapFocus(e, dialog)
         } else if (e.key === "ArrowDown") {
           e.preventDefault()
           this.pushEvent("command_palette_navigate", {direction: "down"})
         } else if (e.key === "ArrowUp") {
           e.preventDefault()
           this.pushEvent("command_palette_navigate", {direction: "up"})
-        } else if (e.key === "Enter") {
+        } else if (e.key === "Enter" && document.activeElement?.id === "command-palette-input") {
           e.preventDefault()
           this.pushEvent("command_palette_execute_selected", {})
         }
@@ -101,6 +239,8 @@ const Hooks = {
       window.addEventListener("keydown", this.handleKeyDown)
 
       this.handleEvent("focus_palette_input", () => {
+        this.rememberFocus()
+
         setTimeout(() => {
           const input = document.getElementById("command-palette-input")
           if (input) {
@@ -117,8 +257,72 @@ const Hooks = {
         }
       })
     },
+    updated() {
+      const paletteIsOpen = this.paletteIsOpen()
+
+      if (paletteIsOpen && !this.paletteWasOpen) this.rememberFocus()
+      if (!paletteIsOpen && this.paletteWasOpen) this.restoreFocus()
+
+      this.paletteWasOpen = paletteIsOpen
+    },
     destroyed() {
       window.removeEventListener("keydown", this.handleKeyDown)
+      if (this.paletteWasOpen) this.restoreFocus()
+    },
+    paletteDialog() {
+      return document.getElementById("command-palette-dialog")
+    },
+    paletteIsOpen() {
+      return Boolean(this.paletteDialog())
+    },
+    rememberFocus() {
+      const activeElement = document.activeElement
+      const dialog = this.paletteDialog()
+
+      if (
+        !this.lastFocusedElement &&
+        activeElement instanceof HTMLElement &&
+        activeElement !== document.body &&
+        (!dialog || !dialog.contains(activeElement))
+      ) {
+        this.lastFocusedElement = activeElement
+      }
+    },
+    restoreFocus() {
+      const element = this.lastFocusedElement
+      this.lastFocusedElement = null
+
+      requestAnimationFrame(() => {
+        if (element?.isConnected) element.focus()
+      })
+    },
+    trapFocus(event, dialog) {
+      const focusable = Array.from(dialog.querySelectorAll(
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      )).filter((element) => (
+        element.getAttribute("tabindex") !== "-1" && element.getClientRects().length > 0
+      ))
+
+      if (focusable.length === 0) {
+        event.preventDefault()
+        dialog.focus()
+        return
+      }
+
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+
+      if (!dialog.contains(document.activeElement)) {
+        event.preventDefault()
+        const target = event.shiftKey ? last : first
+        target.focus()
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
     }
   }
 }

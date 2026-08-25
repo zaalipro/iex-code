@@ -514,8 +514,12 @@ defmodule IexCodeWeb.WorkspaceLiveUIControlsTest do
       assert html =~ "In-meeting"
 
       # 2. Select status
-      html = render_click(view, "select_schedule_status", %{"status" => "In-meeting"})
-      assert html =~ "Collaboration window · batched summaries"
+      render_click(view, "select_schedule_status", %{"status" => "In-meeting"})
+
+      assert has_element?(
+               view,
+               "#time-picker-modal button[aria-pressed='true']"
+             )
 
       # 3. Select time slot
       render_click(view, "select_time_slot", %{"slot" => "02:00 PM - 03:00 PM"})

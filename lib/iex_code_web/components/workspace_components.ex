@@ -478,13 +478,13 @@ defmodule IexCodeWeb.WorkspaceComponents do
     ~H"""
     <div
       id="diff-viewer-container"
-      class="bg-[#11151c] border border-[#21262d] rounded-2xl flex flex-col h-full overflow-hidden"
+      class="min-h-0 min-w-0 bg-[#11151c] border border-[#21262d] rounded-2xl flex flex-col h-full overflow-hidden"
     >
       <!-- Toolbar Header -->
-      <div class="p-3 border-b border-[#21262d] bg-[#161b22] flex items-center justify-between shrink-0 font-mono text-xs">
-        <div class="flex items-center gap-2 min-w-0">
+      <div class="diff-viewer-header p-3 border-b border-[#21262d] bg-[#161b22] flex flex-wrap items-center justify-between gap-2 shrink-0 font-mono text-xs">
+        <div class="flex min-w-0 flex-1 items-center gap-2">
           <.icon name="hero-code-bracket-square" class="w-4 h-4 text-cyan-400 shrink-0" />
-          <span class="font-semibold text-white truncate max-w-xs md:max-w-md">
+          <span class="min-w-0 truncate font-semibold text-white">
             {@file_path || "Multi-File Patch Preview"}
           </span>
           <span class={[
@@ -505,6 +505,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
             <button
               phx-click="revert_file"
               phx-value-file={@file_path}
+              data-confirm="Revert every uncommitted change in this file?"
               class="px-2.5 py-1 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 rounded-lg text-xs font-mono transition-smooth flex items-center gap-1"
               title="Revert entire file to clean git state"
             >
@@ -562,7 +563,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
       </div>
 
       <!-- Diff Body with Granular Hunks -->
-      <div class="flex-1 overflow-auto font-mono text-xs leading-relaxed p-3 bg-[#0a0d12] space-y-4">
+      <div class="flex-1 min-h-0 min-w-0 overflow-auto font-mono text-xs leading-relaxed p-2 sm:p-3 bg-[#0a0d12] space-y-4">
         <%= if is_nil(@diff_text) or String.trim(@diff_text) == "" do %>
           <div class="p-8 text-center text-gray-500">
             No patch or diff selected.
@@ -643,6 +644,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
               phx-click="reject_hunk"
               phx-value-file={@file_path}
               phx-value-hunk_id={@hunk.id}
+              data-confirm="Discard this hunk?"
               class="px-2 py-1 bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 rounded text-[11px] font-semibold transition-smooth flex items-center gap-1"
               title="Reject / Discard this hunk"
             >
@@ -653,6 +655,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
               phx-click="revert_hunk"
               phx-value-file={@file_path}
               phx-value-hunk_id={@hunk.id}
+              data-confirm="Revert this hunk?"
               class="px-2 py-1 bg-gray-700/40 hover:bg-gray-700/60 text-gray-300 border border-gray-600/30 rounded text-[11px] transition-smooth flex items-center gap-1"
               title="Revert this hunk"
             >
@@ -787,7 +790,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
     assigns = assign(assigns, lines: lines)
 
     ~H"""
-    <div class="grid grid-cols-2 gap-2">
+    <div class="grid min-w-[42rem] grid-cols-2 gap-2">
       <div class="space-y-0.5 border-r border-[#21262d] pr-2">
         <div class="text-gray-500 text-[10px] uppercase font-bold px-2 py-1 bg-[#11151c] rounded mb-1">
           Original
@@ -839,6 +842,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
   """
   attr :files, :list, default: []
   attr :filter, :string, default: ""
+  attr :filter_form, :any, default: nil
   attr :expanded_folders, :any, default: MapSet.new()
   attr :selected_file, :string, default: nil
   attr :file_content, :string, default: nil
@@ -875,24 +879,36 @@ defmodule IexCodeWeb.WorkspaceComponents do
       |> assign(:has_filter, has_filter)
       |> assign(:current_text, current_text)
       |> assign(:editor_locked?, editor_locked?)
+      |> assign(:filter_form, assigns.filter_form || to_form(%{"filter" => assigns.filter}))
 
     ~H"""
-    <div id="file-explorer-container" class="flex-1 flex h-full overflow-hidden bg-[#0a0d12]">
+    <div
+      id="file-explorer-container"
+      class="flex-1 flex min-h-0 min-w-0 flex-col overflow-hidden bg-[#0a0d12] md:flex-row"
+    >
       <!-- Left Tree / List Navigation -->
-      <div class="w-72 border-r border-[#21262d] bg-[#11151c] flex flex-col h-full overflow-hidden shrink-0">
+      <aside
+        id="file-tree-panel"
+        aria-label="Project files"
+        class="flex h-[min(38%,20rem)] w-full shrink-0 flex-col overflow-hidden border-b border-[#21262d] bg-[#11151c] md:h-full md:w-64 md:border-r md:border-b-0 xl:w-72"
+      >
         <!-- Search Header -->
         <div class="p-3 border-b border-[#21262d]">
-          <div class="relative">
+          <.form
+            for={@filter_form}
+            id="file-filter-form"
+            phx-change="filter_files"
+            class="relative"
+          >
             <input
               type="text"
               name="filter"
               value={@filter}
               placeholder="Search files (e.g. .ex)..."
-              phx-change="filter_files"
               class="w-full bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-1.5 pl-8 text-xs text-white placeholder-gray-500 font-mono focus:border-cyan-500 focus:outline-none"
             />
             <.icon name="hero-magnifying-glass" class="w-4 h-4 text-gray-400 absolute left-2.5 top-2" />
-          </div>
+          </.form>
           <div class="flex items-center justify-between mt-2 px-1 text-[11px] font-mono text-gray-400">
             <span>{if @has_filter, do: length(@tree_items), else: length(@files)} files</span>
             <button
@@ -965,10 +981,13 @@ defmodule IexCodeWeb.WorkspaceComponents do
             <% end %>
           <% end %>
         </div>
-      </div>
+      </aside>
 
       <!-- Right Interactive Code Editor Viewport -->
-      <div class="flex-1 flex flex-col h-full bg-[#0a0d12] overflow-hidden">
+      <div
+        id="file-editor-panel"
+        class="flex min-h-0 min-w-0 flex-1 flex-col bg-[#0a0d12] overflow-hidden"
+      >
         <%= if @selected_file do %>
           <!-- Open Buffer Tabs Bar -->
           <div class="flex items-center bg-[#11151c] border-b border-[#21262d] overflow-x-auto px-2 pt-1.5 gap-1 shrink-0">
@@ -997,6 +1016,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
                   type="button"
                   phx-click="close_file_buffer"
                   phx-value-path={tab.path}
+                  aria-label={"Close #{Path.basename(tab.path)} buffer"}
                   class="text-gray-500 hover:text-rose-400 p-0.5 rounded transition-smooth ml-1 shrink-0"
                   title="Close buffer"
                 >
@@ -1007,7 +1027,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
           </div>
 
           <!-- Active File Toolbar -->
-          <div class="p-2.5 border-b border-[#21262d] bg-[#161b22] flex items-center justify-between shrink-0 font-mono text-xs">
+          <div class="file-editor-toolbar p-2.5 border-b border-[#21262d] bg-[#161b22] flex flex-wrap items-center justify-between gap-2 shrink-0 font-mono text-xs">
             <div class="flex items-center gap-2 min-w-0">
               <.icon name={file_icon(@selected_file)} class="w-4 h-4 text-cyan-400 shrink-0" />
               <span class="text-white font-semibold truncate">{@selected_file}</span>
@@ -1019,7 +1039,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
             </div>
 
             <!-- Editor Action Buttons: Revert, Save, Copy -->
-            <div class="flex items-center gap-2 shrink-0">
+            <div class="flex max-w-full items-center gap-1.5 sm:gap-2 shrink-0 overflow-x-auto">
               <%= if @is_dirty do %>
                 <button
                   phx-click="revert_file_buffer"
@@ -1027,7 +1047,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
                   title="Discard unsaved buffer edits"
                 >
                   <.icon name="hero-arrow-uturn-left" class="w-3.5 h-3.5" />
-                  <span>Revert</span>
+                  <span class="hidden sm:inline">Revert</span>
                 </button>
               <% end %>
 
@@ -1064,7 +1084,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
                 class="px-2.5 py-1 bg-[#21262d] hover:bg-[#30363d] text-gray-200 rounded-lg text-xs font-mono transition-smooth flex items-center gap-1.5"
               >
                 <.icon name="hero-clipboard-document" class="w-3.5 h-3.5" />
-                <span>Copy</span>
+                <span class="hidden sm:inline">Copy</span>
               </button>
             </div>
           </div>
@@ -1852,143 +1872,177 @@ defmodule IexCodeWeb.WorkspaceComponents do
 
   def command_palette(assigns) do
     ~H"""
-    <%= if @show do %>
-      <div
-        id="command-palette-modal"
-        phx-hook="CommandPalette"
-        class="fixed inset-0 z-50 flex items-start justify-center pt-[10vh] px-4 bg-black/60 backdrop-blur-md transition-opacity"
-      >
-        <!-- Backdrop click dismiss -->
-        <div class="fixed inset-0" phx-click="close_command_palette"></div>
-
-        <!-- Palette Dialog Window -->
+    <div id="command-palette-controller" phx-hook="CommandPalette" class="contents">
+      <%= if @show do %>
         <div
-          class="relative w-full max-w-2xl bg-[#11151c] border border-[#30363d] rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[75vh] z-10 animate-scale-in"
-          phx-click-away="close_command_palette"
+          id="command-palette-modal"
+          class="fixed inset-0 z-50 flex items-start justify-center pt-[10vh] px-4 bg-black/60 backdrop-blur-md transition-opacity"
         >
-          <!-- Search Header Input -->
-          <div class="flex items-center px-4 py-3 border-b border-[#21262d] bg-[#161b22]/80 gap-3">
-            <.icon name="hero-magnifying-glass" class="w-5 h-5 text-gray-400 shrink-0" />
-            <form
-              id="command-palette-form"
-              phx-change="command_palette_search"
-              phx-submit="command_palette_execute_selected"
-              class="flex-1"
-            >
-              <input
-                id="command-palette-input"
-                type="text"
-                name="query"
-                value={@query}
-                phx-debounce="80"
-                autocomplete="off"
-                spellcheck="false"
-                placeholder="Search files, sessions, views, actions... (Cmd+K)"
-                class="w-full bg-transparent border-0 text-gray-100 placeholder-gray-500 font-sans text-sm focus:outline-none focus:ring-0 p-0"
-              />
-            </form>
-            <button
-              type="button"
-              phx-click="close_command_palette"
-              class="px-1.5 py-0.5 text-[11px] font-mono font-medium text-gray-400 bg-[#21262d] border border-[#30363d] rounded hover:text-white"
-            >
-              ESC
-            </button>
-          </div>
+          <%!-- Backdrop click dismiss --%>
+          <div class="fixed inset-0" phx-click="close_command_palette" aria-hidden="true"></div>
 
-          <!-- Category Filter Pills -->
-          <div class="flex items-center gap-1.5 px-4 py-2 border-b border-[#21262d] bg-[#0d1117] overflow-x-auto font-mono text-xs">
-            <%= for {cat, label} <- [{"all", "All"}, {"actions", "Actions"}, {"views", "Views"}, {"files", "Files"}, {"sessions", "Sessions"}] do %>
-              <button
-                type="button"
-                phx-click="command_palette_set_category"
-                phx-value-category={cat}
-                class={[
-                  "px-2.5 py-1 rounded-lg transition-smooth font-medium text-[11px] shrink-0",
-                  @category == cat &&
-                    "bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 font-semibold shadow-sm",
-                  @category != cat &&
-                    "text-gray-400 hover:text-gray-200 hover:bg-[#161b22] border border-transparent"
-                ]}
+          <%!-- Palette Dialog Window --%>
+          <div
+            id="command-palette-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="command-palette-title"
+            aria-describedby="command-palette-description"
+            tabindex="-1"
+            class="relative w-full max-w-2xl bg-[#11151c] border border-[#30363d] rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[75vh] z-10 animate-scale-in"
+            phx-click-away="close_command_palette"
+          >
+            <h2 id="command-palette-title" class="sr-only">Command palette</h2>
+            <p id="command-palette-description" class="sr-only">
+              Search workspace files, sessions, views, and actions.
+            </p>
+
+            <%!-- Search Header Input --%>
+            <div class="flex items-center px-4 py-3 border-b border-[#21262d] bg-[#161b22]/80 gap-3">
+              <.icon name="hero-magnifying-glass" class="w-5 h-5 text-gray-400 shrink-0" />
+              <form
+                id="command-palette-form"
+                phx-change="command_palette_search"
+                phx-submit="command_palette_execute_selected"
+                class="flex-1"
               >
-                {label}
+                <input
+                  id="command-palette-input"
+                  type="text"
+                  name="query"
+                  value={@query}
+                  role="combobox"
+                  aria-label="Search command palette"
+                  aria-autocomplete="list"
+                  aria-expanded="true"
+                  aria-controls="command-palette-results"
+                  aria-activedescendant={
+                    if(@results == [], do: nil, else: "palette-item-#{@selected_index}")
+                  }
+                  phx-debounce="80"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder="Search files, sessions, views, actions... (Cmd+K)"
+                  class="w-full bg-transparent border-0 text-gray-100 placeholder-gray-500 font-sans text-sm focus:outline-none focus:ring-0 p-0"
+                />
+              </form>
+              <button
+                id="command-palette-close"
+                type="button"
+                phx-click="close_command_palette"
+                aria-label="Close command palette"
+                class="px-1.5 py-0.5 text-[11px] font-mono font-medium text-gray-400 bg-[#21262d] border border-[#30363d] rounded hover:text-white"
+              >
+                ESC
               </button>
-            <% end %>
-          </div>
+            </div>
 
-          <!-- Results List View -->
-          <div class="flex-1 overflow-y-auto p-2 space-y-1 font-sans text-sm">
-            <%= if @results == [] do %>
-              <div class="py-12 text-center text-gray-500 font-mono text-xs">
-                <.icon name="hero-magnifying-glass" class="w-8 h-8 text-gray-600 mx-auto mb-2" />
-                <p>No results found for "{@query}"</p>
-                <p class="text-[11px] text-gray-600 mt-1">
-                  Try a different search term or category filter
-                </p>
-              </div>
-            <% else %>
-              <%= for {item, idx} <- Enum.with_index(@results) do %>
-                <% is_selected = idx == @selected_index %>
+            <%!-- Category Filter Pills --%>
+            <div class="flex items-center gap-1.5 px-4 py-2 border-b border-[#21262d] bg-[#0d1117] overflow-x-auto font-mono text-xs">
+              <%= for {cat, label} <- [{"all", "All"}, {"actions", "Actions"}, {"views", "Views"}, {"files", "Files"}, {"sessions", "Sessions"}] do %>
                 <button
                   type="button"
-                  id={"palette-item-#{idx}"}
-                  phx-click="command_palette_select_item"
-                  phx-value-index={to_string(idx)}
+                  phx-click="command_palette_set_category"
+                  phx-value-category={cat}
+                  aria-pressed={to_string(@category == cat)}
                   class={[
-                    "w-full flex items-center justify-between p-2.5 rounded-xl text-left transition-smooth group",
-                    is_selected &&
-                      "bg-cyan-950/40 text-cyan-200 border border-cyan-500/40 font-medium",
-                    !is_selected && "hover:bg-[#161b22] text-gray-300 border border-transparent"
+                    "px-2.5 py-1 rounded-lg transition-smooth font-medium text-[11px] shrink-0",
+                    @category == cat &&
+                      "bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 font-semibold shadow-sm",
+                    @category != cat &&
+                      "text-gray-400 hover:text-gray-200 hover:bg-[#161b22] border border-transparent"
                   ]}
                 >
-                  <div class="flex items-center gap-3 truncate">
-                    <div class={[
-                      "w-7 h-7 rounded-lg flex items-center justify-center shrink-0 border",
-                      item.category == :action &&
-                        "bg-purple-500/10 text-purple-400 border-purple-500/30",
-                      item.category == :view && "bg-cyan-500/10 text-cyan-400 border-cyan-500/30",
-                      item.category == :file && "bg-amber-500/10 text-amber-400 border-amber-500/30",
-                      item.category == :session &&
-                        "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
-                    ]}>
-                      <.icon name={item.icon || "hero-cube"} class="w-4 h-4" />
-                    </div>
-                    <div class="truncate">
-                      <div class="font-medium text-gray-200 group-hover:text-white truncate flex items-center gap-2">
-                        <span>{item.title}</span>
-                        <span class="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-[#21262d] text-gray-400 border border-[#30363d]">
-                          {to_string(item.category)}
-                        </span>
-                      </div>
-                      <div class="text-[11px] text-gray-500 font-mono truncate">{item.subtitle}</div>
-                    </div>
-                  </div>
-
-                  <%= if Map.get(item, :shortcut) && item.shortcut != "" do %>
-                    <span class="px-2 py-0.5 text-[10px] font-mono text-gray-400 bg-[#161b22] border border-[#21262d] rounded shrink-0">
-                      {item.shortcut}
-                    </span>
-                  <% end %>
+                  {label}
                 </button>
               <% end %>
-            <% end %>
-          </div>
-
-          <!-- Footer Keyboard Navigation Helper -->
-          <div class="px-4 py-2 border-t border-[#21262d] bg-[#0d1117] flex items-center justify-between text-[11px] font-mono text-gray-500">
-            <div class="flex items-center gap-3">
-              <span><kbd class="px-1 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-gray-400">↑↓</kbd>
-              Navigate</span>
-              <span><kbd class="px-1 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-gray-400">↵</kbd>
-              Select</span>
-              <span><kbd class="px-1 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-gray-400">esc</kbd>
-              Close</span>
             </div>
-            <span>IexCode Command Hub</span>
+
+            <%!-- Results List View --%>
+            <div
+              id="command-palette-results"
+              role="listbox"
+              aria-label="Command palette results"
+              class="flex-1 overflow-y-auto p-2 space-y-1 font-sans text-sm"
+            >
+              <%= if @results == [] do %>
+                <div class="py-12 text-center text-gray-500 font-mono text-xs">
+                  <.icon name="hero-magnifying-glass" class="w-8 h-8 text-gray-600 mx-auto mb-2" />
+                  <p>No results found for "{@query}"</p>
+                  <p class="text-[11px] text-gray-600 mt-1">
+                    Try a different search term or category filter
+                  </p>
+                </div>
+              <% else %>
+                <%= for {item, idx} <- Enum.with_index(@results) do %>
+                  <% is_selected = idx == @selected_index %>
+                  <button
+                    type="button"
+                    id={"palette-item-#{idx}"}
+                    role="option"
+                    aria-selected={to_string(is_selected)}
+                    tabindex="-1"
+                    phx-click="command_palette_select_item"
+                    phx-value-index={to_string(idx)}
+                    class={[
+                      "w-full flex items-center justify-between p-2.5 rounded-xl text-left transition-smooth group",
+                      is_selected &&
+                        "bg-cyan-950/40 text-cyan-200 border border-cyan-500/40 font-medium",
+                      !is_selected && "hover:bg-[#161b22] text-gray-300 border border-transparent"
+                    ]}
+                  >
+                    <div class="flex items-center gap-3 truncate">
+                      <div class={[
+                        "w-7 h-7 rounded-lg flex items-center justify-center shrink-0 border",
+                        item.category == :action &&
+                          "bg-purple-500/10 text-purple-400 border-purple-500/30",
+                        item.category == :view && "bg-cyan-500/10 text-cyan-400 border-cyan-500/30",
+                        item.category == :file &&
+                          "bg-amber-500/10 text-amber-400 border-amber-500/30",
+                        item.category == :session &&
+                          "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
+                      ]}>
+                        <.icon name={item.icon || "hero-cube"} class="w-4 h-4" />
+                      </div>
+                      <div class="truncate">
+                        <div class="font-medium text-gray-200 group-hover:text-white truncate flex items-center gap-2">
+                          <span>{item.title}</span>
+                          <span class="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-[#21262d] text-gray-400 border border-[#30363d]">
+                            {to_string(item.category)}
+                          </span>
+                        </div>
+                        <div class="text-[11px] text-gray-500 font-mono truncate">
+                          {item.subtitle}
+                        </div>
+                      </div>
+                    </div>
+
+                    <%= if Map.get(item, :shortcut) && item.shortcut != "" do %>
+                      <span class="px-2 py-0.5 text-[10px] font-mono text-gray-400 bg-[#161b22] border border-[#21262d] rounded shrink-0">
+                        {item.shortcut}
+                      </span>
+                    <% end %>
+                  </button>
+                <% end %>
+              <% end %>
+            </div>
+
+            <%!-- Footer Keyboard Navigation Helper --%>
+            <div class="px-4 py-2 border-t border-[#21262d] bg-[#0d1117] flex items-center justify-between text-[11px] font-mono text-gray-500">
+              <div class="flex items-center gap-3">
+                <span><kbd class="px-1 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-gray-400">↑↓</kbd>
+                Navigate</span>
+                <span><kbd class="px-1 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-gray-400">↵</kbd>
+                Select</span>
+                <span><kbd class="px-1 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-gray-400">esc</kbd>
+                Close</span>
+              </div>
+              <span>IexCode Command Hub</span>
+            </div>
           </div>
         </div>
-      </div>
-    <% end %>
+      <% end %>
+    </div>
     """
   end
 
@@ -2346,6 +2400,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
                 <button
                   type="button"
                   phx-click="rollback_autofix"
+                  data-confirm="Roll back the applied AutoFix patch?"
                   class="px-3 py-1.5 bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/40 rounded-lg font-semibold transition-smooth flex items-center gap-1.5"
                 >
                   <.icon name="hero-arrow-uturn-left" class="w-3.5 h-3.5" />
