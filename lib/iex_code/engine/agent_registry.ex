@@ -31,6 +31,67 @@ defmodule IexCode.Engine.AgentRegistry do
     {:via, Registry, {__MODULE__, {:run_fleet, run_id, component}}}
   end
 
+  @doc "Registers the calling process as the sole swarm owner for a session."
+  def register_swarm_owner(session_id, metadata \\ %{})
+      when is_binary(session_id) and is_map(metadata) do
+    local_key = swarm_owner_key(session_id)
+    global_key = global_swarm_owner_key(session_id)
+
+    case Registry.register(__MODULE__, local_key, metadata) do
+      {:ok, _local_owner} ->
+        case :global.register_name(global_key, self()) do
+          :yes ->
+            {:ok, self()}
+
+          :no ->
+            Registry.unregister(__MODULE__, local_key)
+            {:error, {:already_registered, :global.whereis_name(global_key)}}
+        end
+
+      {:error, {:already_registered, owner}} ->
+        {:error, {:already_registered, owner}}
+    end
+  end
+
+  @doc "Removes the calling process' swarm ownership registration."
+  def unregister_swarm_owner(session_id) when is_binary(session_id) do
+    global_key = global_swarm_owner_key(session_id)
+
+    if :global.whereis_name(global_key) == self() do
+      :global.unregister_name(global_key)
+    end
+
+    Registry.unregister(__MODULE__, swarm_owner_key(session_id))
+
+    :ok
+  end
+
+  @doc "Looks up the sole live swarm coordinator for a session."
+  def swarm_owner(session_id) when is_binary(session_id) do
+    case swarm_owner_registration(session_id) do
+      {:ok, pid, _metadata} -> pid
+      {:error, {:swarm_owner_metadata_unavailable, pid, _reason}} -> pid
+      :none -> nil
+    end
+  end
+
+  @doc "Returns the live session swarm owner together with its bounded routing metadata."
+  def swarm_owner_registration(session_id) when is_binary(session_id) do
+    case :global.whereis_name(global_swarm_owner_key(session_id)) do
+      :undefined ->
+        :none
+
+      pid when is_pid(pid) ->
+        case swarm_owner_metadata(pid, session_id) do
+          {:ok, metadata} ->
+            {:ok, pid, metadata}
+
+          {:error, reason} ->
+            {:error, {:swarm_owner_metadata_unavailable, pid, reason}}
+        end
+    end
+  end
+
   @doc """
   Looks up the PID of a registered subagent by session ID and agent type.
   Returns `pid` or `nil` if not found.
@@ -122,5 +183,33 @@ defmodule IexCode.Engine.AgentRegistry do
       [{pid, _value}] -> if Process.alive?(pid), do: pid, else: nil
       [] -> nil
     end
+  end
+
+  defp swarm_owner_key(session_id), do: {:session_swarm, session_id}
+  defp global_swarm_owner_key(session_id), do: {__MODULE__, :session_swarm, session_id}
+
+  defp swarm_owner_metadata(pid, session_id) do
+    result =
+      if node(pid) == node() do
+        Registry.lookup(__MODULE__, swarm_owner_key(session_id))
+      else
+        :erpc.call(
+          node(pid),
+          Registry,
+          :lookup,
+          [__MODULE__, swarm_owner_key(session_id)],
+          1_000
+        )
+      end
+
+    case result do
+      [{^pid, metadata}] when is_map(metadata) -> {:ok, metadata}
+      [] -> {:error, :metadata_not_registered}
+      _invalid_metadata -> {:error, :invalid_owner_metadata}
+    end
+  rescue
+    error -> {:error, {:metadata_lookup_failed, Exception.message(error)}}
+  catch
+    kind, reason -> {:error, {:metadata_lookup_failed, kind, reason}}
   end
 end

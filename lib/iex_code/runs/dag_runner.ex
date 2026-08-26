@@ -443,25 +443,12 @@ defmodule IexCode.Runs.DagRunner do
     state
   end
 
-  defp terminalize_observed_parent(state, run) do
-    if map_size(state.active) == 0 do
-      {:ok, %{attempts: 0, status: run.status}}
-    else
-      terminal_status =
-        case run.status do
-          "cancelled" -> "cancelled"
-          "failed" -> "failed"
-          "interrupted" -> "interrupted"
-          "completed" -> "interrupted"
-        end
-
-      DagScheduler.terminalize_active(
-        run,
-        state.config.owner,
-        state.config.generation,
-        terminal_status
-      )
-    end
+  defp terminalize_observed_parent(_state, run) do
+    # Parent terminal transitions now atomically settle the DAG graph. The
+    # runner may observe that committed state before its local task monitors
+    # drain, so use the idempotent system reconciler rather than requiring the
+    # no-longer-active parent lease a second time.
+    DagScheduler.reconcile_terminal_run(run)
   end
 
   defp remove_active(state, ref, entry) do

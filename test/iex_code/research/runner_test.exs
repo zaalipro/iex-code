@@ -1,7 +1,11 @@
 defmodule IexCode.Research.RunnerTest do
   use IexCode.DataCase, async: false
 
+  import Ecto.Query
+
   alias IexCode.Research.Runner
+  alias IexCode.Repo
+  alias IexCode.Runs.Run
   alias IexCode.{Projects, Runs, Sessions}
 
   setup do
@@ -24,7 +28,7 @@ defmodule IexCode.Research.RunnerTest do
         }
       })
 
-    %{run: run}
+    %{run: run, project: project, session: session}
   end
 
   test "persists attempt-scoped stages, evidence, cited report and progress events", %{run: run} do
@@ -75,6 +79,155 @@ defmodule IexCode.Research.RunnerTest do
     event_types = Enum.map(Runs.list_events(run), & &1.type)
     assert "research.progress" in event_types
     refute "research.failed" in event_types
+  end
+
+  test "leased execution uses worker authority and stale authority cannot create graph state", %{
+    run: run
+  } do
+    assert {:ok, claimed} = Runs.claim_next_run("research-worker", lease_ms: 30_000)
+    assert claimed.id == run.id
+
+    authority = [
+      run_lease_owner: "research-worker",
+      run_attempt: claimed.attempt,
+      run_lease_generation: claimed.lease_generation
+    ]
+
+    expired = DateTime.add(DateTime.utc_now(), -1, :second) |> DateTime.truncate(:second)
+
+    Repo.update_all(from(current in Run, where: current.id == ^claimed.id),
+      set: [lease_expires_at: expired]
+    )
+
+    assert {:error, :lease_not_owned} =
+             Runner.execute(claimed, fn _, _ -> :ok end,
+               run_authority: authority,
+               search_module: IexCode.TestResearchSearchStub,
+               llm_module: IexCode.TestResearchLlmStub
+             )
+
+    assert Runs.list_steps(claimed) == []
+    assert Runs.list_artifacts(claimed) == []
+    assert Enum.map(Runs.list_events(claimed), & &1.type) == ["run.created", "run.claimed"]
+  end
+
+  test "leased execution persists stages and artifacts through scoped worker APIs", %{run: run} do
+    assert {:ok, claimed} = Runs.claim_next_run("research-worker", lease_ms: 30_000)
+    assert claimed.id == run.id
+
+    assert {:ok, result} =
+             Runner.execute(claimed, fn _, _ -> :ok end,
+               run_authority: [
+                 run_lease_owner: "research-worker",
+                 run_attempt: claimed.attempt,
+                 run_lease_generation: claimed.lease_generation
+               ],
+               search_module: IexCode.TestResearchSearchStub,
+               llm_module: IexCode.TestResearchLlmStub
+             )
+
+    assert result.report =~ "Verified source index"
+    assert Enum.all?(Runs.list_steps(claimed), &(&1.status == "completed"))
+    assert length(Runs.list_artifacts(claimed)) == 2
+  end
+
+  for {budget_name, budget_field, budget, llm_module, expected_error} <- [
+        {"token", :token_budget, 2, IexCode.TestResearchTokenBudgetLlmStub,
+         :token_budget_exhausted},
+        {"cost", :cost_budget_cents, 2, IexCode.TestResearchCostBudgetLlmStub,
+         :cost_budget_exhausted}
+      ] do
+    test "#{budget_name} exhaustion terminalizes the public research result under preserved lineage",
+         context do
+      assert {:ok, _cancelled} = Runs.cancel_unleased_run(context.run)
+
+      attrs = %{
+        project_id: context.project.id,
+        session_id: context.session.id,
+        objective: "Budgeted deep research",
+        kind: "deep_research",
+        mode: "research",
+        metadata: %{"research" => %{"level" => "medium"}}
+      }
+
+      assert {:ok, _queued} =
+               Runs.create_run(Map.put(attrs, unquote(budget_field), unquote(budget)))
+
+      assert {:ok, claimed} = Runs.claim_next_run("budget-result-worker", lease_ms: 30_000)
+
+      result_root =
+        Path.join(
+          System.tmp_dir!(),
+          "research-budget-result-#{System.unique_integer([:positive])}"
+        )
+
+      on_exit(fn -> File.rm_rf(result_root) end)
+
+      assert {:error, unquote(expected_error)} =
+               Runner.execute(claimed, fn _, _ -> :ok end,
+                 run_authority: [
+                   run_lease_owner: "budget-result-worker",
+                   run_attempt: claimed.attempt,
+                   run_lease_generation: claimed.lease_generation
+                 ],
+                 root: result_root,
+                 search_module: IexCode.TestResearchSearchStub,
+                 llm_module: unquote(llm_module)
+               )
+
+      assert %{status: "failed", lease_owner: "budget-result-worker"} =
+               Runs.get_run!(claimed.id)
+
+      assert %{status: "failed", completed_at: %DateTime{}} =
+               IexCode.Research.Results.get_by_run(claimed)
+    end
+  end
+
+  test "research result cannot become ready after parent authority expires", context do
+    {:ok, _queued} =
+      Runs.create_run(%{
+        project_id: context.project.id,
+        session_id: context.session.id,
+        objective: "Fence public result publication",
+        kind: "deep_research",
+        mode: "research",
+        metadata: %{"research" => %{"level" => "medium"}}
+      })
+
+    # The setup analysis run is older; cancel it so the deep-research row is
+    # the next claim candidate for this project.
+    assert {:ok, _cancelled} = Runs.cancel_unleased_run(context.run)
+    assert {:ok, claimed} = Runs.claim_next_run("result-worker", lease_ms: 30_000)
+
+    authority = [
+      lease_owner: "result-worker",
+      run_attempt: claimed.attempt,
+      lease_generation: claimed.lease_generation
+    ]
+
+    assert {:ok, running_result} =
+             IexCode.Research.Results.prepare_run_worker(claimed, authority)
+
+    expired = DateTime.add(DateTime.utc_now(), -1, :second) |> DateTime.truncate(:second)
+
+    Repo.update_all(from(current in Run, where: current.id == ^claimed.id),
+      set: [lease_expires_at: expired]
+    )
+
+    result_root =
+      Path.join(System.tmp_dir!(), "stale-result-#{System.unique_integer([:positive])}")
+
+    on_exit(fn -> File.rm_rf(result_root) end)
+
+    assert {:error, :lease_not_owned} =
+             IexCode.Research.Results.commit_worker(
+               running_result,
+               "# Stale report\n\nMust not become public.",
+               [root: result_root, source_count: 0],
+               authority
+             )
+
+    refute IexCode.Research.Results.get_by_run(claimed).status == "ready"
   end
 
   test "retains evidence and fails synthesis without fabricating a report when no key exists", %{

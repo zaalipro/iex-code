@@ -7,7 +7,7 @@ defmodule IexCode.Runs.Run do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
 
-  @statuses ~w(queued running paused completed failed cancelled interrupted)
+  @statuses ~w(draft queued running paused completed failed cancelled interrupted)
   @modes ~w(single swarm workflow research)
   @kinds ~w(coding_swarm analysis deep_research)
   @priorities ~w(low normal high critical)
@@ -18,7 +18,9 @@ defmodule IexCode.Runs.Run do
     :kind,
     :mode,
     :execution_engine,
-    :manifest_hash
+    :manifest_hash,
+    :request_key,
+    :request_fingerprint
   ]
 
   @mutable_fields [
@@ -54,6 +56,8 @@ defmodule IexCode.Runs.Run do
     field :priority, :string, default: "normal"
     field :execution_engine, :string, default: "legacy_v1"
     field :manifest_hash, :string
+    field :request_key, :string
+    field :request_fingerprint, :string
     field :lease_generation, :integer, default: 0
     field :progress, :integer, default: 0
     field :event_sequence, :integer, default: 0
@@ -123,6 +127,10 @@ defmodule IexCode.Runs.Run do
       :execution_engine
     ])
     |> validate_length(:objective, min: 1, max: 100_000)
+    |> validate_length(:request_key, min: 1, max: 200)
+    |> validate_length(:request_fingerprint, is: 64)
+    |> validate_format(:request_fingerprint, ~r/^[0-9a-f]{64}$/)
+    |> validate_request_identity()
     |> validate_length(:error_message, max: 20_000)
     |> validate_length(:lease_owner, max: 200)
     |> validate_inclusion(:status, @statuses)
@@ -146,6 +154,7 @@ defmodule IexCode.Runs.Run do
     |> validate_attempts()
     |> foreign_key_constraint(:project_id)
     |> foreign_key_constraint(:session_id)
+    |> unique_constraint([:session_id, :request_key], name: :runs_session_id_request_key_index)
     |> check_constraint(:execution_engine, name: :runs_execution_engine_check)
     |> check_constraint(:manifest_hash, name: :runs_manifest_hash_shape)
     |> check_constraint(:lease_generation, name: :runs_lease_generation_nonnegative)
@@ -160,17 +169,31 @@ defmodule IexCode.Runs.Run do
   defp reject_manifest_changes(changeset, %__MODULE__{id: id} = run, attrs)
        when not is_nil(id) and is_map(attrs) do
     Enum.reduce(@manifest_fields, changeset, fn field, current ->
-      requested = Map.get(attrs, field, Map.get(attrs, Atom.to_string(field)))
+      case manifest_attr(attrs, field) do
+        :absent ->
+          current
 
-      if is_nil(requested) or requested == Map.get(run, field) do
-        current
-      else
-        add_error(current, field, "cannot be changed after creation")
+        {:present, requested} ->
+          if requested == Map.get(run, field) do
+            current
+          else
+            add_error(current, field, "cannot be changed after creation")
+          end
       end
     end)
   end
 
   defp reject_manifest_changes(changeset, _run, _attrs), do: changeset
+
+  defp manifest_attr(attrs, field) do
+    string_field = Atom.to_string(field)
+
+    cond do
+      Map.has_key?(attrs, field) -> {:present, Map.get(attrs, field)}
+      Map.has_key?(attrs, string_field) -> {:present, Map.get(attrs, string_field)}
+      true -> :absent
+    end
+  end
 
   defp validate_attempts(changeset) do
     attempt = get_field(changeset, :attempt)
@@ -180,6 +203,15 @@ defmodule IexCode.Runs.Run do
       add_error(changeset, :attempt, "cannot exceed max_attempts")
     else
       changeset
+    end
+  end
+
+  defp validate_request_identity(changeset) do
+    case {get_field(changeset, :request_key), get_field(changeset, :request_fingerprint)} do
+      {nil, nil} -> changeset
+      {key, fingerprint} when is_binary(key) and is_binary(fingerprint) -> changeset
+      {nil, _fingerprint} -> add_error(changeset, :request_key, "is required with a fingerprint")
+      {_key, nil} -> add_error(changeset, :request_fingerprint, "is required with a request key")
     end
   end
 

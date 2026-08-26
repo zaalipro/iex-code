@@ -80,13 +80,6 @@ defmodule IexCodeWeb.WorkspaceLive do
 
     messages = Sessions.list_messages(session.id)
 
-    messages =
-      if messages == [] do
-        seed_initial_messages(session.id)
-      else
-        messages
-      end
-
     operations = Sessions.list_operations(session.id)
     durable_runs = Runs.list_runs(session_id: session.id, limit: 100)
     selected_run = List.first(durable_runs)
@@ -104,14 +97,6 @@ defmodule IexCodeWeb.WorkspaceLive do
     files = list_project_files(project.root_path)
     sessions = Sessions.list_sessions_for_project(project.id)
     tasks = Kanban.list_tasks(project.id)
-
-    # Seed initial demo tasks if empty to immediately populate Kanban
-    tasks =
-      if tasks == [] do
-        seed_initial_tasks(project.id, session.id)
-      else
-        tasks
-      end
 
     selected_task = List.first(tasks)
 
@@ -310,7 +295,12 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:run_setup_form, to_form(run_setup_defaults(settings), as: :run_setup))
       |> assign(
         :goal_form,
-        to_form(%{"title" => "", "description" => "", "auto_start" => "true"})
+        to_form(%{
+          "title" => "",
+          "description" => "",
+          "auto_start" => "true",
+          "request_id" => Ecto.UUID.generate()
+        })
       )
       |> assign(
         :task_form,
@@ -651,6 +641,18 @@ defmodule IexCodeWeb.WorkspaceLive do
   end
 
   @impl true
+  def handle_event("clear_kanban_filters", _params, socket) do
+    filters = %{"status" => "", "priority" => "", "assignee" => "", "search" => ""}
+    tasks = Kanban.list_tasks(socket.assigns.project.id, filters)
+
+    {:noreply,
+     socket
+     |> assign(:kanban_filter, filters)
+     |> assign(:tasks, tasks)
+     |> assign(:open_dropdown, nil)}
+  end
+
+  @impl true
   def handle_event("change_model", %{"provider" => provider, "model" => model}, socket) do
     provider = normalize_model_provider(provider, model)
 
@@ -921,12 +923,20 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("show_scheduled_task", %{"id" => task_id}, socket) do
-    task = Kanban.get_task(task_id) || Enum.find(socket.assigns.tasks, &(&1.id == task_id))
+    case Kanban.get_task(socket.assigns.project.id, task_id) do
+      nil ->
+        {:noreply,
+         socket
+         |> assign(:selected_scheduled_task, nil)
+         |> assign(:show_scheduled_task_modal, false)
+         |> put_flash(:error, "Scheduled task not found")}
 
-    {:noreply,
-     socket
-     |> assign(:selected_scheduled_task, task)
-     |> assign(:show_scheduled_task_modal, true)}
+      task ->
+        {:noreply,
+         socket
+         |> assign(:selected_scheduled_task, task)
+         |> assign(:show_scheduled_task_modal, true)}
+    end
   end
 
   @impl true
@@ -936,12 +946,20 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("open_edit_scheduled_task", %{"id" => task_id}, socket) do
-    task = Kanban.get_task(task_id) || Enum.find(socket.assigns.tasks, &(&1.id == task_id))
+    case Kanban.get_task(socket.assigns.project.id, task_id) do
+      nil ->
+        {:noreply,
+         socket
+         |> assign(:selected_scheduled_task, nil)
+         |> assign(:show_edit_scheduled_task_modal, false)
+         |> put_flash(:error, "Scheduled task not found")}
 
-    {:noreply,
-     socket
-     |> assign(:selected_scheduled_task, task)
-     |> assign(:show_edit_scheduled_task_modal, true)}
+      task ->
+        {:noreply,
+         socket
+         |> assign(:selected_scheduled_task, task)
+         |> assign(:show_edit_scheduled_task_modal, true)}
+    end
   end
 
   @impl true
@@ -958,7 +976,7 @@ defmodule IexCodeWeb.WorkspaceLive do
         (socket.assigns.selected_scheduled_task && socket.assigns.selected_scheduled_task.id)
 
     if id do
-      case Kanban.get_task(id) do
+      case Kanban.get_task(socket.assigns.project.id, id) do
         nil ->
           {:noreply, put_flash(socket, :error, "Scheduled task not found")}
 
@@ -1006,7 +1024,7 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("run_scheduled_task", %{"id" => task_id}, socket) do
-    case Kanban.get_task(task_id) do
+    case Kanban.get_task(socket.assigns.project.id, task_id) do
       nil ->
         {:noreply, put_flash(socket, :error, "Scheduled task not found")}
 
@@ -1016,33 +1034,64 @@ defmodule IexCodeWeb.WorkspaceLive do
         #{task.description || "No description provided."}
         """
 
+        request_key = manual_task_request_key(task)
+
         run_attrs = %{
           project_id: socket.assigns.project.id,
           session_id: socket.assigns.session.id,
+          request_key: request_key,
           objective: String.trim(prompt),
           kind: "coding_swarm",
           mode: "swarm",
           priority: task_priority_to_run_priority(task.priority),
-          metadata: %{"source" => "scheduled_task", "kanban_task_id" => task.id}
+          metadata: %{
+            "source" => "scheduled_task",
+            "kanban_task_id" => task.id,
+            "manual_dispatch_key" => request_key
+          }
         }
 
-        case RunDispatcher.enqueue(run_attrs) do
+        dispatch_result =
+          case linked_task_run(task, socket.assigns.session.id) do
+            %Runs.Run{} = existing -> {:ok, existing}
+            :foreign_session -> {:error, :task_linked_to_another_session}
+            nil -> RunDispatcher.enqueue(run_attrs)
+          end
+
+        case dispatch_result do
           {:ok, run} ->
-            {:ok, updated} =
-              Kanban.update_task(task, %{status: "running", worker_pid: "run:#{run.id}"})
+            task_result =
+              if task.worker_pid == "run:#{run.id}" do
+                {:ok, task}
+              else
+                Kanban.update_task(task, %{status: "running", worker_pid: "run:#{run.id}"})
+              end
 
-            tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
+            with {:ok, updated} <- task_result do
+              tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
 
+              {:noreply,
+               socket
+               |> assign(:tasks, tasks)
+               |> assign(:selected_task, updated)
+               |> assign(:show_scheduled_task_modal, false)
+               |> select_run_projection(run)
+               |> assign(:active_tab, "swarm")
+               |> put_flash(
+                 :info,
+                 "Task '#{task.title}' dispatched to the session via the durable run queue"
+               )}
+            else
+              {:error, reason} ->
+                {:noreply, put_flash(socket, :error, "Failed to link task: #{inspect(reason)}")}
+            end
+
+          {:error, :task_linked_to_another_session} ->
             {:noreply,
-             socket
-             |> assign(:tasks, tasks)
-             |> assign(:selected_task, updated)
-             |> assign(:show_scheduled_task_modal, false)
-             |> select_run_projection(run)
-             |> assign(:active_tab, "swarm")
-             |> put_flash(
-               :info,
-               "Task '#{task.title}' dispatched to the session via the durable run queue"
+             put_flash(
+               socket,
+               :error,
+               "Task is already linked to a durable run in another session"
              )}
 
           {:error, reason} ->
@@ -1058,7 +1107,7 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("delete_scheduled_task", %{"id" => task_id}, socket) do
-    case Kanban.get_task(task_id) do
+    case Kanban.get_task(socket.assigns.project.id, task_id) do
       nil ->
         {:noreply, socket}
 
@@ -2082,27 +2131,48 @@ defmodule IexCodeWeb.WorkspaceLive do
       goal_params = params["goal"] || params
       title = goal_params["title"] || ""
       desc = goal_params["description"] || ""
-      auto_start = goal_params["auto_start"] != "false"
+      auto_start = goal_params["auto_start"] in [true, "true", "on", "1", 1]
+      request_id = normalize_goal_request_id(goal_params["request_id"])
 
       if String.trim(to_string(title)) != "" do
+        title = title |> to_string() |> String.trim()
+        description = desc |> to_string() |> String.trim()
+        objective = durable_goal_objective(title, description)
         socket = assign(socket, :submitting?, true)
 
         socket =
           try do
-            {:ok, _goal} =
-              SessionServer.create_goal(
-                socket.assigns.session.id,
-                %{title: String.trim(title), description: desc},
-                auto_start: auto_start
-              )
+            if auto_start do
+              attrs =
+                durable_goal_attrs(socket, title, description, objective, request_id, auto_start)
 
-            socket
-            |> assign(:show_goal_modal, false)
-            |> assign(:active_tab, "swarm")
-            |> put_flash(
-              :info,
-              "Goal created#{if auto_start, do: " and autonomous swarm launched", else: ""}"
-            )
+              case RunDispatcher.enqueue(attrs) do
+                {:ok, run} ->
+                  durable_goal_created(
+                    socket,
+                    run,
+                    "Goal created and queued as a durable multi-agent run"
+                  )
+
+                {:error, reason} ->
+                  put_flash(
+                    socket,
+                    :error,
+                    "Failed to queue durable goal: #{format_run_error(reason)}"
+                  )
+              end
+            else
+              attrs =
+                durable_goal_attrs(socket, title, description, objective, request_id, auto_start)
+
+              case RunDispatcher.create_draft(attrs) do
+                {:ok, run} ->
+                  durable_goal_created(socket, run, "Goal saved as a durable draft")
+
+                {:error, reason} ->
+                  put_flash(socket, :error, "Failed to create goal: #{format_run_error(reason)}")
+              end
+            end
           rescue
             e ->
               Logger.error("create_goal failed: #{Exception.message(e)}")
@@ -2124,24 +2194,42 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("pause_session", _params, socket) do
-    SessionServer.pause_session(socket.assigns.session.id)
-    updated_session = %{socket.assigns.session | status: "paused"}
+    case SessionServer.pause_session(socket.assigns.session.id) do
+      {:ok, :paused} ->
+        {:noreply,
+         socket
+         |> assign(:session, %{socket.assigns.session | status: "paused"})
+         |> put_flash(:info, "Swarm execution paused")}
 
-    {:noreply,
-     socket
-     |> assign(:session, updated_session)
-     |> put_flash(:info, "Swarm execution paused")}
+      {:error, reason} ->
+        {:noreply,
+         put_flash(socket, :error, "Unable to pause execution: #{format_run_error(reason)}")}
+    end
+  catch
+    :exit, _ -> {:noreply, put_flash(socket, :error, "The session coordinator is unavailable")}
   end
 
   @impl true
   def handle_event("resume_session", _params, socket) do
-    SessionServer.resume_session(socket.assigns.session.id)
-    updated_session = %{socket.assigns.session | status: "running"}
+    case SessionServer.resume_session(socket.assigns.session.id) do
+      {:ok, :running} ->
+        {:noreply,
+         socket
+         |> assign(:session, %{socket.assigns.session | status: "running"})
+         |> put_flash(:info, "Swarm execution resumed")}
 
-    {:noreply,
-     socket
-     |> assign(:session, updated_session)
-     |> put_flash(:info, "Swarm execution resumed")}
+      {:error, :no_active_run} ->
+        {:noreply,
+         socket
+         |> assign(:session, %{socket.assigns.session | status: "idle"})
+         |> put_flash(:error, "There is no active execution to resume")}
+
+      {:error, reason} ->
+        {:noreply,
+         put_flash(socket, :error, "Unable to resume execution: #{format_run_error(reason)}")}
+    end
+  catch
+    :exit, _ -> {:noreply, put_flash(socket, :error, "The session coordinator is unavailable")}
   end
 
   @impl true
@@ -2235,8 +2323,17 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("open_task_drawer", %{"id" => task_id}, socket) do
-    task = Kanban.get_task(task_id)
-    {:noreply, socket |> assign(:selected_task, task) |> assign(:show_task_drawer, true)}
+    case Kanban.get_task(socket.assigns.project.id, task_id) do
+      nil ->
+        {:noreply,
+         socket
+         |> assign(:selected_task, nil)
+         |> assign(:show_task_drawer, false)
+         |> put_flash(:error, "Task not found")}
+
+      task ->
+        {:noreply, socket |> assign(:selected_task, task) |> assign(:show_task_drawer, true)}
+    end
   end
 
   @impl true
@@ -2367,7 +2464,7 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("move_task", %{"id" => id, "status" => status}, socket) do
-    case Kanban.get_task(id) do
+    case Kanban.get_task(socket.assigns.project.id, id) do
       nil ->
         {:noreply, put_flash(socket, :error, "Task not found")}
 
@@ -2399,7 +2496,7 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("update_task_priority", %{"id" => id, "priority" => priority}, socket) do
-    case Kanban.get_task(id) do
+    case Kanban.get_task(socket.assigns.project.id, id) do
       nil ->
         {:noreply, put_flash(socket, :error, "Task not found")}
 
@@ -2426,7 +2523,7 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("update_task_assignee", %{"id" => id, "assignee" => assignee}, socket) do
-    case Kanban.get_task(id) do
+    case Kanban.get_task(socket.assigns.project.id, id) do
       nil ->
         {:noreply, put_flash(socket, :error, "Task not found")}
 
@@ -2459,18 +2556,24 @@ defmodule IexCodeWeb.WorkspaceLive do
     title = params["title"] || params["subtask_title"] || ""
 
     if task_id && String.trim(title) != "" do
-      case Kanban.add_subtask(task_id, %{"title" => title}) do
-        {:ok, updated} ->
-          tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
+      case Kanban.get_task(socket.assigns.project.id, task_id) do
+        nil ->
+          {:noreply, put_flash(socket, :error, "Task not found")}
 
-          {:noreply,
-           socket
-           |> assign(:tasks, tasks)
-           |> assign(:selected_task, updated)
-           |> put_flash(:info, "Subtask added")}
+        task ->
+          case Kanban.add_subtask(task, %{"title" => title}) do
+            {:ok, updated} ->
+              tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
 
-        {:error, reason} ->
-          {:noreply, put_flash(socket, :error, "Failed to add subtask: #{inspect(reason)}")}
+              {:noreply,
+               socket
+               |> assign(:tasks, tasks)
+               |> assign(:selected_task, updated)
+               |> put_flash(:info, "Subtask added")}
+
+            {:error, reason} ->
+              {:noreply, put_flash(socket, :error, "Failed to add subtask: #{inspect(reason)}")}
+          end
       end
     else
       {:noreply, socket}
@@ -2483,17 +2586,24 @@ defmodule IexCodeWeb.WorkspaceLive do
       params["task_id"] || (socket.assigns.selected_task && socket.assigns.selected_task.id)
 
     if task_id do
-      case Kanban.toggle_subtask(task_id, subtask_id) do
-        {:ok, updated} ->
-          tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
+      case Kanban.get_task(socket.assigns.project.id, task_id) do
+        nil ->
+          {:noreply, put_flash(socket, :error, "Task not found")}
 
-          {:noreply,
-           socket
-           |> assign(:tasks, tasks)
-           |> assign(:selected_task, updated)}
+        task ->
+          case Kanban.toggle_subtask(task, subtask_id) do
+            {:ok, updated} ->
+              tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
 
-        {:error, reason} ->
-          {:noreply, put_flash(socket, :error, "Failed to toggle subtask: #{inspect(reason)}")}
+              {:noreply,
+               socket
+               |> assign(:tasks, tasks)
+               |> assign(:selected_task, updated)}
+
+            {:error, reason} ->
+              {:noreply,
+               put_flash(socket, :error, "Failed to toggle subtask: #{inspect(reason)}")}
+          end
       end
     else
       {:noreply, socket}
@@ -2506,18 +2616,25 @@ defmodule IexCodeWeb.WorkspaceLive do
       params["task_id"] || (socket.assigns.selected_task && socket.assigns.selected_task.id)
 
     if task_id do
-      case Kanban.delete_subtask(task_id, subtask_id) do
-        {:ok, updated} ->
-          tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
+      case Kanban.get_task(socket.assigns.project.id, task_id) do
+        nil ->
+          {:noreply, put_flash(socket, :error, "Task not found")}
 
-          {:noreply,
-           socket
-           |> assign(:tasks, tasks)
-           |> assign(:selected_task, updated)
-           |> put_flash(:info, "Subtask deleted")}
+        task ->
+          case Kanban.delete_subtask(task, subtask_id) do
+            {:ok, updated} ->
+              tasks = Kanban.list_tasks(socket.assigns.project.id, socket.assigns.kanban_filter)
 
-        {:error, reason} ->
-          {:noreply, put_flash(socket, :error, "Failed to delete subtask: #{inspect(reason)}")}
+              {:noreply,
+               socket
+               |> assign(:tasks, tasks)
+               |> assign(:selected_task, updated)
+               |> put_flash(:info, "Subtask deleted")}
+
+            {:error, reason} ->
+              {:noreply,
+               put_flash(socket, :error, "Failed to delete subtask: #{inspect(reason)}")}
+          end
       end
     else
       {:noreply, socket}
@@ -2530,7 +2647,7 @@ defmodule IexCodeWeb.WorkspaceLive do
     task_params = params["task"] || params
 
     if id do
-      case Kanban.get_task(id) do
+      case Kanban.get_task(socket.assigns.project.id, id) do
         nil ->
           {:noreply, put_flash(socket, :error, "Task not found")}
 
@@ -2580,7 +2697,7 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("delete_task", %{"id" => id}, socket) do
-    case Kanban.get_task(id) do
+    case Kanban.get_task(socket.assigns.project.id, id) do
       nil ->
         {:noreply, put_flash(socket, :error, "Task not found")}
 
@@ -2604,7 +2721,7 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("claim_task", %{"id" => id}, socket) do
-    case Kanban.get_task(id) do
+    case Kanban.get_task(socket.assigns.project.id, id) do
       nil ->
         {:noreply, put_flash(socket, :error, "Task not found")}
 
@@ -2627,7 +2744,7 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("estimate_task", %{"id" => id}, socket) do
-    case Kanban.get_task(id) do
+    case Kanban.get_task(socket.assigns.project.id, id) do
       nil ->
         {:noreply, put_flash(socket, :error, "Task not found")}
 
@@ -2679,6 +2796,11 @@ defmodule IexCodeWeb.WorkspaceLive do
   @impl true
   def handle_event("pause_async_run", %{"id" => run_id}, socket) do
     control_async_run(socket, run_id, :pause)
+  end
+
+  @impl true
+  def handle_event("start_async_run", %{"id" => run_id}, socket) do
+    control_async_run(socket, run_id, :start)
   end
 
   @impl true
@@ -3163,7 +3285,8 @@ defmodule IexCodeWeb.WorkspaceLive do
       nil ->
         {:noreply, put_flash(socket, :error, "Session not found")}
 
-      session ->
+      %Sessions.Session{project_id: project_id} = session
+      when project_id == socket.assigns.project.id ->
         # Stop the SessionServer first so it doesn't keep running against a deleted row
         stop_session_server(session.id)
 
@@ -3195,6 +3318,9 @@ defmodule IexCodeWeb.WorkspaceLive do
           {:error, reason} ->
             {:noreply, put_flash(socket, :error, "Failed to delete session: #{inspect(reason)}")}
         end
+
+      _foreign_session ->
+        {:noreply, put_flash(socket, :error, "Session not found in this project")}
     end
   end
 
@@ -4073,12 +4199,12 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_info({:async_run_started, run, _pid}, socket) do
-    {:noreply, select_run_projection(socket, Runs.get_run(run.id) || run)}
+    select_async_run_message(socket, run)
   end
 
   @impl true
   def handle_info({:async_run_updated, run}, socket) do
-    {:noreply, select_run_projection(socket, Runs.get_run(run.id) || run)}
+    select_async_run_message(socket, run)
   end
 
   @impl true
@@ -4739,146 +4865,6 @@ defmodule IexCodeWeb.WorkspaceLive do
     end
   end
 
-  defp seed_initial_tasks(project_id, session_id) do
-    sample_tasks = [
-      %{
-        project_id: project_id,
-        session_id: session_id,
-        title: "say hi to me <3",
-        description: "Verify worker connection and greeting ping.",
-        status: "running",
-        priority: "low",
-        assignee: "default",
-        worker_pid: "78042",
-        estimate: "3m (Low effort)",
-        latest_summary: "Said hi to Brooklyn with love <3",
-        steps_total: 4,
-        steps_completed: 2,
-        tags: ["Test", "Heartbeat"]
-      },
-      %{
-        project_id: project_id,
-        session_id: session_id,
-        title: "Fix incorrect transaction status for pending card payments",
-        description: "Reconcile payment webhook states under high concurrency.",
-        status: "ready",
-        priority: "high",
-        assignee: "coder",
-        worker_pid: nil,
-        estimate: "15-20m (Medium effort)",
-        latest_summary: "Reproduction test case formulated.",
-        steps_total: 4,
-        steps_completed: 2,
-        tags: ["FinPay", "Bug"]
-      },
-      %{
-        project_id: project_id,
-        session_id: session_id,
-        title: "AST search engine & multi-file fuzzy patch matcher",
-        description: "Implement Elixir AST query formatters and parser tests.",
-        status: "done",
-        priority: "critical",
-        assignee: "verifier",
-        worker_pid: "91024",
-        estimate: "30m (High effort)",
-        latest_summary: "AST query and multi-patch verified with 100% test coverage.",
-        steps_total: 4,
-        steps_completed: 4,
-        tags: ["Core", "AST"]
-      },
-      %{
-        project_id: project_id,
-        session_id: session_id,
-        title: "Nightly regression test runner & telemetry sync",
-        description: "Scheduled cron task executing at 00:00 UTC daily.",
-        status: "scheduled",
-        priority: "medium",
-        assignee: "verifier",
-        worker_pid: nil,
-        estimate: "10m",
-        latest_summary: "Scheduled for next trigger at 00:00 UTC.",
-        steps_total: 3,
-        steps_completed: 0,
-        scheduled_at: DateTime.new!(~D[2026-08-10], ~T[00:00:00], "Etc/UTC"),
-        cron_expression: "0 0 * * *",
-        tags: ["Cron", "Regression"]
-      },
-      %{
-        project_id: project_id,
-        session_id: session_id,
-        title: "AST indexer & schema cache sync",
-        description: "Rebuild AST semantic indices across all repository modules.",
-        status: "scheduled",
-        priority: "high",
-        assignee: "planner",
-        worker_pid: nil,
-        estimate: "15m",
-        latest_summary: "Ready to index 240 module ASTs.",
-        steps_total: 4,
-        steps_completed: 1,
-        scheduled_at: DateTime.new!(~D[2026-08-07], ~T[10:30:00], "Etc/UTC"),
-        cron_expression: "0 10 * * 5",
-        tags: ["AST", "Cron"]
-      },
-      %{
-        project_id: project_id,
-        session_id: session_id,
-        title: "Staging deployment canary validation",
-        description: "Run automated health probes and canary traffic test.",
-        status: "scheduled",
-        priority: "critical",
-        assignee: "verifier",
-        worker_pid: nil,
-        estimate: "20m",
-        latest_summary: "Staging canary container deployed.",
-        steps_total: 5,
-        steps_completed: 2,
-        scheduled_at: DateTime.new!(~D[2026-08-15], ~T[14:00:00], "Etc/UTC"),
-        cron_expression: nil,
-        tags: ["Staging", "Canary"]
-      },
-      %{
-        project_id: project_id,
-        session_id: session_id,
-        title: "Auto-heal swarm diagnostic cycle",
-        description: "Analyze error logs and suggest self-healing auto-fix patches.",
-        status: "scheduled",
-        priority: "high",
-        assignee: "coder",
-        worker_pid: nil,
-        estimate: "12m",
-        latest_summary: "Diagnostic triggers active.",
-        steps_total: 3,
-        steps_completed: 0,
-        scheduled_at: DateTime.new!(~D[2026-08-20], ~T[16:30:00], "Etc/UTC"),
-        cron_expression: "30 16 * * *",
-        tags: ["Heal", "Swarm"]
-      },
-      %{
-        project_id: project_id,
-        session_id: session_id,
-        title: "PubSub telemetry & channel optimizer",
-        description: "Optimize high-throughput PubSub buffer distribution.",
-        status: "scheduled",
-        priority: "medium",
-        assignee: "default",
-        worker_pid: nil,
-        estimate: "8m",
-        latest_summary: "Monitoring 60 concurrent channel streams.",
-        steps_total: 2,
-        steps_completed: 1,
-        scheduled_at: DateTime.new!(~D[2026-08-25], ~T[09:00:00], "Etc/UTC"),
-        cron_expression: nil,
-        tags: ["PubSub", "Perf"]
-      }
-    ]
-
-    for attrs <- sample_tasks do
-      {:ok, task} = Kanban.create_task(attrs)
-      task
-    end
-  end
-
   defp tasks_for_day(tasks, %Date{} = date) do
     Enum.filter(tasks, &scheduled_on?(&1, date))
   end
@@ -4946,90 +4932,6 @@ defmodule IexCodeWeb.WorkspaceLive do
     Enum.any?(segments, &MapSet.member?(excluded_directories, &1)) or
       basename == "erl_crash.dump" or
       Regex.match?(~r/\.(?:db|sqlite|sqlite3)(?:-(?:wal|shm))?\z/i, basename)
-  end
-
-  defp seed_initial_messages(session_id) do
-    now = DateTime.utc_now() |> DateTime.truncate(:second)
-
-    sample_msgs = [
-      %{
-        session_id: session_id,
-        role: "user",
-        content: "generate dashscope_new_report.md and inspect probe statuses",
-        inserted_at: DateTime.add(now, -300, :second)
-      },
-      %{
-        session_id: session_id,
-        role: "assistant",
-        agent_name: "PlannerAgent",
-        content: """
-        ### dashscope_new_report.md
-
-        Total probed: 3504 keys (3386 + 158 unique)
-        Buckets: 40 working + 1075 insufficient + 2389 invalid
-
-        Per-endpoint HTTP status:
-        - 200 (working)
-        - 400 (arrears)
-        - 401 (invalid)
-        - 403 (quota)
-        - 0 (network)
-
-        Changes since last probe (Aug 19 -> Aug 20):
-        • CN working: 29 -> 30 (+1 new working key)
-        • Intl working: 11 -> 10 (-1, sk-0fc24c22... is new)
-        • Insufficient: 1083 -> 1075 (-8, some moved to active)
-        • 6 CN keys had network timeouts (classified under transient)
-        • Still zero keys work on both endpoints
-        """,
-        inserted_at: DateTime.add(now, -240, :second)
-      },
-      %{
-        session_id: session_id,
-        role: "user",
-        content: "also update deepseek_.md file",
-        inserted_at: DateTime.add(now, -180, :second)
-      },
-      %{
-        session_id: session_id,
-        role: "assistant",
-        agent_name: "CoderAgent",
-        content: """
-        deepseek_working.md updated from 3 -> 6 working keys. All 6 re-probed fresh with live balances:
-
-        • sk-dsk-8849... (150.00 CNY remaining)
-        • sk-dsk-3291... (85.40 CNY remaining)
-        • sk-dsk-7712... (210.00 CNY remaining)
-        • sk-dsk-1049... (50.00 CNY remaining)
-        • sk-dsk-4921... (120.00 CNY remaining)
-        • sk-dsk-9923... (300.00 CNY remaining)
-        """,
-        inserted_at: DateTime.add(now, -120, :second)
-      },
-      %{
-        session_id: session_id,
-        role: "user",
-        content: "also add balances like other deepseek keys",
-        inserted_at: DateTime.add(now, -60, :second)
-      },
-      %{
-        session_id: session_id,
-        role: "assistant",
-        agent_name: "VerifierAgent",
-        content: """
-        All balances synchronized with live provider telemetry. Full access quota verified across all 6 keys.
-        """,
-        inserted_at: now
-      }
-    ]
-
-    for attrs <- sample_msgs do
-      case Sessions.create_message(attrs) do
-        {:ok, msg} -> msg
-        _ -> nil
-      end
-    end
-    |> Enum.filter(& &1)
   end
 
   # Durable asynchronous run projection. Runs and their journal are loaded from
@@ -5462,6 +5364,62 @@ defmodule IexCodeWeb.WorkspaceLive do
   defp research_level_semantics("ultra"), do: %{rounds: 4, subagents: 10}
   defp research_level_semantics(_medium), do: %{rounds: 2, subagents: 3}
 
+  defp durable_goal_objective(title, ""), do: title
+
+  defp durable_goal_objective(title, description) do
+    "#{title}\n\nDetailed instructions and acceptance criteria:\n#{description}"
+  end
+
+  defp normalize_goal_request_id(value) when is_binary(value) do
+    case Ecto.UUID.cast(value) do
+      {:ok, request_id} -> request_id
+      :error -> Ecto.UUID.generate()
+    end
+  end
+
+  defp normalize_goal_request_id(_value), do: Ecto.UUID.generate()
+
+  defp durable_goal_attrs(socket, title, description, objective, request_id, auto_start) do
+    %{
+      project_id: socket.assigns.project.id,
+      session_id: socket.assigns.session.id,
+      objective: objective,
+      kind: "coding_swarm",
+      mode: "swarm",
+      priority: socket.assigns.run_setup_priority,
+      max_attempts: socket.assigns.run_setup_max_attempts,
+      token_budget: socket.assigns.run_setup_token_budget,
+      cost_budget_cents: socket.assigns.run_setup_cost_budget_cents,
+      time_budget_ms: minutes_to_ms(socket.assigns.run_setup_time_budget_minutes),
+      metadata: %{
+        "source" => "autonomous_goal",
+        "goal_request_id" => request_id,
+        "goal_title" => title,
+        "goal_description" => description,
+        "goal_auto_start" => auto_start,
+        "allowed_tools" => prompt_allowed_tools(socket)
+      },
+      request_key: request_id
+    }
+  end
+
+  defp durable_goal_created(socket, run, message) do
+    socket
+    |> assign(:show_goal_modal, false)
+    |> assign(:active_tab, "swarm")
+    |> assign(
+      :goal_form,
+      to_form(%{
+        "title" => "",
+        "description" => "",
+        "auto_start" => "true",
+        "request_id" => Ecto.UUID.generate()
+      })
+    )
+    |> select_run_projection(run)
+    |> put_flash(:info, message)
+  end
+
   defp research_provider_selectable?(settings, provider),
     do: provider in enabled_research_launch_providers(settings)
 
@@ -5486,6 +5444,8 @@ defmodule IexCodeWeb.WorkspaceLive do
       result =
         case action do
           :pause -> RunDispatcher.pause(run)
+          :start when run.status == "draft" -> RunDispatcher.resume(run)
+          :start -> {:error, {:invalid_transition, run.status, "queued"}}
           :resume -> RunDispatcher.resume(run)
           :cancel -> RunDispatcher.cancel(run)
           :retry -> RunDispatcher.retry(run)
@@ -5493,12 +5453,12 @@ defmodule IexCodeWeb.WorkspaceLive do
 
       case result do
         {:ok, updated} ->
-          label = action |> Atom.to_string() |> String.capitalize()
+          message = run_control_success_message(run, action)
 
           {:noreply,
            socket
            |> select_run_projection(updated)
-           |> put_flash(:info, "#{label} request persisted")}
+           |> put_flash(:info, message)}
 
         {:error, reason} ->
           {:noreply, put_flash(socket, :error, "Run control failed: #{format_run_error(reason)}")}
@@ -5511,10 +5471,34 @@ defmodule IexCodeWeb.WorkspaceLive do
       {:noreply, put_flash(socket, :error, "The run dispatcher is not available")}
   end
 
+  defp run_control_success_message(%Runs.Run{status: "draft"}, :start),
+    do: "Draft queued for execution"
+
+  defp run_control_success_message(%Runs.Run{status: "draft"}, :cancel),
+    do: "Draft cancelled"
+
+  defp run_control_success_message(_run, :cancel), do: "Cancellation request persisted"
+  defp run_control_success_message(_run, :pause), do: "Pause request persisted"
+  defp run_control_success_message(_run, :resume), do: "Resume request persisted"
+  defp run_control_success_message(_run, :retry), do: "Retry request persisted"
+
+  defp goal_cost_budget_label(nil), do: "Not capped"
+
+  defp goal_cost_budget_label(cents) when is_integer(cents) do
+    fractional = cents |> rem(100) |> Integer.to_string() |> String.pad_leading(2, "0")
+    "$#{div(cents, 100)}.#{fractional}"
+  end
+
   defp selected_run_agent?(socket, agent_id) when is_binary(agent_id) do
     case socket.assigns.selected_run do
-      nil -> false
-      run -> not is_nil(Runs.get_run_agent(run, agent_id))
+      nil ->
+        false
+
+      %Runs.Run{session_id: session_id} = run when session_id == socket.assigns.session.id ->
+        not is_nil(Runs.get_run_agent(run, agent_id))
+
+      _foreign_run ->
+        false
     end
   end
 
@@ -5525,13 +5509,30 @@ defmodule IexCodeWeb.WorkspaceLive do
     run = socket.assigns.selected_run
     module = IexCode.Engine.RunFleetSupervisor
 
-    if run && Code.ensure_loaded?(module) && function_exported?(module, :control_agent, 4) do
-      apply(module, :control_agent, [run, agent_id, kind, payload])
-    else
-      {:error, :fleet_control_unavailable}
+    case run && Runs.get_run(run.id) do
+      %Runs.Run{session_id: session_id} = current
+      when session_id == socket.assigns.session.id ->
+        if Code.ensure_loaded?(module) && function_exported?(module, :control_agent, 4) do
+          apply(module, :control_agent, [current, agent_id, kind, payload])
+        else
+          {:error, :fleet_control_unavailable}
+        end
+
+      _missing_or_foreign ->
+        {:error, :agent_scope_mismatch}
     end
   catch
     :exit, reason -> {:error, {:fleet_control_unavailable, reason}}
+  end
+
+  defp select_async_run_message(socket, run) do
+    case Runs.get_run(run.id) do
+      %Runs.Run{session_id: session_id} = current when session_id == socket.assigns.session.id ->
+        {:noreply, select_run_projection(socket, current)}
+
+      _missing_or_foreign ->
+        {:noreply, socket}
+    end
   end
 
   defp format_run_error(%Ecto.Changeset{} = changeset) do
@@ -5546,6 +5547,49 @@ defmodule IexCodeWeb.WorkspaceLive do
   defp task_priority_to_run_priority("low"), do: "low"
   defp task_priority_to_run_priority(_), do: "normal"
 
+  defp manual_task_request_key(task) do
+    version = task.updated_at || task.inserted_at
+
+    dispatch_version = %{
+      "updated_at" => if(version, do: DateTime.to_iso8601(version), else: nil),
+      "title" => task.title,
+      "description" => task.description,
+      "priority" => task.priority,
+      "status" => task.status,
+      "scheduled_at" =>
+        if(task.scheduled_at, do: DateTime.to_iso8601(task.scheduled_at), else: nil),
+      "worker_pid" => task.worker_pid,
+      "latest_summary" => task.latest_summary
+    }
+
+    {:ok, canonical} = IexCode.Runs.DagPayload.canonical_json(dispatch_version)
+
+    digest =
+      canonical
+      |> then(&:crypto.hash(:sha256, &1))
+      |> Base.encode16(case: :lower)
+
+    "kanban:manual:#{task.id}:#{digest}"
+  end
+
+  defp linked_task_run(
+         %{worker_pid: "run:" <> run_id, id: task_id, project_id: project_id},
+         session_id
+       ) do
+    case Runs.get_run(run_id) do
+      %Runs.Run{project_id: ^project_id, session_id: ^session_id} = run ->
+        if Map.get(run.metadata || %{}, "kanban_task_id") == task_id, do: run
+
+      %Runs.Run{project_id: ^project_id} ->
+        :foreign_session
+
+      _missing_or_foreign ->
+        nil
+    end
+  end
+
+  defp linked_task_run(_task, _session_id), do: nil
+
   # Chat is intentionally live and conversational. All operational views keep
   # the safer durable background default.
   defp maybe_set_tab_dispatch_mode(socket, "chat"),
@@ -5557,7 +5601,7 @@ defmodule IexCodeWeb.WorkspaceLive do
     task_id = Map.get(run.metadata || %{}, "kanban_task_id")
 
     if is_binary(task_id) do
-      case Kanban.get_task(task_id) do
+      case Kanban.get_task(socket.assigns.project.id, task_id) do
         nil ->
           socket
 

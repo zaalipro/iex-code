@@ -144,11 +144,35 @@ defmodule IexCodeWeb.WorkspaceLiveM3M4Test do
   # ============================================================================
 
   describe "Goal Lifecycle & Steering Controls" do
-    test "creates autonomous goal via modal form", %{view: view} do
+    test "creates autonomous goal as a durable run via modal form", %{
+      view: view,
+      session: session
+    } do
       # 1. Switch to Swarm tab & open goal modal
       view |> element("#tab-btn-swarm") |> render_click()
-      render_click(view, "open_goal_modal")
-      assert render(view) =~ "Create Autonomous Goal"
+
+      render_change(view, "update_run_setup", %{
+        "run_setup" => %{
+          "priority" => "high",
+          "max_attempts" => "5",
+          "time_budget_minutes" => "45",
+          "token_budget" => "12000",
+          "cost_budget_cents" => "750"
+        }
+      })
+
+      assert has_element?(view, "#new-goal-button")
+      view |> element("#new-goal-button") |> render_click()
+
+      assert has_element?(view, "#goal-modal")
+      assert has_element?(view, "#goal-modal-submit")
+      assert has_element?(view, "#goal-modal-cancel")
+      assert has_element?(view, "#goal-run-policy-summary")
+      assert has_element?(view, "#goal-policy-priority", "High")
+      assert has_element?(view, "#goal-policy-max-attempts", "5")
+      assert has_element?(view, "#goal-policy-time-budget", "45 min")
+      assert has_element?(view, "#goal-policy-token-budget", "12000")
+      assert has_element?(view, "#goal-policy-cost-budget", "$7.50")
 
       # 2. Submit goal form
       html =
@@ -161,7 +185,149 @@ defmodule IexCodeWeb.WorkspaceLiveM3M4Test do
         })
 
       refute render(view) =~ "Create Autonomous Goal"
-      assert html =~ "Goal created"
+      assert html =~ "Goal created and queued as a durable multi-agent run"
+
+      [run] = IexCode.Runs.list_runs(session_id: session.id, limit: 10)
+      assert run.kind == "coding_swarm"
+      assert run.mode == "swarm"
+      assert run.status == "queued"
+      assert run.priority == "high"
+      assert run.max_attempts == 5
+      assert run.time_budget_ms == 2_700_000
+      assert run.token_budget == 12_000
+      assert run.cost_budget_cents == 750
+      assert run.metadata["source"] == "autonomous_goal"
+      assert run.metadata["goal_title"] == "Build end-to-end telemetry pipeline"
+      assert run.metadata["goal_description"] == "Ensure latency and token counting are verified"
+      assert is_binary(run.request_key)
+
+      assert run.objective =~ "Build end-to-end telemetry pipeline"
+      assert run.objective =~ "Ensure latency and token counting are verified"
+    end
+
+    test "starts a selected durable draft through its state-specific action", %{
+      view: view,
+      session: session
+    } do
+      start_run_dispatcher!()
+      render_click(view, "open_goal_modal")
+
+      view
+      |> form("#goal-create-form", %{
+        "goal" => %{
+          "title" => "Start this draft",
+          "description" => "Exercise the explicit draft lifecycle",
+          "auto_start" => "false"
+        }
+      })
+      |> render_submit()
+
+      [draft] = IexCode.Runs.list_runs(session_id: session.id, limit: 10)
+
+      assert has_element?(view, "#async-run-#{draft.id}[data-run-status='draft']")
+      assert has_element?(view, "#async-run-detail[data-run-status='draft']")
+      assert has_element?(view, "#run-agent-fleet-empty", "Draft has not started")
+      assert has_element?(view, "#run-agent-fleet-empty", "No worker instances are created")
+
+      assert has_element?(
+               view,
+               "#start-async-run[phx-click='start_async_run'][phx-disable-with='Starting…']",
+               "Start"
+             )
+
+      refute has_element?(view, "#resume-async-run")
+
+      view |> element("#start-async-run") |> render_click()
+
+      assert has_element?(view, "#flash-info", "Draft queued for execution")
+      refute has_element?(view, "#async-run-detail[data-run-status='draft']")
+      refute IexCode.Runs.get_run!(draft.id).status == "draft"
+    end
+
+    test "cancels a selected draft without implying execution rollback", %{
+      view: view,
+      session: session
+    } do
+      start_run_dispatcher!()
+      render_click(view, "open_goal_modal")
+
+      view
+      |> form("#goal-create-form", %{
+        "goal" => %{
+          "title" => "Cancel this draft",
+          "description" => "This goal has not started",
+          "auto_start" => "false"
+        }
+      })
+      |> render_submit()
+
+      [draft] = IexCode.Runs.list_runs(session_id: session.id, limit: 10)
+
+      assert has_element?(
+               view,
+               "#cancel-async-run[data-confirm='Cancel this draft? It will be marked cancelled without starting any work.'][phx-disable-with='Cancelling…']"
+             )
+
+      view |> element("#cancel-async-run") |> render_click()
+
+      assert has_element?(view, "#flash-info", "Draft cancelled")
+      assert has_element?(view, "#async-run-#{draft.id}[data-run-status='cancelled']")
+      assert has_element?(view, "#async-run-detail[data-run-status='cancelled']")
+      refute has_element?(view, "#start-async-run")
+      assert IexCode.Runs.get_run!(draft.id).status == "cancelled"
+    end
+
+    test "unchecked auto-start creates a durable draft without dispatching it", %{
+      view: view,
+      session: session
+    } do
+      render_click(view, "open_goal_modal")
+
+      assert has_element?(
+               view,
+               "#goal-create-form input[type='hidden'][name='goal[auto_start]'][value='false']"
+             )
+
+      render_submit(view, "create_goal", %{
+        "goal" => %{
+          "title" => "Draft reliability goal",
+          "description" => "Keep the complete description for later"
+        }
+      })
+
+      [draft] = IexCode.Runs.list_runs(session_id: session.id, limit: 10)
+      assert draft.status == "draft"
+      assert draft.attempt == 0
+      assert draft.lease_owner == nil
+      assert draft.metadata["source"] == "autonomous_goal"
+      assert is_binary(draft.request_key)
+      assert draft.objective =~ "Draft reliability goal"
+      assert draft.objective =~ "Keep the complete description for later"
+    end
+
+    test "the same goal request submitted twice selects one durable run", %{
+      view: view,
+      session: session
+    } do
+      request_key = Ecto.UUID.generate()
+
+      params = %{
+        "goal" => %{
+          "title" => "Retry-safe goal",
+          "description" => "Never duplicate this durable execution",
+          "auto_start" => "true",
+          "request_id" => request_key
+        }
+      }
+
+      render_click(view, "open_goal_modal")
+      render_submit(view, "create_goal", params)
+      render_submit(view, "create_goal", params)
+
+      assert [run] = IexCode.Runs.list_runs(session_id: session.id, limit: 10)
+      assert run.request_key == request_key
+      assert run.metadata["goal_title"] == "Retry-safe goal"
+      assert run.metadata["goal_description"] == "Never duplicate this durable execution"
     end
 
     test "pauses, resumes, and cancels active session execution", %{view: view} do
@@ -317,5 +483,20 @@ defmodule IexCodeWeb.WorkspaceLiveM3M4Test do
       render_click(view, "close_expand_message")
       refute render(view) =~ "copy-expanded-msg-btn"
     end
+  end
+
+  defp start_run_dispatcher! do
+    start_supervised!(
+      {IexCode.Runs.RunDispatcher,
+       name: IexCode.Runs.RunDispatcher,
+       worker_id: "workspace-goal-ui-test-#{System.unique_integer([:positive])}",
+       executor: IexCode.RunDispatcherTestExecutor,
+       max_concurrency: 1,
+       poll_interval: 60_000,
+       heartbeat_interval: 60_000,
+       lease_ms: 120_000,
+       workspace_lock_retry_interval: 60_000,
+       workspace_lock_lease_seconds: 120}
+    )
   end
 end

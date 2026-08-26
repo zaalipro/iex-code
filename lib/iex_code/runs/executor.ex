@@ -61,7 +61,11 @@ defmodule IexCode.Runs.Executor do
       project_root: project_root,
       run_id: run.id,
       allowed_tools: allowed_tools,
-      workspace_lock_delegation: opts[:workspace_lock_delegation]
+      workspace_lock_delegation: opts[:workspace_lock_delegation],
+      run_lease_owner: opts[:run_lease_owner],
+      run_attempt: opts[:run_attempt],
+      run_lease_generation: opts[:run_lease_generation],
+      run_lease_ms: opts[:run_lease_ms]
     )
     |> normalize_swarm_result()
   end
@@ -72,7 +76,7 @@ defmodule IexCode.Runs.Executor do
     end
   end
 
-  defp execute_typed(%Run{kind: "deep_research"} = run, _project_root, progress, _opts) do
+  defp execute_typed(%Run{kind: "deep_research"} = run, _project_root, progress, opts) do
     search = Settings.search_config()
     research = research_metadata(run.metadata)
 
@@ -83,7 +87,15 @@ defmodule IexCode.Runs.Executor do
       depth: Map.get(research, "depth", search.depth),
       max_sources: Map.get(research, "max_sources", search.max_sources),
       fetch_sources: true,
-      cancelled?: fn -> cancelled?(run.id) end
+      cancelled?: fn -> cancelled?(run.id) end,
+      run_authority:
+        Keyword.take(opts, [
+          :run_lease_owner,
+          :run_attempt,
+          :run_lease_generation,
+          :run_lease_ms,
+          :run_terminal_lease_ms
+        ])
     )
   end
 

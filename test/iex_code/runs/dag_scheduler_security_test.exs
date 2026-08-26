@@ -243,6 +243,22 @@ defmodule IexCode.Runs.DagSchedulerSecurityTest do
     end
   end
 
+  test "persisted attempt ownership and step target are immutable", context do
+    {run, [_step]} = dag_fixture(context)
+    assert {:ok, claim} = DagScheduler.claim_ready(run, @owner, 1)
+    {other_run, [other_step]} = dag_fixture(context)
+
+    # Move both columns to an otherwise valid same-run pair. The older scope
+    # trigger therefore permits the shape, leaving the ownership-immutability
+    # trigger as the invariant that rejects reparenting the persisted attempt.
+    assert_raise Exqlite.Error, ~r/run_step_attempt_target_immutable/, fn ->
+      Repo.query!(
+        "UPDATE run_step_attempts SET run_id = ?, run_step_id = ? WHERE id = ?",
+        [other_run.id, other_step.id, claim.attempt.id]
+      )
+    end
+  end
+
   test "canonical path resolution blocks read-handler symlink escapes", context do
     File.ln_s!(context.outside, Path.join(context.root, "escape"))
 

@@ -76,7 +76,7 @@ defmodule IexCodeWeb.RunComponents do
       <div class="flex flex-col gap-4 border-b border-[#21262d] pb-5 lg:flex-row lg:items-end lg:justify-between">
         <div class="max-w-2xl">
           <div class="mb-2 flex items-center gap-2 text-[10px] font-mono font-semibold uppercase tracking-[0.22em] text-[#ff8a68]">
-            <span class="h-1.5 w-1.5 bg-[#ff7e5f]"></span> Durable execution plane
+            <span class="h-1.5 w-1.5 bg-[#ff7e5f]"></span> Mission Control · Durable execution plane
           </div>
           <h2
             id="async-run-heading"
@@ -306,6 +306,7 @@ defmodule IexCodeWeb.RunComponents do
               phx-click="select_async_run"
               phx-value-id={run.id}
               aria-pressed={@selected_run && @selected_run.id == run.id}
+              data-run-status={run.status}
               data-workspace-lock-state={run_workspace_lock_state(run, @active_workspace_locks)}
               class={[
                 "group mb-1 w-full border px-3 py-3 text-left transition-colors",
@@ -384,7 +385,12 @@ defmodule IexCodeWeb.RunComponents do
             </div>
           </div>
 
-          <div :if={@selected_run} id="async-run-detail" class="min-w-0">
+          <div
+            :if={@selected_run}
+            id="async-run-detail"
+            data-run-status={@selected_run.status}
+            class="min-w-0"
+          >
             <div class="border-b border-[#21262d] p-4 md:p-5">
               <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                 <div class="min-w-0 max-w-3xl">
@@ -415,9 +421,21 @@ defmodule IexCodeWeb.RunComponents do
                     type="button"
                     phx-click="pause_async_run"
                     phx-value-id={@selected_run.id}
-                    class="inline-flex items-center gap-1.5 border border-amber-500/30 bg-amber-500/[0.07] px-3 py-2 font-mono text-[11px] font-semibold text-amber-300 transition-colors hover:bg-amber-500/15"
+                    phx-disable-with="Pausing…"
+                    class="inline-flex items-center gap-1.5 border border-amber-500/30 bg-amber-500/[0.07] px-3 py-2 font-mono text-[11px] font-semibold text-amber-300 transition-colors hover:bg-amber-500/15 disabled:cursor-wait disabled:opacity-60"
                   >
                     <.icon name="hero-pause" class="h-3.5 w-3.5" /> Pause
+                  </button>
+                  <button
+                    :if={@selected_run.status == "draft"}
+                    id="start-async-run"
+                    type="button"
+                    phx-click="start_async_run"
+                    phx-value-id={@selected_run.id}
+                    phx-disable-with="Starting…"
+                    class="inline-flex items-center gap-1.5 border border-emerald-500/30 bg-emerald-500/[0.07] px-3 py-2 font-mono text-[11px] font-semibold text-emerald-300 transition-colors hover:bg-emerald-500/15 disabled:cursor-wait disabled:opacity-60"
+                  >
+                    <.icon name="hero-play" class="h-3.5 w-3.5" /> Start
                   </button>
                   <button
                     :if={@selected_run.status == "paused"}
@@ -425,18 +443,26 @@ defmodule IexCodeWeb.RunComponents do
                     type="button"
                     phx-click="resume_async_run"
                     phx-value-id={@selected_run.id}
-                    class="inline-flex items-center gap-1.5 border border-emerald-500/30 bg-emerald-500/[0.07] px-3 py-2 font-mono text-[11px] font-semibold text-emerald-300 transition-colors hover:bg-emerald-500/15"
+                    phx-disable-with="Resuming…"
+                    class="inline-flex items-center gap-1.5 border border-emerald-500/30 bg-emerald-500/[0.07] px-3 py-2 font-mono text-[11px] font-semibold text-emerald-300 transition-colors hover:bg-emerald-500/15 disabled:cursor-wait disabled:opacity-60"
                   >
                     <.icon name="hero-play" class="h-3.5 w-3.5" /> Resume
                   </button>
                   <button
-                    :if={@selected_run.status in ["queued", "running", "paused"]}
+                    :if={@selected_run.status in ["draft", "queued", "running", "paused"]}
                     id="cancel-async-run"
                     type="button"
                     phx-click="cancel_async_run"
                     phx-value-id={@selected_run.id}
-                    data-confirm="Cancel this run and roll back its scoped snapshots?"
-                    class="inline-flex items-center gap-1.5 border border-rose-500/30 bg-rose-500/[0.07] px-3 py-2 font-mono text-[11px] font-semibold text-rose-300 transition-colors hover:bg-rose-500/15"
+                    data-confirm={
+                      if(@selected_run.status == "draft",
+                        do:
+                          "Cancel this draft? It will be marked cancelled without starting any work.",
+                        else: "Cancel this run? Execution will stop after the request is persisted."
+                      )
+                    }
+                    phx-disable-with="Cancelling…"
+                    class="inline-flex items-center gap-1.5 border border-rose-500/30 bg-rose-500/[0.07] px-3 py-2 font-mono text-[11px] font-semibold text-rose-300 transition-colors hover:bg-rose-500/15 disabled:cursor-wait disabled:opacity-60"
                   >
                     <.icon name="hero-stop" class="h-3.5 w-3.5" /> Cancel
                   </button>
@@ -449,7 +475,8 @@ defmodule IexCodeWeb.RunComponents do
                     type="button"
                     phx-click="retry_async_run"
                     phx-value-id={@selected_run.id}
-                    class="inline-flex items-center gap-1.5 bg-[#ff7e5f] px-3 py-2 font-mono text-[11px] font-semibold text-white transition-colors hover:bg-[#ff6b48]"
+                    phx-disable-with="Retrying…"
+                    class="inline-flex items-center gap-1.5 bg-[#ff7e5f] px-3 py-2 font-mono text-[11px] font-semibold text-white transition-colors hover:bg-[#ff6b48] disabled:cursor-wait disabled:opacity-60"
                   >
                     <.icon name="hero-arrow-path" class="h-3.5 w-3.5" /> Retry safely
                   </button>
@@ -1389,6 +1416,7 @@ defmodule IexCodeWeb.RunComponents do
     <span class={[
       "inline-flex items-center gap-1.5 font-mono text-[9px] font-semibold uppercase tracking-[0.14em]",
       @status in ["running", "completed"] && "text-emerald-400",
+      @status == "draft" && "text-violet-400",
       @status == "queued" && "text-blue-400",
       @status in ["paused", "interrupted"] && "text-amber-400",
       @status in ["failed", "cancelled"] && "text-rose-400"
@@ -1397,6 +1425,7 @@ defmodule IexCodeWeb.RunComponents do
         "h-1.5 w-1.5 rounded-full",
         @status == "running" && "animate-pulse bg-emerald-400",
         @status == "completed" && "bg-emerald-400",
+        @status == "draft" && "bg-violet-400",
         @status == "queued" && "bg-blue-400",
         @status in ["paused", "interrupted"] && "bg-amber-400",
         @status in ["failed", "cancelled"] && "bg-rose-400"
@@ -1670,6 +1699,7 @@ defmodule IexCodeWeb.RunComponents do
 
   defp fleet_empty_title(run) do
     case agent_value(run, :status) do
+      "draft" -> "Draft has not started"
       "queued" -> "Fleet awaits dispatcher claim"
       "running" -> "No worker instances attached"
       _ -> "No persisted agent fleet"
@@ -1678,6 +1708,9 @@ defmodule IexCodeWeb.RunComponents do
 
   defp fleet_empty_copy(run) do
     case agent_value(run, :status) do
+      "draft" ->
+        "Start this draft when it is ready. No worker instances are created before it enters the queue."
+
       "queued" ->
         "Worker records appear only when the dispatcher materializes this run's topology."
 
@@ -1685,7 +1718,7 @@ defmodule IexCodeWeb.RunComponents do
         "This run may be executing a non-agent step, or its durable topology has not materialized yet."
 
       status when status in ["completed", "failed", "cancelled", "interrupted"] ->
-        "This archived run completed without a durable agent instance record."
+        "This archived run ended without a durable agent instance record."
 
       _ ->
         "This run has no agent workers attached. Tool-only and provider work can run without a fleet."

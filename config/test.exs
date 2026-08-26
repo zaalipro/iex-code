@@ -5,6 +5,7 @@ import Config
 # test supervisor after checkout.
 config :iex_code, :start_run_dispatcher, false
 config :iex_code, :start_kanban_scheduler, false
+config :iex_code, :control_plane_telemetry, enabled: false
 
 # Configure your database
 #

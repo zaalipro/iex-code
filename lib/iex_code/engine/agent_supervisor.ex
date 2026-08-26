@@ -60,17 +60,61 @@ defmodule IexCode.Engine.AgentSupervisor do
   end
 
   @doc "Stops all and only the agents registered to one durable run."
-  def stop_run_agents(supervisor, run_id) do
-    run_id
-    |> AgentRegistry.list_run_agents()
-    |> Task.async_stream(
-      fn {_agent_id, pid, _metadata} -> DynamicSupervisor.terminate_child(supervisor, pid) end,
-      timeout: 5_000,
-      on_timeout: :kill_task
-    )
-    |> Stream.run()
+  def stop_run_agents(_supervisor, run_id) do
+    pids =
+      run_id
+      |> AgentRegistry.list_run_agents()
+      |> Enum.map(fn {_agent_id, pid, _metadata} -> pid end)
+
+    stop_run_pids(pids)
+  end
+
+  @run_stop_deadline_ms 5_000
+
+  @doc false
+  def stop_run_pids(pids, grace_ms \\ @run_stop_deadline_ms)
+      when is_list(pids) and is_integer(grace_ms) and grace_ms >= 0 do
+    refs =
+      pids
+      |> Enum.filter(&(is_pid(&1) and Process.alive?(&1)))
+      |> Enum.uniq()
+      |> Map.new(fn pid ->
+        ref = Process.monitor(pid)
+        Process.exit(pid, :shutdown)
+        {ref, pid}
+      end)
+
+    deadline = System.monotonic_time(:millisecond) + grace_ms
+    remaining = await_run_agent_shutdowns(refs, deadline)
+
+    Enum.each(remaining, fn {_ref, pid} ->
+      if Process.alive?(pid), do: Process.exit(pid, :kill)
+    end)
+
+    kill_deadline = System.monotonic_time(:millisecond) + 1_000
+
+    remaining
+    |> await_run_agent_shutdowns(kill_deadline)
+    |> Enum.each(fn {ref, _pid} -> Process.demonitor(ref, [:flush]) end)
 
     :ok
+  end
+
+  defp await_run_agent_shutdowns(refs, _deadline) when map_size(refs) == 0, do: refs
+
+  defp await_run_agent_shutdowns(refs, deadline) do
+    remaining_ms = max(deadline - System.monotonic_time(:millisecond), 0)
+
+    if remaining_ms == 0 do
+      refs
+    else
+      receive do
+        {:DOWN, ref, :process, _pid, _reason} when is_map_key(refs, ref) ->
+          await_run_agent_shutdowns(Map.delete(refs, ref), deadline)
+      after
+        remaining_ms -> refs
+      end
+    end
   end
 
   defp do_start_agent(_session_id, _agent_type, _opts, 0),
@@ -141,45 +185,28 @@ defmodule IexCode.Engine.AgentSupervisor do
     end
   end
 
-  @stop_all_deadline_ms 5_000
-
   @doc """
   Terminates all running subagents for a session.
 
-  Agents are shut down in parallel with an overall deadline of #{@stop_all_deadline_ms}ms;
-  any stragglers still alive past the deadline are killed outright.
+  Agents receive shutdown in parallel with a #{@run_stop_deadline_ms}ms grace period;
+  any stragglers still alive past that deadline are killed and awaited.
   """
   def stop_all_agents(session_id) do
     _ = :sys.get_state(AgentRegistry)
 
-    agents = AgentRegistry.list_agents(session_id)
-    deadline = System.monotonic_time(:millisecond) + @stop_all_deadline_ms
-
-    tasks =
-      for {_type, pid} <- agents do
-        Task.async(fn -> DynamicSupervisor.terminate_child(__MODULE__, pid) end)
-      end
-
-    Enum.each(tasks, fn task ->
-      remaining = max(deadline - System.monotonic_time(:millisecond), 0)
-
-      case Task.yield(task, remaining) do
-        {:ok, _result} ->
-          :ok
-
-        {:exit, _reason} ->
-          :ok
-
-        nil ->
-          _ = Task.shutdown(task, :brutal_kill)
-          :ok
-      end
-    end)
-
-    # Guarantee no stragglers survive past the overall deadline.
-    for {_type, pid} <- agents do
-      if Process.alive?(pid), do: Process.exit(pid, :kill)
-    end
+    # Legacy agents use transient restart policies, so they must be removed
+    # through DynamicSupervisor rather than raw Process.exit/2. A brutal kill
+    # would otherwise be interpreted as a crash and spawn replacement agents.
+    session_id
+    |> AgentRegistry.list_agents()
+    |> Task.async_stream(
+      fn {_type, pid} -> DynamicSupervisor.terminate_child(__MODULE__, pid) end,
+      max_concurrency: 4,
+      ordered: false,
+      timeout: @run_stop_deadline_ms,
+      on_timeout: :kill_task
+    )
+    |> Stream.run()
 
     _ = :sys.get_state(AgentRegistry)
     :ok

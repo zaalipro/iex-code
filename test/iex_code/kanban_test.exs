@@ -1,6 +1,7 @@
 defmodule IexCode.KanbanTest do
   use IexCode.DataCase, async: true
-  alias IexCode.{Kanban, Projects, Sessions}
+  alias IexCode.{Kanban, Projects, Repo, Sessions}
+  alias IexCode.Kanban.Task, as: KanbanTask
 
   setup do
     {:ok, project} =
@@ -67,6 +68,137 @@ defmodule IexCode.KanbanTest do
 
     assert {:ok, estimated} = Kanban.estimate_effort(task)
     assert estimated.estimate =~ "High effort"
+  end
+
+  test "rejects task session/project mismatch and immutable task ownership", %{
+    project: project,
+    session: session
+  } do
+    foreign_root = Path.join(System.tmp_dir!(), "kanban-foreign-#{Ecto.UUID.generate()}")
+    File.mkdir_p!(foreign_root)
+    on_exit(fn -> File.rm_rf!(foreign_root) end)
+    {:ok, foreign_project} = Projects.create_project(%{name: "Foreign", root_path: foreign_root})
+
+    {:ok, foreign_session} =
+      Sessions.create_session(%{project_id: foreign_project.id, title: "Foreign"})
+
+    assert {:error, create_changeset} =
+             Kanban.create_task(%{
+               project_id: project.id,
+               session_id: foreign_session.id,
+               title: "Cross-project task"
+             })
+
+    assert {"must belong to the task project", _} = create_changeset.errors[:session_id]
+
+    {:ok, task} =
+      Kanban.create_task(%{
+        project_id: project.id,
+        session_id: session.id,
+        title: "Scoped task"
+      })
+
+    assert {:error, update_changeset} =
+             Kanban.update_task(task, %{
+               project_id: foreign_project.id,
+               session_id: foreign_session.id
+             })
+
+    assert {"cannot be changed after creation", _} = update_changeset.errors[:project_id]
+    assert {"cannot be changed after creation", _} = update_changeset.errors[:session_id]
+
+    persisted = Kanban.get_task!(task.id)
+    assert persisted.project_id == project.id
+    assert persisted.session_id == session.id
+  end
+
+  test "forged loaded task structs cannot mutate, claim, or delete another project row", %{
+    project: project,
+    session: session
+  } do
+    foreign_root = Path.join(System.tmp_dir!(), "kanban-forged-#{Ecto.UUID.generate()}")
+    File.mkdir_p!(foreign_root)
+    on_exit(fn -> File.rm_rf!(foreign_root) end)
+
+    {:ok, foreign_project} =
+      Projects.create_project(%{name: "Forged Foreign", root_path: foreign_root})
+
+    {:ok, foreign_session} =
+      Sessions.create_session(%{project_id: foreign_project.id, title: "Forged Foreign"})
+
+    {:ok, source} =
+      Kanban.create_task(%{
+        project_id: project.id,
+        session_id: session.id,
+        title: "Attacker-owned source",
+        status: "ready"
+      })
+
+    {:ok, victim} =
+      Kanban.create_task(%{
+        project_id: foreign_project.id,
+        session_id: foreign_session.id,
+        title: "Foreign victim",
+        status: "ready",
+        priority: "critical"
+      })
+
+    forged = %{source | id: victim.id}
+
+    assert {:error, :task_scope_mismatch} =
+             Kanban.update_task(forged, %{title: "hijacked", priority: "low"})
+
+    assert {:error, :task_scope_mismatch} = Kanban.add_subtask(forged, "Injected")
+    assert {:error, :task_scope_mismatch} = Kanban.claim_task(forged, "attacker")
+    assert {:error, :task_scope_mismatch} = Kanban.delete_task(forged)
+
+    persisted = Kanban.get_task!(victim.id)
+    assert persisted.title == "Foreign victim"
+    assert persisted.status == "ready"
+    assert persisted.priority == "critical"
+    assert persisted.subtasks == []
+  end
+
+  test "session deletion nilifies a task association without changing project ownership", %{
+    project: project,
+    session: session
+  } do
+    {:ok, task} =
+      Kanban.create_task(%{
+        project_id: project.id,
+        session_id: session.id,
+        title: "Survives session deletion"
+      })
+
+    assert {:ok, _deleted} = Sessions.delete_session(session)
+
+    persisted = Kanban.get_task!(task.id)
+    assert persisted.project_id == project.id
+    assert persisted.session_id == nil
+  end
+
+  test "database trigger rejects cross-project task sessions", %{project: project} do
+    foreign_root = Path.join(System.tmp_dir!(), "kanban-trigger-#{Ecto.UUID.generate()}")
+    File.mkdir_p!(foreign_root)
+    on_exit(fn -> File.rm_rf!(foreign_root) end)
+
+    {:ok, foreign_project} =
+      Projects.create_project(%{name: "Trigger foreign", root_path: foreign_root})
+
+    {:ok, foreign_session} =
+      Sessions.create_session(%{project_id: foreign_project.id, title: "Trigger foreign"})
+
+    assert_raise Exqlite.Error, ~r/kanban_task_session_scope_mismatch/, fn ->
+      %KanbanTask{}
+      |> Ecto.Changeset.change(%{
+        project_id: project.id,
+        session_id: foreign_session.id,
+        title: "Bypass context",
+        status: "triage",
+        priority: "medium"
+      })
+      |> Repo.insert!()
+    end
   end
 
   test "normalizes agile statuses when moving task status", %{

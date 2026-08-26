@@ -58,7 +58,7 @@ defmodule IexCode.Research.ProviderBudgetTest do
 
     assert replayed.id == first.id
 
-    assert {:error, {:invalid_transition, "claimed", "uncertain"}} =
+    assert {:error, :worker_authority_required} =
              IexCode.Runs.transition_command(first, "uncertain")
 
     assert Repo.get!(RunCommand, first.id).status == "claimed"

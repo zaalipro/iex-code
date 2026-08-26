@@ -59,6 +59,8 @@ defmodule IexCode.Kanban.Task do
     |> validate_inclusion(:priority, @priorities)
     |> validate_number(:steps_completed, greater_than_or_equal_to: 0)
     |> validate_number(:steps_total, greater_than_or_equal_to: 0)
+    |> foreign_key_constraint(:project_id)
+    |> foreign_key_constraint(:session_id)
   end
 
   defp compute_subtask_steps(changeset) do

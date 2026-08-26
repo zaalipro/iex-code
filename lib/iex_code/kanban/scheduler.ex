@@ -135,11 +135,12 @@ defmodule IexCode.Kanban.Scheduler do
       %{recovered: 0, claimed: 0, enqueued: 0, errors: [{kind, reason}], results: []}
   end
 
-  defp dispatch_claimed_task(%Task{} = task, now, dispatcher) do
+  @doc false
+  def dispatch_claimed_task(%Task{} = task, now, dispatcher) do
     schedule_key = Kanban.schedule_occurrence_key(task)
 
     with {:ok, next_at} <- next_occurrence(task, now),
-         {:ok, session} <- ensure_session(task),
+         {:ok, session} <- resolve_schedule_session(task),
          {:ok, run} <- find_or_enqueue(task, session.id, schedule_key, dispatcher),
          {:ok, _task} <- Kanban.mark_schedule_dispatched(task, run.id, next_at) do
       current_run = Runs.get_run(run.id) || run
@@ -160,6 +161,11 @@ defmodule IexCode.Kanban.Scheduler do
         _ = Kanban.fail_schedule_claim(task, "Invalid five-field cron expression")
         error
 
+      {:error, reason} = error
+      when reason in [:schedule_session_not_found, :schedule_session_project_mismatch] ->
+        _ = Kanban.fail_schedule_claim(task, reason)
+        error
+
       {:error, reason} = error ->
         _ = Kanban.release_schedule_claim(task, reason)
         error
@@ -170,20 +176,31 @@ defmodule IexCode.Kanban.Scheduler do
       {:error, error}
   end
 
-  defp ensure_session(%Task{session_id: session_id, project_id: project_id} = task) do
-    case session_id && Sessions.get_session(session_id) do
-      %{project_id: ^project_id} = session ->
-        {:ok, session}
-
-      _ ->
+  @doc false
+  def resolve_schedule_session(%Task{session_id: session_id, project_id: project_id} = task) do
+    case session_id do
+      nil ->
         with {:ok, session} <-
                Sessions.create_session(%{
                  project_id: project_id,
                  title: "Scheduled: #{String.slice(task.title, 0, 180)}",
                  swarm_mode: true
-               }),
-             {:ok, _task} <- Kanban.attach_schedule_session(task, session.id) do
-          {:ok, session}
+               }) do
+          case Kanban.attach_schedule_session(task, session.id) do
+            {:ok, _task} ->
+              {:ok, session}
+
+            {:error, reason} ->
+              _ = Sessions.delete_session(session)
+              {:error, reason}
+          end
+        end
+
+      session_id ->
+        case Sessions.get_session(session_id) do
+          %{project_id: ^project_id} = session -> {:ok, session}
+          nil -> {:error, :schedule_session_not_found}
+          _foreign_session -> {:error, :schedule_session_project_mismatch}
         end
     end
   end
@@ -196,17 +213,27 @@ defmodule IexCode.Kanban.Scheduler do
   end
 
   defp find_or_enqueue(task, session_id, schedule_key, dispatcher) do
-    case existing_scheduled_run(task.project_id, schedule_key) do
+    case existing_scheduled_run(task, session_id, schedule_key) do
       nil -> RunDispatcher.enqueue(run_attrs(task, session_id, schedule_key), dispatcher)
       run -> {:ok, run}
     end
   end
 
-  defp existing_scheduled_run(project_id, schedule_key) do
+  defp existing_scheduled_run(task, session_id, schedule_key) do
+    scheduled_for = DateTime.to_iso8601(task.scheduled_at)
+
     from(run in Run,
-      where: run.project_id == ^project_id,
+      where: run.project_id == ^task.project_id and run.session_id == ^session_id,
+      where: run.request_key == ^schedule_key or is_nil(run.request_key),
+      where: fragment("json_extract(?, '$.source') = 'kanban_schedule'", run.metadata),
+      where: fragment("json_extract(?, '$.kanban_task_id') = ?", run.metadata, ^task.id),
       where: fragment("json_extract(?, '$.schedule_key') = ?", run.metadata, ^schedule_key),
-      order_by: [desc: run.inserted_at],
+      where: fragment("json_extract(?, '$.scheduled_for') = ?", run.metadata, ^scheduled_for),
+      order_by: [
+        desc: fragment("? IS NOT NULL", run.request_key),
+        asc: run.inserted_at,
+        asc: run.id
+      ],
       limit: 1
     )
     |> Repo.one()
@@ -221,6 +248,7 @@ defmodule IexCode.Kanban.Scheduler do
     %{
       project_id: task.project_id,
       session_id: session_id,
+      request_key: schedule_key,
       objective: objective,
       kind: "coding_swarm",
       mode: "swarm",

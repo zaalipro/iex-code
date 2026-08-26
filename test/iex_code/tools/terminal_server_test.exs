@@ -190,6 +190,55 @@ defmodule IexCode.Tools.TerminalServerTest do
 
       assert result.exit_code == 7
     end
+
+    test "emits completion telemetry when the terminal disappears after dispatch", %{
+      session_id: session_id
+    } do
+      test_pid = self()
+      handler_id = "terminal-send-failure-#{System.unique_integer([:positive])}"
+
+      :ok =
+        :telemetry.attach_many(
+          handler_id,
+          [
+            [:iex_code, :terminal, :command_dispatched],
+            [:iex_code, :terminal, :command_completed]
+          ],
+          fn
+            [:iex_code, :terminal, :command_dispatched],
+            _measurements,
+            %{session_id: ^session_id},
+            _config ->
+              TerminalServer.kill(session_id)
+
+            [:iex_code, :terminal, :command_completed],
+            measurements,
+            %{session_id: ^session_id} = metadata,
+            _config ->
+              send(test_pid, {:failed_command_completed, measurements, metadata})
+
+            _event, _measurements, _metadata, _config ->
+              :ok
+          end,
+          nil
+        )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      assert {:error, _reason} =
+               TerminalServer.run_agent_command(
+                 session_id,
+                 "echo should-not-run",
+                 "VerifierAgent",
+                 timeout_ms: 1_000
+               )
+
+      assert_receive {:failed_command_completed, measurements, metadata}, 1_000
+      assert measurements.duration_ms >= 0
+      assert measurements.exit_code == -1
+      assert metadata.status == :error
+      refute_receive {:failed_command_completed, _, _}, 50
+    end
   end
 
   describe "history, clear, restart, and kill" do

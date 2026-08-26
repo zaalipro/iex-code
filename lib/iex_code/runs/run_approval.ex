@@ -10,6 +10,8 @@ defmodule IexCode.Runs.RunApproval do
   @statuses ~w(pending approved denied expired cancelled)
 
   schema "run_approvals" do
+    field :target_attempt, :integer, default: 0
+    field :target_generation, :integer, default: 0
     field :key, :string
     field :action, :string
     field :resource, :string
@@ -32,6 +34,8 @@ defmodule IexCode.Runs.RunApproval do
     approval
     |> cast(attrs, [
       :run_command_id,
+      :target_attempt,
+      :target_generation,
       :key,
       :action,
       :resource,
@@ -44,7 +48,16 @@ defmodule IexCode.Runs.RunApproval do
       :expires_at,
       :decided_at
     ])
-    |> validate_required([:run_id, :key, :action, :reason, :status, :requested_by])
+    |> validate_required([
+      :run_id,
+      :target_attempt,
+      :target_generation,
+      :key,
+      :action,
+      :reason,
+      :status,
+      :requested_by
+    ])
     |> validate_length(:key, min: 1, max: 200)
     |> validate_format(:key, ~r/^[A-Za-z0-9][A-Za-z0-9._:-]*$/)
     |> validate_length(:action, min: 1, max: 120)
@@ -54,6 +67,8 @@ defmodule IexCode.Runs.RunApproval do
     |> validate_length(:decided_by, max: 160)
     |> validate_length(:decision_note, max: 20_000)
     |> validate_inclusion(:status, @statuses)
+    |> validate_number(:target_attempt, greater_than_or_equal_to: 0)
+    |> validate_number(:target_generation, greater_than_or_equal_to: 0)
     |> unique_constraint([:run_id, :key])
     |> foreign_key_constraint(:run_id)
     |> foreign_key_constraint(:run_command_id)

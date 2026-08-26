@@ -3,7 +3,7 @@ defmodule IexCodeWeb.WorkspaceLiveUIControlsTest do
   @moduletag mock_llm: true
   @moduletag timeout: 120_000
 
-  alias IexCode.{Kanban, Sessions, Settings}
+  alias IexCode.{Kanban, Runs, Sessions, Settings}
 
   # ============================================================================
   # 1. Navigation, Sidebar, Workspace Switcher & Session Management
@@ -104,6 +104,47 @@ defmodule IexCodeWeb.WorkspaceLiveUIControlsTest do
       fallback = Sessions.list_sessions_for_project(project.id)
       assert length(fallback) == 1
       assert hd(fallback).title == "Coding Session 1"
+    end
+
+    test "rejects a forged cross-project session deletion without navigation or cascade", %{
+      conn: conn,
+      workspace_path: path
+    } do
+      current_project = create_project_fixture(%{name: "Current Project", root_path: path})
+      current_session = create_session_fixture(current_project, %{title: "Current Session"})
+
+      foreign_root = Path.join(System.tmp_dir!(), "foreign-session-#{Ecto.UUID.generate()}")
+      File.mkdir_p!(foreign_root)
+
+      foreign_project =
+        create_project_fixture(%{name: "Foreign Project", root_path: foreign_root})
+
+      foreign_session = create_session_fixture(foreign_project, %{title: "Foreign Session"})
+
+      foreign_message =
+        create_message_fixture(foreign_session, %{content: "Foreign data must survive"})
+
+      assert {:ok, foreign_run} =
+               Runs.create_run(%{
+                 project_id: foreign_project.id,
+                 session_id: foreign_session.id,
+                 objective: "Foreign durable run must survive"
+               })
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{current_session.id}")
+
+      render_click(view, "delete_session", %{"id" => foreign_session.id})
+
+      assert Sessions.get_session(foreign_session.id).id == foreign_session.id
+      assert Enum.any?(Sessions.list_messages(foreign_session.id), &(&1.id == foreign_message.id))
+      assert Runs.get_run(foreign_run.id).id == foreign_run.id
+
+      assigns = live_assigns(view)
+      assert assigns.session.id == current_session.id
+      assert assigns.project.id == current_project.id
+      assert render(view) =~ "Session not found in this project"
+
+      File.rm_rf(foreign_root)
     end
   end
 
@@ -689,5 +730,11 @@ defmodule IexCodeWeb.WorkspaceLiveUIControlsTest do
 
   defp count_exit_markers(html) do
     html |> String.split("[Exit ") |> length() |> Kernel.-(1)
+  end
+
+  defp live_assigns(view) do
+    view.pid
+    |> :sys.get_state()
+    |> then(& &1.socket.assigns)
   end
 end

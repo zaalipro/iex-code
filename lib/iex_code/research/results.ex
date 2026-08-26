@@ -2,6 +2,7 @@ defmodule IexCode.Research.Results do
   @moduledoc "Durable public IDs, immutable files, and chat attachments for deep research."
 
   import Ecto.Query, warn: false
+  require Logger
 
   alias IexCode.Repo
   alias IexCode.Research.{HTMLReport, ResearchResult, ResultStore}
@@ -30,6 +31,9 @@ defmodule IexCode.Research.Results do
     result =
       Repo.retry_on_busy(fn ->
         Repo.transaction(fn ->
+          current_run = Repo.get!(Run, run.id)
+          assert_unleased_run!(current_run)
+
           case Repo.get_by(ResearchResult, run_id: run.id) do
             %ResearchResult{level: ^level} = existing ->
               existing
@@ -135,31 +139,108 @@ defmodule IexCode.Research.Results do
   end
 
   @doc false
-  def prepare_run(%Run{kind: "deep_research"} = run) do
-    case get_by_run(run) do
-      %ResearchResult{status: status} = result when status in ["queued", "running"] ->
-        mark_running(result)
-
-      %ResearchResult{} = result ->
-        {:error, {:research_result_terminal, result.status}}
-
-      nil ->
-        level = metadata_level(run.metadata)
-
-        with {:ok, result} <- register(run, level),
-             {:ok, running} <- mark_running(result) do
-          {:ok, running}
-        end
-    end
-  end
+  def prepare_run(%Run{kind: "deep_research"} = run), do: do_prepare_run(run, nil)
 
   def prepare_run(%Run{}), do: {:ok, nil}
   def prepare_run(_run), do: {:error, :invalid_research_run}
+
+  @doc false
+  def prepare_run_worker(%Run{kind: "deep_research"} = run, authority) when is_list(authority) do
+    with :ok <- validate_worker_authority(authority) do
+      do_prepare_run(run, authority)
+    end
+  end
+
+  def prepare_run_worker(%Run{}, _authority), do: {:ok, nil}
+
+  def prepare_run_worker(_run, _authority), do: {:error, :invalid_worker_authority}
+
+  defp do_prepare_run(%Run{} = run, authority) do
+    transaction =
+      Repo.retry_on_busy(fn ->
+        Repo.transaction(fn ->
+          current_run = Repo.get!(Run, run.id)
+
+          if authority,
+            do: assert_worker_authority!(current_run, authority),
+            else: assert_unleased_run!(current_run)
+
+          level = metadata_level(current_run.metadata)
+
+          result =
+            case Repo.get_by(ResearchResult, run_id: current_run.id) do
+              %ResearchResult{level: ^level} = existing ->
+                existing
+
+              %ResearchResult{} ->
+                Repo.rollback(:research_result_identity_conflict)
+
+              nil ->
+                %ResearchResult{}
+                |> ResearchResult.create_changeset(%{
+                  run_id: current_run.id,
+                  project_id: current_run.project_id,
+                  session_id: current_run.session_id,
+                  objective: current_run.objective,
+                  level: level,
+                  status: "queued",
+                  metadata: %{}
+                })
+                |> Repo.insert()
+                |> case do
+                  {:ok, created} -> created
+                  {:error, changeset} -> Repo.rollback(changeset)
+                end
+            end
+
+          case result.status do
+            status when status in ["queued", "running"] ->
+              result
+              |> ResearchResult.transition_changeset(%{
+                status: "running",
+                metadata: result.metadata || %{}
+              })
+              |> Repo.update()
+              |> case do
+                {:ok, running} -> running
+                {:error, changeset} -> Repo.rollback(changeset)
+              end
+
+            status ->
+              Repo.rollback({:research_result_terminal, status})
+          end
+        end)
+      end)
+
+    unwrap_transaction(transaction)
+  end
 
   @doc "Commits `result.md` and a self-contained HTML report, then marks the ID ready."
   def commit(result_or_id, markdown, opts \\ [])
 
   def commit(result_or_id, markdown, opts) when is_binary(markdown) and is_list(opts) do
+    do_commit(result_or_id, markdown, opts, nil)
+  end
+
+  def commit(_result_or_id, _markdown, _opts), do: {:error, :invalid_research_commit}
+
+  @doc false
+  def commit_worker(result_or_id, markdown, opts, authority)
+      when is_binary(markdown) and is_list(opts) and is_list(authority) do
+    with :ok <- validate_worker_authority(authority),
+         %ResearchResult{} = result <- resolve(result_or_id),
+         {:ok, _run} <- IexCode.Runs.assert_run_worker(result.run_id, authority) do
+      do_commit(result, markdown, opts, authority)
+    else
+      nil -> {:error, :not_found}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  def commit_worker(_result_or_id, _markdown, _opts, _authority),
+    do: {:error, :invalid_research_commit}
+
+  defp do_commit(result_or_id, markdown, opts, authority) do
     with %ResearchResult{} = result <- resolve(result_or_id),
          :ok <- committable?(result),
          {:ok, commit_metadata} <- validate_commit_metadata(opts[:metadata]),
@@ -167,30 +248,69 @@ defmodule IexCode.Research.Results do
          root <- storage_root(opts),
          {:ok, markdown_object} <- ResultStore.put(root, markdown),
          {:ok, html_object} <- ResultStore.put(root, html),
+         :ok <- before_ready(opts),
          result_path <- Path.join(Integer.to_string(result.id), "result.md"),
          html_path <- Path.join(Integer.to_string(result.id), "report.html"),
-         {:ok, _path} <- ResultStore.materialize(root, markdown_object, result_path),
-         {:ok, _path} <- ResultStore.materialize(root, html_object, html_path) do
-      persist_ready(
-        result,
-        result_path,
-        html_path,
-        markdown_object,
-        html_object,
-        Keyword.put(opts, :metadata, commit_metadata)
+         {:ok, ready} <-
+           persist_ready(
+             result,
+             result_path,
+             html_path,
+             markdown_object,
+             html_object,
+             Keyword.put(opts, :metadata, commit_metadata),
+             authority
+           ) do
+      materialize_accepted_paths(
+        ready,
+        root,
+        [{markdown_object, result_path}, {html_object, html_path}]
       )
+
+      {:ok, ready}
     else
       nil -> {:error, :not_found}
       {:error, _reason} = error -> error
     end
   end
 
-  def commit(_result_or_id, _markdown, _opts), do: {:error, :invalid_research_commit}
+  # Content-addressed objects are safe to leave behind if authority is lost.
+  # Fixed public result paths are not: they are immutable and a stale worker
+  # could otherwise occupy them before the fenced ready transition rejects it.
+  # Keep this callback private and test-only in practice; production callers do
+  # not supply it.
+  defp before_ready(opts) do
+    case opts[:before_ready] do
+      callback when is_function(callback, 0) -> callback.()
+      _callback -> :ok
+    end
+  end
+
+  @doc false
+  def mark_failed_worker(result_or_id, code, authority)
+      when is_binary(code) and byte_size(code) in 1..160 and is_list(authority),
+      do:
+        transition_worker(
+          result_or_id,
+          "failed",
+          %{completed_at: now(), metadata: %{"failure_code" => code}},
+          authority
+        )
+
+  def mark_failed_worker(_result_or_id, _code, _authority),
+    do: {:error, :invalid_failure_code}
+
+  @doc false
+  def mark_cancelled_worker(result_or_id, authority) when is_list(authority),
+    do: transition_worker(result_or_id, "cancelled", %{completed_at: now()}, authority)
+
+  def mark_cancelled_worker(_result_or_id, _authority),
+    do: {:error, :invalid_worker_authority}
 
   def read_markdown(result, opts \\ [])
 
   def read_markdown(%ResearchResult{status: "ready"} = result, opts) do
-    ResultStore.read(storage_root(opts), result.result_path, result.markdown_sha256)
+    read_ready_file(storage_root(opts), result.result_path, result.markdown_sha256)
   end
 
   def read_markdown(_result, _opts), do: {:error, :research_result_not_ready}
@@ -198,7 +318,7 @@ defmodule IexCode.Research.Results do
   def read_html(result, opts \\ [])
 
   def read_html(%ResearchResult{status: "ready"} = result, opts) do
-    ResultStore.read(storage_root(opts), result.html_path, result.html_sha256)
+    read_ready_file(storage_root(opts), result.html_path, result.html_sha256)
   end
 
   def read_html(_result, _opts), do: {:error, :research_result_not_ready}
@@ -298,7 +418,15 @@ defmodule IexCode.Research.Results do
     end)
   end
 
-  defp persist_ready(result, result_path, html_path, markdown_object, html_object, opts) do
+  defp persist_ready(
+         result,
+         result_path,
+         html_path,
+         markdown_object,
+         html_object,
+         opts,
+         authority
+       ) do
     metadata =
       (opts[:metadata] || %{})
       |> Map.put("markdown_object", object_ref(markdown_object))
@@ -308,12 +436,22 @@ defmodule IexCode.Research.Results do
       Repo.retry_on_busy(fn ->
         Repo.transaction(fn ->
           current = Repo.get!(ResearchResult, result.id)
+          run = Repo.get!(Run, current.run_id)
+
+          if authority,
+            do: assert_worker_authority!(run, authority),
+            else: assert_unleased_run!(run)
+
+          case committable?(current) do
+            :ok -> :ok
+            {:error, reason} -> Repo.rollback(reason)
+          end
 
           if current.status == "ready" do
             if ready_identity?(current, markdown_object.digest, html_object.digest) do
               current
             else
-              Repo.rollback(:research_result_already_committed)
+              Repo.rollback(:research_object_collision)
             end
           else
             changeset =
@@ -339,16 +477,108 @@ defmodule IexCode.Research.Results do
     unwrap_transaction(transaction)
   end
 
-  defp transition(result_or_id, status, attrs) do
-    with %ResearchResult{} = result <- resolve(result_or_id),
-         :ok <- transition_allowed?(result.status, status) do
-      changeset =
-        ResearchResult.transition_changeset(
-          result,
-          attrs |> Map.put(:status, status) |> Map.put_new(:metadata, result.metadata || %{})
-        )
+  # The ready transaction is the authority boundary: after it accepts the
+  # digests, publishing those exact content-addressed objects is safe even if
+  # the worker subsequently loses its lease. A crash between that transaction
+  # and materialization is repaired lazily from the accepted digest.
+  defp read_ready_file(root, path, digest) do
+    case ResultStore.read(root, path, digest) do
+      {:ok, _body} = ok ->
+        ok
 
-      Repo.update(changeset)
+      {:error, _reason} = original_error ->
+        case ResultStore.materialize_digest(root, digest, path) do
+          {:ok, _path} -> ResultStore.read(root, path, digest)
+          {:error, _reason} -> original_error
+        end
+    end
+  end
+
+  # The ready transaction durably accepts the content-addressed objects. Fixed
+  # paths are a derived cache and must not turn that committed success into a
+  # parent-run failure if publication is interrupted. Reads repair missing
+  # paths. An existing mismatched destination remains an integrity error; it is
+  # never silently replaced or served around.
+  defp materialize_accepted_paths(ready, root, objects_and_paths) do
+    Enum.each(objects_and_paths, fn {object, path} ->
+      case ResultStore.materialize(root, object, path) do
+        {:ok, _path} ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning(
+            "Research result #{ready.id} accepted object #{object.digest} but path publication failed: #{inspect(reason)}"
+          )
+      end
+    end)
+  end
+
+  defp transition(result_or_id, status, attrs) do
+    with %ResearchResult{} = result <- resolve(result_or_id) do
+      transaction =
+        Repo.retry_on_busy(fn ->
+          Repo.transaction(fn ->
+            current = Repo.get!(ResearchResult, result.id)
+            run = Repo.get!(Run, current.run_id)
+            assert_unleased_run!(run)
+
+            case transition_allowed?(current.status, status) do
+              :ok ->
+                current
+                |> ResearchResult.transition_changeset(
+                  attrs
+                  |> Map.put(:status, status)
+                  |> Map.put_new(:metadata, current.metadata || %{})
+                )
+                |> Repo.update()
+                |> case do
+                  {:ok, updated} -> updated
+                  {:error, changeset} -> Repo.rollback(changeset)
+                end
+
+              {:error, reason} ->
+                Repo.rollback(reason)
+            end
+          end)
+        end)
+
+      unwrap_transaction(transaction)
+    else
+      nil -> {:error, :not_found}
+    end
+  end
+
+  defp transition_worker(result_or_id, status, attrs, authority) do
+    with :ok <- validate_worker_authority(authority),
+         %ResearchResult{} = result <- resolve(result_or_id) do
+      transaction =
+        Repo.retry_on_busy(fn ->
+          Repo.transaction(fn ->
+            current = Repo.get!(ResearchResult, result.id)
+            run = Repo.get!(Run, current.run_id)
+            assert_worker_authority!(run, authority)
+
+            case transition_allowed?(current.status, status) do
+              :ok ->
+                current
+                |> ResearchResult.transition_changeset(
+                  attrs
+                  |> Map.put(:status, status)
+                  |> Map.put_new(:metadata, current.metadata || %{})
+                )
+                |> Repo.update()
+                |> case do
+                  {:ok, updated} -> updated
+                  {:error, changeset} -> Repo.rollback(changeset)
+                end
+
+              {:error, reason} ->
+                Repo.rollback(reason)
+            end
+          end)
+        end)
+
+      unwrap_transaction(transaction)
     else
       nil -> {:error, :not_found}
       {:error, _reason} = error -> error
@@ -361,6 +591,33 @@ defmodule IexCode.Research.Results do
 
   defp transition_allowed?(from, to),
     do: {:error, {:invalid_research_result_transition, from, to}}
+
+  defp validate_worker_authority(authority) do
+    owner = authority[:lease_owner]
+    attempt = authority[:run_attempt]
+    generation = authority[:lease_generation]
+
+    if is_binary(owner) and owner != "" and is_integer(attempt) and attempt >= 1 and
+         is_integer(generation) and generation >= 1 do
+      :ok
+    else
+      {:error, :invalid_worker_authority}
+    end
+  end
+
+  defp assert_worker_authority!(run, authority) do
+    valid? =
+      run.status in ["running", "paused"] and run.lease_owner == authority[:lease_owner] and
+        run.attempt == authority[:run_attempt] and
+        run.lease_generation == authority[:lease_generation] and
+        is_struct(run.lease_expires_at, DateTime) and
+        DateTime.compare(run.lease_expires_at, now()) == :gt
+
+    if valid?, do: :ok, else: Repo.rollback(:lease_not_owned)
+  end
+
+  defp assert_unleased_run!(%Run{lease_owner: nil}), do: :ok
+  defp assert_unleased_run!(%Run{}), do: Repo.rollback(:worker_authority_required)
 
   defp committable?(%ResearchResult{status: status}) when status in ["running", "ready"], do: :ok
 

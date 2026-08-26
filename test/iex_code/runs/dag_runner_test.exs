@@ -159,7 +159,7 @@ defmodule IexCode.Runs.DagRunnerTest do
     runner = start_runner(run, context.root, blocking_executor(receiver), poll_ms: 10)
 
     refute_receive {:step_started, _, _}, 50
-    assert {:ok, _running} = Runs.transition_run(run, "running")
+    assert {:ok, _running} = transition_parent(run, "running")
     started = assert_started()
     send(started.pid, :release)
 
@@ -189,13 +189,13 @@ defmodule IexCode.Runs.DagRunnerTest do
       )
 
     started = assert_started()
-    assert {:ok, paused} = Runs.transition_run(run, "paused")
+    assert {:ok, paused} = transition_parent(run, "paused")
     assert_receive {:dag_runner, {:control, :paused, 1}}, 500
     send(started.pid, :checkpoint)
     assert_receive :checkpoint_entered, 500
     refute_receive {:checkpoint_result, _result}, 50
 
-    assert {:ok, _running} = Runs.transition_run(paused, "running")
+    assert {:ok, _running} = transition_parent(paused, "running")
     assert_receive {:checkpoint_result, {:ok, _attempt}}, 1_000
     assert_receive {:dag_runner_result, ^runner, {:ok, %Run{status: "completed"}}}, 2_000
   end
@@ -282,7 +282,7 @@ defmodule IexCode.Runs.DagRunnerTest do
     task_ref = Process.monitor(started.pid)
 
     assert {:ok, failed} =
-             Runs.transition_run(run, "failed", %{
+             transition_parent(run, "failed", %{
                error_message: "external terminalization",
                error_details: %{"reason" => "external_terminalization"}
              })
@@ -335,6 +335,14 @@ defmodule IexCode.Runs.DagRunnerTest do
       )
 
     task
+  end
+
+  defp transition_parent(run, status, attrs \\ %{}) do
+    Runs.transition_run_worker(run, status, attrs,
+      lease_owner: @owner,
+      run_attempt: run.attempt,
+      lease_generation: run.lease_generation
+    )
   end
 
   defp blocking_executor(receiver) do

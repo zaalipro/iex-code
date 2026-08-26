@@ -7,10 +7,11 @@ defmodule IexCode.Application do
   def start(_type, _args) do
     children =
       [
-        IexCodeWeb.Telemetry,
         IexCode.Repo,
         {Ecto.Migrator,
          repos: Application.fetch_env!(:iex_code, :ecto_repos), skip: skip_migrations?()},
+        IexCode.Observability.MetricsStore,
+        IexCodeWeb.Telemetry,
         IexCode.DatabasePermissions,
         {DNSCluster, query: Application.get_env(:iex_code, :dns_cluster_query) || :ignore},
         {Phoenix.PubSub, name: IexCode.PubSub},

@@ -21,6 +21,11 @@ defmodule IexCode.Engine.SwarmCoordinator do
   alias IexCode.{Runs, Sessions}
   alias Phoenix.PubSub
 
+  @max_steering_directives 64
+  @max_steering_bytes 8_000
+  @max_steering_context_bytes 128_000
+  @swarm_start_timeout 5_000
+
   defmodule State do
     defstruct [
       :session_id,
@@ -31,6 +36,10 @@ defmodule IexCode.Engine.SwarmCoordinator do
       :root_op_id,
       :allowed_tools,
       :workspace_lock_delegation,
+      :run_lease_owner,
+      :run_attempt,
+      :run_lease_generation,
+      :run_lease_ms,
       fleet_agents: [],
       stage: :init,
       iteration: 0,
@@ -76,19 +85,31 @@ defmodule IexCode.Engine.SwarmCoordinator do
         options
       end
 
-    if project_root do
-      IexCode.Tools.MultiPatch.Snapshot.claim_unscoped(project_root, session_id)
+    lock = {{__MODULE__, :session_swarm, session_id}, self()}
+    requested_identity = swarm_owner_identity(run_opts)
+
+    with :ok <- validate_durable_swarm_owner_identity(run_opts) do
+      case :global.trans(lock, fn ->
+             case AgentRegistry.swarm_owner_registration(session_id) do
+               {:ok, pid, metadata} ->
+                 if Map.take(metadata, Map.keys(requested_identity)) == requested_identity do
+                   {:ok, pid}
+                 else
+                   {:error, {:session_swarm_owned, metadata[:run_id] || :interactive}}
+                 end
+
+               {:error, {:swarm_owner_metadata_unavailable, _pid, _reason}} ->
+                 {:error, :swarm_owner_metadata_unavailable}
+
+               :none ->
+                 start_swarm_task(session_id, user_prompt, project_root, run_opts, true)
+             end
+           end) do
+        :aborted -> {:error, :swarm_ownership_lock_failed}
+        {:aborted, reason} -> {:error, {:swarm_ownership_lock_failed, reason}}
+        result -> result
+      end
     end
-
-    parent = self()
-
-    task =
-      Task.Supervisor.async_nolink(IexCode.TaskSupervisor, fn ->
-        allow_sandbox(parent, self())
-        run(session_id, user_prompt, run_opts)
-      end)
-
-    {:ok, task.pid}
   end
 
   @doc """
@@ -214,6 +235,19 @@ defmodule IexCode.Engine.SwarmCoordinator do
   Returns `{:ok, final_message}` or `{:error, reason}`.
   """
   def run(session_id, user_prompt, opts \\ []) do
+    case durable_swarm_owner_identity(opts) do
+      :interactive ->
+        run_with_interactive_ownership(session_id, user_prompt, opts)
+
+      {:ok, identity} ->
+        run_with_durable_ownership(session_id, user_prompt, opts, identity)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp do_run(session_id, user_prompt, opts) do
     session =
       try do
         Sessions.get_session!(session_id)
@@ -251,13 +285,6 @@ defmodule IexCode.Engine.SwarmCoordinator do
           end
       end
 
-    if pre_paused? do
-      broadcast(session_id, {:session_status_changed, "paused"})
-    else
-      broadcast(session_id, {:session_status_changed, "running"})
-      update_db_session_status(session_id, "running")
-    end
-
     start_time_ms = System.monotonic_time(:millisecond)
 
     state = %State{
@@ -268,12 +295,25 @@ defmodule IexCode.Engine.SwarmCoordinator do
       user_prompt: user_prompt,
       allowed_tools: Keyword.get(opts, :allowed_tools, :all),
       workspace_lock_delegation: opts[:workspace_lock_delegation],
+      run_lease_owner: opts[:run_lease_owner],
+      run_attempt: opts[:run_attempt],
+      run_lease_generation: opts[:run_lease_generation],
+      run_lease_ms: opts[:run_lease_ms],
       max_retries: max_retries,
       start_time_ms: start_time_ms,
       stage_start_ms: start_time_ms,
       stage: :init,
       status: if(pre_paused?, do: :paused, else: :running)
     }
+
+    state = ensure_durable_run_active!(state)
+
+    if pre_paused? do
+      broadcast(session_id, {:session_status_changed, "paused"})
+    else
+      broadcast(session_id, {:session_status_changed, "running"})
+      update_db_session_status(session_id, "running")
+    end
 
     state = attach_durable_fleet(state)
 
@@ -317,6 +357,13 @@ defmodule IexCode.Engine.SwarmCoordinator do
       # 5. Final Synthesis & Assistant Message
       finish_swarm(state)
     catch
+      {:durable_run_fenced, reason} ->
+        Logger.warning(
+          "[SwarmCoordinator] Durable run #{state.run_id} lost execution authority: #{inspect(reason)}"
+        )
+
+        {:error, {:durable_run_fenced, reason}}
+
       {:swarm_agent_phase_interrupted, role, reason, final_state} ->
         {:error, {:agent_phase_interrupted, role, reason, final_state.stage}}
 
@@ -402,52 +449,14 @@ defmodule IexCode.Engine.SwarmCoordinator do
         handle_cancel_and_terminate(state, action: :rollback)
 
       {:steer_message, steer_text} ->
-        Logger.info(
-          "[SwarmCoordinator] Ingested steering for session #{session_id}: #{steer_text}"
-        )
-
-        new_prompt = state.user_prompt <> "\n\n[Real-time User Guidance]: " <> steer_text
-        new_directives = [steer_text | state.steer_directives]
-
-        broadcast(
-          session_id,
-          {:swarm_steered,
-           %{
-             session_id: session_id,
-             steering: steer_text,
-             updated_prompt: new_prompt
-           }}
-        )
-
-        check_steering_and_control(%State{
-          state
-          | user_prompt: new_prompt,
-            steer_directives: new_directives
-        })
+        state
+        |> ingest_steering(steer_text, "session steering")
+        |> check_steering_and_control()
 
       {:steer, steer_text} ->
-        Logger.info(
-          "[SwarmCoordinator] Ingested steering (direct) for session #{session_id}: #{steer_text}"
-        )
-
-        new_prompt = state.user_prompt <> "\n\n[Real-time User Guidance]: " <> steer_text
-        new_directives = [steer_text | state.steer_directives]
-
-        broadcast(
-          session_id,
-          {:swarm_steered,
-           %{
-             session_id: session_id,
-             steering: steer_text,
-             updated_prompt: new_prompt
-           }}
-        )
-
-        check_steering_and_control(%State{
-          state
-          | user_prompt: new_prompt,
-            steer_directives: new_directives
-        })
+        state
+        |> ingest_steering(steer_text, "direct steering")
+        |> check_steering_and_control()
 
       {:pause, ^session_id} ->
         Logger.info("[SwarmCoordinator] Session #{session_id} paused.")
@@ -469,6 +478,8 @@ defmodule IexCode.Engine.SwarmCoordinator do
   end
 
   defp wait_for_resume_or_cancel(%State{session_id: session_id} = state) do
+    state = ensure_durable_run_active!(state)
+
     receive do
       {:run_control, run_id, control_id, :resume, _payload} when run_id == state.run_id ->
         if acknowledge_control(control_id, state, "resume") == :ok do
@@ -490,6 +501,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
         wait_for_resume_or_cancel(state)
 
       {:run_control, run_id, :cancel, _payload} when run_id == state.run_id ->
+        state = ensure_durable_run_active!(state)
         Logger.info("[SwarmCoordinator] Durable run #{run_id} cancelled while paused.")
         handle_cancel_and_terminate(state, action: :rollback)
 
@@ -523,45 +535,14 @@ defmodule IexCode.Engine.SwarmCoordinator do
         handle_cancel_and_terminate(state, opts)
 
       {:steer_message, steer_text} ->
-        Logger.info("[SwarmCoordinator] Ingested steering while paused: #{steer_text}")
-        new_prompt = state.user_prompt <> "\n\n[Real-time User Guidance]: " <> steer_text
-        new_directives = [steer_text | state.steer_directives]
-
-        broadcast(
-          session_id,
-          {:swarm_steered,
-           %{
-             session_id: session_id,
-             steering: steer_text,
-             updated_prompt: new_prompt
-           }}
-        )
-
-        wait_for_resume_or_cancel(%State{
-          state
-          | user_prompt: new_prompt,
-            steer_directives: new_directives
-        })
+        state
+        |> ingest_steering(steer_text, "session steering while paused")
+        |> wait_for_resume_or_cancel()
 
       {:steer, steer_text} ->
-        new_prompt = state.user_prompt <> "\n\n[Real-time User Guidance]: " <> steer_text
-        new_directives = [steer_text | state.steer_directives]
-
-        broadcast(
-          session_id,
-          {:swarm_steered,
-           %{
-             session_id: session_id,
-             steering: steer_text,
-             updated_prompt: new_prompt
-           }}
-        )
-
-        wait_for_resume_or_cancel(%State{
-          state
-          | user_prompt: new_prompt,
-            steer_directives: new_directives
-        })
+        state
+        |> ingest_steering(steer_text, "direct steering while paused")
+        |> wait_for_resume_or_cancel()
     after
       200 ->
         case state |> replay_claimed_controls() |> align_durable_control_state() do
@@ -572,47 +553,270 @@ defmodule IexCode.Engine.SwarmCoordinator do
   end
 
   defp ingest_steering(%State{session_id: session_id} = state, steer_text, source) do
-    steer_text = to_string(steer_text)
+    steer_text = normalize_steering(steer_text)
     Logger.info("[SwarmCoordinator] Ingested steering from #{source}: #{steer_text}")
-    new_prompt = state.user_prompt <> "\n\n[Real-time User Guidance]: " <> steer_text
 
-    broadcast(
-      session_id,
-      {:swarm_steered,
-       %{session_id: session_id, steering: steer_text, updated_prompt: new_prompt}}
-    )
+    duplicate? = steer_text == "" or steer_text in state.steer_directives
+    addition = "\n\n[Real-time User Guidance]: " <> steer_text
+
+    new_prompt =
+      if duplicate? or
+           byte_size(state.user_prompt) + byte_size(addition) > @max_steering_context_bytes,
+         do: state.user_prompt,
+         else: state.user_prompt <> addition
+
+    directives =
+      if duplicate? do
+        state.steer_directives
+      else
+        [steer_text | state.steer_directives] |> Enum.take(@max_steering_directives)
+      end
+
+    if steer_text != "" do
+      broadcast(
+        session_id,
+        {:swarm_steered,
+         %{session_id: session_id, steering: steer_text, updated_prompt: new_prompt}}
+      )
+    end
 
     %State{
       state
       | user_prompt: new_prompt,
-        steer_directives: [steer_text | state.steer_directives]
+        steer_directives: directives
     }
   end
 
+  defp start_swarm_task(session_id, user_prompt, project_root, run_opts, register_owner?) do
+    if project_root do
+      IexCode.Tools.MultiPatch.Snapshot.claim_unscoped(project_root, session_id)
+    end
+
+    parent = self()
+    start_ref = make_ref()
+    task_supervisor = Keyword.get(run_opts, :task_supervisor, IexCode.TaskSupervisor)
+
+    start_result =
+      try do
+        Task.Supervisor.start_child(task_supervisor, fn ->
+          allow_sandbox(parent, self())
+
+          registration =
+            if register_owner? do
+              AgentRegistry.register_swarm_owner(
+                session_id,
+                swarm_owner_metadata(run_opts)
+              )
+            else
+              {:ok, :durable_run}
+            end
+
+          case registration do
+            {:ok, _metadata} ->
+              send(parent, {start_ref, :registered, self()})
+
+              try do
+                execute_swarm(session_id, user_prompt, run_opts)
+              after
+                if register_owner?, do: AgentRegistry.unregister_swarm_owner(session_id)
+              end
+
+            {:error, {:already_registered, owner}} ->
+              send(parent, {start_ref, :already_registered, owner})
+          end
+        end)
+      catch
+        :exit, reason -> {:error, reason}
+      end
+
+    await_swarm_start(start_result, start_ref, task_supervisor, session_id)
+  end
+
+  defp await_swarm_start({:ok, task_pid}, start_ref, task_supervisor, session_id) do
+    monitor = Process.monitor(task_pid)
+
+    receive do
+      {^start_ref, :registered, ^task_pid} ->
+        Process.demonitor(monitor, [:flush])
+        {:ok, task_pid}
+
+      {^start_ref, :already_registered, owner} when is_pid(owner) ->
+        Process.demonitor(monitor, [:flush])
+
+        case AgentRegistry.swarm_owner_registration(session_id) do
+          {:ok, ^owner, metadata} ->
+            {:error, {:session_swarm_owned, metadata[:run_id] || :interactive}}
+
+          {:error, {:swarm_owner_metadata_unavailable, ^owner, _reason}} ->
+            {:error, :swarm_owner_metadata_unavailable}
+
+          :none ->
+            {:error, :session_swarm_owned}
+        end
+
+      {:DOWN, ^monitor, :process, ^task_pid, reason} ->
+        {:error, {:swarm_start_failed, reason}}
+    after
+      @swarm_start_timeout ->
+        Process.demonitor(monitor, [:flush])
+        _ = Task.Supervisor.terminate_child(task_supervisor, task_pid)
+        {:error, :swarm_start_timeout}
+    end
+  end
+
+  defp await_swarm_start({:error, reason}, _start_ref, _task_supervisor, _session_id),
+    do: {:error, reason}
+
+  defp normalize_steering(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> String.slice(0, @max_steering_bytes)
+  end
+
+  defp normalize_steering(_value), do: ""
+
+  defp swarm_owner_identity(opts) do
+    %{
+      run_id: opts[:run_id],
+      run_attempt: opts[:run_attempt],
+      lease_generation: opts[:run_lease_generation],
+      lease_owner: opts[:run_lease_owner],
+      ownership_token: opts[:ownership_token]
+    }
+  end
+
+  defp swarm_owner_metadata(opts) do
+    opts
+    |> swarm_owner_identity()
+    |> Map.put(:started_at, System.system_time())
+  end
+
+  defp durable_swarm_owner_identity(opts) do
+    case opts[:run_id] do
+      run_id when is_binary(run_id) ->
+        identity = swarm_owner_identity(opts)
+
+        if is_integer(identity.run_attempt) and identity.run_attempt > 0 and
+             is_integer(identity.lease_generation) and identity.lease_generation > 0 and
+             is_binary(identity.lease_owner) and String.trim(identity.lease_owner) != "" do
+          {:ok, identity}
+        else
+          {:error, :invalid_swarm_owner_identity}
+        end
+
+      _run_id ->
+        :interactive
+    end
+  end
+
+  defp validate_durable_swarm_owner_identity(opts) do
+    case durable_swarm_owner_identity(opts) do
+      :interactive -> :ok
+      {:ok, _identity} -> :ok
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp run_with_durable_ownership(session_id, user_prompt, opts, identity) do
+    case AgentRegistry.register_swarm_owner(
+           session_id,
+           Map.put(identity, :started_at, System.system_time())
+         ) do
+      {:ok, _metadata} ->
+        try do
+          execute_swarm(session_id, user_prompt, opts)
+        after
+          AgentRegistry.unregister_swarm_owner(session_id)
+        end
+
+      {:error, {:already_registered, _owner}} ->
+        {:error, :session_swarm_owned}
+    end
+  end
+
+  defp run_with_interactive_ownership(session_id, user_prompt, opts) do
+    case AgentRegistry.register_swarm_owner(session_id, swarm_owner_metadata(opts)) do
+      {:ok, _metadata} ->
+        try do
+          execute_swarm(session_id, user_prompt, opts)
+        after
+          AgentRegistry.unregister_swarm_owner(session_id)
+        end
+
+      {:error, {:already_registered, _owner}} ->
+        {:error, :session_swarm_owned}
+    end
+  end
+
+  defp execute_swarm(session_id, user_prompt, opts) do
+    do_run(session_id, user_prompt, opts)
+  catch
+    {:durable_run_fenced, reason} ->
+      Logger.warning(
+        "[SwarmCoordinator] Durable run #{opts[:run_id]} failed preflight authority: #{inspect(reason)}"
+      )
+
+      {:error, {:durable_run_fenced, reason}}
+  end
+
   defp acknowledge_control(control_id, state, action) do
-    with %{run_id: run_id, kind: kind, worker_id: worker_id} = control <-
+    with %{
+           run_id: run_id,
+           kind: kind,
+           worker_id: worker_id,
+           target_attempt: target_attempt,
+           target_generation: target_generation,
+           claim_generation: claim_generation
+         } = control <-
            Runs.get_control(control_id),
          true <- run_id == state.run_id and kind == action,
-         %{lease_owner: lease_owner} when is_binary(lease_owner) <- Runs.get_run(run_id),
-         true <- worker_id == lease_owner,
-         {:ok, _resolved} <-
-           Runs.resolve_control(
-             control,
-             "applied",
-             %{
-               "action" => action,
-               "stage" => to_string(state.stage),
-               "acknowledged_by" => "swarm_coordinator"
-             },
-             run_id: run_id,
-             worker_id: worker_id,
-             kind: kind
-           ) do
-      :ok
+         true <- target_attempt == state.run_attempt,
+         true <- target_generation == state.run_lease_generation,
+         true <- claim_generation == state.run_lease_generation,
+         true <- worker_id == state.run_lease_owner,
+         %IexCode.Runs.Run{
+           status: run_status,
+           attempt: ^target_attempt,
+           lease_generation: ^target_generation,
+           lease_owner: ^worker_id,
+           lease_expires_at: %DateTime{} = lease_expires_at
+         } <- Runs.get_run(run_id),
+         true <- run_status in ["running", "paused"],
+         true <- DateTime.compare(lease_expires_at, DateTime.utc_now()) == :gt do
+      resolve_or_accept_control(control, state, action)
     else
       _ -> :stale
     end
   end
+
+  # Legacy pause/resume transitions atomically resolve their receipt in the
+  # dispatcher before delivery. Steering remains claimed until the coordinator
+  # journals its ingestion. Both paths are safe only after the exact lineage
+  # checks in acknowledge_control/3 above.
+  defp resolve_or_accept_control(%{status: "applied"}, _state, _action), do: :ok
+
+  defp resolve_or_accept_control(%{status: "claimed"} = control, state, action) do
+    case Runs.resolve_control(
+           control,
+           "applied",
+           %{
+             "action" => action,
+             "stage" => to_string(state.stage),
+             "acknowledged_by" => "swarm_coordinator"
+           },
+           run_id: control.run_id,
+           worker_id: control.worker_id,
+           kind: control.kind,
+           target_attempt: state.run_attempt,
+           target_generation: state.run_lease_generation,
+           claim_generation: state.run_lease_generation
+         ) do
+      {:ok, _resolved} -> :ok
+      {:error, _reason} -> :stale
+    end
+  end
+
+  defp resolve_or_accept_control(_control, _state, _action), do: :stale
 
   defp replay_claimed_controls(%State{run_id: run_id} = state) when is_binary(run_id) do
     case Runs.list_controls(run_id, status: "claimed", limit: 1) do
@@ -620,28 +824,30 @@ defmodule IexCode.Engine.SwarmCoordinator do
         guidance = value(payload, "guidance")
         applied? = acknowledge_control(control.id, state, "steer") == :ok
 
-        next_state =
-          if applied? and is_binary(guidance),
-            do: ingest_steering(state, guidance, "durable control poll"),
-            else: state
+        if applied? do
+          next_state =
+            if is_binary(guidance),
+              do: ingest_steering(state, guidance, "durable control poll"),
+              else: state
 
-        replay_claimed_controls(next_state)
+          replay_claimed_controls(next_state)
+        else
+          state
+        end
 
       [%{kind: "pause"} = control] ->
-        next_state =
-          if acknowledge_control(control.id, state, "pause") == :ok,
-            do: %State{state | status: :paused},
-            else: state
-
-        replay_claimed_controls(next_state)
+        if acknowledge_control(control.id, state, "pause") == :ok do
+          replay_claimed_controls(%State{state | status: :paused})
+        else
+          state
+        end
 
       [%{kind: "resume"} = control] ->
-        next_state =
-          if acknowledge_control(control.id, state, "resume") == :ok,
-            do: %State{state | status: :running},
-            else: state
-
-        replay_claimed_controls(next_state)
+        if acknowledge_control(control.id, state, "resume") == :ok do
+          replay_claimed_controls(%State{state | status: :running})
+        else
+          state
+        end
 
       _ ->
         state
@@ -650,25 +856,71 @@ defmodule IexCode.Engine.SwarmCoordinator do
 
   defp replay_claimed_controls(state), do: state
 
-  defp align_durable_control_state(%State{run_id: run_id} = state) when is_binary(run_id) do
+  defp align_durable_control_state(
+         %State{
+           run_id: run_id,
+           run_attempt: attempt,
+           run_lease_generation: generation,
+           run_lease_owner: owner
+         } = state
+       )
+       when is_binary(run_id) do
     case Runs.get_run(run_id) do
-      %{status: "paused"} -> %State{state | status: :paused}
-      %{status: "running"} -> %State{state | status: :running}
-      _ -> state
+      %{status: "paused", attempt: ^attempt, lease_generation: ^generation, lease_owner: ^owner} ->
+        %State{state | status: :paused}
+
+      %{status: "running", attempt: ^attempt, lease_generation: ^generation, lease_owner: ^owner} ->
+        %State{state | status: :running}
+
+      _ ->
+        state
     end
   end
 
   defp align_durable_control_state(state), do: state
 
-  defp ensure_durable_run_active!(%State{run_id: run_id} = state) when is_binary(run_id) do
+  defp ensure_durable_run_active!(
+         %State{
+           run_id: run_id,
+           run_lease_owner: owner,
+           run_attempt: attempt,
+           run_lease_generation: generation
+         } = state
+       )
+       when is_binary(run_id) do
     case Runs.get_run(run_id) do
-      %IexCode.Runs.Run{status: status} when status in ["failed", "cancelled", "interrupted"] ->
-        stop_state_agents(state, status)
-        _ = perform_rollback(state.project_root, state)
-        throw({:swarm_cancelled, :durable_run_terminal, state})
+      %IexCode.Runs.Run{
+        status: status,
+        lease_owner: ^owner,
+        attempt: ^attempt,
+        lease_generation: ^generation,
+        lease_expires_at: %DateTime{} = lease_expires_at
+      }
+      when status in ["failed", "cancelled", "interrupted"] ->
+        if DateTime.compare(lease_expires_at, DateTime.utc_now()) == :gt do
+          stop_state_agents(state, status)
+          _ = perform_rollback(state.project_root, state)
+          throw({:swarm_cancelled, :durable_run_terminal, state})
+        else
+          throw({:durable_run_fenced, :lease_expired})
+        end
 
-      _ ->
-        state
+      %IexCode.Runs.Run{
+        status: status,
+        lease_owner: ^owner,
+        attempt: ^attempt,
+        lease_generation: ^generation,
+        lease_expires_at: %DateTime{} = lease_expires_at
+      }
+      when status in ["running", "paused"] ->
+        if DateTime.compare(lease_expires_at, DateTime.utc_now()) == :gt do
+          state
+        else
+          throw({:durable_run_fenced, :lease_expired})
+        end
+
+      _stale_or_missing ->
+        throw({:durable_run_fenced, :lease_not_owned})
     end
   end
 
@@ -676,17 +928,33 @@ defmodule IexCode.Engine.SwarmCoordinator do
 
   defp value(map, key), do: Map.get(map || %{}, key) || Map.get(map || %{}, to_string(key))
 
-  defp attach_durable_fleet(%State{run_id: run_id} = state) when is_binary(run_id) do
-    run = Runs.get_run!(run_id)
+  defp attach_durable_fleet(
+         %State{
+           run_id: run_id,
+           run_lease_owner: owner,
+           run_attempt: attempt,
+           run_lease_generation: generation
+         } = state
+       )
+       when is_binary(run_id) do
+    case Runs.get_run(run_id) do
+      %IexCode.Runs.Run{
+        lease_owner: ^owner,
+        attempt: ^attempt,
+        lease_generation: ^generation
+      } = run ->
+        case FleetSupervisor.attach(run,
+               session: state.session,
+               project_root: state.project_root,
+               allowed_tools: state.allowed_tools,
+               workspace_lock_delegation: state.workspace_lock_delegation
+             ) do
+          {:ok, agents} -> %State{state | fleet_agents: agents}
+          {:error, reason} -> raise "durable fleet failed to attach: #{inspect(reason)}"
+        end
 
-    case FleetSupervisor.attach(run,
-           session: state.session,
-           project_root: state.project_root,
-           allowed_tools: state.allowed_tools,
-           workspace_lock_delegation: state.workspace_lock_delegation
-         ) do
-      {:ok, agents} -> %State{state | fleet_agents: agents}
-      {:error, reason} -> raise "durable fleet failed to attach: #{inspect(reason)}"
+      _stale_or_missing ->
+        throw({:durable_run_fenced, :lease_not_owned})
     end
   end
 
@@ -752,10 +1020,26 @@ defmodule IexCode.Engine.SwarmCoordinator do
     |> Enum.sort_by(& &1.position)
   end
 
-  defp stop_state_agents(%State{run_id: run_id}, status) when is_binary(run_id) do
+  defp stop_state_agents(
+         %State{
+           run_id: run_id,
+           run_lease_owner: owner,
+           run_attempt: attempt,
+           run_lease_generation: generation
+         },
+         status
+       )
+       when is_binary(run_id) do
     case AgentRegistry.whereis_fleet(run_id, :manager) do
-      nil -> :ok
-      _pid -> FleetManager.stop(run_id, status)
+      nil ->
+        :ok
+
+      _pid ->
+        FleetManager.stop(run_id, status,
+          lease_owner: owner,
+          run_attempt: attempt,
+          lease_generation: generation
+        )
     end
   rescue
     _ -> :ok
@@ -767,6 +1051,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
     do: AgentSupervisor.stop_all_agents(session_id)
 
   defp handle_cancel_and_terminate(%State{session_id: session_id} = state, opts) do
+    state = ensure_durable_run_active!(state)
     action = Keyword.get(opts, :action, :rollback)
     project_root = state.project_root
 
@@ -1341,21 +1626,33 @@ defmodule IexCode.Engine.SwarmCoordinator do
          message: message
        }}
 
-    broadcast(session_id, event)
     persist_run_stage(state, stage, progress, message)
+    broadcast(session_id, event)
   end
 
-  defp persist_run_stage(%State{run_id: run_id}, stage, progress, message)
-       when is_binary(run_id) do
-    _ = Runs.record_progress(run_id, progress, message, "swarm.#{stage}")
-    :ok
-  rescue
-    error ->
-      Logger.warning(
-        "[SwarmCoordinator] Could not persist run stage #{stage}: #{Exception.message(error)}"
-      )
-
-      :ok
+  defp persist_run_stage(
+         %State{
+           run_id: run_id,
+           run_lease_owner: owner,
+           run_attempt: attempt,
+           run_lease_generation: generation,
+           run_lease_ms: lease_ms
+         },
+         stage,
+         progress,
+         message
+       )
+       when is_binary(run_id) and is_binary(owner) and is_integer(attempt) and
+              is_integer(generation) do
+    case Runs.record_progress(run_id, progress, message, "swarm.#{stage}",
+           lease_owner: owner,
+           run_attempt: attempt,
+           lease_generation: generation,
+           lease_ms: lease_ms
+         ) do
+      {:ok, _run} -> :ok
+      {:error, reason} -> throw({:durable_run_fenced, reason})
+    end
   end
 
   defp persist_run_stage(_state, _stage, _progress, _message), do: :ok

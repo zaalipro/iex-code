@@ -23,40 +23,55 @@ defmodule IexCode.Research.Runner do
     llm_module = Keyword.get(opts, :llm_module, IexCode.LLM)
     config = research_config(run, opts)
 
-    with {:ok, durable_result} <- Results.prepare_run(run),
+    with :ok <- assert_run_authority(run, opts),
+         {:ok, durable_result} <- prepare_result(run, opts),
          :ok <- control_checkpoint(run, opts),
-         {:ok, plan_step} <- stage(run, "plan", "Research plan", 20),
-         :ok <- begin_stage(plan_step),
-         :ok <- announce(run, progress_fun, 5, "Planning durable research strategy"),
-         {:ok, _step} <- finish_plan(plan_step, run, config),
-         {:ok, search_step} <- stage(run, "search", "Federated evidence search", 21),
-         :ok <- begin_stage(search_step),
-         :ok <- announce(run, progress_fun, 10, "Searching #{provider_label(config.providers)}"),
+         {:ok, plan_step} <- stage(run, "plan", "Research plan", 20, opts),
+         :ok <- begin_stage(plan_step, opts),
+         :ok <- announce(run, progress_fun, 5, "Planning durable research strategy", opts),
+         {:ok, _step} <- finish_plan(plan_step, run, config, opts),
+         {:ok, search_step} <- stage(run, "search", "Federated evidence search", 21, opts),
+         :ok <- begin_stage(search_step, opts),
+         :ok <-
+           announce(
+             run,
+             progress_fun,
+             10,
+             "Searching #{provider_label(config.providers)}",
+             opts
+           ),
          :ok <- control_checkpoint(run, opts),
          {:ok, search_result} <-
            perform_search(search_module, config.queries, config, opts, fn ->
              control_checkpoint(run, opts)
            end),
          {:ok, sources} <- normalize_sources(search_result.results, config.max_sources),
-         {:ok, _step} <- finish_stage(search_step, sources, search_result),
-         :ok <- announce(run, progress_fun, 55, "Collected #{length(sources)} research sources"),
+         {:ok, _step} <- finish_stage(search_step, sources, search_result, opts),
+         :ok <-
+           announce(
+             run,
+             progress_fun,
+             55,
+             "Collected #{length(sources)} research sources",
+             opts
+           ),
          {:ok, sources, evidence_step} <-
            maybe_fetch_sources(run, sources, progress_fun, config, opts),
          {:ok, sources} <- bound_source_evidence(sources, config.depth),
          {:ok, evidence_artifact} <-
-           persist_evidence(run, evidence_step || search_step, sources, search_result),
+           persist_evidence(run, evidence_step || search_step, sources, search_result, opts),
          :ok <- control_checkpoint(run, opts),
          {:ok, synthesis_step} <-
-           stage(run, "synthesize", "Evidence-grounded synthesis", 23),
-         :ok <- begin_stage(synthesis_step),
-         :ok <- announce(run, progress_fun, 65, "Synthesizing cited research report"),
+           stage(run, "synthesize", "Evidence-grounded synthesis", 23, opts),
+         :ok <- begin_stage(synthesis_step, opts),
+         :ok <- announce(run, progress_fun, 65, "Synthesizing cited research report", opts),
          :ok <- control_checkpoint(run, opts),
          {:ok, markdown} <- synthesize(llm_module, run, sources, config, opts),
          :ok <- control_checkpoint(run, opts, false),
          {:ok, report_artifact} <-
            persist_report(run, synthesis_step, markdown, sources, config, durable_result, opts),
-         {:ok, _step} <- finish_synthesis(synthesis_step, markdown, sources),
-         :ok <- announce(run, progress_fun, 100, "Research report ready") do
+         {:ok, _step} <- finish_synthesis(synthesis_step, markdown, sources, opts),
+         :ok <- announce(run, progress_fun, 100, "Research report ready", opts) do
       {:ok,
        %{
          report: markdown,
@@ -69,21 +84,21 @@ defmodule IexCode.Research.Runner do
        }}
     else
       {:error, reason} = error ->
-        record_failure(run, reason)
-        terminalize_result(run, reason)
+        record_failure(run, reason, opts)
+        terminalize_result(run, reason, opts)
         error
     end
   rescue
     error ->
       reason = {error, __STACKTRACE__}
-      record_failure(run, reason)
-      terminalize_result(run, reason)
+      record_failure(run, reason, opts)
+      terminalize_result(run, reason, opts)
       {:error, reason}
   catch
     kind, reason ->
       caught = {kind, reason}
-      record_failure(run, caught)
-      terminalize_result(run, caught)
+      record_failure(run, caught, opts)
+      terminalize_result(run, caught, opts)
       {:error, caught}
   end
 
@@ -269,26 +284,32 @@ defmodule IexCode.Research.Runner do
       fetcher = Keyword.get(opts, :fetcher_module, Fetcher)
       parallelism = opts |> Keyword.get(:fetch_parallelism, 4) |> min(8) |> max(1)
 
-      with {:ok, fetch_step} <- stage(run, "fetch", "Bounded public source fetch", 22),
-           :ok <- begin_stage(fetch_step),
-           :ok <- announce(run, progress_fun, 58, "Fetching public source content") do
+      with {:ok, fetch_step} <- stage(run, "fetch", "Bounded public source fetch", 22, opts),
+           :ok <- begin_stage(fetch_step, opts),
+           :ok <- announce(run, progress_fun, 58, "Fetching public source content", opts) do
         with {:ok, enriched} <-
                fetch_source_batches(run, sources, fetcher, parallelism, opts) do
           fetched_count = Enum.count(enriched, &Map.get(&1.metadata, "fetched", false))
 
-          case Runs.transition_step(fetch_step, "completed", %{
-                 result: %{
-                   "source_count" => length(enriched),
-                   "fetched_count" => fetched_count
-                 }
-               }) do
+          case transition_step(
+                 fetch_step,
+                 "completed",
+                 %{
+                   result: %{
+                     "source_count" => length(enriched),
+                     "fetched_count" => fetched_count
+                   }
+                 },
+                 opts
+               ) do
             {:ok, completed} ->
               _ =
                 announce(
                   run,
                   progress_fun,
                   62,
-                  "Fetched #{fetched_count}/#{length(enriched)} sources"
+                  "Fetched #{fetched_count}/#{length(enriched)} sources",
+                  opts
                 )
 
               {:ok, enriched, completed}
@@ -301,7 +322,7 @@ defmodule IexCode.Research.Runner do
     else
       reason = if config.depth == "quick", do: "quick_depth", else: "source_fetch_disabled"
 
-      with {:ok, _skipped_step} <- terminalize_unneeded_fetch(run, reason) do
+      with {:ok, _skipped_step} <- terminalize_unneeded_fetch(run, reason, opts) do
         {:ok, sources, nil}
       end
     end
@@ -337,14 +358,14 @@ defmodule IexCode.Research.Runner do
     end)
   end
 
-  defp terminalize_unneeded_fetch(run, reason) do
+  defp terminalize_unneeded_fetch(run, reason, opts) do
     case Enum.find(Runs.list_steps(run), &(&1.key == stage_key(run, "fetch"))) do
       %RunStep{status: status} = step
       when status in ["pending", "ready", "blocked", "interrupted"] ->
-        Runs.transition_step(step, "skipped", %{result: %{"reason" => reason}})
+        transition_step(step, "skipped", %{result: %{"reason" => reason}}, opts)
 
       %RunStep{status: status} = step when status in ["running", "paused", "waiting_approval"] ->
-        Runs.transition_step(step, "cancelled", %{result: %{"reason" => reason}})
+        transition_step(step, "cancelled", %{result: %{"reason" => reason}}, opts)
 
       %RunStep{status: status} = step when status in ["completed", "skipped"] ->
         {:ok, step}
@@ -399,20 +420,44 @@ defmodule IexCode.Research.Runner do
 
     with {:ok, response} <-
            llm_module.chat(messages, system_prompt, session, fn _ -> :ok end, llm_opts),
-         :ok <- persist_usage(run, response),
+         :ok <- persist_usage(run, response, opts),
          {:ok, text} <- Report.extract_text(response),
          {:ok, report} <- Report.ensure_citations(text, sources) do
       {:ok, report}
     end
   end
 
-  defp persist_usage(run, response) do
+  defp persist_usage(run, response, opts) do
     usage = Map.get(response, :usage) || Map.get(response, "usage")
 
     if is_map(usage) do
-      case Runs.record_usage(run, usage, "research.synthesis") do
+      authority = Keyword.get(opts, :run_authority, [])
+
+      result =
+        with owner when is_binary(owner) <- authority[:run_lease_owner],
+             attempt when is_integer(attempt) <- authority[:run_attempt],
+             generation when is_integer(generation) <- authority[:run_lease_generation] do
+          terminal_lease_ms =
+            case authority[:run_terminal_lease_ms] do
+              lease_ms when is_integer(lease_ms) and lease_ms > 0 -> min(lease_ms, 300_000)
+              _invalid -> 30_000
+            end
+
+          Runs.record_usage(run, usage, "research.synthesis",
+            lease_owner: owner,
+            run_attempt: attempt,
+            lease_generation: generation,
+            terminal_lease_ms: terminal_lease_ms
+          )
+        else
+          _invalid_authority ->
+            Runs.record_usage(run, usage, "research.synthesis")
+        end
+
+      case result do
         {:ok, _run} -> :ok
         {:error, {:token_budget_exhausted, _run}} -> {:error, :token_budget_exhausted}
+        {:error, {:cost_budget_exhausted, _run}} -> {:error, :cost_budget_exhausted}
         {:error, reason} -> {:error, reason}
       end
     else
@@ -420,19 +465,76 @@ defmodule IexCode.Research.Runner do
     end
   end
 
-  defp stage(run, name, title, position) do
+  defp create_step(run, attrs, opts) do
+    case run_worker_authority(opts) do
+      {:ok, authority} -> Runs.create_step_worker(run, attrs, authority)
+      :none -> Runs.create_step(run, attrs)
+    end
+  end
+
+  defp transition_step(step, status, attrs, opts) do
+    case run_worker_authority(opts) do
+      {:ok, authority} -> Runs.transition_step_worker(step, status, attrs, authority)
+      :none -> Runs.transition_step(step, status, attrs)
+    end
+  end
+
+  defp run_worker_authority(opts) do
+    authority = Keyword.get(opts, :run_authority, [])
+
+    with owner when is_binary(owner) <- authority[:run_lease_owner],
+         attempt when is_integer(attempt) <- authority[:run_attempt],
+         generation when is_integer(generation) <- authority[:run_lease_generation] do
+      {:ok,
+       [
+         lease_owner: owner,
+         run_attempt: attempt,
+         lease_generation: generation
+       ]}
+    else
+      _invalid_authority -> :none
+    end
+  end
+
+  defp assert_run_authority(run, opts) do
+    case run_worker_authority(opts) do
+      {:ok, authority} ->
+        case Runs.assert_run_worker(run, authority) do
+          {:ok, _current} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+
+      :none ->
+        case Runs.get_run(run.id) do
+          %Run{lease_owner: nil} -> :ok
+          %Run{} -> {:error, :worker_authority_required}
+          nil -> {:error, :not_found}
+        end
+    end
+  end
+
+  defp prepare_result(run, opts) do
+    case run_worker_authority(opts) do
+      {:ok, authority} -> Results.prepare_run_worker(run, authority)
+      :none -> Results.prepare_run(run)
+    end
+  end
+
+  defp stage(run, name, title, position, opts) do
     key = stage_key(run, name)
 
     case Enum.find(Runs.list_steps(run), &(&1.key == key)) do
       nil ->
-        case Runs.create_step(run, %{
-               key: key,
-               kind: "research_#{name}",
-               title: title,
-               position: position,
-               status: "pending",
-               params: %{"run_attempt" => run.attempt, "stage" => name}
-             }) do
+        step_attrs = %{
+          key: key,
+          kind: "research_#{name}",
+          title: title,
+          position: position,
+          status: "pending",
+          params: %{"run_attempt" => run.attempt, "stage" => name}
+        }
+
+        case create_step(run, step_attrs, opts) do
           {:error, _reason} ->
             case Enum.find(Runs.list_steps(run), &(&1.key == key)) do
               nil -> {:error, {:research_stage_unavailable, key}}
@@ -448,58 +550,77 @@ defmodule IexCode.Research.Runner do
     end
   end
 
-  defp begin_stage(%RunStep{status: "running"}), do: :ok
+  defp begin_stage(%RunStep{status: "running"}, _opts), do: :ok
 
-  defp begin_stage(%RunStep{status: status} = step)
+  defp begin_stage(%RunStep{status: status} = step, opts)
        when status in ~w(pending ready paused waiting_approval blocked interrupted) do
-    case Runs.transition_step(step, "running") do
+    case transition_step(step, "running", %{}, opts) do
       {:ok, _step} -> :ok
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp begin_stage(%RunStep{status: "completed"}), do: :ok
-  defp begin_stage(%RunStep{status: status}), do: {:error, {:research_stage_terminal, status}}
+  defp begin_stage(%RunStep{status: "completed"}, _opts), do: :ok
 
-  defp finish_stage(%RunStep{status: "completed"} = step, _sources, _result), do: {:ok, step}
+  defp begin_stage(%RunStep{status: status}, _opts),
+    do: {:error, {:research_stage_terminal, status}}
 
-  defp finish_stage(step, sources, result) do
-    Runs.transition_step(step, "completed", %{
-      result: %{
-        "source_count" => length(sources),
-        "providers" => result.providers,
-        "provider_errors" => safe_term(result.errors)
-      }
-    })
-  end
-
-  defp finish_plan(%RunStep{status: "completed"} = step, _run, _config), do: {:ok, step}
-
-  defp finish_plan(step, run, config) do
-    Runs.transition_step(step, "completed", %{
-      result: %{
-        "query" => run.objective,
-        "queries" => config.queries,
-        "depth" => config.depth,
-        "max_sources" => config.max_sources,
-        "providers" => safe_term(config.providers)
-      }
-    })
-  end
-
-  defp finish_synthesis(%RunStep{status: "completed"} = step, _markdown, _sources),
+  defp finish_stage(%RunStep{status: "completed"} = step, _sources, _result, _opts),
     do: {:ok, step}
 
-  defp finish_synthesis(step, markdown, sources) do
-    Runs.transition_step(step, "completed", %{
-      result: %{
-        "source_count" => length(sources),
-        "report_bytes" => byte_size(markdown)
-      }
-    })
+  defp finish_stage(step, sources, result, opts) do
+    transition_step(
+      step,
+      "completed",
+      %{
+        result: %{
+          "source_count" => length(sources),
+          "providers" => result.providers,
+          "provider_errors" => safe_term(result.errors)
+        }
+      },
+      opts
+    )
   end
 
-  defp persist_evidence(run, step, sources, result) do
+  defp finish_plan(%RunStep{status: "completed"} = step, _run, _config, _opts),
+    do: {:ok, step}
+
+  defp finish_plan(step, run, config, opts) do
+    transition_step(
+      step,
+      "completed",
+      %{
+        result: %{
+          "query" => run.objective,
+          "queries" => config.queries,
+          "depth" => config.depth,
+          "max_sources" => config.max_sources,
+          "providers" => safe_term(config.providers)
+        }
+      },
+      opts
+    )
+  end
+
+  defp finish_synthesis(%RunStep{status: "completed"} = step, _markdown, _sources, _opts),
+    do: {:ok, step}
+
+  defp finish_synthesis(step, markdown, sources, opts) do
+    transition_step(
+      step,
+      "completed",
+      %{
+        result: %{
+          "source_count" => length(sources),
+          "report_bytes" => byte_size(markdown)
+        }
+      },
+      opts
+    )
+  end
+
+  defp persist_evidence(run, step, sources, result, opts) do
     content =
       Jason.encode!(%{
         "objective" => run.objective,
@@ -516,12 +637,13 @@ defmodule IexCode.Research.Runner do
       "evidence.json",
       content,
       "application/json",
-      %{"source_count" => length(sources), "sources" => sources, "content" => content}
+      %{"source_count" => length(sources), "sources" => sources, "content" => content},
+      opts
     )
   end
 
-  defp persist_report(run, step, markdown, sources, config, nil, _opts) do
-    persist_markdown_artifact(run, step, markdown, sources, config, nil)
+  defp persist_report(run, step, markdown, sources, config, nil, opts) do
+    persist_markdown_artifact(run, step, markdown, sources, config, nil, opts)
   end
 
   defp persist_report(run, step, markdown, sources, config, durable_result, opts) do
@@ -534,9 +656,18 @@ defmodule IexCode.Research.Runner do
       ]
       |> maybe_put(:root, Keyword.get(opts, :research_root))
 
-    with {:ok, ready} <- Results.commit(durable_result, markdown, result_opts),
+    commit =
+      case run_worker_authority(opts) do
+        {:ok, authority} ->
+          Results.commit_worker(durable_result, markdown, result_opts, authority)
+
+        :none ->
+          Results.commit(durable_result, markdown, result_opts)
+      end
+
+    with {:ok, ready} <- commit,
          {:ok, markdown_artifact} <-
-           persist_markdown_artifact(run, step, markdown, sources, config, ready),
+           persist_markdown_artifact(run, step, markdown, sources, config, ready, opts),
          {:ok, html} <- Results.read_html(ready, result_opts),
          {:ok, _html_artifact} <-
            persist_artifact(
@@ -553,13 +684,14 @@ defmodule IexCode.Research.Runner do
                "sha256" => ready.html_sha256,
                "open_path" => "/research/#{ready.id}/report",
                "download_path" => "/research/#{ready.id}/report/download"
-             }
+             },
+             opts
            ) do
       {:ok, markdown_artifact}
     end
   end
 
-  defp persist_markdown_artifact(run, step, markdown, sources, config, durable_result) do
+  defp persist_markdown_artifact(run, step, markdown, sources, config, durable_result, opts) do
     filename = if durable_result, do: "result-#{durable_result.id}.md", else: "report.md"
 
     metadata = %{
@@ -587,16 +719,17 @@ defmodule IexCode.Research.Runner do
       filename,
       markdown,
       "text/markdown",
-      metadata
+      metadata,
+      opts
     )
   end
 
-  defp persist_artifact(run, step, kind, name, filename, content, media_type, metadata) do
+  defp persist_artifact(run, step, kind, name, filename, content, media_type, metadata, opts) do
     uri = "research://runs/#{run.id}/attempts/#{run.attempt}/#{filename}"
 
     case Enum.find(Runs.list_artifacts(run), &(&1.uri == uri)) do
       nil ->
-        Runs.create_artifact(run, %{
+        artifact_attrs = %{
           run_step_id: step.id,
           kind: kind,
           name: name,
@@ -605,31 +738,53 @@ defmodule IexCode.Research.Runner do
           byte_size: byte_size(content),
           checksum: "sha256:" <> sha256(content),
           metadata: metadata
-        })
+        }
+
+        case run_worker_authority(opts) do
+          {:ok, authority} -> Runs.create_artifact_worker(run, artifact_attrs, authority)
+          :none -> Runs.create_artifact(run, artifact_attrs)
+        end
 
       artifact ->
         {:ok, artifact}
     end
   end
 
-  defp announce(run, progress_fun, percent, message) do
+  defp announce(run, progress_fun, percent, message, opts) do
     _ = progress_fun.(percent, message)
 
-    case Runs.append_event(
-           run,
-           "research.progress",
-           %{
-             "percent" => percent,
-             "message" => message
-           },
-           "research.runner"
-         ) do
+    payload = %{"percent" => percent, "message" => message}
+
+    result =
+      case run_worker_authority(opts) do
+        {:ok, authority} ->
+          Runs.append_event_worker(
+            run,
+            "research.progress",
+            payload,
+            "research.runner",
+            authority
+          )
+
+        :none ->
+          Runs.append_event(run, "research.progress", payload, "research.runner")
+      end
+
+    case result do
       {:ok, _event} -> :ok
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp record_failure(run, reason) do
+  defp record_failure(run, reason, opts) do
+    if assert_run_authority(run, opts) == :ok do
+      do_record_failure(run, reason, opts)
+    else
+      :ok
+    end
+  end
+
+  defp do_record_failure(run, reason, opts) do
     latest_active =
       run
       |> Runs.list_steps()
@@ -638,7 +793,12 @@ defmodule IexCode.Research.Runner do
 
     if latest_active do
       _ =
-        Runs.transition_step(latest_active, "failed", %{error_message: format_reason(reason)})
+        transition_step(
+          latest_active,
+          "failed",
+          %{error_message: format_reason(reason)},
+          opts
+        )
     end
 
     run
@@ -652,36 +812,53 @@ defmodule IexCode.Research.Runner do
         if step.status in ["paused", "waiting_approval"], do: "cancelled", else: "skipped"
 
       _ =
-        Runs.transition_step(step, terminal_status, %{
-          error_message: "Upstream research stage failed"
-        })
+        transition_step(
+          step,
+          terminal_status,
+          %{error_message: "Upstream research stage failed"},
+          opts
+        )
     end)
 
+    payload = %{"reason" => format_reason(reason)}
+
     _ =
-      Runs.append_event(
-        run,
-        "research.failed",
-        %{"reason" => format_reason(reason)},
-        "research.runner"
-      )
+      case run_worker_authority(opts) do
+        {:ok, authority} ->
+          Runs.append_event_worker(run, "research.failed", payload, "research.runner", authority)
+
+        :none ->
+          Runs.append_event(run, "research.failed", payload, "research.runner")
+      end
 
     :ok
   rescue
     _ -> :ok
   end
 
-  defp terminalize_result(%Run{kind: "deep_research"} = run, reason) do
-    case Results.get_by_run(run) do
-      %{status: status} = result when status in ["queued", "running"] ->
-        action = if reason == :cancelled, do: :cancelled, else: :failed
+  defp terminalize_result(%Run{kind: "deep_research"} = run, reason, opts) do
+    if assert_run_authority(run, opts) == :ok do
+      case Results.get_by_run(run) do
+        %{status: status} = result when status in ["queued", "running"] ->
+          action = if reason == :cancelled, do: :cancelled, else: :failed
 
-        case action do
-          :cancelled -> Results.mark_cancelled(result)
-          :failed -> Results.mark_failed(result, failure_code(reason))
-        end
+          case {action, run_worker_authority(opts)} do
+            {:cancelled, {:ok, worker_authority}} ->
+              Results.mark_cancelled_worker(result, worker_authority)
 
-      _result ->
-        :ok
+            {:failed, {:ok, worker_authority}} ->
+              Results.mark_failed_worker(result, failure_code(reason), worker_authority)
+
+            {:cancelled, :none} ->
+              Results.mark_cancelled(result)
+
+            {:failed, :none} ->
+              Results.mark_failed(result, failure_code(reason))
+          end
+
+        _result ->
+          :ok
+      end
     end
 
     :ok
@@ -689,7 +866,7 @@ defmodule IexCode.Research.Runner do
     _exception -> :ok
   end
 
-  defp terminalize_result(_run, _reason), do: :ok
+  defp terminalize_result(_run, _reason, _opts), do: :ok
 
   defp failure_code(reason) do
     reason
@@ -709,10 +886,11 @@ defmodule IexCode.Research.Runner do
   end
 
   defp control_checkpoint(run, opts, acknowledge_steer? \\ true) do
-    with :ok <- not_cancelled(opts) do
+    with :ok <- not_cancelled(opts),
+         :ok <- assert_run_authority(run, opts) do
       current = Runs.get_run(run.id)
       acknowledge_research_controls(run, current, acknowledge_steer?)
-      sync_research_step_status(run, current)
+      sync_research_step_status(run, current, opts)
 
       case current do
         %Run{status: "paused"} ->
@@ -784,27 +962,27 @@ defmodule IexCode.Research.Runner do
     end)
   end
 
-  defp sync_research_step_status(run, %Run{status: "paused"}) do
+  defp sync_research_step_status(run, %Run{status: "paused"}, opts) do
     run
     |> Runs.list_steps()
     |> Enum.find(&(String.starts_with?(&1.key, "research.") and &1.status == "running"))
     |> case do
       nil -> :ok
-      step -> Runs.transition_step(step, "paused")
+      step -> transition_step(step, "paused", %{}, opts)
     end
   end
 
-  defp sync_research_step_status(run, %Run{status: "running"}) do
+  defp sync_research_step_status(run, %Run{status: "running"}, opts) do
     run
     |> Runs.list_steps()
     |> Enum.find(&(String.starts_with?(&1.key, "research.") and &1.status == "paused"))
     |> case do
       nil -> :ok
-      step -> Runs.transition_step(step, "running")
+      step -> transition_step(step, "running", %{}, opts)
     end
   end
 
-  defp sync_research_step_status(_run, _current), do: :ok
+  defp sync_research_step_status(_run, _current, _opts), do: :ok
 
   defp research_objective(run) do
     guidance =

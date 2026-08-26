@@ -274,7 +274,7 @@ defmodule IexCode.Research.ProviderEffectTest do
                flunk("uncertain effect must not replay")
              end)
 
-    assert {:error, {:invalid_transition, "uncertain", "failed"}} =
+    assert {:error, :worker_authority_required} =
              IexCode.Runs.transition_command(command, "failed")
 
     changeset = RunCommand.changeset(command, %{status: "failed"})

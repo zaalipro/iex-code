@@ -4,6 +4,7 @@ defmodule IexCode.Runs.RunDispatcherTest do
   import Ecto.Query
 
   alias IexCode.{Projects, Repo, Runs, Sessions, WorkspaceLocks}
+  alias IexCode.Engine.{AgentRegistry, FleetManager, FleetSupervisor}
   alias IexCode.Runs.{DagScheduler, ExecutionEngine, Run, RunDispatcher, RunStep}
 
   @dispatcher IexCode.RunDispatcherUnderTest
@@ -64,6 +65,29 @@ defmodule IexCode.Runs.RunDispatcherTest do
     assert projected.latest_summary =~ "completed successfully"
     assert :noop = IexCode.Kanban.project_run_terminal(run_id, "completed")
     assert IexCode.Kanban.get_task!(task.id) == projected
+  end
+
+  test "durable drafts remain unclaimed until explicitly started", context do
+    assert {:ok, draft} = RunDispatcher.create_draft(run_attrs(context, "draft run"))
+    assert draft.status == "draft"
+    assert draft.attempt == 0
+    refute_receive {:test_run_started, _, _}, 100
+
+    assert {:ok, queued} = RunDispatcher.resume(draft, @dispatcher)
+    assert queued.status == "queued"
+    assert_receive {:test_run_started, run_id, worker_pid}, 2_000
+    assert run_id == draft.id
+
+    send(worker_pid, {:finish, run_id, {:ok, :done}})
+    assert_receive {:async_run_updated, %Run{id: ^run_id, status: "completed"}}, 2_000
+
+    assert {:ok, cancellable} = RunDispatcher.create_draft(run_attrs(context, "cancel draft"))
+    assert {:ok, cancelled} = RunDispatcher.cancel(cancellable, @dispatcher)
+    assert cancelled.status == "cancelled"
+    assert cancelled.attempt == 0
+    assert Enum.all?(Runs.list_steps(cancelled), &(&1.status == "cancelled"))
+    cancelled_id = cancelled.id
+    refute_receive {:test_run_started, ^cancelled_id, _}, 100
   end
 
   test "periodically reconciles bounded research results and provider effects" do
@@ -180,6 +204,7 @@ defmodule IexCode.Runs.RunDispatcherTest do
     Phoenix.PubSub.subscribe(IexCode.PubSub, "session:#{context.session.id}:steer")
     assert {:ok, cancelled} = RunDispatcher.cancel(queued, @dispatcher)
     assert cancelled.status == "cancelled"
+    assert Enum.all?(Runs.list_steps(cancelled), &(&1.status == "cancelled"))
     refute_receive {:cancel, _, _}, 100
     assert Process.alive?(active_worker)
 
@@ -210,20 +235,128 @@ defmodule IexCode.Runs.RunDispatcherTest do
     assert_receive {:async_run_updated, %Run{id: ^run_id, status: "completed"}}, 2_000
   end
 
-  test "enforces the durable wall-clock budget and journals exhaustion", context do
-    attrs = run_attrs(context, "bounded run") |> Map.put(:time_budget_ms, 30)
+  test "enqueue canonicalizes atom and string status overrides to queued", context do
+    request_key = Ecto.UUID.generate()
+
+    attrs =
+      context
+      |> run_attrs("canonical queued disposition")
+      |> Map.merge(%{"status" => "running", status: "draft", request_key: request_key})
+
+    assert {:ok, first} = RunDispatcher.enqueue(attrs, @dispatcher)
+    assert first.status == "queued"
+    assert first.metadata["request_initial_status"] == "queued"
+
+    assert {:ok, duplicate} =
+             attrs
+             |> Map.put(:status, "cancelled")
+             |> Map.put("status", "paused")
+             |> RunDispatcher.enqueue(@dispatcher)
+
+    assert duplicate.id == first.id
+
+    assert_receive {:test_run_started, run_id, worker_pid}, 2_000
+    send(worker_pid, {:finish, run_id, {:ok, :done}})
+  end
+
+  test "wall-clock exhaustion holds its lease until worker cleanup", context do
+    restart_dispatcher(cancel_grace_ms: 3_000, lease_ms: 2_000, heartbeat_interval: 60_000)
+
+    attrs = run_attrs(context, "bounded run") |> Map.put(:time_budget_ms, 500)
     assert {:ok, run} = RunDispatcher.enqueue(attrs, @dispatcher)
     run_id = run.id
     assert_receive {:test_run_started, ^run_id, worker_pid}, 2_000
 
+    original_expiry =
+      DateTime.utc_now()
+      |> DateTime.add(2, :second)
+      |> DateTime.truncate(:second)
+
+    {1, _} =
+      from(candidate in Run, where: candidate.id == ^run_id)
+      |> Repo.update_all(set: [lease_expires_at: original_expiry])
+
+    assert {:ok, queued} = enqueue(context, "same-project work after time budget")
+    queued_id = queued.id
     ref = Process.monitor(worker_pid)
     assert_receive {:run_updated, %Run{id: ^run_id, status: "failed"}}, 2_000
-    assert_receive {:DOWN, ^ref, :process, ^worker_pid, _reason}, 2_000
+
+    assert %Run{status: "failed", lease_owner: "dispatcher-test"} =
+             failed_with_lease =
+             Runs.get_run!(run_id)
+
+    assert DateTime.compare(failed_with_lease.lease_expires_at, original_expiry) == :gt
+    assert :none = Runs.claim_next_run("foreign-dispatcher")
+    assert Process.alive?(worker_pid)
+    refute_receive {:DOWN, ^ref, :process, ^worker_pid, _reason}, 50
+
+    Process.send_after(self(), :original_time_lease_elapsed, 2_200)
+    assert_receive :original_time_lease_elapsed, 3_000
+    assert Process.alive?(worker_pid)
+    assert :none = Runs.claim_next_run("foreign-dispatcher")
+
+    assert_receive {:DOWN, ^ref, :process, ^worker_pid, _reason}, 3_000
+    _ = RunDispatcher.get_stats(@dispatcher)
 
     failed = Runs.get_run!(run_id)
+    assert is_nil(failed.lease_owner)
     assert failed.error_details["reason"] == "budget_exhausted"
     assert failed.error_details["budget"] == "time"
     assert Enum.any?(Runs.list_events(run), &(&1.type == "run.budget_exhausted"))
+
+    assert_receive {:test_run_started, ^queued_id, queued_worker}, 2_000
+    send(queued_worker, {:finish, queued_id, {:ok, :done}})
+  end
+
+  test "token exhaustion holds its lease until the reporting worker exits", context do
+    attrs = run_attrs(context, "provider-token bounded run") |> Map.put(:token_budget, 1)
+    assert {:ok, run} = RunDispatcher.enqueue(attrs, @dispatcher)
+    run_id = run.id
+    assert_receive {:test_run_started, ^run_id, worker_pid}, 2_000
+
+    original_expiry =
+      DateTime.utc_now()
+      |> DateTime.add(2, :second)
+      |> DateTime.truncate(:second)
+
+    {1, _} =
+      from(candidate in Run, where: candidate.id == ^run_id)
+      |> Repo.update_all(set: [lease_expires_at: original_expiry])
+
+    assert {:ok, queued} = enqueue(context, "same-project work after token budget")
+    queued_id = queued.id
+    ref = Process.monitor(worker_pid)
+    send(worker_pid, {:record_usage, run_id, %{input_tokens: 2}})
+
+    assert_receive {
+                     :test_run_usage_result,
+                     ^run_id,
+                     {:error,
+                      {:token_budget_exhausted,
+                       %Run{status: "failed", lease_owner: "dispatcher-test"}}}
+                   },
+                   2_000
+
+    assert %Run{status: "failed", lease_owner: "dispatcher-test"} =
+             failed_with_lease =
+             Runs.get_run!(run_id)
+
+    assert DateTime.compare(failed_with_lease.lease_expires_at, original_expiry) == :gt
+    assert :none = Runs.claim_next_run("foreign-dispatcher")
+    assert Process.alive?(worker_pid)
+
+    Process.send_after(self(), :original_token_lease_elapsed, 2_200)
+    assert_receive :original_token_lease_elapsed, 3_000
+    assert Process.alive?(worker_pid)
+    assert :none = Runs.claim_next_run("foreign-dispatcher")
+
+    send(worker_pid, {:finish, run_id, {:error, :token_budget_exhausted}})
+    assert_receive {:DOWN, ^ref, :process, ^worker_pid, :normal}, 2_000
+    _ = RunDispatcher.get_stats(@dispatcher)
+    assert is_nil(Runs.get_run!(run_id).lease_owner)
+
+    assert_receive {:test_run_started, ^queued_id, queued_worker}, 2_000
+    send(queued_worker, {:finish, queued_id, {:ok, :done}})
   end
 
   test "an abnormal monitored worker exit is persisted as interrupted", context do
@@ -351,6 +484,62 @@ defmodule IexCode.Runs.RunDispatcherTest do
     assert :ok = WorkspaceLocks.release(interactive)
   end
 
+  test "expired same-lineage worker completion leaves controls and fleet for reconciliation",
+       context do
+    attrs =
+      context
+      |> run_attrs("expired coding worker completion")
+      |> Map.merge(%{kind: "coding_swarm", mode: "swarm"})
+
+    assert {:ok, run} = RunDispatcher.enqueue(attrs, @dispatcher)
+    run_id = run.id
+    assert_receive {:test_run_started, ^run_id, worker_pid}, 2_000
+    running = Runs.get_run!(run_id)
+
+    on_exit(fn -> FleetSupervisor.stop(run_id) end)
+
+    assert {:ok, fleet} =
+             FleetSupervisor.attach(running,
+               agent_count: 4,
+               project_root: context.project.root_path
+             )
+
+    fleet_supervisor = AgentRegistry.whereis_fleet(run_id, :supervisor)
+    fleet_pids = Enum.map(fleet, & &1.pid)
+
+    assert {:ok, pending} =
+             Runs.enqueue_control(running, "expired-worker-control", %{
+               kind: "steer",
+               payload: %{"guidance" => "must remain claimed"},
+               requested_by: "test"
+             })
+
+    assert {:ok, claimed} = Runs.claim_control(pending, "dispatcher-test", claim_ms: 60_000)
+
+    expired_at =
+      DateTime.utc_now()
+      |> DateTime.add(-1, :second)
+      |> DateTime.truncate(:microsecond)
+
+    {1, _} =
+      from(candidate in Run, where: candidate.id == ^run_id)
+      |> Repo.update_all(set: [lease_expires_at: expired_at])
+
+    worker_ref = Process.monitor(worker_pid)
+    send(worker_pid, {:finish, run_id, {:ok, :stale_result}})
+    assert_receive {:DOWN, ^worker_ref, :process, ^worker_pid, :normal}, 2_000
+
+    stats = RunDispatcher.get_stats(@dispatcher)
+    assert stats.active == 0
+
+    assert %{status: "running", lease_owner: "dispatcher-test"} = Runs.get_run!(run_id)
+    assert Runs.get_control(claimed.id).status == "claimed"
+    assert AgentRegistry.whereis_fleet(run_id, :supervisor) == fleet_supervisor
+    assert Enum.all?(fleet_pids, &Process.alive?/1)
+    assert length(FleetManager.list_agents(run_id)) == 4
+    assert [%{status: "released"}] = Runs.list_workspace_locks(run_id: run_id)
+  end
+
   test "dispatcher shutdown cleans up a coding worker and its outer lock", context do
     attrs =
       context
@@ -400,6 +589,8 @@ defmodule IexCode.Runs.RunDispatcherTest do
   end
 
   test "cancelling an active coding worker releases only after worker cleanup", context do
+    restart_dispatcher(cancel_grace_ms: 500)
+
     attrs =
       context
       |> run_attrs("cancel active coding")
@@ -410,11 +601,68 @@ defmodule IexCode.Runs.RunDispatcherTest do
     assert_receive {:test_run_started, ^run_id, worker_pid}, 2_000
     assert [%{status: "held"}] = Runs.list_workspace_locks(run_id: run_id, active: true)
 
+    queued_attrs = %{attrs | objective: "same-project coding after cancellation"}
+    assert {:ok, queued} = RunDispatcher.enqueue(queued_attrs, @dispatcher)
+    queued_id = queued.id
     worker_ref = Process.monitor(worker_pid)
-    assert {:ok, %Run{status: "cancelled"}} = RunDispatcher.cancel(run_id, @dispatcher)
+
+    assert {:ok, %Run{status: "cancelled", lease_owner: "dispatcher-test"}} =
+             RunDispatcher.cancel(run_id, @dispatcher)
+
+    assert %Run{status: "cancelled", lease_owner: "dispatcher-test"} =
+             Runs.get_run!(run_id)
+
+    assert :none = Runs.claim_next_run("foreign-dispatcher")
+    assert Process.alive?(worker_pid)
+    refute_receive {:DOWN, ^worker_ref, :process, ^worker_pid, _reason}, 50
+
     assert_receive {:DOWN, ^worker_ref, :process, ^worker_pid, _reason}, 2_000
     _ = RunDispatcher.get_stats(@dispatcher)
+    assert is_nil(Runs.get_run!(run_id).lease_owner)
     assert [%{status: "released"}] = Runs.list_workspace_locks(run_id: run_id)
+
+    assert_receive {:test_run_started, ^queued_id, queued_worker}, 2_000
+    send(queued_worker, {:finish, queued_id, {:ok, :done}})
+  end
+
+  test "near-expiry cancellation keeps same-project work fenced until worker DOWN", context do
+    restart_dispatcher(cancel_grace_ms: 3_000, lease_ms: 2_000, heartbeat_interval: 60_000)
+
+    assert {:ok, run} = enqueue(context, "near-expiry cancellation fence")
+    run_id = run.id
+    assert_receive {:test_run_started, ^run_id, worker_pid}, 2_000
+
+    original_expiry =
+      DateTime.utc_now()
+      |> DateTime.add(2, :second)
+      |> DateTime.truncate(:second)
+
+    {1, _} =
+      from(candidate in Run, where: candidate.id == ^run_id)
+      |> Repo.update_all(set: [lease_expires_at: original_expiry])
+
+    assert {:ok, queued} = enqueue(context, "queued behind cancelling worker")
+    queued_id = queued.id
+    worker_ref = Process.monitor(worker_pid)
+
+    assert {:ok, %Run{status: "cancelled", lease_owner: "dispatcher-test"} = cancelled} =
+             RunDispatcher.cancel(run_id, @dispatcher)
+
+    assert DateTime.compare(cancelled.lease_expires_at, original_expiry) == :gt
+
+    Process.send_after(self(), :original_lease_elapsed, 2_200)
+    assert_receive :original_lease_elapsed, 3_000
+
+    assert Process.alive?(worker_pid)
+    assert :none = Runs.claim_next_run("foreign-dispatcher")
+    refute_receive {:test_run_started, ^queued_id, _pid}, 50
+
+    assert_receive {:DOWN, ^worker_ref, :process, ^worker_pid, _reason}, 3_000
+    _ = RunDispatcher.get_stats(@dispatcher)
+    assert is_nil(Runs.get_run!(run_id).lease_owner)
+
+    assert_receive {:test_run_started, ^queued_id, queued_worker}, 2_000
+    send(queued_worker, {:finish, queued_id, {:ok, :done}})
   end
 
   test "an interrupted research worker terminalizes pending descendants", context do
@@ -458,11 +706,17 @@ defmodule IexCode.Runs.RunDispatcherTest do
 
   test "dag enqueue persists the explicit immutable engine manifest", context do
     manifest = dag_manifest()
-    attrs = run_attrs(context, "reserved DAG") |> Map.put(:mode, "workflow")
+
+    attrs =
+      context
+      |> run_attrs("reserved DAG")
+      |> Map.put(:mode, "workflow")
+      |> Map.put(:status, "draft")
+      |> Map.put("status", "running")
 
     assert "dag_v1" in ExecutionEngine.available_ids()
 
-    assert {:ok, %Run{execution_engine: "dag_v1"}} =
+    assert {:ok, %Run{execution_engine: "dag_v1", status: "queued"}} =
              RunDispatcher.enqueue_dag(attrs, manifest, @dispatcher)
   end
 
@@ -688,11 +942,20 @@ defmodule IexCode.Runs.RunDispatcherTest do
     {:ok, run} = create_run(context, "orphaned run")
     run_id = run.id
     :ok = create_steps(run)
-    assert {:ok, claimed} = Runs.claim_next_run("dead-worker", lease_ms: 10)
+    assert {:ok, claimed} = Runs.claim_next_run("dead-worker", lease_ms: 30_000)
     assert claimed.id == run.id
+    assert {:ok, [fleet_agent]} = Runs.create_run_agents(claimed, [%{key: "planner"}])
+    assert {:ok, fleet_agent} = Runs.claim_run_agent(fleet_agent, "dead-fleet", 60_000)
 
     [prepare, _execute] = Runs.list_steps(run)
-    assert {:ok, _} = Runs.transition_step(prepare, "running")
+
+    assert {:ok, _} =
+             Runs.transition_step_worker(prepare, "running", %{},
+               lease_owner: "dead-worker",
+               run_attempt: claimed.attempt,
+               lease_generation: claimed.lease_generation
+             )
+
     {:ok, task} = linked_task(context, claimed)
 
     past = DateTime.utc_now() |> DateTime.add(-60, :second) |> DateTime.truncate(:second)
@@ -704,6 +967,7 @@ defmodule IexCode.Runs.RunDispatcherTest do
 
     assert Runs.get_run!(run.id).status == "interrupted"
     assert hd(Runs.list_steps(run)).status == "interrupted"
+    assert Runs.get_run_agent(fleet_agent.id).status == "interrupted"
     projected = IexCode.Kanban.get_task!(task.id)
     assert projected.status == "blocked"
     assert projected.worker_pid == nil
@@ -833,6 +1097,17 @@ defmodule IexCode.Runs.RunDispatcherTest do
         internal_step_executor: &dag_test_executor/2
       ]
     ]
+  end
+
+  defp restart_dispatcher(overrides) do
+    stop_supervised!(RunDispatcher)
+
+    options =
+      Enum.reduce(overrides, dispatcher_options(), fn {key, value}, options ->
+        Keyword.put(options, key, value)
+      end)
+
+    start_supervised!({RunDispatcher, options})
   end
 
   defp dag_manifest do

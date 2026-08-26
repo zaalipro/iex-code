@@ -4,6 +4,7 @@ defmodule IexCode.Kanban do
   schedules, and real-time PubSub updates.
   """
   import Ecto.Query
+  alias Ecto.Changeset
   alias IexCode.Repo
   alias IexCode.Kanban.Task
   alias IexCode.Sessions
@@ -75,35 +76,65 @@ defmodule IexCode.Kanban do
 
   def get_task(id), do: Repo.get(Task, id)
 
+  @doc "Gets a task only when it belongs to the expected project."
+  def get_task(project_id, id) when is_binary(project_id) and is_binary(id),
+    do: Repo.get_by(Task, project_id: project_id, id: id)
+
+  def get_task(_project_id, _id), do: nil
+
+  @doc "Gets a task in the expected project or raises when it is absent/out of scope."
+  def get_task!(project_id, id) when is_binary(project_id) and is_binary(id),
+    do: Repo.get_by!(Task, project_id: project_id, id: id)
+
   def create_task(attrs) do
-    Repo.retry_on_busy(fn ->
+    changeset =
       %Task{}
       |> Task.changeset(sanitize_attrs(attrs))
-      |> Repo.insert()
-    end)
-    |> case do
-      {:ok, task} ->
-        broadcast(task.project_id, {:task_created, task})
-        {:ok, task}
+      |> validate_task_session_project()
 
-      error ->
-        error
+    if changeset.valid? do
+      Repo.retry_on_busy(fn -> Repo.insert(changeset) end)
+      |> case do
+        {:ok, task} ->
+          broadcast(task.project_id, {:task_created, task})
+          {:ok, task}
+
+        error ->
+          error
+      end
+    else
+      {:error, changeset}
     end
   end
 
   def update_task(%Task{} = task, attrs) do
-    Repo.retry_on_busy(fn ->
-      task
-      |> Task.changeset(sanitize_attrs(attrs))
-      |> Repo.update()
-    end)
-    |> case do
+    attrs = sanitize_attrs(attrs)
+
+    result =
+      Repo.retry_on_busy(fn ->
+        Repo.transaction(fn ->
+          current = task_snapshot_or_rollback!(task)
+
+          changeset =
+            current
+            |> Task.changeset(attrs)
+            |> reject_task_scope_changes(current)
+            |> validate_task_session_project()
+
+          case Repo.update(changeset) do
+            {:ok, updated} -> updated
+            {:error, changeset} -> Repo.rollback(changeset)
+          end
+        end)
+      end)
+
+    case result do
       {:ok, updated_task} ->
         broadcast(updated_task.project_id, {:task_updated, updated_task})
         {:ok, updated_task}
 
-      error ->
-        error
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -220,15 +251,25 @@ defmodule IexCode.Kanban do
   end
 
   def delete_task(%Task{} = task) do
-    project_id = task.project_id
+    result =
+      Repo.retry_on_busy(fn ->
+        Repo.transaction(fn ->
+          current = task_snapshot_or_rollback!(task)
 
-    case Repo.retry_on_busy(fn -> Repo.delete(task) end) do
+          case Repo.delete(current) do
+            {:ok, deleted} -> deleted
+            {:error, changeset} -> Repo.rollback(changeset)
+          end
+        end)
+      end)
+
+    case result do
       {:ok, deleted_task} ->
-        broadcast(project_id, {:task_deleted, deleted_task})
+        broadcast(deleted_task.project_id, {:task_deleted, deleted_task})
         {:ok, deleted_task}
 
-      error ->
-        error
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -253,8 +294,10 @@ defmodule IexCode.Kanban do
     {count, _} =
       from(t in Task,
         where: t.id == ^task.id,
+        where: t.project_id == ^task.project_id,
         where: t.status != "running" or is_nil(t.claimed_at) or t.claimed_at < ^stale_before
       )
+      |> task_session_scope(task.session_id)
       |> Repo.update_all(
         set: [
           status: "running",
@@ -272,7 +315,10 @@ defmodule IexCode.Kanban do
         {:ok, claimed}
 
       0 ->
-        {:error, :already_claimed}
+        case task_snapshot(task) do
+          {:ok, _current} -> {:error, :already_claimed}
+          {:error, reason} -> {:error, reason}
+        end
     end
   end
 
@@ -379,23 +425,33 @@ defmodule IexCode.Kanban do
 
   @doc "Attaches a newly-created session to a live scheduler claim if none is attached."
   def attach_schedule_session(%Task{} = task, session_id) when is_binary(session_id) do
-    {count, _} =
-      from(t in Task,
-        where: t.id == ^task.id,
-        where: t.status == "running",
-        where: t.worker_pid == ^task.worker_pid,
-        where: is_nil(t.session_id)
-      )
-      |> Repo.update_all(
-        set: [
-          session_id: session_id,
-          updated_at: DateTime.utc_now() |> DateTime.truncate(:second)
-        ]
-      )
+    case Sessions.get_session(session_id) do
+      %{project_id: project_id} when project_id == task.project_id ->
+        {count, _} =
+          from(t in Task,
+            where: t.id == ^task.id,
+            where: t.project_id == ^project_id,
+            where: t.status == "running",
+            where: t.worker_pid == ^task.worker_pid,
+            where: is_nil(t.session_id)
+          )
+          |> Repo.update_all(
+            set: [
+              session_id: session_id,
+              updated_at: DateTime.utc_now() |> DateTime.truncate(:second)
+            ]
+          )
 
-    case count do
-      1 -> {:ok, get_task!(task.id)}
-      0 -> {:error, :schedule_claim_lost}
+        case count do
+          1 -> {:ok, get_task!(task.id)}
+          0 -> {:error, :schedule_claim_lost}
+        end
+
+      nil ->
+        {:error, :schedule_session_not_found}
+
+      _foreign_session ->
+        {:error, :schedule_session_project_mismatch}
     end
   end
 
@@ -424,7 +480,53 @@ defmodule IexCode.Kanban do
         ]
       end
 
-    update_schedule_claim(task, attrs)
+    result =
+      Repo.retry_on_busy(fn ->
+        Repo.transaction(fn ->
+          current =
+            from(t in Task,
+              where: t.id == ^task.id,
+              where: t.status == "running",
+              where: t.worker_pid == ^task.worker_pid,
+              where: t.scheduled_at == ^task.scheduled_at,
+              where: t.claimed_at == ^task.claimed_at
+            )
+            |> Repo.one()
+
+          if is_nil(current), do: Repo.rollback(:schedule_claim_lost)
+
+          run = Repo.get(IexCode.Runs.Run, run_id)
+          occurrence_key = schedule_occurrence_key(current)
+
+          unless scheduled_run_matches?(run, current, occurrence_key) do
+            Repo.rollback(:schedule_run_mismatch)
+          end
+
+          {count, _} =
+            from(t in Task,
+              where: t.id == ^current.id,
+              where: t.status == "running",
+              where: t.worker_pid == ^current.worker_pid,
+              where: t.project_id == ^current.project_id,
+              where: t.session_id == ^current.session_id,
+              where: t.scheduled_at == ^current.scheduled_at
+            )
+            |> Repo.update_all(set: attrs)
+
+          if count == 1,
+            do: Repo.get!(Task, current.id),
+            else: Repo.rollback(:schedule_claim_lost)
+        end)
+      end)
+
+    case result do
+      {:ok, %Task{} = updated} ->
+        broadcast(updated.project_id, {:task_updated, updated})
+        {:ok, updated}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   @doc "Releases a scheduler claim after a transient enqueue failure."
@@ -546,12 +648,118 @@ defmodule IexCode.Kanban do
 
   defp sanitize_attrs(attrs), do: attrs
 
+  defp task_snapshot(%Task{id: id, project_id: project_id, session_id: session_id})
+       when is_binary(id) and is_binary(project_id) do
+    current =
+      Task
+      |> where([task], task.id == ^id and task.project_id == ^project_id)
+      |> task_session_scope(session_id)
+      |> Repo.one()
+
+    case current do
+      %Task{} ->
+        {:ok, current}
+
+      nil ->
+        if Repo.exists?(from(task in Task, where: task.id == ^id)),
+          do: {:error, :task_scope_mismatch},
+          else: {:error, :not_found}
+    end
+  end
+
+  defp task_snapshot(%Task{}), do: {:error, :task_scope_mismatch}
+
+  defp task_snapshot_or_rollback!(%Task{} = task) do
+    case task_snapshot(task) do
+      {:ok, current} -> current
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp task_session_scope(query, nil), do: where(query, [task], is_nil(task.session_id))
+
+  defp task_session_scope(query, session_id) when is_binary(session_id),
+    do: where(query, [task], task.session_id == ^session_id)
+
+  defp task_session_scope(query, _invalid), do: where(query, false)
+
+  defp validate_task_session_project(%Changeset{} = changeset) do
+    project_id = Changeset.get_field(changeset, :project_id)
+    session_id = Changeset.get_field(changeset, :session_id)
+
+    case {project_id, session_id} do
+      {_project_id, nil} ->
+        changeset
+
+      {project_id, session_id} when is_binary(project_id) and is_binary(session_id) ->
+        case Sessions.get_session(session_id) do
+          %{project_id: ^project_id} ->
+            changeset
+
+          nil ->
+            Changeset.add_error(changeset, :session_id, "does not exist")
+
+          _foreign ->
+            Changeset.add_error(changeset, :session_id, "must belong to the task project")
+        end
+
+      {_project_id, _session_id} ->
+        Changeset.add_error(changeset, :session_id, "is invalid")
+    end
+  end
+
+  defp reject_task_scope_changes(%Changeset{} = changeset, %Task{} = task) do
+    changeset
+    |> reject_task_scope_change(:project_id, task.project_id)
+    |> reject_task_scope_change(:session_id, task.session_id)
+  end
+
+  defp reject_task_scope_change(%Changeset{} = changeset, field, persisted) do
+    case Changeset.fetch_change(changeset, field) do
+      {:ok, requested} when requested != persisted ->
+        Changeset.add_error(changeset, field, "cannot be changed after creation")
+
+      _unchanged ->
+        changeset
+    end
+  end
+
+  defp scheduled_run_matches?(%IexCode.Runs.Run{} = run, %Task{} = task, occurrence_key)
+       when is_binary(occurrence_key) do
+    metadata = run.metadata || %{}
+
+    request_identity_matches? = run.request_key == occurrence_key or is_nil(run.request_key)
+
+    run.project_id == task.project_id and run.session_id == task.session_id and
+      request_identity_matches? and metadata_value(metadata, "source") == "kanban_schedule" and
+      metadata_value(metadata, "kanban_task_id") == task.id and
+      metadata_value(metadata, "schedule_key") == occurrence_key and
+      metadata_value(metadata, "scheduled_for") == DateTime.to_iso8601(task.scheduled_at)
+  end
+
+  defp scheduled_run_matches?(_run, _task, _occurrence_key), do: false
+
+  defp metadata_value(metadata, "kanban_task_id"),
+    do: Map.get(metadata, "kanban_task_id") || Map.get(metadata, :kanban_task_id)
+
+  defp metadata_value(metadata, "source"),
+    do: Map.get(metadata, "source") || Map.get(metadata, :source)
+
+  defp metadata_value(metadata, "schedule_key"),
+    do: Map.get(metadata, "schedule_key") || Map.get(metadata, :schedule_key)
+
+  defp metadata_value(metadata, "scheduled_for"),
+    do: Map.get(metadata, "scheduled_for") || Map.get(metadata, :scheduled_for)
+
   defp update_schedule_claim(%Task{} = task, attrs) do
     {count, _} =
       from(t in Task,
         where: t.id == ^task.id,
+        where: t.project_id == ^task.project_id,
         where: t.status == "running",
-        where: t.worker_pid == ^task.worker_pid
+        where: t.worker_pid == ^task.worker_pid,
+        where: t.scheduled_at == ^task.scheduled_at,
+        where: t.claimed_at == ^task.claimed_at
       )
       |> Repo.update_all(set: attrs)
 

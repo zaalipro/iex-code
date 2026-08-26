@@ -10,7 +10,7 @@ defmodule IexCode.Adversarial.GoalEdgeCasesAdversarialTest do
   @moduletag timeout: 120_000
 
   alias IexCode.{Projects, Sessions}
-  alias IexCode.Engine.{SessionServer, AgentSupervisor}
+  alias IexCode.Engine.{AgentRegistry, AgentSupervisor, SessionServer}
 
   setup do
     test_root = Path.join(System.tmp_dir!(), "edge_goal_#{Ecto.UUID.generate()}")
@@ -75,7 +75,7 @@ defmodule IexCode.Adversarial.GoalEdgeCasesAdversarialTest do
   end
 
   describe "Vulnerability 2: Send Prompt during Paused State Split-Brain" do
-    test "send_prompt while paused triggers new swarm task instead of steering existing paused swarm",
+    test "send_prompt while paused steers the existing swarm without starting a second task",
          %{
            session: session,
            test_root: test_root
@@ -101,19 +101,15 @@ defmodule IexCode.Adversarial.GoalEdgeCasesAdversarialTest do
       # While paused, user submits a prompt thinking it will steer or resume
       SessionServer.send_prompt(session.id, "Steering guidance sent via prompt box")
 
-      # Observe SessionServer state: status is set to running, but did it launch a second task?
+      # GenServer call ordering makes this a synchronization point after the cast.
       state = SessionServer.get_state(session.id)
       task2_pid = state.current_task
 
-      # If task2_pid != task1_pid, it spawned a split-brain duplicate task while task1 was still alive!
-      # We record whether task1 and task2 are distinct concurrent processes
       assert is_pid(task2_pid)
-
-      if task2_pid != task1_pid do
-        # Empirical proof of split-brain: both task1 and task2 are simultaneously alive
-        assert Process.alive?(task1_pid)
-        assert Process.alive?(task2_pid)
-      end
+      assert task2_pid == task1_pid
+      assert state.status == :paused
+      assert AgentRegistry.swarm_owner(session.id) == task1_pid
+      assert_receive {:swarm_steered, %{steering: "Steering guidance sent via prompt box"}}, 5_000
 
       # Cleanup
       SessionServer.cancel_session(session.id, action: :rollback)

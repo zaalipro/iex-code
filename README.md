@@ -177,6 +177,34 @@ remains unable to report state or usage.
 The older interactive-session cards remain clearly labeled role templates and are not used
 as durable fleet truth.
 
+### Durable goals and recovery guarantees
+
+Autonomous goals created from the workspace are durable from submission onward. Each form
+submission carries a stable session-scoped request key, backed by a unique SQLite index, so a
+browser retry or concurrent duplicate resolves to the same run instead of launching duplicate
+fleets. The goal title and complete instructions are retained in run metadata and the executable
+objective. Unchecking **Queue for execution now** creates a real `draft` run; Mission Control can
+start or cancel that draft later without relying on LiveView or `SessionServer` memory.
+
+Execution authority is the complete tuple of run ID, run attempt, lease owner, lease generation,
+and unexpired lease. Progress, usage, controls, DAG compensation, child terminalization, and final
+run settlement validate that tuple. Parent, current-attempt graph, and fleet terminalization share
+one transaction, so a stale worker cannot finish children after a retry has taken ownership.
+Control claims similarly record their target attempt/generation, claim generation, and expiry;
+startup and periodic reconciliation reject stale controls and recover abandoned claims.
+
+Only one swarm coordinator may own a session across connected Erlang nodes. `SessionServer`
+adopts that owner after its own restart, routes durable pause/resume/cancel/steer through the run
+control plane, and treats prompts received while paused as steering rather than starting another
+coordinator. Fleet recovery uses bounded retries that extend beyond the old lease horizon,
+rehydrates interrupted agents, replays controls fairly in bounded batches, and uses concurrent
+graceful shutdown with a forced-stop fallback.
+
+Operational telemetry deliberately avoids IDs, prompts, commands, and arbitrary error strings as
+metric tags. A supervised bounded `MetricsStore` consumes operation, terminal, and 30-second
+control-plane aggregates for runs, fleets, DAG attempts, controls, approvals, and workspace locks.
+SQLite remains authoritative; the store is a restartable local health view, not another ledger.
+
 ### Typed DAG workflows
 
 Run setup also exposes an explicit **Typed DAG** mission. `dag_v1` accepts a
@@ -241,7 +269,7 @@ substitute for running the gate on the current checkout.
 
 ## Current limitations
 
-- Durable background runs survive LiveView disconnects and preserve their journal across
+- Durable background runs and goal drafts survive LiveView disconnects and preserve their journal across
   application restarts. An orphaned active run still becomes `interrupted`; `dag_v1` can
   retry an expired replay-safe step while its parent run lease remains current, but process/app
   loss does not automatically resume the outer run. Explicit run retry starts a new generation.

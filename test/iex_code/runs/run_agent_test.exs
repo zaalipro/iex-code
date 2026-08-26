@@ -11,15 +11,24 @@ defmodule IexCode.Runs.RunAgentTest do
     {:ok, project} = Projects.create_project(%{name: "Agent Fleet", root_path: root})
     {:ok, session} = Sessions.create_session(%{project_id: project.id, title: "Fleet"})
 
-    {:ok, run} =
+    {:ok, _queued} =
       Runs.create_run(%{
         project_id: project.id,
         session_id: session.id,
         objective: "Run a durable dynamic fleet"
       })
 
-    {:ok, run} = Runs.transition_run(run, "running")
+    owner = "run-agent-test:#{System.unique_integer([:positive])}"
+    {:ok, run} = Runs.claim_next_run(owner, lease_ms: 300_000)
     %{project: project, session: session, run: run}
+  end
+
+  defp transition_parent(run, status, attrs \\ %{}) do
+    Runs.transition_run_worker(run, status, attrs,
+      lease_owner: run.lease_owner,
+      run_attempt: run.attempt,
+      lease_generation: run.lease_generation
+    )
   end
 
   test "creates a bounded ordered manifest with parent scope and durable events", %{run: run} do
@@ -308,10 +317,12 @@ defmodule IexCode.Runs.RunAgentTest do
   end
 
   test "usage is fenced, updates run totals, records latency, and preserves token budget", %{
+    project: project,
+    session: session,
     run: run
   } do
-    {:ok, run} = Runs.transition_run(run, "paused")
-    {:ok, run} = Runs.transition_run(run, "running", %{token_budget: 10})
+    {:ok, run} = transition_parent(run, "paused")
+    {:ok, run} = transition_parent(run, "running", %{token_budget: 10})
     {:ok, [agent]} = Runs.create_run_agents(run, [%{key: "planner"}])
     {:ok, agent} = Runs.claim_run_agent(agent, "fleet:test", 60_000)
 
@@ -345,6 +356,16 @@ defmodule IexCode.Runs.RunAgentTest do
              )
 
     assert failed_run.status == "failed"
+    assert failed_run.lease_owner == run.lease_owner
+
+    assert {:ok, _queued} =
+             Runs.create_run(%{
+               project_id: project.id,
+               session_id: session.id,
+               objective: "Queued behind token-exhausted owner"
+             })
+
+    assert :none = Runs.claim_next_run("other-token-dispatcher")
   end
 
   test "rejects recursively secret-shaped durable payloads", %{run: run} do
@@ -382,7 +403,13 @@ defmodule IexCode.Runs.RunAgentTest do
     assert {:ok, _control} =
              Runs.enqueue_run_agent_control(second, "stop:1", %{kind: "cancel", payload: %{}})
 
-    assert {:ok, terminalized} = Runs.terminalize_run_agents(run, "cancelled")
+    assert {:ok, terminalized} =
+             Runs.terminalize_run_agents(run, "cancelled", %{},
+               lease_owner: run.lease_owner,
+               run_attempt: run.attempt,
+               lease_generation: run.lease_generation
+             )
+
     assert Enum.any?(terminalized, &(&1.id == second.id and &1.status == "cancelled"))
     assert [%RunAgentControl{status: "superseded"}] = Runs.list_run_agent_controls(second)
   end
@@ -489,16 +516,100 @@ defmodule IexCode.Runs.RunAgentTest do
     assert applied.status == "applied"
   end
 
+  test "terminal-agent reconciliation applies a claimed cancel left after agent shutdown", %{
+    run: run
+  } do
+    owner = "fleet:cancel-reconcile"
+
+    {:ok, [agent, stale_agent]} =
+      Runs.create_run_agents(run, [%{key: "cancel-receipt"}, %{key: "stale-control"}])
+
+    {:ok, agent} = Runs.claim_run_agent(agent, owner, 60_000)
+
+    assert {:ok, cancel} =
+             Runs.enqueue_run_agent_control(agent, "cancel:crash-window", %{
+               kind: "cancel",
+               payload: %{}
+             })
+
+    assert {:ok, claimed_cancel} =
+             Runs.claim_next_run_agent_control(agent, owner, agent.lease_generation)
+
+    assert claimed_cancel.id == cancel.id
+
+    assert {:ok, cancelled} =
+             Runs.release_run_agent_lease(
+               agent,
+               owner,
+               agent.lease_generation,
+               "cancelled",
+               %{desired_state: "stopped"}
+             )
+
+    assert cancelled.status == "cancelled"
+    assert Runs.get_run_agent_control(cancel.id).status == "claimed"
+
+    assert {:ok, stale_control} =
+             Runs.enqueue_run_agent_control(stale_agent, "steer:terminal-row", %{
+               kind: "steer",
+               payload: %{"guidance" => "too late"}
+             })
+
+    timestamp = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    {1, _} =
+      from(candidate in RunAgent, where: candidate.id == ^stale_agent.id)
+      |> Repo.update_all(
+        set: [
+          status: "cancelled",
+          desired_state: "stopped",
+          lease_owner: nil,
+          lease_expires_at: nil,
+          completed_at: timestamp,
+          last_active_at: timestamp
+        ]
+      )
+
+    :ok = Runs.subscribe(run)
+
+    reconciled = Runs.reconcile_terminal_run_agent_controls(run_id: run.id)
+
+    assert Enum.map(reconciled, &{&1.id, &1.status}) |> Enum.sort() ==
+             Enum.sort([{cancel.id, "applied"}, {stale_control.id, "superseded"}])
+
+    control_id = cancel.id
+
+    assert_receive {:run_agent_control_updated, %{id: ^control_id, status: "applied"}}
+
+    stale_control_id = stale_control.id
+
+    assert_receive {:run_agent_control_updated, %{id: ^stale_control_id, status: "superseded"}}
+
+    assert %{
+             status: "applied",
+             result: %{
+               "action" => "cancel",
+               "status" => "cancelled",
+               "reason" => "terminal_agent_reconciliation"
+             }
+           } = Runs.get_run_agent_control(cancel.id)
+
+    assert %{status: "superseded", result: %{"reason" => "agent_terminal_or_stopped"}} =
+             Runs.get_run_agent_control(stale_control.id)
+
+    assert Runs.reconcile_terminal_run_agent_controls(run_id: run.id) == []
+  end
+
   test "strict legacy control resolution rejects scope confusion", %{run: run} do
     {:ok, pending} =
       Runs.enqueue_control(run, "strict-control", %{kind: "steer", payload: %{"guidance" => "x"}})
 
-    {:ok, claimed} = Runs.claim_control(pending, "dispatcher:strict")
+    {:ok, claimed} = Runs.claim_control(pending, run.lease_owner)
 
     assert {:error, {:control_scope_mismatch, :run_id}} =
              Runs.resolve_control(claimed, "applied", %{},
                run_id: Ecto.UUID.generate(),
-               worker_id: "dispatcher:strict",
+               worker_id: run.lease_owner,
                kind: "steer"
              )
 
@@ -512,14 +623,14 @@ defmodule IexCode.Runs.RunAgentTest do
     assert {:error, {:control_scope_mismatch, :kind}} =
              Runs.resolve_control(claimed, "applied", %{},
                run_id: run.id,
-               worker_id: "dispatcher:strict",
+               worker_id: run.lease_owner,
                kind: "cancel"
              )
 
     assert {:ok, applied} =
              Runs.resolve_control(claimed, "applied", %{},
                run_id: run.id,
-               worker_id: "dispatcher:strict",
+               worker_id: run.lease_owner,
                kind: "steer"
              )
 
@@ -603,7 +714,11 @@ defmodule IexCode.Runs.RunAgentTest do
         project_id: project.id,
         session_id: session.id,
         objective: "Keep receipt scopes isolated",
-        status: "running"
+        status: "running",
+        attempt: 1,
+        lease_generation: 1,
+        lease_owner: "other-control-window",
+        lease_expires_at: DateTime.add(DateTime.utc_now(), 60, :second)
       })
 
     {:ok, [other_agent]} = Runs.create_run_agents(other_run, [%{key: "other"}])
@@ -686,9 +801,13 @@ defmodule IexCode.Runs.RunAgentTest do
     assert control_sql =~ "claim_owner NOT GLOB '*[^0-9a-f]*'"
   end
 
-  test "agent usage enforces provider-reported cost budget", %{run: run} do
-    {:ok, run} = Runs.transition_run(run, "paused")
-    {:ok, run} = Runs.transition_run(run, "running", %{cost_budget_cents: 4})
+  test "agent usage enforces provider-reported cost budget", %{
+    project: project,
+    session: session,
+    run: run
+  } do
+    {:ok, run} = transition_parent(run, "paused")
+    {:ok, run} = transition_parent(run, "running", %{cost_budget_cents: 4})
     {:ok, [agent]} = Runs.create_run_agents(run, [%{key: "costed"}])
     {:ok, agent} = Runs.claim_run_agent(agent, "fleet:cost", 60_000)
 
@@ -704,6 +823,16 @@ defmodule IexCode.Runs.RunAgentTest do
     assert failed_run.status == "failed"
     assert failed_run.cost_cents == 5
     assert failed_run.error_details["budget"] == "cost_cents"
+    assert failed_run.lease_owner == run.lease_owner
+
+    assert {:ok, _queued} =
+             Runs.create_run(%{
+               project_id: project.id,
+               session_id: session.id,
+               objective: "Queued behind cost-exhausted owner"
+             })
+
+    assert :none = Runs.claim_next_run("other-cost-dispatcher")
   end
 
   test "durable agent mutations fail closed after the parent run terminalizes", %{run: run} do
@@ -717,7 +846,7 @@ defmodule IexCode.Runs.RunAgentTest do
         lease_generation: claimed.lease_generation
       )
 
-    assert {:ok, failed_run} = Runs.transition_run(run, "failed")
+    assert {:ok, failed_run} = transition_parent(run, "failed")
     assert failed_run.status == "failed"
 
     assert {:error, :lease_lost} =
@@ -725,13 +854,13 @@ defmodule IexCode.Runs.RunAgentTest do
                progress: 40
              })
 
-    assert {:error, {:run_not_active, "failed"}} =
+    assert {:error, {:invalid_transition, "failed", "running"}} =
              Runs.transition_run_agent(idle, "running", %{current_task: "must not start"},
                lease_owner: owner,
                lease_generation: idle.lease_generation
              )
 
-    assert {:error, {:run_not_active, "failed"}} =
+    assert {:error, :lease_lost} =
              Runs.record_run_agent_usage(
                idle,
                %{prompt_tokens: 9, completion_tokens: 4, cost_cents: 3},
@@ -742,12 +871,84 @@ defmodule IexCode.Runs.RunAgentTest do
 
     persisted_agent = Runs.get_run_agent(idle.id)
     persisted_run = Runs.get_run!(run.id)
-    assert persisted_agent.status == "idle"
+    assert persisted_agent.status == "failed"
     assert persisted_agent.progress == 0
     assert persisted_agent.input_tokens == 0
     assert persisted_agent.output_tokens == 0
     assert persisted_run.input_tokens == 0
     assert persisted_run.output_tokens == 0
     assert persisted_run.cost_cents == 0
+  end
+
+  test "a parent retry fences every prior-attempt agent claim, control, and active mutation", %{
+    run: run
+  } do
+    old_owner = "fleet:prior-attempt"
+
+    {:ok, [active, restartable, pending]} =
+      Runs.create_run_agents(run, [
+        %{key: "old-active"},
+        %{key: "old-restartable"},
+        %{key: "old-pending"}
+      ])
+
+    {:ok, active} = Runs.claim_run_agent(active, old_owner, 60_000)
+    {:ok, restartable} = Runs.claim_run_agent(restartable, old_owner, 60_000)
+
+    {:ok, restartable} =
+      Runs.release_run_agent_lease(
+        restartable,
+        old_owner,
+        restartable.lease_generation,
+        "interrupted",
+        %{desired_state: "active"}
+      )
+
+    assert {:ok, _restart} =
+             Runs.enqueue_run_agent_control(restartable, "old-restart", %{
+               kind: "restart",
+               payload: %{}
+             })
+
+    {1, _} =
+      Repo.update_all(
+        from(parent in IexCode.Runs.Run, where: parent.id == ^run.id),
+        inc: [attempt: 1, lease_generation: 1]
+      )
+
+    current = Runs.get_run!(run.id)
+    assert current.attempt == run.attempt + 1
+
+    assert {:error, :run_lease_lost} = Runs.claim_run_agent(pending, old_owner, 60_000)
+
+    assert {:error, :lease_lost} =
+             Runs.heartbeat_run_agent(active, old_owner, active.lease_generation, 60_000)
+
+    assert {:error, :run_lease_lost} =
+             Runs.transition_run_agent(active, "idle", %{},
+               lease_owner: old_owner,
+               lease_generation: active.lease_generation
+             )
+
+    assert {:error, :run_lease_lost} =
+             Runs.claim_restart_run_agent_control(restartable, old_owner, 60_000)
+
+    assert {:error, :run_lease_lost} =
+             Runs.enqueue_run_agent_control(active, "stale-steer", %{
+               kind: "steer",
+               payload: %{"guidance" => "must not cross attempts"}
+             })
+
+    assert {:ok, [current_agent]} =
+             Runs.create_run_agents(current, [%{key: "current-attempt"}])
+
+    assert {:error, :lease_not_owned} =
+             Runs.terminalize_run_agents(run, "cancelled", %{},
+               lease_owner: run.lease_owner,
+               run_attempt: run.attempt,
+               lease_generation: run.lease_generation
+             )
+
+    assert Runs.get_run_agent(current_agent.id).status == "pending"
   end
 end

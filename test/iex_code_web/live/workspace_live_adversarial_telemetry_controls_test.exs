@@ -200,18 +200,28 @@ defmodule IexCodeWeb.WorkspaceLiveAdversarialTelemetryControlsTest do
       {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
 
       render_click(view, "open_goal_modal")
+      request_id = Ecto.UUID.generate()
 
-      # First submission creates the goal
-      html =
-        render_submit(view, "create_goal", %{
-          "goal" => %{
-            "title" => "Primary Stress Goal",
-            "description" => "Test double-dispatch guard",
-            "auto_start" => "false"
-          }
-        })
+      params = %{
+        "goal" => %{
+          "title" => "Primary Stress Goal",
+          "description" => "Test double-dispatch guard",
+          "auto_start" => "true",
+          "request_id" => request_id
+        }
+      }
+
+      # A retried browser submission carries the same request ID and must
+      # select the original durable run rather than enqueueing duplicate work.
+      html = render_submit(view, "create_goal", params)
 
       assert html =~ "Goal created" or is_binary(html)
+      render_submit(view, "create_goal", params)
+
+      runs = IexCode.Runs.list_runs(session_id: session.id, limit: 10)
+      assert length(runs) == 1
+      assert hd(runs).metadata["goal_request_id"] == request_id
+      assert hd(runs).request_key == request_id
 
       # Attempt empty title -> returns error flash without crash
       html_err = render_submit(view, "create_goal", %{"goal" => %{"title" => "   "}})

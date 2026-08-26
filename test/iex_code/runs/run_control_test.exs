@@ -94,7 +94,13 @@ defmodule IexCode.Runs.RunControlTest do
 
     now = ~U[2026-08-24 10:00:00Z]
 
-    assert changeset(%{status: "claimed", worker_id: "dispatcher:1", claimed_at: now}).valid?
+    assert changeset(%{
+             status: "claimed",
+             worker_id: "dispatcher:1",
+             claim_generation: 0,
+             claimed_at: now,
+             claim_expires_at: DateTime.add(now, 30, :second)
+           }).valid?
   end
 
   test "applied and rejected outcomes require a complete worker claim and durable result" do
@@ -104,14 +110,16 @@ defmodule IexCode.Runs.RunControlTest do
       invalid = changeset(%{status: status})
       refute invalid.valid?
 
-      for field <- ~w(worker_id claimed_at applied_at result)a do
+      for field <- ~w(worker_id claim_generation claimed_at claim_expires_at applied_at result)a do
         assert field in Keyword.keys(invalid.errors)
       end
 
       assert changeset(%{
                status: status,
                worker_id: "dispatcher:1",
+               claim_generation: 0,
                claimed_at: now,
+               claim_expires_at: DateTime.add(now, 30, :second),
                applied_at: now,
                result: %{"outcome" => status}
              }).valid?
@@ -131,12 +139,16 @@ defmodule IexCode.Runs.RunControlTest do
       changeset(%{
         status: "superseded",
         worker_id: "dispatcher:1",
+        claim_generation: 0,
         applied_at: now,
         result: %{"by_sequence" => 2}
       })
 
     refute invalid.valid?
-    assert :claimed_at in Keyword.keys(invalid.errors)
+
+    for field <- ~w(claimed_at claim_expires_at)a do
+      assert field in Keyword.keys(invalid.errors)
+    end
   end
 
   test "pending controls reject claim and outcome data" do
@@ -145,14 +157,16 @@ defmodule IexCode.Runs.RunControlTest do
     changeset =
       changeset(%{
         worker_id: "dispatcher:1",
+        claim_generation: 0,
         claimed_at: now,
+        claim_expires_at: DateTime.add(now, 30, :second),
         applied_at: now,
         result: %{"ok" => true}
       })
 
     refute changeset.valid?
 
-    for field <- ~w(worker_id claimed_at applied_at result)a do
+    for field <- ~w(worker_id claim_generation claimed_at claim_expires_at applied_at result)a do
       assert field in Keyword.keys(changeset.errors)
     end
   end
@@ -162,12 +176,45 @@ defmodule IexCode.Runs.RunControlTest do
       changeset(%{
         status: "applied",
         worker_id: "dispatcher:1",
+        claim_generation: 0,
         claimed_at: ~U[2026-08-24 10:00:01Z],
+        claim_expires_at: ~U[2026-08-24 10:00:30Z],
         applied_at: ~U[2026-08-24 10:00:00Z],
         result: %{"ok" => true}
       })
 
     refute changeset.valid?
     assert {"cannot be before claimed_at", _metadata} = changeset.errors[:applied_at]
+  end
+
+  test "a claim expiry must be after its claim timestamp" do
+    changeset =
+      changeset(%{
+        status: "claimed",
+        worker_id: "dispatcher:1",
+        claim_generation: 0,
+        claimed_at: ~U[2026-08-24 10:00:01Z],
+        claim_expires_at: ~U[2026-08-24 10:00:01Z]
+      })
+
+    refute changeset.valid?
+    assert {"must be after claimed_at", _metadata} = changeset.errors[:claim_expires_at]
+  end
+
+  test "a worker claim is fenced to the control target generation" do
+    changeset =
+      changeset(%{
+        target_generation: 4,
+        status: "claimed",
+        worker_id: "dispatcher:1",
+        claim_generation: 3,
+        claimed_at: ~U[2026-08-24 10:00:01Z],
+        claim_expires_at: ~U[2026-08-24 10:00:30Z]
+      })
+
+    refute changeset.valid?
+
+    assert {"must match target_generation", _metadata} =
+             changeset.errors[:claim_generation]
   end
 end

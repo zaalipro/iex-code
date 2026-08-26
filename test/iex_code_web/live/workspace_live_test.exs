@@ -468,6 +468,18 @@ defmodule IexCodeWeb.WorkspaceLiveTest do
        } do
     project = create_project_fixture(%{root_path: path})
     session = create_session_fixture(project)
+
+    create_message_fixture(session, %{
+      role: "user",
+      content: "Inspect the durable scheduler state"
+    })
+
+    create_message_fixture(session, %{
+      role: "assistant",
+      agent_name: "PlannerAgent",
+      content: "The scheduler state is scoped and ready for review."
+    })
+
     {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
 
     # Switch to chat tab
@@ -480,7 +492,8 @@ defmodule IexCodeWeb.WorkspaceLiveTest do
     assert html =~ "scroll-timeline-node"
     assert html =~ "scroll-notch"
     assert html =~ "scroll-preview-card"
-    assert html =~ "dashscope_new_report.md" or html =~ "deepseek"
+    assert html =~ "Inspect the durable scheduler state"
+    assert html =~ "The scheduler state is scoped and ready for review."
     assert html =~ "chat-viewport"
 
     # Trigger scroll to message

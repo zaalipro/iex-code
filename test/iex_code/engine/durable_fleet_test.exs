@@ -2,7 +2,7 @@ defmodule IexCode.Engine.DurableFleetTest do
   use IexCode.DataCase, async: false
 
   alias IexCode.{Projects, Repo, Runs, Sessions}
-  alias IexCode.Runs.{Executor, Run}
+  alias IexCode.Runs.{Executor, Run, RunAgent}
 
   alias IexCode.Engine.{
     AgentRegistry,
@@ -47,7 +47,22 @@ defmodule IexCode.Engine.DurableFleetTest do
   test "two runs in one session have isolated registry identities and stopping one is scoped",
        ctx do
     run_a = running_run(ctx, "A")
-    run_b = running_run(ctx, "B")
+
+    root_b = Path.join(System.tmp_dir!(), "iex-fleet-b-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(root_b)
+    on_exit(fn -> File.rm_rf(root_b) end)
+
+    {:ok, project_b} =
+      Projects.create_project(%{
+        name: "fleet-b-#{System.unique_integer([:positive])}",
+        root_path: root_b
+      })
+
+    {:ok, session_b} =
+      Sessions.create_session(%{project_id: project_b.id, title: "Fleet runtime B"})
+
+    run_b =
+      running_run(%{project: project_b, session: session_b, root: root_b}, "B")
 
     on_exit(fn ->
       FleetSupervisor.stop(run_a.id)
@@ -55,7 +70,7 @@ defmodule IexCode.Engine.DurableFleetTest do
     end)
 
     assert {:ok, agents_a} = FleetSupervisor.attach(run_a, agent_count: 4, project_root: ctx.root)
-    assert {:ok, agents_b} = FleetSupervisor.attach(run_b, agent_count: 4, project_root: ctx.root)
+    assert {:ok, agents_b} = FleetSupervisor.attach(run_b, agent_count: 4, project_root: root_b)
 
     assert MapSet.disjoint?(
              MapSet.new(Enum.map(agents_a, & &1.pid)),
@@ -66,7 +81,14 @@ defmodule IexCode.Engine.DurableFleetTest do
     assert length(AgentRegistry.list_run_agents(run_b.id)) == 4
 
     b_pids = Enum.map(agents_b, & &1.pid)
-    assert :ok = FleetManager.stop(run_a.id, "cancelled")
+
+    assert :ok =
+             FleetManager.stop(run_a.id, "cancelled",
+               lease_owner: run_a.lease_owner,
+               run_attempt: run_a.attempt,
+               lease_generation: run_a.lease_generation
+             )
+
     assert Enum.all?(b_pids, &Process.alive?/1)
     assert length(AgentRegistry.list_run_agents(run_b.id)) == 4
   end
@@ -170,6 +192,156 @@ defmodule IexCode.Engine.DurableFleetTest do
     assert Enum.all?(recovered, &(&1.generation > Map.fetch!(generations, &1.agent_id)))
   end
 
+  test "transient rehydration failures are observable and retry to success within the cap", ctx do
+    run = running_run(ctx, "observable recovery failure")
+    on_exit(fn -> FleetSupervisor.stop(run.id) end)
+    assert {:ok, agents} = FleetSupervisor.attach(run, agent_count: 4, project_root: ctx.root)
+    selected = Enum.find(agents, &(&1.role == :explorer))
+    original = Runs.get_run_agent(selected.agent_id)
+    handler_id = "fleet-rehydrate-test-#{System.unique_integer([:positive])}"
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:iex_code, :fleet, :rehydrate_error],
+        fn event, measurements, metadata, receiver ->
+          send(receiver, {:fleet_rehydrate_error, event, measurements, metadata})
+        end,
+        self()
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+
+    {1, _} =
+      from(agent in RunAgent, where: agent.id == ^selected.agent_id)
+      |> Repo.update_all(set: [lease_owner: String.duplicate("f", 64)])
+
+    manager = AgentRegistry.whereis_fleet(run.id, :manager)
+    ref = Process.monitor(manager)
+    Process.exit(manager, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^manager, :killed}, 2_000
+
+    supervisor = AgentRegistry.whereis_fleet(run.id, :supervisor)
+    _ = :sys.get_state(supervisor)
+    recovered_manager = AgentRegistry.whereis_fleet(run.id, :manager)
+    _ = :sys.get_state(recovered_manager)
+
+    assert_receive {:fleet_rehydrate_error, [:iex_code, :fleet, :rehydrate_error], %{count: 1},
+                    %{run_id: run_id, agent_id: agent_id, reason: reason}},
+                   2_000
+
+    assert run_id == run.id
+    assert agent_id == selected.agent_id
+    assert reason in [:lease_lost, :lease_expired]
+    assert [{agent_id, reason}] = FleetManager.rehydration_errors(run.id)
+    assert agent_id == selected.agent_id
+    assert reason in [:lease_lost, :lease_expired]
+    refute Enum.any?(FleetManager.list_agents(run.id), &(&1.agent_id == selected.agent_id))
+
+    :ok = Runs.subscribe(run)
+
+    {1, _} =
+      from(agent in RunAgent, where: agent.id == ^selected.agent_id)
+      |> Repo.update_all(set: [lease_owner: original.lease_owner])
+
+    assert_receive {:run_agent_updated, %{id: ^agent_id, status: "idle"}}, 2_000
+    assert FleetManager.rehydration_errors(run.id) == []
+    assert :sys.get_state(recovered_manager).rehydrate_attempt < 5
+
+    assert {:ok, recovered} = FleetManager.current_agent(run.id, selected.agent_id)
+    assert Process.alive?(recovered.pid)
+    assert recovered.generation == selected.generation + 1
+  end
+
+  test "whole fleet restart reclaims an expired agent lease and its claimed restart control",
+       ctx do
+    run = running_run(ctx, "whole supervisor claimed restart recovery")
+    on_exit(fn -> FleetSupervisor.stop(run.id) end)
+    assert {:ok, agents} = FleetSupervisor.attach(run, agent_count: 4, project_root: ctx.root)
+    selected = Enum.find(agents, &(&1.role == :planner))
+    old_supervisor = AgentRegistry.whereis_fleet(run.id, :supervisor)
+    agent_supervisor = AgentRegistry.via_fleet(run.id, :agent_supervisor)
+    old_manager = AgentRegistry.whereis_fleet(run.id, :manager)
+    old_agent_ref = Process.monitor(selected.pid)
+
+    assert :ok = AgentSupervisor.stop_run_agent(agent_supervisor, run.id, selected.agent_id)
+    assert_receive {:DOWN, ^old_agent_ref, :process, _, _}, 2_000
+    _ = :sys.get_state(old_manager)
+
+    interrupted = Runs.get_run_agent(selected.agent_id)
+    assert interrupted.status == "interrupted"
+
+    assert {:ok, restart} =
+             Runs.enqueue_run_agent_control(
+               interrupted,
+               "claimed-restart-before-fleet-restart",
+               %{
+                 kind: "restart",
+                 payload: %{},
+                 target_generation: interrupted.lease_generation,
+                 requested_by: "test"
+               }
+             )
+
+    assert {:ok, {claimed_agent, claimed_restart}} =
+             Runs.claim_restart_run_agent_control(interrupted, "departed-fleet-owner", 100)
+
+    assert claimed_restart.id == restart.id
+    assert claimed_restart.status == "claimed"
+    assert claimed_agent.status == "starting"
+
+    expires_at = DateTime.utc_now() |> DateTime.add(100, :millisecond)
+
+    {4, _} =
+      from(agent in RunAgent,
+        where: agent.run_id == ^run.id and agent.status in ^RunAgent.leased_statuses()
+      )
+      |> Repo.update_all(set: [lease_expires_at: expires_at])
+
+    :ok = Runs.subscribe(run)
+
+    # Replacing the whole tree changes the in-memory fleet credential while the
+    # durable rows and claimed restart receipt still belong to the departed one.
+    supervisor_ref = Process.monitor(old_supervisor)
+    manager_ref = Process.monitor(old_manager)
+    Process.exit(old_supervisor, :kill)
+    assert_receive {:DOWN, ^supervisor_ref, :process, ^old_supervisor, :killed}, 2_000
+    assert_receive {:DOWN, ^manager_ref, :process, ^old_manager, :killed}, 2_000
+
+    _ = :sys.get_state(FleetSupervisor)
+
+    assert {:ok, new_supervisor} =
+             FleetSupervisor.ensure_started(run,
+               session: ctx.session,
+               project_root: ctx.root
+             )
+
+    assert is_pid(new_supervisor)
+    refute new_supervisor == old_supervisor
+    new_manager = AgentRegistry.whereis_fleet(run.id, :manager)
+    _ = :sys.get_state(new_manager)
+
+    errors = FleetManager.rehydration_errors(run.id)
+
+    assert Enum.any?(errors, fn {agent_id, reason} ->
+             agent_id == selected.agent_id and reason in [:lease_lost, :lease_expired]
+           end)
+
+    assert_receive {:run_agent_control_updated, %{id: control_id, status: "pending"}}, 3_000
+    assert control_id == restart.id
+
+    assert_receive {:run_agent_control_updated, %{id: ^control_id, status: "applied"}}, 3_000
+
+    assert %{status: "applied", result: %{"status" => "restarted"}} =
+             Runs.get_run_agent_control(restart.id)
+
+    assert {:ok, recovered} = FleetManager.current_agent(run.id, selected.agent_id)
+    assert Process.alive?(recovered.pid)
+    assert recovered.generation == claimed_agent.lease_generation + 1
+    assert FleetManager.rehydration_errors(run.id) == []
+    assert length(FleetManager.list_agents(run.id)) == 4
+  end
+
   test "paused state and queued steering recover without duplicate consumption", ctx do
     run = running_run(ctx, "paused recovery")
     on_exit(fn -> FleetSupervisor.stop(run.id) end)
@@ -208,6 +380,149 @@ defmodule IexCode.Engine.DurableFleetTest do
            ]
 
     assert FleetManager.drain_steering(run.id, recovered.agent_id) == []
+  end
+
+  test "control replay yields fairly and immediately continues beyond one batch", ctx do
+    run = running_run(ctx, "large control backlog")
+    on_exit(fn -> FleetSupervisor.stop(run.id) end)
+    assert {:ok, agents} = FleetSupervisor.attach(run, agent_count: 4, project_root: ctx.root)
+    planner = Enum.find(agents, &(&1.role == :planner))
+    explorer = Enum.find(agents, &(&1.role == :explorer))
+
+    :ok = Runs.subscribe(run)
+
+    last_planner_control =
+      Enum.reduce(1..70, nil, fn index, _previous ->
+        assert {:ok, control} =
+                 Runs.enqueue_run_agent_control(planner.agent_id, "planner-backlog-#{index}", %{
+                   kind: "steer",
+                   payload: %{"guidance" => "planner guidance #{index}"},
+                   target_generation: planner.generation,
+                   requested_by: "test"
+                 })
+
+        control
+      end)
+
+    assert {:ok, _control} =
+             Runs.enqueue_run_agent_control(explorer.agent_id, "explorer-fairness", %{
+               kind: "steer",
+               payload: %{"guidance" => "explorer must not starve"},
+               target_generation: explorer.generation,
+               requested_by: "test"
+             })
+
+    manager = AgentRegistry.whereis_fleet(run.id, :manager)
+    send(manager, :replay_controls)
+
+    # The replay cursor advances after every applied item, so the later-position
+    # explorer is serviced in the first batch instead of waiting behind all 70
+    # planner controls.
+    _ = :sys.get_state(manager)
+
+    assert [%{status: "applied"}] =
+             Runs.list_run_agent_controls(explorer.agent_id, status: "applied")
+
+    last_control_id = last_planner_control.id
+
+    assert_receive {:run_agent_control_updated, %{id: ^last_control_id, status: "applied"}},
+                   5_000
+
+    assert length(Runs.list_run_agent_controls(planner.agent_id, status: "applied")) == 70
+    assert Runs.list_run_agent_controls(planner.agent_id, status: "pending") == []
+  end
+
+  test "stopping a maximum-size fleet terminalizes and tears down every child", ctx do
+    run = running_run(ctx, "maximum fleet shutdown")
+    on_exit(fn -> FleetSupervisor.stop(run.id) end)
+    assert {:ok, agents} = FleetSupervisor.attach(run, agent_count: 32, project_root: ctx.root)
+    refs = Map.new(agents, &{Process.monitor(&1.pid), &1.pid})
+
+    assert :ok =
+             FleetManager.stop(run.id, "cancelled",
+               lease_owner: run.lease_owner,
+               run_attempt: run.attempt,
+               lease_generation: run.lease_generation
+             )
+
+    assert_all_down(refs, 5_000)
+
+    assert AgentRegistry.whereis_fleet(run.id, :supervisor) == nil
+    assert AgentRegistry.list_run_agents(run.id) == []
+    assert Enum.all?(Runs.list_run_agents(run.id), &(&1.status == "cancelled"))
+  end
+
+  test "heartbeat skips terminal and dead fleet entries", ctx do
+    run = running_run(ctx, "heartbeat eligibility")
+    on_exit(fn -> FleetSupervisor.stop(run.id) end)
+    assert {:ok, agents} = FleetSupervisor.attach(run, agent_count: 4, project_root: ctx.root)
+    cancelled = Enum.find(agents, &(&1.role == :planner))
+    dead = Enum.find(agents, &(&1.role == :explorer))
+
+    assert {:ok, :cancelled} =
+             RunFleetSupervisor.control_agent(run, cancelled.agent_id, :cancel, %{
+               idempotency_key: "heartbeat-terminal"
+             })
+
+    dead_ref = Process.monitor(dead.pid)
+    Process.exit(dead.pid, :kill)
+    assert_receive {:DOWN, ^dead_ref, :process, _, :killed}, 2_000
+
+    manager = AgentRegistry.whereis_fleet(run.id, :manager)
+    before_heartbeat = :sys.get_state(manager)
+
+    assert Runs.get_run_agent(cancelled.agent_id).status == "cancelled"
+    assert Runs.get_run_agent(dead.agent_id).status == "interrupted"
+    assert before_heartbeat.agents[cancelled.agent_id].error == nil
+    assert before_heartbeat.agents[dead.agent_id].error == ":killed"
+
+    old_heartbeat =
+      DateTime.utc_now()
+      |> DateTime.add(-3_600, :second)
+      |> DateTime.truncate(:microsecond)
+
+    {2, _} =
+      from(agent in RunAgent, where: agent.id in ^[cancelled.agent_id, dead.agent_id])
+      |> Repo.update_all(set: [heartbeat_at: old_heartbeat])
+
+    send(manager, :heartbeat)
+    after_heartbeat = :sys.get_state(manager)
+
+    assert Runs.get_run_agent(cancelled.agent_id).heartbeat_at == old_heartbeat
+    assert Runs.get_run_agent(dead.agent_id).heartbeat_at == old_heartbeat
+    assert after_heartbeat.agents[cancelled.agent_id].error == nil
+    assert after_heartbeat.agents[dead.agent_id].error == ":killed"
+  end
+
+  test "forced run-agent shutdown is bounded and awaits every stubborn child" do
+    receiver = self()
+
+    pids =
+      for index <- 1..4 do
+        start_supervised!(
+          Supervisor.child_spec(
+            {Task,
+             fn ->
+               Process.flag(:trap_exit, true)
+               send(receiver, {:stubborn_agent_ready, self()})
+               stubborn_agent_loop()
+             end},
+            id: {:stubborn_run_agent, index}
+          )
+        )
+      end
+
+    Enum.each(pids, fn pid ->
+      assert_receive {:stubborn_agent_ready, ^pid}, 2_000
+    end)
+
+    refs = Map.new(pids, &{Process.monitor(&1), &1})
+    started_at = System.monotonic_time(:millisecond)
+
+    assert :ok = AgentSupervisor.stop_run_pids(pids, 25)
+    assert System.monotonic_time(:millisecond) - started_at < 1_000
+    assert_all_down(refs, 1_000)
+    assert Enum.all?(pids, &(not Process.alive?(&1)))
   end
 
   test "interrupted agent restart advances generation and later invocation resolves replacement",
@@ -345,6 +660,66 @@ defmodule IexCode.Engine.DurableFleetTest do
     assert AgentRegistry.whereis_fleet(run.id, :manager) == nil
   end
 
+  test "a retry replaces the old fleet tree and stale lineage cannot stop the new fleet", ctx do
+    run = running_run(ctx, "fleet lineage replacement")
+    on_exit(fn -> FleetSupervisor.stop(run.id) end)
+
+    assert {:ok, old_agents} =
+             FleetSupervisor.attach(run, agent_count: 4, project_root: ctx.root)
+
+    old_manager = AgentRegistry.whereis_fleet(run.id, :manager)
+    old_manager_ref = Process.monitor(old_manager)
+
+    assert {:ok, _interrupted} =
+             Runs.terminalize_run_agents(run, "interrupted", %{},
+               lease_owner: run.lease_owner,
+               run_attempt: run.attempt,
+               lease_generation: run.lease_generation
+             )
+
+    {1, _} =
+      Repo.update_all(
+        from(parent in Run, where: parent.id == ^run.id),
+        inc: [attempt: 1, lease_generation: 1]
+      )
+
+    retry = Runs.get_run!(run.id)
+
+    old_agent = hd(old_agents)
+
+    assert {:error, :parent_lease_lost} =
+             FleetManager.current_agent(run.id, old_agent.agent_id)
+
+    assert {:error, :parent_lease_lost} =
+             FleetRuntime.begin_work(
+               %{
+                 run_id: run.id,
+                 agent_id: old_agent.agent_id,
+                 generation: old_agent.generation
+               },
+               "must not cross parent attempts"
+             )
+
+    assert {:ok, new_agents} =
+             FleetSupervisor.attach(retry, agent_count: 4, project_root: ctx.root)
+
+    assert_receive {:DOWN, ^old_manager_ref, :process, ^old_manager, _reason}, 2_000
+    refute AgentRegistry.whereis_fleet(run.id, :manager) == old_manager
+
+    refute MapSet.new(Enum.map(old_agents, & &1.agent_id)) ==
+             MapSet.new(Enum.map(new_agents, & &1.agent_id))
+
+    assert {:error, :parent_lease_lost} =
+             FleetManager.stop(run.id, "cancelled",
+               lease_owner: run.lease_owner,
+               run_attempt: run.attempt,
+               lease_generation: run.lease_generation
+             )
+
+    assert Enum.all?(Runs.list_run_agents(retry), &(&1.status in RunAgent.leased_statuses()))
+    assert Enum.all?(new_agents, &(is_pid(&1.pid) and Process.alive?(&1.pid)))
+  end
+
   test "fenced work lifecycle updates only the selected durable agent", ctx do
     run = running_run(ctx, "lifecycle")
     on_exit(fn -> FleetSupervisor.stop(run.id) end)
@@ -400,8 +775,8 @@ defmodule IexCode.Engine.DurableFleetTest do
 
   test "one agent exhausting the run budget promptly gates and terminalizes its siblings", ctx do
     run = running_run(ctx, "budget exhaustion")
-    {:ok, paused} = Runs.transition_run(run, "paused")
-    {:ok, run} = Runs.transition_run(paused, "running", %{token_budget: 3})
+    {:ok, paused} = transition_parent(run, "paused")
+    {:ok, run} = transition_parent(paused, "running", %{token_budget: 3})
     on_exit(fn -> FleetSupervisor.stop(run.id) end)
 
     assert {:ok, agents} = FleetSupervisor.attach(run, agent_count: 4, project_root: ctx.root)
@@ -499,12 +874,22 @@ defmodule IexCode.Engine.DurableFleetTest do
 
   test "cost exhaustion returns a structured fleet error and terminalizes the fleet", ctx do
     run = running_run(ctx, "cost exhaustion")
-    {:ok, paused} = Runs.transition_run(run, "paused")
-    {:ok, run} = Runs.transition_run(paused, "running", %{cost_budget_cents: 2})
+    {:ok, paused} = transition_parent(run, "paused")
+    {:ok, run} = transition_parent(paused, "running", %{cost_budget_cents: 2})
     on_exit(fn -> FleetSupervisor.stop(run.id) end)
 
     assert {:ok, agents} = FleetSupervisor.attach(run, agent_count: 4, project_root: ctx.root)
     selected = Enum.find(agents, &(&1.role == :planner))
+
+    original_expiry =
+      DateTime.utc_now()
+      |> DateTime.add(2, :second)
+      |> DateTime.truncate(:second)
+
+    assert {:ok, _near_expiry} =
+             run
+             |> Ecto.Changeset.change(lease_expires_at: original_expiry)
+             |> Repo.update()
 
     owner = %{
       run_id: run.id,
@@ -515,16 +900,23 @@ defmodule IexCode.Engine.DurableFleetTest do
     assert {:error, :cost_budget_exhausted} =
              FleetRuntime.record_usage(owner, %{cost_cents: 3}, "planner.llm")
 
-    assert %{status: "failed", error_details: %{"budget" => "cost_cents"}} =
-             Runs.get_run!(run.id)
+    assert %{
+             status: "failed",
+             lease_owner: lease_owner,
+             lease_expires_at: terminal_expiry,
+             error_details: %{"budget" => "cost_cents"}
+           } = Runs.get_run!(run.id)
+
+    assert is_binary(lease_owner)
+    assert DateTime.compare(terminal_expiry, original_expiry) == :gt
 
     assert Enum.all?(Runs.list_run_agents(run.id), &(&1.status == "failed"))
   end
 
   test "agent-owned usage caller observes budget error before its owner is terminated", ctx do
     run = running_run(ctx, "agent owned budget caller")
-    {:ok, paused} = Runs.transition_run(run, "paused")
-    {:ok, run} = Runs.transition_run(paused, "running", %{token_budget: 3})
+    {:ok, paused} = transition_parent(run, "paused")
+    {:ok, run} = transition_parent(paused, "running", %{token_budget: 3})
     on_exit(fn -> FleetSupervisor.stop(run.id) end)
 
     assert {:ok, agents} =
@@ -645,7 +1037,7 @@ defmodule IexCode.Engine.DurableFleetTest do
   end
 
   defp running_run(ctx, suffix) do
-    {:ok, run} =
+    {:ok, _queued} =
       Runs.create_run(%{
         project_id: ctx.project.id,
         session_id: ctx.session.id,
@@ -655,7 +1047,34 @@ defmodule IexCode.Engine.DurableFleetTest do
         execution_engine: "legacy_v1"
       })
 
-    {:ok, run} = Runs.transition_run(run, "running")
+    owner = "fleet-test:#{suffix}:#{System.unique_integer([:positive])}"
+    {:ok, run} = Runs.claim_next_run(owner, lease_ms: 300_000)
     run
+  end
+
+  defp transition_parent(run, status, attrs \\ %{}) do
+    Runs.transition_run_worker(run, status, attrs,
+      lease_owner: run.lease_owner,
+      run_attempt: run.attempt,
+      lease_generation: run.lease_generation
+    )
+  end
+
+  defp assert_all_down(refs, _timeout) when map_size(refs) == 0, do: :ok
+
+  defp assert_all_down(refs, timeout) do
+    receive do
+      {:DOWN, ref, :process, _pid, _reason} when is_map_key(refs, ref) ->
+        assert_all_down(Map.delete(refs, ref), timeout)
+    after
+      timeout -> flunk("fleet still had #{map_size(refs)} live monitored children")
+    end
+  end
+
+  defp stubborn_agent_loop do
+    receive do
+      {:EXIT, _from, :shutdown} -> stubborn_agent_loop()
+      _message -> stubborn_agent_loop()
+    end
   end
 end

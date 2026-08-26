@@ -7,7 +7,8 @@ defmodule IexCode.Engine.SessionServer do
   use GenServer, restart: :transient
   require Logger
   alias IexCode.{LLM, Projects, Sessions, Tools, WorkspacePath}
-  alias IexCode.Engine.{SwarmCoordinator, OperationManager, AgentSupervisor}
+  alias IexCode.Engine.{AgentRegistry, AgentSupervisor, OperationManager, SwarmCoordinator}
+  alias IexCode.Runs.RunDispatcher
   alias Phoenix.PubSub
 
   # Client API
@@ -105,6 +106,37 @@ defmodule IexCode.Engine.SessionServer do
     GenServer.call(via_tuple(session_id), :get_state)
   end
 
+  @doc false
+  def dispatch_run_control(controller_node, operation, args, opts \\ [])
+
+  def dispatch_run_control(controller_node, operation, args, opts)
+      when is_atom(controller_node) and operation in [:pause, :resume, :cancel, :steer] and
+             is_list(args) and is_list(opts) do
+    dispatcher = Keyword.get(opts, :dispatcher, RunDispatcher)
+    timeout = Keyword.get(opts, :timeout, 5_000)
+
+    try do
+      if controller_node == node() do
+        apply(dispatcher, operation, args)
+      else
+        case Keyword.get(opts, :rpc) do
+          rpc when is_function(rpc, 5) ->
+            rpc.(controller_node, dispatcher, operation, args, timeout)
+
+          _default ->
+            :erpc.call(controller_node, dispatcher, operation, args, timeout)
+        end
+      end
+    rescue
+      error -> {:error, {:durable_dispatch_unavailable, Exception.message(error)}}
+    catch
+      kind, reason -> {:error, {:durable_dispatch_unavailable, kind, reason}}
+    end
+  end
+
+  def dispatch_run_control(_controller_node, _operation, _args, _opts),
+    do: {:error, :invalid_durable_dispatch}
+
   defp via_tuple(session_id) do
     {:via, Registry, {IexCode.SessionRegistry, session_id}}
   end
@@ -123,6 +155,13 @@ defmodule IexCode.Engine.SessionServer do
 
     status = normalize_status(session.status)
 
+    {swarm_owner, swarm_metadata, swarm_lookup_error} =
+      case AgentRegistry.swarm_owner_registration(session_id) do
+        {:ok, pid, metadata} -> {pid, metadata, nil}
+        {:error, {:swarm_owner_metadata_unavailable, pid, reason}} -> {pid, %{}, reason}
+        :none -> {nil, %{}, nil}
+      end
+
     state = %{
       session_id: session_id,
       session: session,
@@ -133,21 +172,50 @@ defmodule IexCode.Engine.SessionServer do
       active_goal: nil
     }
 
-    # Rehydrate: a DB row left in "running" is phantom-running after a restart
-    # (no live task exists in this fresh process), so normalize it.
     state =
-      if status == :running do
-        Logger.warning(
-          "Session #{session_id} restarted while marked running; marking interrupted"
-        )
+      cond do
+        is_pid(swarm_owner) and swarm_lookup_error ->
+          track_unavailable_owner(state, swarm_owner, swarm_lookup_error)
 
-        update_db_session_status(session_id, "idle")
-        broadcast(session_id, {:session_status_changed, "idle"})
-        broadcast(session_id, {:session_interrupted, %{session_id: session_id}})
+        is_pid(swarm_owner) ->
+          track_registered_owner(state, swarm_owner, swarm_metadata)
 
-        %{state | status: :idle, session: %{session | status: "idle"}}
-      else
-        state
+        true ->
+          state
+      end
+
+    # Adopt the uniquely registered coordinator after a SessionServer restart.
+    # Without a live owner, a DB row left in "running" is phantom-running and
+    # must be normalized rather than allowing a second coordinator to start.
+    state =
+      cond do
+        is_pid(swarm_owner) ->
+          adopted_status = state.status
+
+          if status != adopted_status do
+            update_db_session_status(session_id, to_string(adopted_status))
+            broadcast(session_id, {:session_status_changed, to_string(adopted_status)})
+          end
+
+          %{
+            state
+            | status: adopted_status,
+              session: %{session | status: to_string(adopted_status)}
+          }
+
+        status == :running ->
+          Logger.warning(
+            "Session #{session_id} restarted while marked running; marking interrupted"
+          )
+
+          update_db_session_status(session_id, "idle")
+          broadcast(session_id, {:session_status_changed, "idle"})
+          broadcast(session_id, {:session_interrupted, %{session_id: session_id}})
+
+          %{state | status: :idle, session: %{session | status: "idle"}}
+
+        true ->
+          state
       end
 
     {:ok, state}
@@ -157,122 +225,42 @@ defmodule IexCode.Engine.SessionServer do
   def handle_call(
         {:create_goal, _goal_prompt_or_params, _opts},
         _from,
-        %{status: :running} = state
-      ) do
-    {:reply, {:error, :already_running}, state}
-  end
+        %{status: status} = state
+      )
+      when status in [:running, :paused],
+      do: {:reply, {:error, :already_running}, state}
 
   @impl true
   def handle_call(
         {:create_goal, goal_prompt_or_params, opts},
-        _from,
-        %{session_id: session_id, session: session} = state
+        from,
+        %{session_id: session_id} = state
       ) do
-    {title, prompt} =
-      cond do
-        is_binary(goal_prompt_or_params) ->
-          {String.slice(goal_prompt_or_params, 0, 60), goal_prompt_or_params}
+    case AgentRegistry.swarm_owner_registration(session_id) do
+      {:ok, owner, metadata} ->
+        {:reply, {:error, :already_running}, track_registered_owner(state, owner, metadata)}
 
-        is_map(goal_prompt_or_params) ->
-          t =
-            Map.get(goal_prompt_or_params, :title) || Map.get(goal_prompt_or_params, "title") ||
-              "Autonomous Goal"
+      {:error, {:swarm_owner_metadata_unavailable, owner, reason}} ->
+        {:reply, {:error, :already_running}, track_unavailable_owner(state, owner, reason)}
 
-          p =
-            Map.get(goal_prompt_or_params, :prompt) || Map.get(goal_prompt_or_params, "prompt") ||
-              t
-
-          {t, p}
-
-        true ->
-          {"Autonomous Goal", "Analyze workspace and coordinate goal"}
-      end
-
-    current_session = fetch_current_session(session_id, session)
-
-    project_root = resolve_project_root(current_session, opts)
-    auto_start = Keyword.get(opts, :auto_start, true)
-
-    goal_record = %{
-      id: Ecto.UUID.generate(),
-      session_id: session_id,
-      title: title,
-      prompt: prompt,
-      status: if(auto_start, do: :running, else: :idle),
-      created_at: DateTime.utc_now()
-    }
-
-    # Save Goal User message in DB
-    {user_msg, _msg_error} =
-      case Sessions.create_message(%{
-             session_id: session_id,
-             role: "user",
-             agent_name: "User (Goal)",
-             content: "🎯 **Goal**: #{title}\n\n#{prompt}"
-           }) do
-        {:ok, msg} ->
-          {msg, nil}
-
-        error ->
-          Logger.error(
-            "Failed to persist goal message for session #{session_id}: #{inspect(error)}"
-          )
-
-          broadcast(session_id, {:run_failed, %{session_id: session_id, reason: inspect(error)}})
-
-          {%{
-             id: Ecto.UUID.generate(),
-             session_id: session_id,
-             role: "user",
-             agent_name: "User (Goal)",
-             content: "🎯 **Goal**: #{title}\n\n#{prompt}"
-           }, error}
-      end
-
-    broadcast(session_id, {:message_created, user_msg})
-    broadcast(session_id, {:goal_created, goal_record})
-
-    if auto_start do
-      update_db_session_status(session_id, "running")
-      broadcast(session_id, {:session_status_changed, "running"})
-
-      case SwarmCoordinator.run_swarm(session_id, prompt, project_root, opts) do
-        {:ok, task_pid} ->
-          task_ref = Process.monitor(task_pid)
-
-          new_state = %{
-            state
-            | session: %{current_session | status: "running"},
-              status: :running,
-              current_task: task_pid,
-              task_ref: task_ref,
-              run_mode: :swarm,
-              active_goal: goal_record
-          }
-
-          {:reply, {:ok, Map.put(goal_record, :task_pid, task_pid)}, new_state}
-      end
-    else
-      update_db_session_status(session_id, "idle")
-      broadcast(session_id, {:session_status_changed, "idle"})
-
-      new_state = %{
-        state
-        | session: %{current_session | status: "idle"},
-          status: :idle,
-          current_task: nil,
-          active_goal: goal_record
-      }
-
-      {:reply, {:ok, goal_record}, new_state}
+      :none ->
+        handle_create_goal(goal_prompt_or_params, opts, from, state)
     end
   end
 
   @impl true
   def handle_call({:send_steering, steer_text}, _from, %{session_id: session_id} = state) do
-    cleaned = String.trim(steer_text)
+    cleaned = normalize_steering(steer_text)
+    state = refresh_registered_owner(state)
 
-    if cleaned != "" do
+    result =
+      if cleaned == "" do
+        {:ok, cleaned}
+      else
+        route_steering(state, cleaned)
+      end
+
+    if cleaned != "" and match?({:ok, _}, result) do
       # Create message in DB
       case Sessions.create_message(%{
              session_id: session_id,
@@ -284,57 +272,33 @@ defmodule IexCode.Engine.SessionServer do
         _ -> :ok
       end
 
-      # Broadcast to steering topic and main session topic
-      PubSub.broadcast(IexCode.PubSub, "session:#{session_id}:steer", {:steer_message, cleaned})
       broadcast(session_id, {:swarm_steered, %{session_id: session_id, steering: cleaned}})
     end
 
-    {:reply, {:ok, cleaned}, state}
+    {:reply, result, state}
   end
 
   @impl true
-  def handle_call(:pause_session, _from, %{session_id: session_id, session: session} = state) do
-    current_session = fetch_current_session(session_id, session)
+  def handle_call(:pause_session, _from, state) do
+    state = refresh_registered_owner(state)
 
-    update_db_session_status(session_id, "paused")
-
-    PubSub.broadcast(IexCode.PubSub, "session:#{session_id}:steer", {:pause, session_id})
-    broadcast(session_id, {:session_status_changed, "paused"})
-
-    new_state = %{state | status: :paused, session: %{current_session | status: "paused"}}
-    {:reply, {:ok, :paused}, new_state}
+    case state.run_mode do
+      {:durable_swarm, run_id} -> pause_durable_run(run_id, state)
+      {:swarm_owner_metadata_unavailable, _reason} -> owner_metadata_unavailable_reply(state)
+      {:stale_durable_swarm, _run_id} -> stale_owner_reply(state)
+      _interactive_or_idle -> pause_interactive_run(state)
+    end
   end
 
   @impl true
-  def handle_call(:resume_session, _from, %{session_id: session_id, session: session} = state) do
-    task_alive? =
-      case task_pid(state.current_task) do
-        nil -> false
-        pid -> Process.alive?(pid)
-      end
+  def handle_call(:resume_session, _from, state) do
+    state = refresh_registered_owner(state)
 
-    if state.status == :paused and task_alive? do
-      current_session = fetch_current_session(session_id, session)
-
-      update_db_session_status(session_id, "running")
-
-      PubSub.broadcast(IexCode.PubSub, "session:#{session_id}:steer", {:resume, session_id})
-      broadcast(session_id, {:session_status_changed, "running"})
-
-      new_state = %{state | status: :running, session: %{current_session | status: "running"}}
-      {:reply, {:ok, :running}, new_state}
-    else
-      # No live task to resume - never phantom-resume into :running.
-      new_state =
-        if task_alive? do
-          state
-        else
-          update_db_session_status(session_id, "idle")
-          broadcast(session_id, {:session_status_changed, "idle"})
-          %{state | status: :idle, current_task: nil, task_ref: nil}
-        end
-
-      {:reply, {:error, :no_active_run}, new_state}
+    case state.run_mode do
+      {:durable_swarm, run_id} -> resume_durable_run(run_id, state)
+      {:swarm_owner_metadata_unavailable, _reason} -> owner_metadata_unavailable_reply(state)
+      {:stale_durable_swarm, _run_id} -> stale_owner_reply(state)
+      _interactive_or_idle -> resume_interactive_run(state)
     end
   end
 
@@ -342,104 +306,16 @@ defmodule IexCode.Engine.SessionServer do
   def handle_call(
         {:cancel_session, opts},
         _from,
-        %{session_id: session_id, session: session} = state
+        state
       ) do
-    # Honor legacy `commit: true` while letting an explicit `:action` win.
-    default_action = if Keyword.get(opts, :commit, false), do: :commit, else: :rollback
-    action = Keyword.get(opts, :action, default_action)
+    state = refresh_registered_owner(state)
 
-    current_session = fetch_current_session(session_id, session)
-
-    project_root = resolve_project_root(current_session, opts)
-    mutation_project_id = trusted_project_id_for_root(current_session, project_root)
-
-    # 1. Signal all workers via PubSub. A live swarm coordinator subscribes to
-    #    this topic and performs its own rollback/commit + termination, so the
-    #    server must NOT roll back again for that path (avoid double-delivery).
-    PubSub.broadcast(IexCode.PubSub, "session:#{session_id}:steer", {:cancel, session_id, opts})
-
-    # 2. Wait briefly for the running task to die on its own (it also observes
-    #    the {:cancel, ...} message), then escalate shutdown -> kill.
-    swarm_handled_cancel? =
-      case task_pid(state.current_task) do
-        nil ->
-          false
-
-        pid ->
-          if Process.alive?(pid) do
-            await_task_exit(pid)
-
-            # The swarm coordinator cleans up on its own; the single-agent task
-            # does not, so the server performs the rollback/commit for it.
-            state.run_mode == :swarm
-          else
-            false
-          end
-      end
-
-    if state.task_ref, do: Process.demonitor(state.task_ref, [:flush])
-
-    # 3. Cleanly terminate all subagent OTP workers
-    AgentSupervisor.stop_all_agents(session_id)
-
-    # 4. Perform rollback or commit (only if the swarm coordinator didn't already)
-    unless swarm_handled_cancel? do
-      case action do
-        :rollback ->
-          IexCode.Tools.MultiPatch.Snapshot.claim_unscoped(project_root, session_id)
-
-          SwarmCoordinator.perform_rollback(
-            project_root,
-            %SwarmCoordinator.State{
-              session_id: session_id,
-              session: %{project_id: mutation_project_id},
-              project_root: project_root
-            }
-          )
-
-        :commit ->
-          commit_opts =
-            opts
-            |> Keyword.delete(:project_id)
-            |> maybe_put_project_id(mutation_project_id)
-
-          SwarmCoordinator.perform_commit(
-            project_root,
-            commit_opts
-          )
-
-        _ ->
-          :ok
-      end
+    case state.run_mode do
+      {:durable_swarm, run_id} -> cancel_durable_run(run_id, opts, state)
+      {:swarm_owner_metadata_unavailable, _reason} -> owner_metadata_unavailable_reply(state)
+      {:stale_durable_swarm, _run_id} -> stale_owner_reply(state)
+      _interactive_or_idle -> cancel_interactive_run(opts, state)
     end
-
-    # 5. Update DB status
-    update_db_session_status(session_id, "stopped")
-
-    # 6. Create assistant cancellation message in DB
-    case Sessions.create_message(%{
-           session_id: session_id,
-           role: "assistant",
-           agent_name: "Swarm Coordinator",
-           content: "🛑 **Session Stopped**: Execution cancelled by user with action `#{action}`."
-         }) do
-      {:ok, cancel_msg} -> broadcast(session_id, {:message_created, cancel_msg})
-      _ -> :ok
-    end
-
-    broadcast(session_id, {:session_status_changed, "stopped"})
-    broadcast(session_id, {:session_cancelled, %{session_id: session_id, action: action}})
-
-    new_state = %{
-      state
-      | status: :stopped,
-        current_task: nil,
-        task_ref: nil,
-        run_mode: nil,
-        session: %{current_session | status: "stopped"}
-    }
-
-    {:reply, {:ok, %{status: :stopped, action: action}}, new_state}
   end
 
   @impl true
@@ -473,26 +349,24 @@ defmodule IexCode.Engine.SessionServer do
   end
 
   @impl true
-  def handle_call(:get_state, _from, %{status: status} = state)
-      when status in [:running, :paused, :stopped] do
-    # While a run is actively managed by this process, the cached state is
-    # authoritative - skip the blocking DB read.
-    {:reply, state, state}
-  end
-
-  @impl true
   def handle_call(:get_state, _from, state) do
-    current_session = fetch_current_session(state.session_id, state.session)
+    state = refresh_registered_owner(state)
 
-    status = normalize_status(current_session.status)
+    if state.status in [:running, :paused, :stopped] do
+      # While a run is actively managed by this process, the cached state is
+      # authoritative - skip the blocking DB read.
+      {:reply, state, state}
+    else
+      current_session = fetch_current_session(state.session_id, state.session)
 
-    result_state = %{
-      state
-      | session: current_session,
-        status: status
-    }
+      result_state = %{
+        state
+        | session: current_session,
+          status: normalize_status(current_session.status)
+      }
 
-    {:reply, result_state, result_state}
+      {:reply, result_state, result_state}
+    end
   end
 
   @impl true
@@ -505,8 +379,30 @@ defmodule IexCode.Engine.SessionServer do
       ) do
     prompt = String.trim(raw_prompt)
 
-    if state.status == :running do
-      # If already running, ingest as real-time steering
+    {registered_owner, owner_metadata} =
+      case AgentRegistry.swarm_owner_registration(session_id) do
+        {:ok, pid, metadata} ->
+          {pid, metadata}
+
+        {:error, {:swarm_owner_metadata_unavailable, pid, reason}} ->
+          {pid, {:metadata_unavailable, reason}}
+
+        :none ->
+          {nil, %{}}
+      end
+
+    if state.status in [:running, :paused] or is_pid(registered_owner) do
+      # A paused coordinator is still the active owner. Prompts must be
+      # delivered to that exact task rather than starting a split-brain swarm.
+      state =
+        case owner_metadata do
+          {:metadata_unavailable, reason} ->
+            track_unavailable_owner(state, registered_owner, reason)
+
+          metadata ->
+            track_registered_owner(state, registered_owner, metadata)
+        end
+
       {:reply, _, new_state} = handle_call({:send_steering, prompt}, nil, state)
       {:noreply, new_state}
     else
@@ -579,6 +475,29 @@ defmodule IexCode.Engine.SessionServer do
                  run_mode: :swarm,
                  session: %{current_session | status: "running"}
              }}
+
+          {:error, reason} ->
+            Logger.error(
+              "Failed to start swarm task for session #{session_id}: #{inspect(reason)}"
+            )
+
+            update_db_session_status(session_id, "idle")
+            broadcast(session_id, {:session_status_changed, "idle"})
+
+            broadcast(
+              session_id,
+              {:run_failed, %{session_id: session_id, reason: inspect(reason)}}
+            )
+
+            {:noreply,
+             %{
+               state
+               | status: :idle,
+                 current_task: nil,
+                 task_ref: nil,
+                 run_mode: nil,
+                 session: %{current_session | status: "idle"}
+             }}
         end
       else
         # Run Single Agent Async Task
@@ -628,37 +547,47 @@ defmodule IexCode.Engine.SessionServer do
   end
 
   @impl true
-  def handle_info({:DOWN, ref, :process, _pid, reason}, %{task_ref: task_ref} = state)
+  def handle_info(
+        {:DOWN, ref, :process, pid, :noconnection},
+        %{task_ref: ref, current_task: pid} = state
+      )
+      when node(pid) != node() do
+    # A node partition is not proof that the remote coordinator died. Keep the
+    # session fail-closed until global ownership/metadata can be observed again;
+    # marking it idle here could admit a conflicting interactive coordinator.
+    {:noreply,
+     %{
+       state
+       | current_task: nil,
+         task_ref: nil,
+         run_mode: {:swarm_owner_metadata_unavailable, :owner_node_disconnected}
+     }}
+  end
+
+  def handle_info({:DOWN, ref, :process, pid, reason}, %{task_ref: task_ref} = state)
       when ref == task_ref do
-    status =
-      case reason do
-        :normal -> :idle
-        :noproc -> :idle
-        :shutdown -> :stopped
-        :killed -> :stopped
-        _ -> :failed
-      end
+    case AgentRegistry.swarm_owner_registration(state.session_id) do
+      {:ok, replacement, metadata} when replacement != pid ->
+        # A retry can acquire the session immediately after this generation
+        # exits. Adopt it instead of letting the stale DOWN normalize the
+        # shared session to idle and lose durable control routing.
+        {:noreply,
+         state
+         |> Map.put(:current_task, nil)
+         |> Map.put(:task_ref, nil)
+         |> track_registered_owner(replacement, metadata)}
 
-    session_id = state.session_id
-    update_db_session_status(session_id, to_string(status))
-    broadcast(session_id, {:session_status_changed, to_string(status)})
+      {:error, {:swarm_owner_metadata_unavailable, replacement, reason}}
+      when replacement != pid ->
+        {:noreply,
+         state
+         |> Map.put(:current_task, nil)
+         |> Map.put(:task_ref, nil)
+         |> track_unavailable_owner(replacement, reason)}
 
-    if status == :failed do
-      Logger.error("Session #{session_id} run crashed: #{inspect(reason)}")
-      broadcast(session_id, {:run_failed, %{session_id: session_id, reason: inspect(reason)}})
-
-      case Sessions.create_message(%{
-             session_id: session_id,
-             role: "assistant",
-             agent_name: "Swarm Coordinator",
-             content: "❌ **Run Failed**: The session run crashed with `#{inspect(reason)}`."
-           }) do
-        {:ok, err_msg} -> broadcast(session_id, {:message_created, err_msg})
-        _ -> :ok
-      end
+      _none_or_same_owner ->
+        finish_task_down(state, reason)
     end
-
-    {:noreply, %{state | status: status, current_task: nil, task_ref: nil, run_mode: nil}}
   end
 
   @impl true
@@ -926,11 +855,586 @@ defmodule IexCode.Engine.SessionServer do
     end
   end
 
+  defp handle_create_goal(
+         goal_prompt_or_params,
+         opts,
+         _from,
+         %{session_id: session_id, session: session} = state
+       ) do
+    {title, prompt} = normalize_goal(goal_prompt_or_params)
+
+    current_session = fetch_current_session(session_id, session)
+
+    project_root = resolve_project_root(current_session, opts)
+    auto_start = Keyword.get(opts, :auto_start, true)
+
+    goal_record = %{
+      id: Ecto.UUID.generate(),
+      session_id: session_id,
+      title: title,
+      prompt: prompt,
+      status: if(auto_start, do: :running, else: :idle),
+      created_at: DateTime.utc_now()
+    }
+
+    if auto_start do
+      # Acquire the shared session-swarm ownership before making the goal
+      # observable. A durable worker can win ownership after the earlier
+      # preflight lookup; persisting first would leave a ghost goal/message on
+      # this losing side of that race.
+      run_opts = Keyword.put(opts, :ownership_token, goal_record.id)
+
+      case SwarmCoordinator.run_swarm(session_id, prompt, project_root, run_opts) do
+        {:ok, task_pid} ->
+          persist_goal_message(session_id, title, prompt)
+          broadcast(session_id, {:goal_created, goal_record})
+
+          update_db_session_status(session_id, "running")
+          broadcast(session_id, {:session_status_changed, "running"})
+
+          task_ref = Process.monitor(task_pid)
+
+          new_state = %{
+            state
+            | session: %{current_session | status: "running"},
+              status: :running,
+              current_task: task_pid,
+              task_ref: task_ref,
+              run_mode: :swarm,
+              active_goal: goal_record
+          }
+
+          {:reply, {:ok, Map.put(goal_record, :task_pid, task_pid)}, new_state}
+
+        {:error, reason} ->
+          case AgentRegistry.swarm_owner_registration(session_id) do
+            {:ok, owner, metadata} ->
+              {:reply, {:error, {:swarm_start_failed, reason}},
+               track_registered_owner(state, owner, metadata)}
+
+            {:error, {:swarm_owner_metadata_unavailable, owner, lookup_reason}} ->
+              {:reply, {:error, {:swarm_start_failed, reason}},
+               track_unavailable_owner(state, owner, lookup_reason)}
+
+            :none ->
+              failed_goal = %{goal_record | status: :failed}
+              update_db_session_status(session_id, "idle")
+              broadcast(session_id, {:session_status_changed, "idle"})
+
+              broadcast(
+                session_id,
+                {:run_failed, %{session_id: session_id, reason: inspect(reason)}}
+              )
+
+              {:reply, {:error, {:swarm_start_failed, reason}},
+               %{
+                 state
+                 | status: :idle,
+                   session: %{current_session | status: "idle"},
+                   active_goal: failed_goal
+               }}
+          end
+      end
+    else
+      persist_goal_message(session_id, title, prompt)
+      broadcast(session_id, {:goal_created, goal_record})
+
+      update_db_session_status(session_id, "idle")
+      broadcast(session_id, {:session_status_changed, "idle"})
+
+      new_state = %{
+        state
+        | session: %{current_session | status: "idle"},
+          status: :idle,
+          current_task: nil,
+          active_goal: goal_record
+      }
+
+      {:reply, {:ok, goal_record}, new_state}
+    end
+  end
+
+  defp persist_goal_message(session_id, title, prompt) do
+    user_msg =
+      case Sessions.create_message(%{
+             session_id: session_id,
+             role: "user",
+             agent_name: "User (Goal)",
+             content: "🎯 **Goal**: #{title}\n\n#{prompt}"
+           }) do
+        {:ok, msg} ->
+          msg
+
+        error ->
+          Logger.error(
+            "Failed to persist goal message for session #{session_id}: #{inspect(error)}"
+          )
+
+          broadcast(session_id, {:run_failed, %{session_id: session_id, reason: inspect(error)}})
+
+          %{
+            id: Ecto.UUID.generate(),
+            session_id: session_id,
+            role: "user",
+            agent_name: "User (Goal)",
+            content: "🎯 **Goal**: #{title}\n\n#{prompt}"
+          }
+      end
+
+    broadcast(session_id, {:message_created, user_msg})
+  end
+
+  defp normalize_goal(value) when is_binary(value) do
+    prompt = value |> String.trim() |> String.slice(0, 100_000)
+    prompt = if prompt == "", do: "Analyze workspace and coordinate goal", else: prompt
+    {String.slice(prompt, 0, 60), prompt}
+  end
+
+  defp normalize_goal(value) when is_map(value) do
+    title = map_string(value, [:title]) |> String.trim() |> String.slice(0, 240)
+
+    description =
+      map_string(value, [:prompt, :description])
+      |> String.trim()
+      |> String.slice(0, 100_000)
+
+    title = if title == "", do: "Autonomous Goal", else: title
+    {title, if(description == "", do: title, else: description)}
+  end
+
+  defp normalize_goal(_value),
+    do: {"Autonomous Goal", "Analyze workspace and coordinate goal"}
+
+  defp map_string(map, keys) do
+    Enum.find_value(keys, "", fn key ->
+      case Map.get(map, key) || Map.get(map, Atom.to_string(key)) do
+        value when is_binary(value) -> if(String.trim(value) == "", do: nil, else: value)
+        _ -> nil
+      end
+    end)
+  end
+
+  defp normalize_steering(value) when is_binary(value),
+    do: value |> String.trim() |> String.slice(0, 8_000)
+
+  defp normalize_steering(_value), do: ""
+
+  defp cancel_interactive_run(
+         opts,
+         %{session_id: session_id, session: session} = state
+       ) do
+    # Honor legacy `commit: true` while letting an explicit `:action` win.
+    default_action = if Keyword.get(opts, :commit, false), do: :commit, else: :rollback
+    action = Keyword.get(opts, :action, default_action)
+
+    current_session = fetch_current_session(session_id, session)
+
+    project_root = resolve_project_root(current_session, opts)
+    mutation_project_id = trusted_project_id_for_root(current_session, project_root)
+
+    # 1. Signal all workers via PubSub. A live swarm coordinator subscribes to
+    #    this topic and performs its own rollback/commit + termination, so the
+    #    server must NOT roll back again for that path (avoid double-delivery).
+    PubSub.broadcast(IexCode.PubSub, "session:#{session_id}:steer", {:cancel, session_id, opts})
+
+    # 2. Wait briefly for the running task to die on its own (it also observes
+    #    the {:cancel, ...} message), then escalate shutdown -> kill.
+    swarm_handled_cancel? =
+      case task_pid(state.current_task) do
+        nil ->
+          false
+
+        pid ->
+          if process_alive?(pid) do
+            await_task_exit(pid)
+
+            # The swarm coordinator cleans up on its own; the single-agent task
+            # does not, so the server performs the rollback/commit for it.
+            state.run_mode == :swarm
+          else
+            false
+          end
+      end
+
+    if state.task_ref, do: Process.demonitor(state.task_ref, [:flush])
+
+    # 3. Cleanly terminate all subagent OTP workers
+    AgentSupervisor.stop_all_agents(session_id)
+
+    # 4. Perform rollback or commit (only if the swarm coordinator didn't already)
+    unless swarm_handled_cancel? do
+      case action do
+        :rollback ->
+          IexCode.Tools.MultiPatch.Snapshot.claim_unscoped(project_root, session_id)
+
+          SwarmCoordinator.perform_rollback(
+            project_root,
+            %SwarmCoordinator.State{
+              session_id: session_id,
+              session: %{project_id: mutation_project_id},
+              project_root: project_root
+            }
+          )
+
+        :commit ->
+          commit_opts =
+            opts
+            |> Keyword.delete(:project_id)
+            |> maybe_put_project_id(mutation_project_id)
+
+          SwarmCoordinator.perform_commit(
+            project_root,
+            commit_opts
+          )
+
+        _ ->
+          :ok
+      end
+    end
+
+    # 5. Update DB status
+    update_db_session_status(session_id, "stopped")
+
+    # 6. Create assistant cancellation message in DB
+    try do
+      case Sessions.create_message(%{
+             session_id: session_id,
+             role: "assistant",
+             agent_name: "Swarm Coordinator",
+             content:
+               "🛑 **Session Stopped**: Execution cancelled by user with action `#{action}`."
+           }) do
+        {:ok, cancel_msg} -> broadcast(session_id, {:message_created, cancel_msg})
+        _ -> :ok
+      end
+    rescue
+      error ->
+        Logger.warning(
+          "Could not persist cancellation message for session #{session_id}: #{Exception.message(error)}"
+        )
+    end
+
+    broadcast(session_id, {:session_status_changed, "stopped"})
+    broadcast(session_id, {:session_cancelled, %{session_id: session_id, action: action}})
+
+    new_state = %{
+      state
+      | status: :stopped,
+        current_task: nil,
+        task_ref: nil,
+        run_mode: nil,
+        session: %{current_session | status: "stopped"}
+    }
+
+    {:reply, {:ok, %{status: :stopped, action: action}}, new_state}
+  end
+
+  defp finish_task_down(state, reason) do
+    status =
+      if state.status == :stopped do
+        :stopped
+      else
+        case reason do
+          :normal -> :idle
+          :noproc -> :idle
+          :shutdown -> :stopped
+          :killed -> :stopped
+          _ -> :failed
+        end
+      end
+
+    session_id = state.session_id
+    update_db_session_status(session_id, to_string(status))
+    broadcast(session_id, {:session_status_changed, to_string(status)})
+
+    if status == :failed do
+      Logger.error("Session #{session_id} run crashed: #{inspect(reason)}")
+      broadcast(session_id, {:run_failed, %{session_id: session_id, reason: inspect(reason)}})
+
+      case Sessions.create_message(%{
+             session_id: session_id,
+             role: "assistant",
+             agent_name: "Swarm Coordinator",
+             content: "❌ **Run Failed**: The session run crashed with `#{inspect(reason)}`."
+           }) do
+        {:ok, err_msg} -> broadcast(session_id, {:message_created, err_msg})
+        _ -> :ok
+      end
+    end
+
+    {:noreply, %{state | status: status, current_task: nil, task_ref: nil, run_mode: nil}}
+  end
+
+  defp pause_durable_run(
+         run_id,
+         %{session_id: session_id, session: session} = state
+       ) do
+    case dispatch_durable_control(state, :pause, [run_id]) do
+      {:ok, _run} ->
+        current_session = fetch_current_session(session_id, session)
+        update_db_session_status(session_id, "paused")
+        broadcast(session_id, {:session_status_changed, "paused"})
+
+        {:reply, {:ok, :paused},
+         %{state | status: :paused, session: %{current_session | status: "paused"}}}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  defp pause_interactive_run(%{session_id: session_id, session: session} = state) do
+    current_session = fetch_current_session(session_id, session)
+
+    update_db_session_status(session_id, "paused")
+    PubSub.broadcast(IexCode.PubSub, "session:#{session_id}:steer", {:pause, session_id})
+    broadcast(session_id, {:session_status_changed, "paused"})
+
+    {:reply, {:ok, :paused},
+     %{state | status: :paused, session: %{current_session | status: "paused"}}}
+  end
+
+  defp resume_durable_run(
+         run_id,
+         %{session_id: session_id, session: session} = state
+       ) do
+    case dispatch_durable_control(state, :resume, [run_id]) do
+      {:ok, _run} ->
+        current_session = fetch_current_session(session_id, session)
+        update_db_session_status(session_id, "running")
+        broadcast(session_id, {:session_status_changed, "running"})
+
+        {:reply, {:ok, :running},
+         %{state | status: :running, session: %{current_session | status: "running"}}}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  defp resume_interactive_run(%{session_id: session_id, session: session} = state) do
+    task_alive? =
+      case task_pid(state.current_task) do
+        nil -> false
+        pid -> process_alive?(pid)
+      end
+
+    if state.status == :paused and task_alive? do
+      current_session = fetch_current_session(session_id, session)
+
+      update_db_session_status(session_id, "running")
+      PubSub.broadcast(IexCode.PubSub, "session:#{session_id}:steer", {:resume, session_id})
+      broadcast(session_id, {:session_status_changed, "running"})
+
+      {:reply, {:ok, :running},
+       %{state | status: :running, session: %{current_session | status: "running"}}}
+    else
+      # No live task to resume - never phantom-resume into :running.
+      new_state =
+        if task_alive? do
+          state
+        else
+          update_db_session_status(session_id, "idle")
+          broadcast(session_id, {:session_status_changed, "idle"})
+          %{state | status: :idle, current_task: nil, task_ref: nil}
+        end
+
+      {:reply, {:error, :no_active_run}, new_state}
+    end
+  end
+
+  defp cancel_durable_run(
+         run_id,
+         opts,
+         %{session_id: session_id, session: session} = state
+       ) do
+    action =
+      Keyword.get(
+        opts,
+        :action,
+        if(Keyword.get(opts, :commit, false), do: :commit, else: :rollback)
+      )
+
+    if action == :rollback do
+      case dispatch_durable_control(state, :cancel, [run_id]) do
+        {:ok, _run} ->
+          current_session = fetch_current_session(session_id, session)
+          update_db_session_status(session_id, "stopped")
+          broadcast(session_id, {:session_status_changed, "stopped"})
+
+          {:reply, {:ok, %{status: :stopped, action: :rollback}},
+           %{state | status: :stopped, session: %{current_session | status: "stopped"}}}
+
+        {:error, reason} ->
+          {:reply, {:error, reason}, state}
+      end
+    else
+      # The durable dispatcher currently persists cancellation as rollback.
+      # Reject commit/no-op requests rather than reporting success for the
+      # opposite destructive action.
+      {:reply, {:error, :durable_cancel_action_unsupported}, state}
+    end
+  end
+
+  defp refresh_registered_owner(%{session_id: session_id} = state) do
+    case AgentRegistry.swarm_owner_registration(session_id) do
+      {:ok, owner, metadata} ->
+        track_registered_owner(state, owner, metadata)
+
+      {:error, {:swarm_owner_metadata_unavailable, owner, reason}} ->
+        track_unavailable_owner(state, owner, reason)
+
+      :none ->
+        state
+    end
+  end
+
+  defp route_steering(%{run_mode: {:durable_swarm, run_id}} = state, cleaned) do
+    dispatch_durable_control(state, :steer, [run_id, cleaned])
+    |> case do
+      {:ok, _run} -> {:ok, cleaned}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp route_steering(%{run_mode: {:swarm_owner_metadata_unavailable, _reason}}, _cleaned),
+    do: {:error, :swarm_owner_metadata_unavailable}
+
+  defp route_steering(%{run_mode: {:stale_durable_swarm, _run_id}}, _cleaned),
+    do: {:error, :stale_swarm_owner}
+
+  defp route_steering(%{session_id: session_id}, cleaned) do
+    PubSub.broadcast(
+      IexCode.PubSub,
+      "session:#{session_id}:steer",
+      {:steer_message, cleaned}
+    )
+
+    {:ok, cleaned}
+  end
+
+  defp dispatch_durable_control(state, operation, args) do
+    case task_pid(state.current_task) do
+      owner when is_pid(owner) -> dispatch_run_control(node(owner), operation, args)
+      _missing -> {:error, :durable_dispatch_unavailable}
+    end
+  end
+
+  defp owner_metadata_unavailable_reply(state),
+    do: {:reply, {:error, :swarm_owner_metadata_unavailable}, state}
+
+  defp stale_owner_reply(state), do: {:reply, {:error, :stale_swarm_owner}, state}
+
+  defp track_registered_owner(state, owner, metadata) when is_pid(owner) do
+    {run_mode, status} = registered_owner_projection(state, metadata)
+
+    if state.current_task == owner do
+      %{state | status: status, run_mode: run_mode}
+    else
+      if state.task_ref, do: Process.demonitor(state.task_ref, [:flush])
+
+      %{
+        state
+        | status: status,
+          current_task: owner,
+          task_ref: Process.monitor(owner),
+          run_mode: run_mode
+      }
+    end
+  end
+
+  defp track_registered_owner(state, _owner, _metadata), do: state
+
+  defp track_unavailable_owner(state, owner, reason) when is_pid(owner) do
+    same_owner? = state.current_task == owner
+    run_mode = {:swarm_owner_metadata_unavailable, reason}
+
+    if same_owner? do
+      %{state | run_mode: run_mode}
+    else
+      if state.task_ref, do: Process.demonitor(state.task_ref, [:flush])
+
+      %{
+        state
+        | status: if(state.status == :paused, do: :paused, else: :running),
+          current_task: owner,
+          task_ref: Process.monitor(owner),
+          run_mode: run_mode
+      }
+    end
+  end
+
+  defp track_unavailable_owner(state, _owner, _reason), do: state
+
+  defp registered_owner_projection(
+         state,
+         %{
+           run_id: run_id,
+           run_attempt: attempt,
+           lease_generation: generation,
+           lease_owner: lease_owner
+         }
+       )
+       when is_binary(run_id) and is_integer(attempt) and is_integer(generation) and
+              is_binary(lease_owner) do
+    case IexCode.Runs.get_run(run_id) do
+      %{attempt: ^attempt, lease_generation: ^generation, status: status}
+      when status in ["cancelled", "interrupted"] ->
+        {{:stale_durable_swarm, run_id}, :stopped}
+
+      %{attempt: ^attempt, lease_generation: ^generation, status: "failed"} ->
+        {{:stale_durable_swarm, run_id}, :failed}
+
+      %{attempt: ^attempt, lease_generation: ^generation, status: "completed"} ->
+        {{:stale_durable_swarm, run_id}, :idle}
+
+      %{
+        attempt: ^attempt,
+        lease_generation: ^generation,
+        lease_owner: ^lease_owner,
+        lease_expires_at: %DateTime{} = lease_expires_at,
+        status: status
+      } ->
+        live_lease? = DateTime.compare(lease_expires_at, DateTime.utc_now()) == :gt
+
+        cond do
+          live_lease? and status == "paused" ->
+            {{:durable_swarm, run_id}, :paused}
+
+          live_lease? and status == "running" ->
+            {{:durable_swarm, run_id}, :running}
+
+          true ->
+            {{:stale_durable_swarm, run_id}, state.status}
+        end
+
+      _stale_or_missing ->
+        {{:stale_durable_swarm, run_id}, state.status}
+    end
+  rescue
+    error ->
+      {{:swarm_owner_metadata_unavailable, {:run_lookup_failed, Exception.message(error)}},
+       state.status}
+  end
+
+  defp registered_owner_projection(state, _metadata),
+    do: {:swarm, if(state.status == :paused, do: :paused, else: :running)}
+
   # Accepts a raw pid or a %Task{} struct (Task.Supervisor.async_nolink returns
   # a %Task{}; start_child returns a pid).
   defp task_pid(pid) when is_pid(pid), do: pid
   defp task_pid(%Task{pid: pid}) when is_pid(pid), do: pid
   defp task_pid(_), do: nil
+
+  defp process_alive?(pid) when is_pid(pid) and node(pid) == node(), do: Process.alive?(pid)
+
+  defp process_alive?(pid) when is_pid(pid) do
+    :erpc.call(node(pid), Process, :alive?, [pid], 1_000)
+  rescue
+    _ -> false
+  catch
+    _, _ -> false
+  end
 
   # Waits for a task to exit on its own (it may be handling a cancel message),
   # then escalates shutdown -> kill. Always returns once the process is down.

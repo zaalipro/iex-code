@@ -267,11 +267,31 @@ defmodule IexCode.Tools.TerminalServer do
 
         {:error, reason} ->
           Task.shutdown(collector_task, :brutal_kill)
+
+          emit_command_completed(
+            session_id,
+            command,
+            agent_name,
+            op_id,
+            start_monotonic,
+            :error
+          )
+
           {:error, reason}
       end
     rescue
       e ->
         Task.shutdown(collector_task, :brutal_kill)
+
+        emit_command_completed(
+          session_id,
+          command,
+          agent_name,
+          op_id,
+          start_monotonic,
+          :error
+        )
+
         {:error, e}
     catch
       :exit, {:timeout, _} ->
@@ -299,8 +319,46 @@ defmodule IexCode.Tools.TerminalServer do
 
       :exit, reason ->
         Task.shutdown(collector_task, :brutal_kill)
+
+        emit_command_completed(
+          session_id,
+          command,
+          agent_name,
+          op_id,
+          start_monotonic,
+          :error
+        )
+
         {:error, {:exit, reason}}
     end
+  end
+
+  defp emit_command_completed(
+         session_id,
+         command,
+         agent_name,
+         op_id,
+         start_monotonic,
+         status
+       ) do
+    :telemetry.execute(
+      [:iex_code, :terminal, :command_completed],
+      %{
+        duration_ms: max(System.monotonic_time(:millisecond) - start_monotonic, 0),
+        exit_code: -1,
+        system_time: System.system_time()
+      },
+      %{
+        session_id: session_id,
+        command: command,
+        agent_name: agent_name,
+        op_id: op_id,
+        exit_code: -1,
+        status: status
+      }
+    )
+
+    :ok
   end
 
   defp collect_agent_output(session_id, token, acc, start_time, timeout_ms) do

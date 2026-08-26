@@ -1,6 +1,8 @@
 defmodule IexCode.Research.ResultsTest do
   use IexCode.DataCase, async: false
 
+  import Ecto.Query
+
   alias IexCode.Research.{DagAdapter, DagFinalizer, ResearchResult, Results, ResultStore, Runner}
   alias IexCode.{Projects, Repo, Runs, Sessions}
 
@@ -102,6 +104,93 @@ defmodule IexCode.Research.ResultsTest do
 
     assert {:error, :research_object_collision} =
              Results.commit(ready, markdown <> " changed", root: root)
+  end
+
+  test "authority loss after object writes cannot poison public paths for a retry", context do
+    run = create_research_run(context, "Recover fenced publication", "medium")
+    root = Path.join(context.app_dir, "research-fenced-publish")
+
+    assert {:ok, claimed} = Runs.claim_next_run("stale-result-worker", lease_ms: 30_000)
+    assert claimed.id == run.id
+
+    stale_authority = [
+      lease_owner: "stale-result-worker",
+      run_attempt: claimed.attempt,
+      lease_generation: claimed.lease_generation
+    ]
+
+    assert {:ok, running_result} = Results.prepare_run_worker(claimed, stale_authority)
+
+    expire_authority = fn ->
+      expired = DateTime.add(DateTime.utc_now(), -1, :second) |> DateTime.truncate(:second)
+
+      Repo.update_all(from(current in Runs.Run, where: current.id == ^claimed.id),
+        set: [lease_expires_at: expired]
+      )
+
+      :ok
+    end
+
+    assert {:error, :lease_not_owned} =
+             Results.commit_worker(
+               running_result,
+               "# Stale report\n\nThis must never claim the public path.",
+               [root: root, before_ready: expire_authority],
+               stale_authority
+             )
+
+    refute File.exists?(Path.join(root, "#{running_result.id}/result.md"))
+    refute File.exists?(Path.join(root, "#{running_result.id}/report.html"))
+    assert Path.wildcard(Path.join(root, ".objects/sha256/*/*")) != []
+
+    assert [%{id: run_id, status: "interrupted"}] = Runs.reconcile_orphaned_runs()
+    assert run_id == claimed.id
+    assert {:ok, retried} = Runs.retry_run(claimed)
+    assert {:ok, reclaimed} = Runs.claim_next_run("retry-result-worker", lease_ms: 30_000)
+    assert reclaimed.id == retried.id
+
+    retry_authority = [
+      lease_owner: "retry-result-worker",
+      run_attempt: reclaimed.attempt,
+      lease_generation: reclaimed.lease_generation
+    ]
+
+    assert {:ok, retry_result} = Results.prepare_run_worker(reclaimed, retry_authority)
+    replacement = "# Replacement report\n\nPublished by the current worker."
+
+    assert {:ok, ready} =
+             Results.commit_worker(retry_result, replacement, [root: root], retry_authority)
+
+    assert ready.status == "ready"
+    assert File.read!(Path.join(root, ready.result_path)) == replacement
+    assert File.read!(Path.join(root, ready.html_path)) =~ "Replacement report"
+
+    File.rm!(Path.join(root, ready.result_path))
+    refute File.exists?(Path.join(root, ready.result_path))
+    assert {:ok, ^replacement} = Results.read_markdown(ready, root: root)
+    assert File.read!(Path.join(root, ready.result_path)) == replacement
+  end
+
+  test "fixed-path publication failure cannot undo an accepted object", context do
+    run = create_research_run(context, "Recover accepted object publication", "low")
+    result = Results.get_by_run(run)
+    {:ok, running} = Results.mark_running(result)
+    root = Path.join(context.app_dir, "research-accepted-object")
+    result_path = Path.join(root, "#{result.id}/result.md")
+
+    File.mkdir_p!(Path.dirname(result_path))
+    File.write!(result_path, "stale fixed-path content", [:exclusive])
+
+    markdown = "# Accepted report\n\nThe digest is authoritative."
+    assert {:ok, ready} = Results.commit(running, markdown, root: root)
+    assert ready.status == "ready"
+    assert File.read!(result_path) == "stale fixed-path content"
+
+    assert {:error, :research_result_integrity_error} =
+             Results.read_markdown(ready, root: root)
+
+    assert {:ok, html} = Results.read_html(ready, root: root)
+    assert html =~ "Accepted report"
   end
 
   test "verifies checksums on every read and bounds chat attachments", context do

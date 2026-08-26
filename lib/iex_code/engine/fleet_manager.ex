@@ -10,6 +10,12 @@ defmodule IexCode.Engine.FleetManager do
   @roles ~w(planner explorer coder verifier)a
   @lease_ms 30_000
   @heartbeat_ms 10_000
+  @control_replay_batch_size 64
+  # A replacement fleet supervisor receives a new secret and cannot take over
+  # rows until the prior 30-second lease expires. Keep the bounded retry window
+  # beyond that lease horizon so recovery cannot stop just before takeover is
+  # legal.
+  @rehydrate_retry_limit 6
 
   def start_link(opts) do
     run = Keyword.fetch!(opts, :run)
@@ -21,6 +27,21 @@ defmodule IexCode.Engine.FleetManager do
   end
 
   def list_agents(run_id), do: GenServer.call(AgentRegistry.via_fleet(run_id, :manager), :list)
+
+  @doc false
+  def matches_parent_lineage?(run_id, run) do
+    GenServer.call(
+      AgentRegistry.via_fleet(run_id, :manager),
+      {:matches_parent_lineage, run.attempt, run.lease_generation, run.lease_owner}
+    )
+  catch
+    :exit, _reason -> false
+  end
+
+  @doc false
+  def rehydration_errors(run_id) do
+    GenServer.call(AgentRegistry.via_fleet(run_id, :manager), :rehydration_errors)
+  end
 
   def agent_pid(run_id, agent_id) do
     GenServer.call(AgentRegistry.via_fleet(run_id, :manager), {:agent_pid, agent_id})
@@ -100,9 +121,24 @@ defmodule IexCode.Engine.FleetManager do
     )
   end
 
-  def stop(run_id, status \\ "interrupted") do
-    GenServer.call(AgentRegistry.via_fleet(run_id, :manager), {:stop, status}, 30_000)
+  def stop(run_id, status, opts) when is_binary(run_id) and is_list(opts) do
+    case GenServer.call(
+           AgentRegistry.via_fleet(run_id, :manager),
+           {:stop, status, requested_parent_authority(opts)},
+           30_000
+         ) do
+      :ok ->
+        teardown_fleet(run_id)
+        :ok
+
+      {:error, _reason} = error ->
+        error
+    end
   end
+
+  def stop(_run_id, _status, _opts), do: {:error, :invalid_parent_authority}
+
+  def stop(_run_id, _status \\ "interrupted"), do: {:error, :parent_authority_required}
 
   @impl true
   def init(opts) do
@@ -115,6 +151,11 @@ defmodule IexCode.Engine.FleetManager do
 
     state = %{
       run: run,
+      parent_authority: %{
+        lease_owner: run.lease_owner,
+        run_attempt: run.attempt,
+        lease_generation: run.lease_generation
+      },
       session: opts[:session],
       project_root: opts[:project_root],
       allowed_tools: Keyword.get(opts, :allowed_tools, :all),
@@ -122,6 +163,10 @@ defmodule IexCode.Engine.FleetManager do
       supervisor: AgentRegistry.via_fleet(run.id, :agent_supervisor),
       agents: %{},
       budget_callers: %{},
+      control_replay_scheduled?: false,
+      control_replay_cursor: nil,
+      rehydrate_errors: [],
+      rehydrate_attempt: 0,
       activation_opts: opts
     }
 
@@ -130,41 +175,70 @@ defmodule IexCode.Engine.FleetManager do
 
   @impl true
   def handle_continue(:rehydrate, state) do
-    rows = Runs.list_run_agents(state.run.id)
+    case require_parent_run_status(state, ["running", "paused"]) do
+      {:ok, state} -> rehydrate(state)
+      {:error, _reason} -> {:noreply, deactivate_stale_fleet(state)}
+    end
+  end
 
-    agents =
-      Enum.reduce(rows, state.agents, fn row, agents ->
+  defp rehydrate(state) do
+    _ = Runs.reconcile_terminal_run_agent_controls(run_id: state.run.id)
+
+    rows =
+      state.run.id
+      |> Runs.list_run_agents()
+      |> Enum.filter(&rehydratable?/1)
+
+    {agents, errors} =
+      Enum.reduce(rows, {state.agents, []}, fn row, {agents, errors} ->
         case ensure_agent(state, agents, row, state.activation_opts) do
-          {:ok, _entry, updated} -> updated
-          {:error, _reason} -> agents
+          {:ok, _entry, updated} ->
+            {updated, errors}
+
+          {:error, reason} ->
+            report_rehydrate_error(state.run.id, row, reason)
+            {agents, [{row.id, reason} | errors]}
         end
       end)
 
-    state = %{state | agents: agents}
-    send(self(), :replay_controls)
+    state =
+      state
+      |> Map.put(:agents, agents)
+      |> Map.put(:rehydrate_errors, Enum.reverse(errors))
+      |> schedule_control_replay()
+
+    if errors != [], do: Process.send_after(self(), :retry_rehydrate, 1_000)
+
     {:noreply, state}
   end
 
   @impl true
   def handle_call({:activate, rows, opts}, _from, state) do
-    case validate_rows(state.run.id, rows) do
-      :ok ->
-        {agents, result} =
-          Enum.reduce_while(rows, {state.agents, []}, fn row, {agents, result} ->
-            case ensure_agent(state, agents, row, opts) do
-              {:ok, entry, updated} -> {:cont, {updated, [public_entry(entry) | result]}}
-              {:error, reason} -> {:halt, {agents, {:error, reason}}}
-            end
-          end)
+    with {:ok, state} <- require_parent_run_status(state, ["running", "paused"]),
+         :ok <- validate_rows(state.run.id, rows) do
+      {agents, result} =
+        Enum.reduce_while(rows, {state.agents, []}, fn row, {agents, result} ->
+          case ensure_agent(state, agents, row, opts) do
+            {:ok, entry, updated} -> {:cont, {updated, [public_entry(entry) | result]}}
+            {:error, reason} -> {:halt, {agents, {:error, reason}}}
+          end
+        end)
 
-        case result do
-          {:error, _} = error -> {:reply, error, %{state | agents: agents}}
-          entries -> {:reply, {:ok, Enum.reverse(entries)}, %{state | agents: agents}}
-        end
-
-      {:error, _} = error ->
-        {:reply, error, state}
+      case result do
+        {:error, _} = error -> {:reply, error, %{state | agents: agents}}
+        entries -> {:reply, {:ok, Enum.reverse(entries)}, %{state | agents: agents}}
+      end
+    else
+      {:error, _} = error -> {:reply, error, state}
     end
+  end
+
+  def handle_call({:matches_parent_lineage, attempt, generation, owner}, _from, state) do
+    authority = state.parent_authority
+
+    {:reply,
+     authority.run_attempt == attempt and authority.lease_generation == generation and
+       authority.lease_owner == owner, state}
   end
 
   def handle_call(:list, _from, state) do
@@ -175,6 +249,10 @@ defmodule IexCode.Engine.FleetManager do
       |> Enum.map(&public_entry/1)
 
     {:reply, entries, state}
+  end
+
+  def handle_call(:rehydration_errors, _from, state) do
+    {:reply, state.rehydrate_errors, state}
   end
 
   def handle_call({:agent_pid, agent_id}, _from, state) do
@@ -189,107 +267,127 @@ defmodule IexCode.Engine.FleetManager do
 
   def handle_call({:current_agent, agent_id}, _from, state) do
     {reply, state} =
-      case Map.get(state.agents, agent_id) do
-        %{pid: pid} = entry when is_pid(pid) ->
-          with true <- Process.alive?(pid),
-               %RunAgent{lease_generation: generation, status: status} = row <-
-                 Runs.get_run_agent(state.run.id, agent_id),
-               true <- generation == entry.generation,
-               true <- status in RunAgent.leased_statuses(),
-               {:ok, row} <- Runs.assert_run_agent_lease(row, lease_owner(), generation) do
-            refreshed = %{entry | row: row, status: String.to_existing_atom(status)}
-            {{:ok, public_entry(refreshed)}, put_in(state.agents[agent_id], refreshed)}
-          else
-            _ -> {{:error, :agent_not_active}, state}
-          end
+      with {:ok, state} <- require_parent_run_status(state, ["running", "paused"]) do
+        case Map.get(state.agents, agent_id) do
+          %{pid: pid} = entry when is_pid(pid) ->
+            with true <- Process.alive?(pid),
+                 %RunAgent{lease_generation: generation, status: status} = row <-
+                   Runs.get_run_agent(state.run.id, agent_id),
+                 true <- generation == entry.generation,
+                 true <- status in RunAgent.leased_statuses(),
+                 {:ok, row} <- Runs.assert_run_agent_lease(row, lease_owner(), generation) do
+              refreshed = %{entry | row: row, status: String.to_existing_atom(status)}
+              {{:ok, public_entry(refreshed)}, put_in(state.agents[agent_id], refreshed)}
+            else
+              _ -> {{:error, :agent_not_active}, state}
+            end
 
-        nil ->
-          {{:error, :agent_not_found}, state}
+          nil ->
+            {{:error, :agent_not_found}, state}
 
-        _entry ->
-          {{:error, :agent_not_active}, state}
+          _entry ->
+            {{:error, :agent_not_active}, state}
+        end
+      else
+        {:error, reason} -> {{:error, reason}, state}
       end
 
     {:reply, reply, state}
   end
 
   def handle_call({:drain_steering, agent_id}, _from, state) do
-    case Map.get(state.agents, agent_id) do
-      nil ->
-        {:reply, [], state}
+    with {:ok, state} <- require_parent_run_status(state, ["running", "paused"]) do
+      case Map.get(state.agents, agent_id) do
+        nil ->
+          {:reply, [], state}
 
-      entry ->
-        case Runs.consume_run_agent_steering_controls(
-               entry.row,
-               lease_owner(),
-               entry.generation
-             ) do
-          {:ok, directives} -> {:reply, Enum.map(directives, & &1["guidance"]), state}
-          {:error, _reason} -> {:reply, [], state}
-        end
+        entry ->
+          case Runs.consume_run_agent_steering_controls(
+                 entry.row,
+                 lease_owner(),
+                 entry.generation
+               ) do
+            {:ok, directives} -> {:reply, Enum.map(directives, & &1["guidance"]), state}
+            {:error, _reason} -> {:reply, [], state}
+          end
+      end
+    else
+      {:error, _reason} -> {:reply, [], state}
     end
   end
 
   def handle_call({:control, agent_id, action, payload}, _from, state) do
-    case Map.fetch(state.agents, agent_id) do
-      :error ->
-        {:reply, {:error, :agent_not_found}, state}
+    with {:ok, state} <- require_parent_run_status(state, ["running", "paused"]) do
+      case Map.fetch(state.agents, agent_id) do
+        :error ->
+          {:reply, {:error, :agent_not_found}, state}
 
-      {:ok, entry} ->
-        case Runs.get_run_agent(entry.agent_id) do
-          %RunAgent{lease_generation: generation} = row when generation == entry.generation ->
-            fresh = %{entry | row: row, status: String.to_existing_atom(row.status)}
-            apply_control(put_in(state.agents[agent_id], fresh), fresh, action, payload)
+        {:ok, entry} ->
+          case Runs.get_run_agent(entry.agent_id) do
+            %RunAgent{lease_generation: generation} = row when generation == entry.generation ->
+              fresh = %{entry | row: row, status: String.to_existing_atom(row.status)}
+              apply_control(put_in(state.agents[agent_id], fresh), fresh, action, payload)
 
-          _ ->
-            {:reply, {:error, :lease_lost}, state}
-        end
+            _ ->
+              {:reply, {:error, :lease_lost}, state}
+          end
+      end
+    else
+      {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
 
   def handle_call({:control_all, action, payload}, _from, state) do
-    {results, updated_state} =
-      Enum.reduce(state.agents, {[], state}, fn {agent_id, entry}, {results, acc} ->
-        fresh = Map.get(acc.agents, agent_id, entry)
+    with {:ok, state} <- require_parent_run_status(state, ["running", "paused"]) do
+      {results, updated_state} =
+        Enum.reduce(state.agents, {[], state}, fn {agent_id, entry}, {results, acc} ->
+          fresh = Map.get(acc.agents, agent_id, entry)
 
-        case apply_control_result(acc, fresh, action, payload) do
-          {:ok, result, updated} -> {[{agent_id, result} | results], updated}
-          {:error, reason, updated} -> {[{agent_id, {:error, reason}} | results], updated}
-        end
-      end)
+          case apply_control_result(acc, fresh, action, payload) do
+            {:ok, result, updated} -> {[{agent_id, result} | results], updated}
+            {:error, reason, updated} -> {[{agent_id, {:error, reason}} | results], updated}
+          end
+        end)
 
-    {:reply, {:ok, Enum.reverse(results)}, updated_state}
+      {:reply, {:ok, Enum.reverse(results)}, updated_state}
+    else
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
   end
 
   def handle_call({:apply_durable_control, control_id}, _from, state) do
-    case Runs.get_run_agent_control(control_id) do
-      %{run_id: run_id, run_agent_id: agent_id} = control when run_id == state.run.id ->
-        case Map.get(state.agents, agent_id) do
-          nil ->
-            {:reply, {:error, :agent_not_active}, state}
+    with {:ok, state} <- require_parent_run_status(state, ["running", "paused"]) do
+      case Runs.get_run_agent_control(control_id) do
+        %{run_id: run_id, run_agent_id: agent_id} = control when run_id == state.run.id ->
+          case Map.get(state.agents, agent_id) do
+            nil ->
+              {:reply, {:error, :agent_not_active}, state}
 
-          entry ->
-            case Runs.get_run_agent(state.run.id, agent_id) do
-              %RunAgent{} = row ->
-                fresh = %{
-                  entry
-                  | row: row,
-                    generation: row.lease_generation,
-                    status: String.to_existing_atom(row.status)
-                }
+            entry ->
+              case Runs.get_run_agent(state.run.id, agent_id) do
+                %RunAgent{} = row ->
+                  fresh = %{
+                    entry
+                    | row: row,
+                      generation: row.lease_generation,
+                      status: String.to_existing_atom(row.status)
+                  }
 
-                apply_control_queue(put_in(state.agents[agent_id], fresh), fresh, control)
+                  apply_control_queue(put_in(state.agents[agent_id], fresh), fresh, control)
 
-              nil ->
-                {:reply, {:error, :agent_not_found}, state}
-            end
-        end
+                nil ->
+                  {:reply, {:error, :agent_not_found}, state}
+              end
+          end
 
-      nil ->
-        {:reply, {:error, :control_not_found}, state}
+        nil ->
+          {:reply, {:error, :control_not_found}, state}
 
-      _foreign ->
-        {:reply, {:error, :agent_scope_mismatch}, state}
+        _foreign ->
+          {:reply, {:error, :agent_scope_mismatch}, state}
+      end
+    else
+      {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
 
@@ -364,7 +462,8 @@ defmodule IexCode.Engine.FleetManager do
          {:ok, row} <-
            Runs.record_run_agent_usage(entry.row, usage, source,
              lease_owner: lease_owner(),
-             lease_generation: generation
+             lease_generation: generation,
+             terminal_lease_ms: @lease_ms
            ) do
       {:reply, :ok, put_in(state.agents[agent_id], %{entry | row: row})}
     else
@@ -389,18 +488,43 @@ defmodule IexCode.Engine.FleetManager do
     end
   end
 
-  def handle_call({:stop, status}, _from, state)
+  def handle_call({:stop, status, requested_authority}, _from, state)
       when status in ["completed", "failed", "cancelled", "interrupted"] do
-    agents =
-      Enum.reduce(state.agents, state.agents, fn {_id, entry}, agents ->
-        FleetControlToken.cancel(entry.token)
-        demonitor_entry(entry)
-        _ = AgentSupervisor.stop_run_agent(state.supervisor, state.run.id, entry.agent_id)
-        _ = release(entry, state, status, %{error_message: terminal_error(status)})
-        Map.delete(agents, entry.agent_id)
-      end)
+    if requested_authority != state.parent_authority do
+      {:reply, {:error, :parent_lease_lost}, state}
+    else
+      entries = Map.values(state.agents)
 
-    {:reply, :ok, %{state | agents: agents}}
+      result =
+        Runs.terminalize_run_agents(
+          state.run,
+          status,
+          %{error_message: terminal_error(status)},
+          terminalization_authority_opts(state)
+        )
+
+      case result do
+        {:ok, _rows} ->
+          Enum.each(entries, &FleetControlToken.cancel(&1.token))
+          Enum.each(entries, &demonitor_entry/1)
+          launch_agent_shutdown(state.run.id, entries)
+
+          {:reply, :ok,
+           %{
+             state
+             | agents: %{},
+               control_replay_cursor: nil,
+               control_replay_scheduled?: false
+           }}
+
+        {:error, reason} ->
+          Logger.error(
+            "Run #{state.run.id} fleet shutdown could not terminalize agents: #{inspect(reason)}"
+          )
+
+          {:reply, {:error, {:fleet_terminalization_failed, reason}}, state}
+      end
+    end
   end
 
   defp terminal_error("completed"), do: nil
@@ -408,36 +532,34 @@ defmodule IexCode.Engine.FleetManager do
 
   @impl true
   def handle_info(:heartbeat, state) do
-    agents =
-      Map.new(state.agents, fn {id, entry} ->
-        updated =
-          case Runs.heartbeat_run_agent(
-                 entry.row,
-                 lease_owner(),
-                 entry.generation,
-                 @lease_ms,
-                 %{}
-               ) do
-            {:ok, row} ->
-              %{entry | row: row}
-
-            {:error, reason} ->
-              FleetControlToken.cancel(entry.token)
-              demonitor_entry(entry)
-              _ = AgentSupervisor.stop_run_agent(state.supervisor, state.run.id, entry.agent_id)
-              %{entry | pid: nil, ref: nil, status: :interrupted, error: inspect(reason)}
-          end
-
-        {id, updated}
-      end)
-
-    Process.send_after(self(), :heartbeat, @heartbeat_ms)
-    send(self(), :replay_controls)
-    {:noreply, %{state | agents: agents}}
+    case require_parent_run_status(state, ["running", "paused"]) do
+      {:ok, state} -> heartbeat_agents(state)
+      {:error, _reason} -> {:noreply, deactivate_stale_fleet(state)}
+    end
   end
 
   def handle_info(:replay_controls, state) do
-    {:noreply, replay_controls(state, 64)}
+    state = %{state | control_replay_scheduled?: false}
+
+    case require_parent_run_status(state, ["running", "paused"]) do
+      {:ok, state} ->
+        case replay_controls(state, @control_replay_batch_size) do
+          {updated, :more} -> {:noreply, schedule_control_replay(updated)}
+          {updated, _status} -> {:noreply, updated}
+        end
+
+      {:error, _reason} ->
+        {:noreply, deactivate_stale_fleet(state)}
+    end
+  end
+
+  def handle_info(:retry_rehydrate, %{rehydrate_errors: []} = state), do: {:noreply, state}
+
+  def handle_info(:retry_rehydrate, state) do
+    case require_parent_run_status(state, ["running", "paused"]) do
+      {:ok, state} -> retry_rehydrate(state)
+      {:error, _reason} -> {:noreply, deactivate_stale_fleet(state)}
+    end
   end
 
   def handle_info({:terminate_budget_children, entries}, state) when is_list(entries) do
@@ -488,34 +610,226 @@ defmodule IexCode.Engine.FleetManager do
 
   def handle_info(_message, state), do: {:noreply, state}
 
-  defp replay_controls(state, 0), do: state
+  defp heartbeat_agents(state) do
+    agents =
+      Map.new(state.agents, fn {id, entry} ->
+        updated =
+          if heartbeat_eligible?(entry) do
+            case Runs.heartbeat_run_agent(
+                   entry.row,
+                   lease_owner(),
+                   entry.generation,
+                   @lease_ms,
+                   %{}
+                 ) do
+              {:ok, row} ->
+                %{entry | row: row}
 
-  defp replay_controls(state, remaining) do
-    candidate =
-      state.agents
-      |> Enum.sort_by(fn {_id, entry} -> entry.position end)
-      |> Enum.find_value(fn {_id, entry} ->
-        control =
-          entry.agent_id
-          |> Runs.list_run_agent_controls()
-          |> Enum.find(&(&1.status in ["pending", "claimed"]))
+              {:error, reason} ->
+                FleetControlToken.cancel(entry.token)
+                demonitor_entry(entry)
+                _ = AgentSupervisor.stop_run_agent(state.supervisor, state.run.id, entry.agent_id)
+                %{entry | pid: nil, ref: nil, status: :interrupted, error: inspect(reason)}
+            end
+          else
+            entry
+          end
 
-        cond do
-          is_nil(control) -> nil
-          control.kind == "restart" and control.status == "claimed" -> nil
-          true -> {entry, control}
+        {id, updated}
+      end)
+
+    Process.send_after(self(), :heartbeat, @heartbeat_ms)
+    {:noreply, state |> Map.put(:agents, agents) |> schedule_control_replay()}
+  end
+
+  defp retry_rehydrate(state) do
+    _ = Runs.reconcile_orphaned_run_agents(run_id: state.run.id)
+    failed_ids = MapSet.new(Enum.map(state.rehydrate_errors, &elem(&1, 0)))
+
+    rows =
+      state.run.id
+      |> Runs.list_run_agents()
+      |> Enum.filter(&(MapSet.member?(failed_ids, &1.id) and rehydratable?(&1)))
+
+    {agents, errors} =
+      Enum.reduce(rows, {state.agents, []}, fn row, {agents, errors} ->
+        case ensure_agent(state, agents, row, state.activation_opts) do
+          {:ok, _entry, updated} ->
+            {updated, errors}
+
+          {:error, reason} ->
+            report_rehydrate_error(state.run.id, row, reason)
+            {agents, [{row.id, reason} | errors]}
         end
       end)
 
-    case candidate do
-      nil ->
-        state
+    attempt = state.rehydrate_attempt + 1
 
-      {entry, control} ->
-        case apply_control_queue(state, entry, control) do
-          {:reply, _result, updated} -> replay_controls(updated, remaining - 1)
-        end
+    if errors != [] and attempt < @rehydrate_retry_limit do
+      Process.send_after(self(), :retry_rehydrate, min(1_000 * Integer.pow(2, attempt), 10_000))
     end
+
+    updated = %{
+      state
+      | agents: agents,
+        rehydrate_errors: Enum.reverse(errors),
+        rehydrate_attempt: attempt
+    }
+
+    {:noreply, schedule_control_replay(updated)}
+  end
+
+  defp replay_controls(state, limit) do
+    candidates = replay_control_candidates(state, limit)
+
+    {updated, result} =
+      Enum.reduce_while(candidates, {state, :done}, fn {entry, control}, {current, _status} ->
+        fresh_entry = Map.get(current.agents, entry.agent_id, entry)
+
+        case apply_control_queue(current, fresh_entry, control) do
+          {:reply, {:ok, _result}, next} ->
+            next = %{next | control_replay_cursor: entry.agent_id}
+            {:cont, {next, :done}}
+
+          {:reply, {:error, reason}, next} ->
+            case Runs.get_run_agent_control(control.id) do
+              %{status: status} when status in ["applied", "rejected", "superseded"] ->
+                # The effect can fail while its durable control is successfully
+                # rejected. That is forward progress, so do not starve later
+                # agents until the next heartbeat.
+                next = %{next | control_replay_cursor: entry.agent_id}
+                {:cont, {next, :done}}
+
+              _open_or_missing ->
+                Logger.warning(
+                  "Run #{state.run.id} control replay paused at agent #{entry.agent_id}: #{inspect(reason)}"
+                )
+
+                {:halt, {next, :blocked}}
+            end
+        end
+      end)
+
+    cond do
+      result == :blocked -> {updated, :blocked}
+      length(candidates) == limit -> {updated, :more}
+      true -> {updated, :done}
+    end
+  end
+
+  defp replay_control_candidates(state, limit) do
+    queues =
+      Enum.map(replay_agent_order(state), fn {_id, entry} ->
+        controls =
+          ["pending", "claimed"]
+          |> Enum.flat_map(&Runs.list_run_agent_controls(entry.agent_id, status: &1, limit: 200))
+          |> Enum.reject(&(&1.kind == "restart" and &1.status == "claimed"))
+          |> Enum.sort_by(&{&1.sequence, &1.id})
+
+        {entry, controls}
+      end)
+
+    max_depth =
+      queues |> Enum.map(fn {_entry, controls} -> length(controls) end) |> Enum.max(fn -> 0 end)
+
+    if max_depth == 0 do
+      []
+    else
+      0..(max_depth - 1)
+      |> Enum.flat_map(fn index ->
+        Enum.flat_map(queues, fn {entry, controls} ->
+          case Enum.at(controls, index) do
+            nil -> []
+            control -> [{entry, control}]
+          end
+        end)
+      end)
+      |> Enum.take(limit)
+    end
+  end
+
+  defp replay_agent_order(state) do
+    entries = Enum.sort_by(state.agents, fn {_id, entry} -> {entry.position, entry.key} end)
+
+    case Enum.split_while(entries, fn {_id, entry} ->
+           entry.agent_id != state.control_replay_cursor
+         end) do
+      {before, [cursor | after_cursor]} -> after_cursor ++ before ++ [cursor]
+      {_before, []} -> entries
+    end
+  end
+
+  defp schedule_control_replay(%{control_replay_scheduled?: true} = state), do: state
+
+  defp schedule_control_replay(state) do
+    send(self(), :replay_controls)
+    %{state | control_replay_scheduled?: true}
+  end
+
+  defp heartbeat_eligible?(%{pid: pid, row: %RunAgent{status: status}})
+       when is_pid(pid) and status in ["starting", "idle", "running", "paused", "stopping"] do
+    Process.alive?(pid)
+  end
+
+  defp heartbeat_eligible?(_entry), do: false
+
+  defp rehydratable?(%RunAgent{status: status, desired_state: desired_state}) do
+    desired_state != "stopped" and
+      status in ["pending", "interrupted" | RunAgent.leased_statuses()]
+  end
+
+  defp report_rehydrate_error(run_id, row, reason) do
+    Logger.error(
+      "Run #{run_id} could not rehydrate fleet agent #{row.id} (#{row.key}): #{inspect(reason)}"
+    )
+
+    :telemetry.execute(
+      [:iex_code, :fleet, :rehydrate_error],
+      %{count: 1},
+      %{run_id: run_id, agent_id: row.id, agent_key: row.key, reason: reason}
+    )
+  end
+
+  defp launch_agent_shutdown(run_id, entries) do
+    pids = entries |> Enum.map(& &1.pid) |> Enum.filter(&is_pid/1)
+
+    result =
+      try do
+        Task.Supervisor.start_child(IexCode.TaskSupervisor, fn ->
+          AgentSupervisor.stop_run_pids(pids)
+        end)
+      catch
+        :exit, reason -> {:error, reason}
+      end
+
+    case result do
+      {:ok, _pid} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "Run #{run_id} could not start supervised fleet cleanup: #{inspect(reason)}"
+        )
+
+        Enum.each(pids, fn pid ->
+          if Process.alive?(pid), do: Process.exit(pid, :shutdown)
+        end)
+    end
+  end
+
+  defp teardown_fleet(run_id) do
+    IexCode.Engine.FleetSupervisor.stop(run_id)
+  rescue
+    error ->
+      Logger.warning(
+        "Run #{run_id} fleet supervisor teardown failed: #{Exception.message(error)}"
+      )
+
+      :ok
+  catch
+    kind, reason ->
+      Logger.warning("Run #{run_id} fleet supervisor teardown failed: #{inspect({kind, reason})}")
+      :ok
   end
 
   defp ensure_agent(state, agents, %RunAgent{} = row, opts) do
@@ -530,9 +844,45 @@ defmodule IexCode.Engine.FleetManager do
     end
   end
 
+  defp start_agent(state, agents, %RunAgent{status: "interrupted"} = row, opts) do
+    case pending_restart_control(row) do
+      nil -> claim_and_start_agent(state, agents, row, opts)
+      control -> recover_restart_control(state, agents, row, control, opts)
+    end
+  end
+
   defp start_agent(state, agents, %RunAgent{} = row, opts) do
+    claim_and_start_agent(state, agents, row, opts)
+  end
+
+  defp claim_and_start_agent(state, agents, row, opts) do
     with {:ok, claimed} <- claim_if_needed(row, lease_owner()) do
       start_claimed_agent(state, agents, claimed, opts)
+    end
+  end
+
+  defp recover_restart_control(state, agents, row, _control, opts) do
+    with {:ok, {claimed_agent, claimed_control}} <-
+           Runs.claim_restart_run_agent_control(row, lease_owner(), @lease_ms),
+         {:ok, restarted, agents} <-
+           start_claimed_agent(state, Map.delete(agents, row.id), claimed_agent, opts) do
+      resolve_started_restart(state, restarted, agents, claimed_control)
+    end
+  end
+
+  defp pending_restart_control(row) do
+    active =
+      row.id
+      |> Runs.list_run_agent_controls()
+      |> Enum.find(&(&1.status in ["pending", "claimed"]))
+
+    case active do
+      %{status: "pending", kind: "restart", target_generation: generation} = control
+      when generation == row.lease_generation ->
+        control
+
+      _other ->
+        nil
     end
   end
 
@@ -798,18 +1148,45 @@ defmodule IexCode.Engine.FleetManager do
              Map.delete(state.agents, entry.agent_id),
              claimed_agent,
              []
-           ),
-         {:ok, _resolved} <-
-           Runs.resolve_run_agent_control(
-             claimed_control,
-             "applied",
-             control_result(:restart, public_entry(restarted)),
-             lease_owner(),
-             claimed_control.claim_generation
            ) do
-      {:reply, {:ok, public_entry(restarted)}, %{state | agents: agents}}
+      case resolve_started_restart(state, restarted, agents, claimed_control) do
+        {:ok, restarted, agents} ->
+          {:reply, {:ok, public_entry(restarted)}, %{state | agents: agents}}
+
+        {:error, reason} ->
+          {:reply, {:error, reason}, state}
+      end
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  defp resolve_started_restart(state, restarted, agents, claimed_control) do
+    case Runs.resolve_run_agent_control(
+           claimed_control,
+           "applied",
+           control_result(:restart, public_entry(restarted)),
+           lease_owner(),
+           claimed_control.claim_generation
+         ) do
+      {:ok, _resolved} ->
+        {:ok, restarted, agents}
+
+      {:error, reason} ->
+        # Starting the replacement and resolving its durable receipt cannot be
+        # one DB/process transaction. If receipt fencing wins the race, stop
+        # and release the replacement before returning so it is never lost
+        # outside `state.agents`.
+        FleetControlToken.cancel(restarted.token)
+        demonitor_entry(restarted)
+        _ = AgentSupervisor.stop_run_agent(state.supervisor, state.run.id, restarted.agent_id)
+
+        _ =
+          release_row(restarted.row, state, "interrupted", %{
+            error_message: "restart_control_resolution_failed"
+          })
+
+        {:error, reason}
     end
   end
 
@@ -903,14 +1280,95 @@ defmodule IexCode.Engine.FleetManager do
 
   defp require_parent_run_status(state, allowed_statuses) do
     case Runs.get_run(state.run.id) do
-      %IexCode.Runs.Run{status: status} = run ->
-        if status in allowed_statuses,
-          do: {:ok, %{state | run: run}},
-          else: {:error, {:run_not_active, status}}
+      %IexCode.Runs.Run{} = run ->
+        authority = state.parent_authority
+
+        cond do
+          run.attempt != authority.run_attempt or
+            run.lease_generation != authority.lease_generation or
+            run.lease_owner != authority.lease_owner or not live_parent_lease?(run) ->
+            {:error, :parent_lease_lost}
+
+          run.status not in allowed_statuses ->
+            {:error, {:run_not_active, run.status}}
+
+          true ->
+            {:ok, %{state | run: run}}
+        end
 
       nil ->
         {:error, :run_not_found}
     end
+  end
+
+  defp live_parent_lease?(%{lease_expires_at: %DateTime{} = expires_at}) do
+    DateTime.compare(expires_at, DateTime.utc_now()) == :gt
+  end
+
+  defp live_parent_lease?(_run), do: false
+
+  defp parent_authority_opts(state) do
+    authority = state.parent_authority
+
+    [
+      lease_owner: authority.lease_owner,
+      run_attempt: authority.run_attempt,
+      lease_generation: authority.lease_generation
+    ]
+  end
+
+  defp requested_parent_authority(opts) do
+    %{
+      lease_owner: opts[:lease_owner],
+      run_attempt: opts[:run_attempt],
+      lease_generation: opts[:lease_generation]
+    }
+  end
+
+  defp terminalization_authority_opts(state) do
+    authority = state.parent_authority
+
+    case Runs.get_run(state.run.id) do
+      %{
+        attempt: attempt,
+        lease_generation: generation,
+        status: status
+      }
+      when attempt == authority.run_attempt and generation == authority.lease_generation and
+             status in ["completed", "failed", "cancelled", "interrupted"] ->
+        run = Runs.get_run!(state.run.id)
+
+        if run.lease_owner == authority.lease_owner and live_parent_lease?(run) do
+          parent_authority_opts(state)
+        else
+          [
+            run_attempt: authority.run_attempt,
+            lease_generation: authority.lease_generation,
+            reconcile_terminal: true
+          ]
+        end
+
+      _active_or_stale ->
+        parent_authority_opts(state)
+    end
+  end
+
+  defp deactivate_stale_fleet(state) do
+    entries = Map.values(state.agents)
+
+    Enum.each(entries, fn entry ->
+      FleetControlToken.cancel(entry.token)
+      demonitor_entry(entry)
+      _ = AgentSupervisor.stop_run_agent(state.supervisor, state.run.id, entry.agent_id)
+    end)
+
+    %{
+      state
+      | agents: %{},
+        control_replay_cursor: nil,
+        control_replay_scheduled?: false,
+        rehydrate_errors: []
+    }
   end
 
   defp terminalize_budget_exhausted_fleet(state, failed_run, budget_error, caller_pid) do
@@ -925,7 +1383,7 @@ defmodule IexCode.Engine.FleetManager do
       error_details: failed_run.error_details
     }
 
-    case Runs.terminalize_run_agents(failed_run, "failed", attrs) do
+    case Runs.terminalize_run_agents(failed_run, "failed", attrs, parent_authority_opts(state)) do
       {:ok, _terminalized} ->
         Enum.each(entries, &demonitor_entry/1)
 

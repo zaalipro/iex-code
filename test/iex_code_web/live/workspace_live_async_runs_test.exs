@@ -19,6 +19,7 @@ defmodule IexCodeWeb.WorkspaceLiveAsyncRunsTest do
     view |> element("#tab-btn-swarm") |> render_click()
 
     assert has_element?(view, "#async-run-control")
+    assert has_element?(view, "#async-run-control", "Mission Control")
     assert has_element?(view, "#async-runs-empty")
     assert has_element?(view, "#dispatch-mode-background")
     assert render(view) =~ "Durable mode"
@@ -632,7 +633,11 @@ defmodule IexCodeWeb.WorkspaceLiveAsyncRunsTest do
         objective: "Control one durable worker",
         kind: "coding_swarm",
         mode: "swarm",
-        status: "running"
+        status: "running",
+        attempt: 1,
+        lease_generation: 1,
+        lease_owner: "workspace-fleet-control",
+        lease_expires_at: DateTime.add(DateTime.utc_now(), 60, :second)
       })
 
     on_exit(fn -> FleetSupervisor.stop(run.id) end)
@@ -702,7 +707,11 @@ defmodule IexCodeWeb.WorkspaceLiveAsyncRunsTest do
         objective: "Preserve operator guidance on failure",
         kind: "coding_swarm",
         mode: "swarm",
-        status: "running"
+        status: "running",
+        attempt: 1,
+        lease_generation: 1,
+        lease_owner: "workspace-guidance-failure",
+        lease_expires_at: DateTime.add(DateTime.utc_now(), 60, :second)
       })
 
     {:ok, [agent]} = Runs.create_run_agents(run, [%{key: "coder", role: "coder"}])
@@ -750,7 +759,11 @@ defmodule IexCodeWeb.WorkspaceLiveAsyncRunsTest do
         objective: "Recover one durable worker",
         kind: "coding_swarm",
         mode: "swarm",
-        status: "running"
+        status: "running",
+        attempt: 1,
+        lease_generation: 1,
+        lease_owner: "workspace-fleet-restart",
+        lease_expires_at: DateTime.add(DateTime.utc_now(), 60, :second)
       })
 
     on_exit(fn -> FleetSupervisor.stop(run.id) end)

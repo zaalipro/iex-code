@@ -48,6 +48,7 @@ gateway, and lease expiry alone cannot prove that an orphaned OS descendant stop
 ```text
 IexCode.Application
 ├── IexCode.Repo (SQLite/WAL)
+├── MetricsStore + Telemetry poller (bounded operational aggregates)
 ├── Phoenix.PubSub
 ├── Session Registry
 ├── Agent Registry
@@ -98,7 +99,7 @@ legacy executor; it atomically claims ready steps and runs up to four concurrent
 | Operation | Parent, agent, type, progress, result/error, PID string, timings |
 | Kanban task | Workflow state, priority, assignee, subtasks, schedule, metadata |
 | App settings | Model endpoints/keys plus twelve ranked-search adapters, provider order, fleet size, and exact research defaults for level, sources, conflict audit, cost, tokens, and time |
-| Run | Changeset-immutable objective/kind/mode/engine manifest, typed executor, lifecycle, priority, progress, budgets, attempts, lease, timings |
+| Run | Changeset-immutable objective/kind/mode/engine manifest and session request key, draft/active lifecycle, typed executor, priority, progress, budgets, attempts, lease, timings |
 | Run agent/control | Run-attempt identity, role/ordinal, lifecycle, desired state, fenced lease generation, task/progress/usage, ordered targeted controls, and bounded UI receipts |
 | Run step | Immutable DAG handler contract plus typed legacy nodes, dependencies, logical lifecycle, bounded params/result, and timeout |
 | Run step attempt | Append-only run/step attempt identity, manifest and handler snapshot, hashed owners, fenced generations, lease/heartbeat, retry, checkpoint, result digest, and outcome |
@@ -184,7 +185,9 @@ SessionServer ──starts──▶ supervised task
         └── persists messages and operation summaries
 ```
 
-Interactive session work survives a LiveView disconnect but not an application restart.
+Interactive single-agent work survives a LiveView disconnect but not an application restart.
+Interactive and durable swarm coordinators share one cluster-global session ownership key, so a
+restarted `SessionServer` adopts the live owner instead of starting a second coordinator.
 Durable background runs additionally survive process loss as records: on boot an expired
 lease becomes `interrupted` and must be retried explicitly, preventing partial native
 workspace effects from being replayed blindly.
@@ -198,7 +201,8 @@ workspace effects from being replayed blindly.
 | Durable messages and operation summaries | Current | Rehydrated by LiveView |
 | Native PTY and developer tools | Current | Execute in the real project root |
 | Atomic MultiPatch rollback | Current | Applies only to writes performed through MultiPatch |
-| Pause/resume/cancel/restart/steer | Current/partial | Durable targeted controls expose persisted receipts and queued-versus-consumed steering; arbitrary effect replay remains conservative |
+| Durable goal intake | Current | Session-scoped DB idempotency keys, full title/instruction retention, durable drafts, explicit draft start/cancel |
+| Pause/resume/cancel/restart/steer | Current/partial | Attempt/generation-targeted controls have expiring claims, reconciliation, persisted receipts, and queued-versus-consumed steering; arbitrary effect replay remains conservative |
 | Dynamic durable coding fleet | Current | One planner/coder/verifier plus bounded concurrent explorers, run-scoped identity, leases, heartbeats, generation-aware invocation rebinding, recovery, and Mission Control projection |
 | Fixed role correction loop | Current | Role phases and mutation order remain typed legacy workflow, not a general scheduler |
 | LLM streaming transport | Current | Parser/callback support plus bounded success/error collection and credential-redacted error paths |
@@ -213,7 +217,7 @@ workspace effects from being replayed blindly.
 | Exact research levels | Current finite scope | Low/medium/high/ultra launch static `dag_v1` graphs with 1/2/3/4 rounds and handler-internal `Task.async_stream` query-fanout ceilings of 2/3/4/10; ranked-provider UI selection is current, while grounded-provider UI selection and durable per-query controls remain planned |
 | Native workspace coordination | Current cooperative baseline | Durable batched project/file/Git resources, FIFO-oriented waits, capability checks, heartbeats, fencing, dispatcher ownership, guarded UI/tools/terminal, and Mission Control; native bypass/physical-alias hardening remain |
 | Approval and durable command records | Partial | Command idempotency keys and approval records exist; policy enforcement/inbox UX remain planned |
-| Restart reconciliation | Partial | Expired workers become interrupted; safe checkpoint resume is not implemented |
+| Restart reconciliation | Partial | Expired workers/controls become interrupted or are requeued, fleets retry through the prior lease horizon, and safe checkpoint resume remains unimplemented |
 | Automatic calendar worker | Current | Supervised claims, stable occurrence keys, recurrence, stale recovery, and existing-run reuse |
 | Direct Gemini/local adapters | Planned | Compatible endpoints can be used today through OpenAI adapter |
 
@@ -260,7 +264,7 @@ the target scheduler. Items explicitly marked planned are not current behavior.
 #### Run
 
 - Owns a goal across process and socket lifetimes.
-- Current states are `queued`, `running`, `paused`, `completed`, `failed`, `cancelled`,
+- Current states are `draft`, `queued`, `running`, `paused`, `completed`, `failed`, `cancelled`,
   and `interrupted`; a distinct review-waiting state is planned.
 - Stores priority, token/cost/time budgets, attempts, worker lease, and the latest event
   sequence. General execution policy and checkpoint cursors are planned.

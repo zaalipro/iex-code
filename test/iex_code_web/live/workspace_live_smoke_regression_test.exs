@@ -4,7 +4,80 @@ defmodule IexCodeWeb.WorkspaceLiveSmokeRegressionTest do
   @moduletag mock_llm: true
   @moduletag timeout: 120_000
 
-  alias IexCode.{Kanban, Sessions}
+  alias IexCode.{Kanban, Runs, Sessions}
+  alias IexCode.Kanban.Scheduler
+
+  test "mounting an empty workspace never persists or dispatches demo data", %{
+    conn: conn,
+    workspace_path: path
+  } do
+    project = create_project_fixture(%{name: "Empty workspace regression", root_path: path})
+    session = create_session_fixture(project, %{title: "Empty session regression"})
+
+    assert Kanban.list_tasks(project.id) == []
+    assert Sessions.list_messages(session.id) == []
+    assert Runs.list_runs(project_id: project.id) == []
+
+    {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+    assert has_element?(view, "#kanban-empty-state")
+    assert has_element?(view, "#kanban-empty-create-task")
+    assert Kanban.list_tasks(project.id) == []
+    assert Sessions.list_messages(session.id) == []
+    assert Runs.list_runs(project_id: project.id) == []
+
+    view |> element("#sidebar-tab-chat") |> render_click()
+    assert has_element?(view, "#chat-empty-state")
+
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    assert %{claimed: 0, enqueued: 0, errors: [], results: []} =
+             Scheduler.dispatch_due(
+               now: now,
+               dispatcher: self(),
+               worker_id: "empty-workspace-regression"
+             )
+
+    refute_receive {:"$gen_cast", :dispatch}, 50
+    assert Kanban.list_tasks(project.id) == []
+    assert Sessions.list_messages(session.id) == []
+    assert Runs.list_runs(project_id: project.id) == []
+  end
+
+  test "a zero-result Kanban filter offers clear filters without claiming the board is empty", %{
+    conn: conn,
+    workspace_path: path
+  } do
+    project = create_project_fixture(%{name: "Filtered board regression", root_path: path})
+    session = create_session_fixture(project, %{title: "Filtered board session"})
+
+    {:ok, task} =
+      Kanban.create_task(%{
+        project_id: project.id,
+        session_id: session.id,
+        title: "Persisted task outside the search",
+        status: "running",
+        priority: "medium",
+        assignee: "coder"
+      })
+
+    {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+    view
+    |> form("#kanban-filter-form", %{"search" => "definitely-no-match"})
+    |> render_change()
+
+    assert has_element?(view, "#kanban-filter-empty-state", "No tasks match these filters")
+    assert has_element?(view, "#kanban-clear-filters[phx-click='clear_kanban_filters']")
+    refute has_element?(view, "#kanban-empty-state")
+    refute has_element?(view, "#kanban-empty-create-task")
+
+    view |> element("#kanban-clear-filters") |> render_click()
+
+    refute has_element?(view, "#kanban-filter-empty-state")
+    refute has_element?(view, "#kanban-empty-state")
+    assert has_element?(view, "#task-card-#{task.id}")
+  end
 
   test "workspace search forms filter projects and sessions without mutating messages", %{
     conn: conn,
@@ -57,6 +130,53 @@ defmodule IexCodeWeb.WorkspaceLiveSmokeRegressionTest do
 
     assert MapSet.new(Enum.map(assigns.sessions, & &1.id)) ==
              MapSet.new([alpha_session.id, beta_session.id])
+  end
+
+  test "late run messages cannot cross a session switch or authorize foreign agent controls", %{
+    conn: conn,
+    workspace_path: path
+  } do
+    project = create_project_fixture(%{name: "Run message scope", root_path: path})
+    old_session = create_session_fixture(project, %{title: "Old Session"})
+    current_session = create_session_fixture(project, %{title: "Current Session"})
+
+    assert {:ok, old_run} =
+             Runs.create_run(%{
+               project_id: project.id,
+               session_id: old_session.id,
+               objective: "Old session run"
+             })
+
+    assert {:ok, [old_agent]} = Runs.create_run_agents(old_run, [%{key: "old-agent"}])
+
+    assert {:ok, current_run} =
+             Runs.create_run(%{
+               project_id: project.id,
+               session_id: current_session.id,
+               objective: "Current session run"
+             })
+
+    {:ok, view, _html} = live(conn, ~p"/sessions/#{old_session.id}")
+    render_patch(view, ~p"/sessions/#{current_session.id}")
+
+    send(view.pid, {:async_run_started, old_run, self()})
+    send(view.pid, {:async_run_updated, old_run})
+    _ = render(view)
+
+    assigns = live_assigns(view)
+    assert assigns.session.id == current_session.id
+    assert assigns.selected_run.id == current_run.id
+
+    render_click(view, "update_run_agent_guidance", %{
+      "agent_id" => old_agent.id,
+      "agent_control" => %{"guidance" => "cross-session guidance"}
+    })
+
+    render_click(view, "control_run_agent", %{"id" => old_agent.id, "action" => "cancel"})
+
+    refute Map.has_key?(live_assigns(view).run_agent_guidance, old_agent.id)
+    assert Runs.list_run_agent_controls(old_agent) == []
+    assert Runs.get_run_agent(old_agent.id).status == "pending"
   end
 
   test "file filter form is wired and renders only matching project files", %{

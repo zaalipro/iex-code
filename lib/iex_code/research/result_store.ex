@@ -47,6 +47,22 @@ defmodule IexCode.Research.ResultStore do
 
   def materialize(_root, _object, _relative_path), do: {:error, :invalid_materialization}
 
+  @doc "Materializes a previously stored object by its accepted digest."
+  def materialize_digest(root, digest, relative_path)
+      when is_binary(root) and is_binary(digest) and is_binary(relative_path) do
+    with true <- Regex.match?(@digest_format, digest) or {:error, :invalid_object_digest},
+         {:ok, root} <- ensure_root(root),
+         {:ok, object_path} <- authorize_destination(root, object_relative_path(digest)) do
+      materialize(root, %{digest: digest, object_path: object_path}, relative_path)
+    else
+      false -> {:error, :invalid_object_digest}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  def materialize_digest(_root, _digest, _relative_path),
+    do: {:error, :invalid_materialization}
+
   @spec read(Path.t(), Path.t(), String.t()) :: {:ok, binary()} | {:error, term()}
   def read(root, relative_path, expected_digest)
       when is_binary(root) and is_binary(relative_path) and is_binary(expected_digest) do

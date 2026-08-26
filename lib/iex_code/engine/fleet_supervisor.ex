@@ -17,7 +17,8 @@ defmodule IexCode.Engine.FleetSupervisor do
     with %IexCode.Runs.Run{} = persisted <- persisted,
          true <-
            persisted.session_id == run.session_id and persisted.project_id == run.project_id,
-         :ok <- validate_execution_engine(persisted) do
+         :ok <- validate_execution_engine(persisted),
+         :ok <- validate_run_lineage(persisted, run) do
       do_ensure_started(persisted, opts)
     else
       nil -> {:error, :run_not_found}
@@ -36,7 +37,13 @@ defmodule IexCode.Engine.FleetSupervisor do
         end
 
       pid ->
-        {:ok, pid}
+        if FleetManager.matches_parent_lineage?(run.id, run) do
+          {:ok, pid}
+        else
+          with :ok <- DynamicSupervisor.terminate_child(__MODULE__, pid) do
+            do_ensure_started(run, opts)
+          end
+        end
     end
   end
 
@@ -54,6 +61,7 @@ defmodule IexCode.Engine.FleetSupervisor do
          true <-
            persisted.session_id == run.session_id and persisted.project_id == run.project_id,
          :ok <- validate_execution_engine(persisted),
+         :ok <- validate_run_lineage(persisted, run),
          :ok <- validate_delegation(persisted, opts[:workspace_lock_delegation]),
          %IexCode.Sessions.Session{} = session <-
            IexCode.Sessions.get_session(persisted.session_id),
@@ -83,6 +91,22 @@ defmodule IexCode.Engine.FleetSupervisor do
 
   defp validate_execution_engine(%IexCode.Runs.Run{execution_engine: engine}),
     do: {:error, {:execution_engine_unavailable, engine}}
+
+  defp validate_run_lineage(persisted, requested) do
+    live_lease? =
+      is_binary(persisted.lease_owner) and persisted.lease_owner != "" and
+        is_struct(persisted.lease_expires_at, DateTime) and
+        DateTime.compare(persisted.lease_expires_at, DateTime.utc_now()) == :gt
+
+    if persisted.status in ["running", "paused"] and live_lease? and
+         persisted.attempt == requested.attempt and
+         persisted.lease_generation == requested.lease_generation and
+         persisted.lease_owner == requested.lease_owner do
+      :ok
+    else
+      {:error, :parent_lease_lost}
+    end
+  end
 
   defp validate_delegation(_run, nil), do: :ok
 

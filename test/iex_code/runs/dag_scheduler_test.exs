@@ -152,7 +152,7 @@ defmodule IexCode.Runs.DagSchedulerTest do
              )
 
     lease_expiry = checkpointed.lease_expires_at
-    assert {:ok, paused_run} = Runs.transition_run(run, "paused")
+    assert {:ok, paused_run} = transition_parent(run, "paused")
 
     assert {:error, :run_lease_lost} =
              DagScheduler.set_paused(paused_run, "foreign", 1, true)
@@ -174,7 +174,7 @@ defmodule IexCode.Runs.DagSchedulerTest do
     assert {:error, {:run_not_running, "paused"}} =
              DagScheduler.claim_ready(paused_run, @owner, 1)
 
-    assert {:ok, running_run} = Runs.transition_run(paused_run, "running")
+    assert {:ok, running_run} = transition_parent(paused_run, "running")
 
     assert {:ok, %{paused: false, attempts: 1}} =
              DagScheduler.set_paused(running_run, @owner, 1, false)
@@ -198,7 +198,14 @@ defmodule IexCode.Runs.DagSchedulerTest do
     {run, _steps} = dag_fixture(context)
     assert {:ok, first} = DagScheduler.claim_ready(run, @owner, 1)
     assert {:ok, second} = DagScheduler.claim_ready(run, @owner, 1)
-    assert {:ok, interrupted_run} = Runs.transition_run(run, "interrupted")
+
+    # Model a legacy/external terminal write that predates the atomic parent +
+    # graph finalizer. The system reconciler must repair it exactly once.
+    {1, _} =
+      from(current in Run, where: current.id == ^run.id)
+      |> Repo.update_all(set: [status: "interrupted"])
+
+    interrupted_run = Runs.get_run!(run.id)
 
     assert {:ok, %{status: "interrupted", attempts: 2, steps: 3}} =
              DagScheduler.reconcile_terminal_run(interrupted_run)
@@ -231,7 +238,7 @@ defmodule IexCode.Runs.DagSchedulerTest do
   test "system terminal reconciliation rejects active parent and manifest drift", context do
     {run, steps} = dag_fixture(context)
     assert {:error, {:run_not_terminal, "running"}} = DagScheduler.reconcile_terminal_run(run)
-    assert {:ok, interrupted} = Runs.transition_run(run, "interrupted")
+    assert {:ok, interrupted} = transition_parent(run, "interrupted")
     [step | _rest] = steps
 
     Repo.update_all(from(current in RunStep, where: current.id == ^step.id),
@@ -355,5 +362,13 @@ defmodule IexCode.Runs.DagSchedulerTest do
       end)
 
     {run, steps}
+  end
+
+  defp transition_parent(run, status, attrs \\ %{}) do
+    Runs.transition_run_worker(run, status, attrs,
+      lease_owner: @owner,
+      run_attempt: run.attempt,
+      lease_generation: run.lease_generation
+    )
   end
 end

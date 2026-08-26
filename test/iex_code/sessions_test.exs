@@ -41,4 +41,21 @@ defmodule IexCode.SessionsTest do
     ops = Sessions.list_operations(session.id)
     assert length(ops) == 1
   end
+
+  test "a persisted session cannot be reparented to another project" do
+    {:ok, project} =
+      Projects.create_project(%{name: "Session owner", root_path: "/tmp/session_owner"})
+
+    {:ok, other_project} =
+      Projects.create_project(%{name: "Other owner", root_path: "/tmp/other_session_owner"})
+
+    {:ok, session} =
+      Sessions.create_session(%{project_id: project.id, title: "Owned session"})
+
+    assert {:error, %Ecto.Changeset{} = changeset} =
+             Sessions.update_session(session, %{project_id: other_project.id})
+
+    assert {"cannot be changed after creation", _metadata} = changeset.errors[:project_id]
+    assert Sessions.get_session(session.id).project_id == project.id
+  end
 end
