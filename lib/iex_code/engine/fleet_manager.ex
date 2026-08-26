@@ -10,7 +10,13 @@ defmodule IexCode.Engine.FleetManager do
   @roles ~w(planner explorer coder verifier)a
   @lease_ms 30_000
   @heartbeat_ms 10_000
-  @control_replay_batch_size 64
+  # Durable controls can each perform several SQLite transactions. Keep replay
+  # chunks deliberately small so a large backlog yields to GenServer calls,
+  # heartbeats, and controls for other agents between chunks.
+  @control_replay_batch_size 16
+  @control_receipt_poll_ms 10
+  @control_receipt_max_poll_ms 100
+  @terminal_control_statuses ~w(applied rejected superseded)
   # A replacement fleet supervisor receives a new secret and cannot take over
   # rows until the prior 30-second lease expires. Keep the bounded retry window
   # beyond that lease horizon so recovery cannot stop just before takeover is
@@ -78,6 +84,25 @@ defmodule IexCode.Engine.FleetManager do
       30_000
     )
   end
+
+  @doc """
+  Waits for a durable agent control to reach a terminal status.
+
+  The receipt is bounded by `timeout` and is based on persisted control state,
+  rather than GenServer mailbox ordering. If the caller is already subscribed
+  to the run, matching PubSub updates provide a fast path; bounded persistence
+  polling makes the barrier reliable across processes and BEAM instances too.
+  """
+  def await_control(run_id, control_id, timeout \\ 30_000)
+
+  def await_control(run_id, control_id, timeout)
+      when is_binary(run_id) and is_binary(control_id) and is_integer(timeout) and timeout >= 0 do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    await_control_receipt(run_id, control_id, deadline, @control_receipt_poll_ms)
+  end
+
+  def await_control(_run_id, _control_id, _timeout),
+    do: {:error, :invalid_control_receipt}
 
   def runtime_begin(run_id, agent_id, generation, task) do
     GenServer.call(
@@ -764,6 +789,79 @@ defmodule IexCode.Engine.FleetManager do
   defp schedule_control_replay(state) do
     send(self(), :replay_controls)
     %{state | control_replay_scheduled?: true}
+  end
+
+  defp await_control_receipt(run_id, control_id, deadline, poll_ms) do
+    remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+
+    if remaining == 0 do
+      {:error, :control_receipt_timeout}
+    else
+      case fetch_control_receipt(control_id, min(remaining, @control_receipt_max_poll_ms)) do
+        {:ok, %{run_id: ^run_id, status: status} = control}
+        when status in @terminal_control_statuses ->
+          {:ok, control}
+
+        {:ok, %{run_id: ^run_id}} ->
+          await_open_control_receipt(run_id, control_id, deadline, poll_ms)
+
+        {:ok, _missing_or_different_run} ->
+          {:error, :control_not_found}
+
+        :retry ->
+          # The fleet may briefly own SQLite's only available writer/connection.
+          # Treat checkout pressure as a transient observation failure, not as a
+          # failed receipt, while preserving the caller's original deadline.
+          await_open_control_receipt(run_id, control_id, deadline, poll_ms)
+      end
+    end
+  end
+
+  defp fetch_control_receipt(control_id, timeout) do
+    {:ok, Runs.get_run_agent_control(control_id, timeout: timeout)}
+  rescue
+    error in [DBConnection.ConnectionError, DBConnection.OwnershipError] ->
+      if transient_control_receipt_database_error?(error) do
+        :retry
+      else
+        reraise error, __STACKTRACE__
+      end
+  end
+
+  defp transient_control_receipt_database_error?(%DBConnection.OwnershipError{}), do: true
+
+  defp transient_control_receipt_database_error?(%DBConnection.ConnectionError{} = error) do
+    message = error |> Exception.message() |> String.downcase()
+
+    String.contains?(message, "could not checkout the connection") or
+      String.contains?(message, "connection not available") or
+      String.contains?(message, "request was dropped from queue")
+  end
+
+  defp await_open_control_receipt(run_id, control_id, deadline, poll_ms) do
+    remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+
+    if remaining == 0 do
+      {:error, :control_receipt_timeout}
+    else
+      receive do
+        {:run_agent_control_updated,
+         %{id: ^control_id, run_id: ^run_id, status: status} = control}
+        when status in @terminal_control_statuses ->
+          {:ok, control}
+
+        {:run_agent_control_updated, %{id: ^control_id, run_id: ^run_id}} ->
+          await_control_receipt(run_id, control_id, deadline, poll_ms)
+      after
+        min(remaining, poll_ms) ->
+          await_control_receipt(
+            run_id,
+            control_id,
+            deadline,
+            min(poll_ms * 2, @control_receipt_max_poll_ms)
+          )
+      end
+    end
   end
 
   defp heartbeat_eligible?(%{pid: pid, row: %RunAgent{status: status}})

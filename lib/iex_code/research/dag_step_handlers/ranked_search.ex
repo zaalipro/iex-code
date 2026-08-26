@@ -128,7 +128,9 @@ defmodule IexCode.Research.DagStepHandlers.RankedSearch do
               :external_effect_uncertain,
               :external_effect_unsettled,
               :external_effect_ambiguous,
-              :external_effect_release_failed
+              :external_effect_release_failed,
+              :provider_configuration_changed,
+              :invalid_provider_snapshot_ref
             ],
        do: {:halt, {:error, reason}}
 

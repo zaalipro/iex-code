@@ -555,8 +555,19 @@ defmodule IexCode.E2E.Tier5AdversarialStreamLiveviewTest do
 
       # Malicious settings update attempts
       oversized_key = String.duplicate("SECRET_KEY_", 500)
-      {:ok, updated} = Settings.update_settings(%{openai_api_key: oversized_key})
-      assert updated.openai_api_key == oversized_key
+      original_key = settings.openai_api_key
+
+      assert {:error, changeset} =
+               Settings.update_settings(%{openai_api_key: oversized_key})
+
+      assert {message, validation} = changeset.errors[:openai_api_key]
+      assert message == "should be at most %{count} character(s)"
+      assert validation[:validation] == :length
+      assert validation[:kind] == :max
+      assert validation[:count] == 4_096
+
+      # Rejected secrets are not partially persisted or truncated.
+      assert Settings.get_settings().openai_api_key == original_key
     end
 
     test "T5_23_oversized_payload_db_truncation_and_sanitization" do

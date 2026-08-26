@@ -4,7 +4,8 @@ defmodule IexCode.Research.DagStepHandlers.ReportSynthesize do
 
   alias IexCode.Research.{DagContracts, DagRuntime, Results}
 
-  @fields ~w(max_input_tokens max_output_tokens max_cost_cents require_claim_ledger attachment_refs artifact_kind level_policy)
+  @fields ~w(max_input_tokens max_output_tokens max_cost_cents provider_snapshot_ref require_claim_ledger attachment_refs artifact_kind level_policy)
+  @legacy_fields @fields -- ["provider_snapshot_ref"]
 
   @impl true
   def descriptor do
@@ -22,10 +23,11 @@ defmodule IexCode.Research.DagStepHandlers.ReportSynthesize do
 
   @impl true
   def validate_params(params, [_audit]) do
-    with :ok <- DagContracts.exact_fields(params, @fields),
+    with :ok <- validate_fields(params),
          :ok <- DagContracts.integer(params["max_input_tokens"], 256..200_000, :input_tokens),
          :ok <- DagContracts.integer(params["max_output_tokens"], 256..100_000, :output_tokens),
          :ok <- DagContracts.integer(params["max_cost_cents"], 0..100_000, :cost),
+         :ok <- validate_snapshot_ref(params),
          true <- params["require_claim_ledger"] or {:error, {:params, :claims}},
          :ok <- DagContracts.attachment_refs(params["attachment_refs"]),
          :ok <- DagContracts.level_policy(params["level_policy"]),
@@ -63,7 +65,8 @@ defmodule IexCode.Research.DagStepHandlers.ReportSynthesize do
                "attachment_context" => attachment_context,
                "max_input_tokens" => params["max_input_tokens"],
                "max_output_tokens" => params["max_output_tokens"],
-               "max_cost_cents" => params["max_cost_cents"]
+               "max_cost_cents" => params["max_cost_cents"],
+               "provider_snapshot_ref" => params["provider_snapshot_ref"]
              },
              context,
              opts
@@ -95,4 +98,16 @@ defmodule IexCode.Research.DagStepHandlers.ReportSynthesize do
 
   defp attachment_context(_params, _context),
     do: {:error, :invalid_research_attachment_context}
+
+  defp validate_fields(params) do
+    case DagContracts.exact_fields(params, @fields) do
+      :ok -> :ok
+      {:error, _reason} -> DagContracts.exact_fields(params, @legacy_fields)
+    end
+  end
+
+  defp validate_snapshot_ref(%{"provider_snapshot_ref" => reference}),
+    do: DagContracts.bounded_string(reference, 500, :snapshot)
+
+  defp validate_snapshot_ref(_params), do: :ok
 end

@@ -5,10 +5,9 @@ defmodule IexCode.Engine.AdversarialStressTest do
   """
   use IexCode.DataCase, async: false
   @moduletag timeout: 120_000
-  alias IexCode.{Projects, Sessions, Repo, Settings}
+  alias IexCode.{Projects, Sessions, Repo}
   alias IexCode.Engine.{AgentRegistry, AgentSupervisor, OperationManager}
   alias IexCode.Engine.Agents.{PlannerAgent, ExplorerAgent, CoderAgent, VerifierAgent}
-  alias IexCode.E2E.MockLLMServer
   alias IexCode.Sessions.Operation
   import Ecto.Query
 
@@ -329,22 +328,27 @@ defmodule IexCode.Engine.AdversarialStressTest do
   end
 
   describe "Feature F2: Concurrent Subagent Invocation Across Sessions" do
-    test "concurrently executes operations across all 4 subagent types simultaneously", %{
-      project: project
-    } do
-      # No real LLM credentials in the test environment: point the LLM at a local mock server
-      {:ok, mock_pid, mock_info} = MockLLMServer.start(scenario: :standard_completion)
+    test "concurrently executes operations across all 4 subagent types simultaneously" do
+      # Keep this concurrency test independent from the repository running the
+      # test suite. Pointing five verifier agents at this project's mix.exs
+      # launches five nested full compiles and can exhaust the operation's
+      # otherwise-valid 60 second deadline under full-suite load. A small real
+      # workspace still exercises Planner, Explorer, Coder, and Verifier
+      # concurrently without benchmarking the host checkout.
+      workspace_root =
+        Path.join(
+          System.tmp_dir!(),
+          "iex-code-concurrent-agents-#{System.unique_integer([:positive])}"
+        )
 
-      on_exit(fn ->
-        MockLLMServer.stop(mock_pid)
-      end)
+      File.mkdir_p!(workspace_root)
+      File.write!(Path.join(workspace_root, "sample.ex"), "defmodule ConcurrentSample do\nend\n")
+      on_exit(fn -> File.rm_rf(workspace_root) end)
 
-      {:ok, _} =
-        Settings.update_settings(%{
-          openai_base_url: "#{mock_info.url}/v1",
-          anthropic_base_url: "#{mock_info.url}/v1",
-          openai_api_key: "sk-test-mock-key",
-          anthropic_api_key: "sk-test-mock-key"
+      {:ok, project} =
+        Projects.create_project(%{
+          name: "Concurrent Agent Workspace",
+          root_path: workspace_root
         })
 
       sessions =
@@ -360,7 +364,8 @@ defmodule IexCode.Engine.AdversarialStressTest do
           {:ok, p_pid} =
             AgentSupervisor.start_agent(s.id, :planner,
               project_root: project.root_path,
-              session: s
+              session: s,
+              llm: IexCode.ConcurrentAgentLLMStub
             )
 
           {:ok, e_pid} =
@@ -370,7 +375,11 @@ defmodule IexCode.Engine.AdversarialStressTest do
             )
 
           {:ok, c_pid} =
-            AgentSupervisor.start_agent(s.id, :coder, project_root: project.root_path, session: s)
+            AgentSupervisor.start_agent(s.id, :coder,
+              project_root: project.root_path,
+              session: s,
+              llm: IexCode.ConcurrentAgentLLMStub
+            )
 
           {:ok, v_pid} =
             AgentSupervisor.start_agent(s.id, :verifier,
@@ -411,6 +420,11 @@ defmodule IexCode.Engine.AdversarialStressTest do
 
       for res <- results do
         assert {:ok, _} = res
+      end
+
+      for [planner, _explorer, coder, _verifier] <- Enum.chunk_every(results, 4) do
+        assert planner == {:ok, "deterministic concurrent plan"}
+        assert coder == {:ok, "deterministic concurrent implementation"}
       end
 
       # Clean up

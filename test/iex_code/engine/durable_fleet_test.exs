@@ -1,7 +1,8 @@
 defmodule IexCode.Engine.DurableFleetTest do
   use IexCode.DataCase, async: false
 
-  alias IexCode.{Projects, Repo, Runs, Sessions}
+  alias IexCode.Execution.Router
+  alias IexCode.{Projects, Repo, Runs, Sessions, Settings}
   alias IexCode.Runs.{Executor, Run, RunAgent}
 
   alias IexCode.Engine.{
@@ -42,6 +43,64 @@ defmodule IexCode.Engine.DurableFleetTest do
     assert length(FleetTopology.manifest(32)) == 32
     assert length(FleetTopology.manifest(33)) == 32
     assert Enum.count(FleetTopology.manifest(32), &(&1.role == "explorer")) == 29
+  end
+
+  test "snapshotted fleet size and model policy override later runtime defaults", ctx do
+    {:ok, _queued} =
+      Runs.create_run(%{
+        project_id: ctx.project.id,
+        session_id: ctx.session.id,
+        objective: "snapshotted fleet",
+        kind: "coding_swarm",
+        mode: "swarm",
+        metadata: %{
+          "execution_policy" => %{
+            "swarm_agent_count" => 6,
+            "model_provider" => "anthropic",
+            "model_name" => "snapshotted-swarm-model",
+            "temperature" => 0.7
+          }
+        }
+      })
+
+    owner = "fleet-policy:#{System.unique_integer([:positive])}"
+    {:ok, run} = Runs.claim_next_run(owner, lease_ms: 300_000)
+    on_exit(fn -> FleetSupervisor.stop(run.id) end)
+
+    assert {:ok, agents} = FleetSupervisor.attach(run, agent_count: 4)
+    assert length(agents) == 6
+    assert Enum.count(agents, &(&1.role == :explorer)) == 3
+
+    planner = Enum.find(agents, &(&1.role == :planner))
+    planner_state = IexCode.Engine.Agents.PlannerAgent.get_state(planner.pid)
+    assert planner_state.session.model_provider == "anthropic"
+    assert planner_state.session.model_name == "snapshotted-swarm-model"
+    assert planner_state.session.temperature == 0.7
+  end
+
+  test "router-enqueued 240-byte model reaches the durable fleet", ctx do
+    model = String.duplicate("m", 240)
+
+    assert {:ok, %{run: queued}} =
+             Router.route("/swarm execute the bounded fleet model", %{
+               project_id: ctx.project.id,
+               session_id: ctx.session.id,
+               settings: Settings.get_settings(),
+               overrides: %{model_name: model, swarm_agent_count: 4},
+               request_key: "fleet-model-boundary-#{Ecto.UUID.generate()}"
+             })
+
+    assert queued.metadata["execution_policy"]["model_name"] == model
+
+    owner = "fleet-router:#{System.unique_integer([:positive])}"
+    assert {:ok, run} = Runs.claim_next_run(owner, lease_ms: 300_000)
+    assert run.id == queued.id
+    on_exit(fn -> FleetSupervisor.stop(run.id) end)
+
+    assert {:ok, agents} = FleetSupervisor.attach(run, project_root: ctx.root)
+    planner = Enum.find(agents, &(&1.role == :planner))
+    planner_state = IexCode.Engine.Agents.PlannerAgent.get_state(planner.pid)
+    assert planner_state.session.model_name == model
   end
 
   test "two runs in one session have isolated registry identities and stopping one is scoped",
@@ -404,7 +463,7 @@ defmodule IexCode.Engine.DurableFleetTest do
         control
       end)
 
-    assert {:ok, _control} =
+    assert {:ok, explorer_control} =
              Runs.enqueue_run_agent_control(explorer.agent_id, "explorer-fairness", %{
                kind: "steer",
                payload: %{"guidance" => "explorer must not starve"},
@@ -415,21 +474,70 @@ defmodule IexCode.Engine.DurableFleetTest do
     manager = AgentRegistry.whereis_fleet(run.id, :manager)
     send(manager, :replay_controls)
 
-    # The replay cursor advances after every applied item, so the later-position
-    # explorer is serviced in the first batch instead of waiting behind all 70
-    # planner controls.
-    _ = :sys.get_state(manager)
+    # This persisted receipt proves the later-position explorer is serviced
+    # without using manager mailbox ordering as a proxy for control completion.
+    assert {:ok, %{id: explorer_control_id, status: "applied"}} =
+             FleetManager.await_control(run.id, explorer_control.id, 10_000)
 
-    assert [%{status: "applied"}] =
-             Runs.list_run_agent_controls(explorer.agent_id, status: "applied")
+    assert explorer_control_id == explorer_control.id
 
     last_control_id = last_planner_control.id
 
-    assert_receive {:run_agent_control_updated, %{id: ^last_control_id, status: "applied"}},
-                   5_000
+    # A small replay chunk must yield and immediately schedule the remaining
+    # chunks until the full backlog has a durable terminal receipt.
+    assert {:ok, %{id: ^last_control_id, status: "applied"}} =
+             FleetManager.await_control(run.id, last_control_id, 30_000)
 
     assert length(Runs.list_run_agent_controls(planner.agent_id, status: "applied")) == 70
     assert Runs.list_run_agent_controls(planner.agent_id, status: "pending") == []
+  end
+
+  test "durable control receipt has a strict timeout without a fleet process", ctx do
+    run = running_run(ctx, "bounded control receipt")
+
+    assert {:ok, [agent]} =
+             Runs.create_run_agents(run, [
+               %{key: "receipt-planner", role: "planner", adapter: "otp.planner"}
+             ])
+
+    assert {:ok, control} =
+             Runs.enqueue_run_agent_control(agent.id, "unprocessed-receipt", %{
+               kind: "steer",
+               payload: %{"guidance" => "remain pending"},
+               target_generation: agent.lease_generation,
+               requested_by: "test"
+             })
+
+    started_at = System.monotonic_time(:millisecond)
+
+    assert {:error, :control_receipt_timeout} =
+             FleetManager.await_control(run.id, control.id, 25)
+
+    assert System.monotonic_time(:millisecond) - started_at < 500
+    assert Runs.get_run_agent_control(control.id).status == "pending"
+
+    assert {:error, :control_not_found} =
+             FleetManager.await_control(Ecto.UUID.generate(), control.id, 100)
+
+    assert {:error, :control_not_found} =
+             FleetManager.await_control(run.id, Ecto.UUID.generate(), 100)
+  end
+
+  test "durable control receipt bounds transient sandbox ownership loss" do
+    original_repo = Repo.get_dynamic_repo()
+    repo = start_supervised!({IexCode.ControlReceiptOwnershipRepo, name: nil})
+    :ok = Ecto.Adapters.SQL.Sandbox.mode(repo, :manual)
+    Repo.put_dynamic_repo(repo)
+    started_at = System.monotonic_time(:millisecond)
+
+    try do
+      assert {:error, :control_receipt_timeout} =
+               FleetManager.await_control(Ecto.UUID.generate(), Ecto.UUID.generate(), 25)
+
+      assert System.monotonic_time(:millisecond) - started_at < 500
+    after
+      Repo.put_dynamic_repo(original_repo)
+    end
   end
 
   test "stopping a maximum-size fleet terminalizes and tears down every child", ctx do

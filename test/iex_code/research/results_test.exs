@@ -106,6 +106,53 @@ defmodule IexCode.Research.ResultsTest do
              Results.commit(ready, markdown <> " changed", root: root)
   end
 
+  test "broadcasts committed and repairable materialization lifecycle after durable state",
+       context do
+    assert :ok = Results.subscribe_session(context.session.id)
+    run = create_research_run(context, "Observable publication", "low")
+    result = Results.get_by_run(run)
+    root = Path.join(context.app_dir, "research-observable")
+
+    assert {:ok, running} = Results.mark_running(result)
+
+    assert_receive {:research_result_updated,
+                    %{result: %{id: result_id, status: "running"}, lifecycle: :running}}
+
+    assert result_id == result.id
+    assert {:ok, ready} = Results.commit(running, "# Observable\n\nEvidence.", root: root)
+
+    assert_receive {:research_result_updated,
+                    %{
+                      result: %{id: ready_id, status: "ready"},
+                      lifecycle: :ready,
+                      details: %{publication: :complete}
+                    }}
+
+    assert ready_id == ready.id
+
+    second = create_research_run(context, "Repairable publication", "low")
+    {:ok, second} = Results.get_by_run(second) |> Results.mark_running()
+    second_path = Path.join(root, "#{second.id}/result.md")
+    File.mkdir_p!(Path.dirname(second_path))
+    File.write!(second_path, "collision", [:exclusive])
+
+    assert {:ok, accepted} = Results.commit(second, "# Accepted", root: root)
+
+    assert_receive {:research_result_updated,
+                    %{
+                      result: %{id: accepted_id, status: "ready"},
+                      lifecycle: :materialization_failed,
+                      details: %{
+                        publication: :repairable_failure,
+                        failures: failures
+                      }
+                    }}
+
+    assert accepted_id == accepted.id
+    assert Enum.any?(failures, &(&1.reason == "research_object_collision"))
+    assert Results.get(accepted.id).status == "ready"
+  end
+
   test "authority loss after object writes cannot poison public paths for a retry", context do
     run = create_research_run(context, "Recover fenced publication", "medium")
     root = Path.join(context.app_dir, "research-fenced-publish")

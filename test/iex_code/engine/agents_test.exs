@@ -123,6 +123,37 @@ defmodule IexCode.Engine.AgentsTest do
       # Clean up
       AgentSupervisor.stop_agent(session.id, :planner)
     end
+
+    test "durable swarm planner rejects endpoint drift before its model effect", %{
+      session: session,
+      project: project
+    } do
+      assert {:ok, original} =
+               Settings.update_settings(%{
+                 openai_api_key: "route-test-key",
+                 openai_base_url: "https://original-route.example/v1"
+               })
+
+      policy = Settings.execution_policy(original, session)
+
+      assert {:ok, _changed} =
+               Settings.update_settings(%{
+                 openai_base_url: "https://changed-route.example/v1"
+               })
+
+      {:ok, pid} =
+        AgentSupervisor.start_agent(session.id, :planner, project_root: project.root_path)
+
+      Ecto.Adapters.SQL.Sandbox.allow(IexCode.Repo, self(), pid)
+
+      assert {:error, :model_route_configuration_changed} =
+               PlannerAgent.plan(session.id, "Do not dispatch this prompt",
+                 run_id: Ecto.UUID.generate(),
+                 execution_policy: policy
+               )
+
+      AgentSupervisor.stop_agent(session.id, :planner)
+    end
   end
 
   describe "ExplorerAgent GenServer" do
@@ -151,6 +182,156 @@ defmodule IexCode.Engine.AgentsTest do
   end
 
   describe "CoderAgent GenServer" do
+    test "durable policy snapshots bound every coder tool/model loop", %{
+      session: session,
+      project: project
+    } do
+      tool_response =
+        {:ok,
+         %{
+           text: "",
+           tool_calls: [%{id: "call-1", name: "read_file", args: %{}}]
+         }}
+
+      completion = {:ok, %{text: "complete", tool_calls: []}}
+
+      assert {:ok, low_settings} = Settings.update_settings(%{agent_max_turns: 2})
+      low_policy = Settings.execution_policy(low_settings, session)
+
+      # The queued run keeps its snapshot even if the global default changes
+      # before its coder (or a later repair coder) is invoked.
+      assert {:ok, _current_settings} = Settings.update_settings(%{agent_max_turns: 20})
+
+      start_supervised!({IexCode.CoderAgentLoopLLMStub, List.duplicate(tool_response, 20)})
+
+      {:ok, pid} =
+        AgentSupervisor.start_agent(session.id, :coder,
+          project_root: project.root_path,
+          llm: IexCode.CoderAgentLoopLLMStub
+        )
+
+      Ecto.Adapters.SQL.Sandbox.allow(IexCode.Repo, self(), pid)
+
+      assert {:error, {:tool_iteration_limit_reached, 2}} =
+               CoderAgent.code(session.id, "bounded durable coding",
+                 execution_policy: low_policy,
+                 allowed_tools: []
+               )
+
+      assert IexCode.CoderAgentLoopLLMStub.calls() == 2
+      AgentSupervisor.stop_agent(session.id, :coder)
+
+      stop_supervised!(IexCode.CoderAgentLoopLLMStub)
+
+      start_supervised!({IexCode.CoderAgentLoopLLMStub, List.duplicate(tool_response, 20)})
+
+      {:ok, pid} =
+        AgentSupervisor.start_agent(session.id, :coder,
+          project_root: project.root_path,
+          llm: IexCode.CoderAgentLoopLLMStub
+        )
+
+      Ecto.Adapters.SQL.Sandbox.allow(IexCode.Repo, self(), pid)
+
+      assert {:error, {:tool_iteration_limit_reached, 2}} =
+               CoderAgent.code(session.id, "bounded diagnostic repair",
+                 execution_policy: low_policy,
+                 diagnostics: %{compile: "still failing"},
+                 allowed_tools: []
+               )
+
+      assert IexCode.CoderAgentLoopLLMStub.calls() == 2
+      AgentSupervisor.stop_agent(session.id, :coder)
+
+      stop_supervised!(IexCode.CoderAgentLoopLLMStub)
+
+      start_supervised!(
+        {IexCode.CoderAgentLoopLLMStub, List.duplicate(tool_response, 6) ++ [completion]}
+      )
+
+      assert {:ok, high_settings} = Settings.update_settings(%{agent_max_turns: 7})
+      high_policy = Settings.execution_policy(high_settings, session)
+
+      {:ok, pid} =
+        AgentSupervisor.start_agent(session.id, :coder,
+          project_root: project.root_path,
+          llm: IexCode.CoderAgentLoopLLMStub
+        )
+
+      Ecto.Adapters.SQL.Sandbox.allow(IexCode.Repo, self(), pid)
+
+      assert {:ok, "complete"} =
+               CoderAgent.code(session.id, "bounded durable coding",
+                 execution_policy: high_policy,
+                 allowed_tools: []
+               )
+
+      assert IexCode.CoderAgentLoopLLMStub.calls() == 7
+      AgentSupervisor.stop_agent(session.id, :coder)
+    end
+
+    test "legacy coder invocations retain the five-turn ceiling", %{
+      session: session,
+      project: project
+    } do
+      tool_response =
+        {:ok,
+         %{
+           text: "",
+           tool_calls: [%{id: "legacy-call", name: "read_file", args: %{}}]
+         }}
+
+      start_supervised!(
+        {IexCode.CoderAgentLoopLLMStub,
+         List.duplicate(tool_response, 5) ++ [{:ok, %{text: "too late", tool_calls: []}}]}
+      )
+
+      {:ok, pid} =
+        AgentSupervisor.start_agent(session.id, :coder,
+          project_root: project.root_path,
+          llm: IexCode.CoderAgentLoopLLMStub
+        )
+
+      Ecto.Adapters.SQL.Sandbox.allow(IexCode.Repo, self(), pid)
+
+      assert {:error, {:tool_iteration_limit_reached, 5}} =
+               CoderAgent.code(session.id, "legacy coding", allowed_tools: [])
+
+      assert IexCode.CoderAgentLoopLLMStub.calls() == 5
+      AgentSupervisor.stop_agent(session.id, :coder)
+    end
+
+    test "in-progress durable swarm coder rejects endpoint drift before a model turn", %{
+      session: session,
+      project: project
+    } do
+      assert {:ok, original} =
+               Settings.update_settings(%{
+                 openai_api_key: "route-test-key",
+                 openai_base_url: "https://original-coder-route.example/v1"
+               })
+
+      policy = Settings.execution_policy(original, session)
+
+      {:ok, pid} =
+        AgentSupervisor.start_agent(session.id, :coder, project_root: project.root_path)
+
+      Ecto.Adapters.SQL.Sandbox.allow(IexCode.Repo, self(), pid)
+
+      assert {:ok, _changed} =
+               Settings.update_settings(%{
+                 openai_base_url: "https://changed-coder-route.example/v1"
+               })
+
+      assert {:error, :model_route_configuration_changed} =
+               CoderAgent.code(session.id, "Do not dispatch this prompt",
+                 run_id: Ecto.UUID.generate(),
+                 execution_policy: policy
+               )
+
+      AgentSupervisor.stop_agent(session.id, :coder)
+    end
+
     @tag :tmp_dir
     test "generates code and applies atomic patches", %{tmp_dir: tmp_dir} do
       {:ok, project} =

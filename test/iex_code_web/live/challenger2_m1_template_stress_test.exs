@@ -347,7 +347,7 @@ defmodule IexCodeWeb.Challenger2M1TemplateStressTest do
     test "sequential settings updates and reads handle SQLite lock serialization gracefully" do
       for i <- 1..10 do
         Settings.update_settings(%{
-          swarm_agent_count: 1 + rem(i, 8),
+          swarm_agent_count: 4 + rem(i, 8),
           auto_save: rem(i, 2) == 0
         })
 

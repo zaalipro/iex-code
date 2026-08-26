@@ -1304,6 +1304,9 @@ defmodule IexCode.Runs do
                 current.attempt >= current.max_attempts ->
                   Repo.rollback(:attempts_exhausted)
 
+                ambiguous_command_effect?(current.id) ->
+                  Repo.rollback(:command_effect_requires_review)
+
                 true ->
                   {superseded_controls, control_events} =
                     supersede_controls_in_transaction!(current.id, %{}, "run_retried")
@@ -4163,8 +4166,12 @@ defmodule IexCode.Runs do
   def enqueue_run_agent_control(_agent_or_id, _key, _attrs),
     do: {:error, :invalid_agent_control}
 
-  def get_run_agent_control(id) when is_binary(id), do: Repo.get(RunAgentControl, id)
-  def get_run_agent_control(_id), do: nil
+  def get_run_agent_control(id, opts \\ [])
+
+  def get_run_agent_control(id, opts) when is_binary(id) and is_list(opts),
+    do: Repo.get(RunAgentControl, id, opts)
+
+  def get_run_agent_control(_id, _opts), do: nil
 
   def list_run_agent_controls(agent_or_id, opts \\ []) when is_list(opts) do
     with %RunAgent{} = agent <- resolve_run_agent(agent_or_id) do
@@ -7492,6 +7499,18 @@ defmodule IexCode.Runs do
   defp run_command_semantically_equal?(%RunCommand{} = existing, %RunCommand{} = requested) do
     fields = [:run_step_id, :tool_name, :arguments, :max_attempts, :not_before]
     Enum.all?(fields, &(Map.get(existing, &1) == Map.get(requested, &1)))
+  end
+
+  # A native tool can finish immediately before its worker loses authority. A
+  # command left running or explicitly uncertain therefore cannot be replayed
+  # safely under a new run attempt without human review.
+  defp ambiguous_command_effect?(run_id) do
+    Repo.exists?(
+      from(command in RunCommand,
+        where:
+          command.run_id == ^run_id and command.status in ["running", "interrupted", "uncertain"]
+      )
+    )
   end
 
   defp validate_event_label(type, source) when is_atom(type) or is_binary(type) do

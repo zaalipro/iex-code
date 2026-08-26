@@ -1,7 +1,7 @@
 defmodule IexCode.Research.DagRuntimeTest do
   use ExUnit.Case, async: true
 
-  alias IexCode.Research.DagRuntime
+  alias IexCode.Research.{DagRuntime, Launch}
 
   @secret "runtime-secret-123"
 
@@ -210,6 +210,202 @@ defmodule IexCode.Research.DagRuntimeTest do
     assert Jason.encode!(result)
   end
 
+  test "ranked search refuses a changed effective route before any effect" do
+    parent = self()
+    session = routing_session()
+    reference = Launch.settings_snapshot_ref(strict_settings(4), session, ["brave"], [])
+    runtime_context = research_context(parent, ["brave"], [])
+
+    assert {:ok, result} =
+             DagRuntime.ranked_search(
+               %{
+                 "provider" => "brave",
+                 "query" => "stable route",
+                 "provider_snapshot_ref" => reference
+               },
+               runtime_context,
+               settings_resolver: fn -> strict_settings(4) end,
+               session_resolver: fn "session" -> session end,
+               search_module: fn "stable route", _opts ->
+                 {:ok, %{results: [], errors: %{}, providers: ["brave"]}}
+               end
+             )
+
+    assert result["provider"] == "brave"
+    assert_receive {:provider_effect, "research.ranked_search", _, _}
+
+    blocked_context =
+      put_in(runtime_context.provider_effect, fn _, _, _, _, _ ->
+        flunk("changed routing must stop before the effect boundary")
+      end)
+
+    assert {:error, :provider_configuration_changed} =
+             DagRuntime.ranked_search(
+               %{
+                 "provider" => "brave",
+                 "query" => "changed route",
+                 "provider_snapshot_ref" => reference
+               },
+               blocked_context,
+               settings_resolver: fn ->
+                 put_in(
+                   strict_settings(5),
+                   ["search", "providers", "brave", "base_url"],
+                   "https://changed.example"
+                 )
+               end,
+               session_resolver: fn "session" -> session end,
+               search_module: fn _, _ -> flunk("changed routing must not invoke the provider") end
+             )
+  end
+
+  test "grounded search refuses a changed effective model route before any effect" do
+    parent = self()
+    session = routing_session()
+
+    reference =
+      Launch.settings_snapshot_ref(strict_settings(4), session, [], ["openai_responses"])
+
+    runtime_context = research_context(parent, [], ["openai_responses"])
+
+    grounded = fn "openai_responses", query, _opts ->
+      {:ok,
+       %{
+         answer: "Answer",
+         provider: :openai_responses,
+         citations: [],
+         search_calls: [%{id: "call-1", queries: [query], status: "completed"}],
+         usage: %{input_tokens: 1, output_tokens: 1},
+         metadata: %{}
+       }}
+    end
+
+    params = %{
+      "provider" => "openai_responses",
+      "query" => "grounded route",
+      "max_input_tokens" => 100,
+      "max_output_tokens" => 1_000,
+      "max_cost_cents" => 10,
+      "provider_snapshot_ref" => reference
+    }
+
+    assert {:ok, _result} =
+             DagRuntime.grounded_search(params, runtime_context,
+               settings_resolver: fn -> strict_settings(4) end,
+               session_resolver: fn "session" -> session end,
+               grounded_search_module: grounded
+             )
+
+    assert_receive {:provider_effect, "research.grounded_search", _, _}
+
+    blocked_context =
+      put_in(runtime_context.provider_effect, fn _, _, _, _, _ ->
+        flunk("changed routing must stop before the effect boundary")
+      end)
+
+    assert {:error, :provider_configuration_changed} =
+             DagRuntime.grounded_search(params, blocked_context,
+               settings_resolver: fn ->
+                 put_in(
+                   strict_settings(5),
+                   ["grounded_providers", "openai_responses", "model"],
+                   "gpt-changed"
+                 )
+               end,
+               session_resolver: fn "session" -> session end,
+               grounded_search_module: fn _, _, _ ->
+                 flunk("changed routing must not invoke the provider")
+               end
+             )
+  end
+
+  test "report synthesis refuses a changed strict session model or endpoint" do
+    parent = self()
+    session = routing_session()
+
+    reference =
+      Launch.settings_snapshot_ref(
+        strict_settings(4),
+        session,
+        ["brave"],
+        ["openai_responses"]
+      )
+
+    runtime_context = research_context(parent, ["brave"], ["openai_responses"])
+
+    params = %{
+      "objective" => "Verify synthesis routing",
+      "depth" => "high",
+      "sources" => [
+        %{
+          "url" => "https://example.com",
+          "title" => "Evidence",
+          "provider" => "brave",
+          "snippet" => "bounded evidence"
+        }
+      ],
+      "max_input_tokens" => 2_000,
+      "max_output_tokens" => 1_000,
+      "provider_snapshot_ref" => reference
+    }
+
+    llm = fn _messages, _system, _session, _on_chunk, _opts ->
+      {:ok, %{text: "# Verified", usage: %{input_tokens: 1, output_tokens: 1}}}
+    end
+
+    assert {:ok, %{"markdown" => "# Verified"}} =
+             DagRuntime.synthesize_report(params, runtime_context,
+               settings_resolver: fn -> strict_settings(4) end,
+               session_resolver: fn "session" -> session end,
+               llm_module: llm
+             )
+
+    assert_receive {:provider_effect, "research.report_synthesis", _, _}
+
+    blocked_context =
+      put_in(runtime_context.provider_effect, fn _, _, _, _, _ ->
+        flunk("changed routing must stop before the effect boundary")
+      end)
+
+    assert {:error, :provider_configuration_changed} =
+             DagRuntime.synthesize_report(params, blocked_context,
+               settings_resolver: fn ->
+                 put_in(
+                   strict_settings(5),
+                   ["synthesis_providers", "openai", "base_url"],
+                   "https://changed-models.example"
+                 )
+               end,
+               session_resolver: fn "session" -> session end,
+               llm_module: fn _, _, _, _, _ ->
+                 flunk("changed settings must not call the model")
+               end
+             )
+
+    assert {:error, :provider_configuration_changed} =
+             DagRuntime.synthesize_report(params, blocked_context,
+               settings_resolver: fn -> strict_settings(4) end,
+               session_resolver: fn "session" -> %{session | model_name: "gpt-next"} end,
+               llm_module: fn _, _, _, _, _ -> flunk("changed model must not be called") end
+             )
+  end
+
+  test "legacy current-settings references remain executable" do
+    assert {:ok, _result} =
+             DagRuntime.ranked_search(
+               %{
+                 "provider" => "brave",
+                 "query" => "legacy route",
+                 "provider_snapshot_ref" => "settings://search-providers/current"
+               },
+               context(self()),
+               settings_resolver: ranked_settings(),
+               search_module: fn _, _ ->
+                 {:ok, %{results: [], errors: %{}, providers: ["brave"]}}
+               end
+             )
+  end
+
   test "provider exceptions and checkpoint failures become stable redacted errors" do
     leaking = fn _query, _opts -> raise "upstream echoed #{@secret}" end
 
@@ -399,7 +595,7 @@ defmodule IexCode.Research.DagRuntimeTest do
                params,
                context(parent),
                settings_resolver: grounded_settings(),
-               session_resolver: fn "session" -> %{id: "session"} end,
+               session_resolver: fn "session" -> routing_session() end,
                llm_module: llm
              )
 
@@ -410,6 +606,15 @@ defmodule IexCode.Research.DagRuntimeTest do
     assert is_function(on_chunk, 1)
     assert llm_opts[:allowed_tools] == []
     assert llm_opts[:max_tokens] == 1_000
+
+    assert llm_opts[:resolved_route] == %{
+             "provider" => "openai",
+             "model" => "gpt-test",
+             "api_key" => @secret,
+             "base_url" => "https://models.example",
+             "temperature" => 0.1
+           }
+
     assert result["markdown"] == "# Report\n\nFinding [1]."
 
     assert result["usage"] == %{
@@ -451,7 +656,7 @@ defmodule IexCode.Research.DagRuntimeTest do
 
     common_opts = [
       settings_resolver: grounded_settings(),
-      session_resolver: fn "session" -> %{id: "session"} end,
+      session_resolver: fn "session" -> routing_session() end,
       llm_module: fn _messages, _system, _session, _on_chunk, _opts ->
         {:ok, %{text: "# Report\n\nFinding [1].", usage: %{}}}
       end
@@ -560,6 +765,15 @@ defmodule IexCode.Research.DagRuntimeTest do
     }
   end
 
+  defp research_context(parent, ranked, grounded) do
+    put_in(context(parent), [:run, :metadata], %{
+      "research" => %{
+        "ranked_providers" => ranked,
+        "grounded_providers" => grounded
+      }
+    })
+  end
+
   defp effect_receipt(response, usage) do
     {:ok, %{replayed?: false, response: response, usage: usage}}
   end
@@ -585,10 +799,44 @@ defmodule IexCode.Research.DagRuntimeTest do
   defp grounded_settings do
     fn ->
       %{
+        "synthesis_providers" => %{
+          "openai" => %{"api_key" => @secret, "base_url" => "https://models.example"}
+        },
         "grounded_providers" => %{
           "openai_responses" => %{"api_key" => @secret, "model" => "gpt-test"}
         }
       }
     end
+  end
+
+  defp strict_settings(lock_version) do
+    %{
+      "settings_identity" => %{"id" => "settings-1", "lock_version" => lock_version},
+      "search" => %{
+        "order" => ["brave", "exa"],
+        "providers" => %{
+          "brave" => %{
+            "enabled" => true,
+            "api_key" => @secret,
+            "base_url" => "https://brave.example"
+          },
+          "exa" => %{
+            "enabled" => true,
+            "api_key" => "unselected-secret",
+            "base_url" => "https://exa.example"
+          }
+        }
+      },
+      "synthesis_providers" => %{
+        "openai" => %{"base_url" => "https://models.example", "api_key" => @secret}
+      },
+      "grounded_providers" => %{
+        "openai_responses" => %{"api_key" => @secret, "model" => "gpt-test"}
+      }
+    }
+  end
+
+  defp routing_session do
+    %{id: "session", model_provider: "openai", model_name: "gpt-test"}
   end
 end

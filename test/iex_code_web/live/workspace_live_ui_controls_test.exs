@@ -332,6 +332,7 @@ defmodule IexCodeWeb.WorkspaceLiveUIControlsTest do
       assert html =~ "OBSERVED SESSION TOKENS"
       assert html =~ "NO FABRICATED USAGE"
       assert has_element?(view, "#settings-search-providers")
+      assert has_element?(view, "#legacy-settings-swarm-agent-count[min='4'][max='32']")
 
       # 2. Save new settings
       html =
@@ -425,7 +426,7 @@ defmodule IexCodeWeb.WorkspaceLiveUIControlsTest do
 
       assert has_element?(view, "#run-setup-provider-tavily[checked]")
       refute has_element?(view, "#run-setup-provider-duckduckgo[checked]")
-      assert has_element?(view, "#run-setup-research-depth option[value='deep'][selected]")
+      assert has_element?(view, "#run-setup-research-level option[value='high'][selected]")
       assert has_element?(view, "#run-setup-research-sources[value='7']")
     end
   end

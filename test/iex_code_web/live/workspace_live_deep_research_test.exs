@@ -36,6 +36,7 @@ defmodule IexCodeWeb.WorkspaceLiveDeepResearchTest do
 
     assert has_element?(view, "#deep-research-page")
     assert has_element?(view, "#deep-research-form")
+    assert has_element?(view, "#deep-research-form #deep-research-request-id")
 
     assert has_element?(view, "[data-level='low'][data-rounds='1'][data-subagents='2']")
     assert has_element?(view, "[data-level='medium'][data-rounds='2'][data-subagents='3']")
@@ -155,6 +156,80 @@ defmodule IexCodeWeb.WorkspaceLiveDeepResearchTest do
     assert has_element?(view, "#deep-research-provider-duckduckgo[checked]")
   end
 
+  test "exact launcher rejects oversized crafted source counts instead of clamping", %{
+    conn: conn,
+    workspace_path: path
+  } do
+    project = create_project_fixture(%{root_path: path})
+    session = create_session_fixture(project)
+    {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}/research")
+
+    html =
+      view
+      |> form("#deep-research-form", %{
+        "research" => %{
+          "objective" => "Reject silent source truncation",
+          "level" => "low",
+          "max_sources" => "41",
+          "providers" => %{"duckduckgo" => "true"}
+        }
+      })
+      |> render_submit()
+
+    assert html =~ "maximum sources must be a whole number from 1 to 40"
+    assert has_element?(view, "#deep-research-max-sources[value='41']")
+    assert Runs.list_runs(session_id: session.id) == []
+  end
+
+  test "exact launcher rejects a crafted level instead of coercing it to medium", %{
+    conn: conn,
+    workspace_path: path
+  } do
+    project = create_project_fixture(%{root_path: path})
+    session = create_session_fixture(project)
+    {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}/research")
+
+    html =
+      render_submit(view, "submit_deep_research", %{
+        "research" => %{
+          "objective" => "Reject silent effort coercion",
+          "level" => "extreme",
+          "max_sources" => "8",
+          "providers" => %{"duckduckgo" => "true"},
+          "request_id" => Ecto.UUID.generate()
+        }
+      })
+
+    assert html =~ "research effort must be one of low, medium, high, or ultra"
+    assert Runs.list_runs(session_id: session.id) == []
+  end
+
+  test "exact launcher replays the same submitted request id idempotently", %{
+    conn: conn,
+    workspace_path: path
+  } do
+    project = create_project_fixture(%{root_path: path})
+    session = create_session_fixture(project)
+    {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}/research")
+    request_id = Ecto.UUID.generate()
+
+    payload = %{
+      "research" => %{
+        "objective" => "Idempotent research launch",
+        "level" => "low",
+        "max_sources" => "8",
+        "providers" => %{"duckduckgo" => "true"},
+        "request_id" => request_id
+      }
+    }
+
+    render_submit(view, "submit_deep_research", payload)
+    render_submit(view, "submit_deep_research", payload)
+
+    assert [run] = Runs.list_runs(session_id: session.id)
+    assert run.request_key == request_id
+  end
+
   test "slash command opens the ready-result picker and enforces session scope", %{
     conn: conn,
     workspace_path: path
@@ -205,7 +280,7 @@ defmodule IexCodeWeb.WorkspaceLiveDeepResearchTest do
       |> form("#prompt-form", %{"prompt" => "/deep_research #{oversized_id}"})
       |> render_submit()
 
-    assert html =~ "was not found in this session"
+    assert html =~ "outside the supported range"
     refute has_element?(view, "#prompt-research-attachments")
   end
 
@@ -346,13 +421,19 @@ defmodule IexCodeWeb.WorkspaceLiveDeepResearchTest do
     session = create_session_fixture(project)
     {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
     view |> element("#tab-btn-research") |> render_click()
-    view |> element("#research-open-settings") |> render_click()
 
-    assert has_element?(view, "#settings-search-providers")
+    assert has_element?(
+             view,
+             "#research-open-settings[href='/sessions/#{session.id}/settings#providers']"
+           )
+
+    {:ok, settings_view, _html} = live(conn, ~p"/sessions/#{session.id}/settings")
+
+    assert has_element?(settings_view, "#settings-search-providers")
 
     for descriptor <- Registry.descriptors() do
       provider = descriptor.id
-      assert has_element?(view, "#settings-search-provider-#{provider}")
+      assert has_element?(settings_view, "#settings-search-provider-#{provider}")
     end
   end
 

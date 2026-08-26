@@ -100,10 +100,10 @@ defmodule IexCodeWeb.CommandPalette do
       id: "open_settings",
       category: :action,
       title: "Settings & API Keys",
-      subtitle: "Configure Anthropic, OpenAI, and Swarm parameters",
+      subtitle: "Open model, execution, swarm, research, and runtime settings",
       icon: "hero-cog-6-tooth",
       shortcut: "Cmd+,",
-      event: "toggle_settings_modal",
+      event: "open_settings_page",
       params: %{}
     },
     %{

@@ -3,7 +3,8 @@ defmodule IexCode.Engine.SwarmCoordinator do
   Coordinates multi-agent autonomous swarm workflows using isolated OTP GenServers
   (PlannerAgent, ExplorerAgent, CoderAgent, VerifierAgent) managed by AgentSupervisor.
   Implements real-time steering message ingestion, pause/resume/cancel lifecycle control,
-  and autonomous self-healing error feedback loop (up to 3 retries) with cycle detection.
+  and an autonomous self-healing error feedback loop with a configurable,
+  bounded retry ceiling (0–10) and cycle detection.
   """
   require Logger
 
@@ -16,6 +17,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
   }
 
   alias IexCode.Engine.Agents.{PlannerAgent, ExplorerAgent, CoderAgent, VerifierAgent}
+  alias IexCode.Execution.Limits
   alias IexCode.Tools
   alias IexCode.Tools.{AutoFix, MultiPatch}
   alias IexCode.{Runs, Sessions}
@@ -40,6 +42,8 @@ defmodule IexCode.Engine.SwarmCoordinator do
       :run_attempt,
       :run_lease_generation,
       :run_lease_ms,
+      :execution_policy,
+      :control_barrier,
       fleet_agents: [],
       stage: :init,
       iteration: 0,
@@ -256,10 +260,12 @@ defmodule IexCode.Engine.SwarmCoordinator do
           Sessions.get_session(session_id) || %Sessions.Session{id: session_id, status: "running"}
       end
 
+    session = apply_execution_policy!(session, opts[:execution_policy])
+
     project_root =
       opts[:project_root] || (session.project && session.project.root_path) || File.cwd!()
 
-    max_retries = Keyword.get(opts, :max_retries, 3)
+    max_retries = bounded_max_retries(Keyword.get(opts, :max_retries, 3))
 
     # Subscribe to steering topic for mid-flight steering/control
     unless is_binary(opts[:run_id]) do
@@ -299,6 +305,8 @@ defmodule IexCode.Engine.SwarmCoordinator do
       run_attempt: opts[:run_attempt],
       run_lease_generation: opts[:run_lease_generation],
       run_lease_ms: opts[:run_lease_ms],
+      execution_policy: opts[:execution_policy],
+      control_barrier: opts[:control_barrier],
       max_retries: max_retries,
       start_time_ms: start_time_ms,
       stage_start_ms: start_time_ms,
@@ -306,7 +314,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
       status: if(pre_paused?, do: :paused, else: :running)
     }
 
-    state = ensure_durable_run_active!(state)
+    state = state |> ensure_durable_run_active!() |> restore_durable_steering()
 
     if pre_paused? do
       broadcast(session_id, {:session_status_changed, "paused"})
@@ -315,7 +323,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
       update_db_session_status(session_id, "running")
     end
 
-    state = attach_durable_fleet(state)
+    state = state |> ensure_durable_user_message() |> attach_durable_fleet()
 
     # 1. Root Swarm Operation — created before the guarded region below so the
     # crash handler can still mark it failed (try-body bindings don't leak to catch).
@@ -331,6 +339,8 @@ defmodule IexCode.Engine.SwarmCoordinator do
         5,
         "Swarm initialized with #{fleet_size(state)} isolated OTP subagents."
       )
+
+      state = await_control_barrier(state)
 
       # A pause that landed before subscribe: block until resumed (or cancelled;
       # cancellation throws {:swarm_cancelled, _, _} from inside the wait).
@@ -418,12 +428,9 @@ defmodule IexCode.Engine.SwarmCoordinator do
     state = ensure_durable_run_active!(state)
 
     receive do
-      {:run_control, run_id, control_id, :steer, %{"guidance" => steer_text}}
+      {:run_control, run_id, control_id, :steer, %{"guidance" => _steer_text}}
       when run_id == state.run_id ->
-        next_state =
-          if acknowledge_control(control_id, state, "steer") == :ok,
-            do: ingest_steering(state, steer_text, "durable run control"),
-            else: state
+        next_state = reconcile_durable_steering(state, control_id, "durable run control")
 
         check_steering_and_control(next_state)
 
@@ -477,6 +484,27 @@ defmodule IexCode.Engine.SwarmCoordinator do
     end
   end
 
+  # A deterministic safe-point used by concurrency tests and controlled
+  # embedders. It is reached only after init-stage persistence has returned, so
+  # the waiting coordinator cannot hold a checked-out database connection.
+  # Monitoring the controller prevents an abandoned barrier from leaking a run.
+  defp await_control_barrier(%State{control_barrier: {controller, reference}} = state)
+       when is_pid(controller) and is_reference(reference) do
+    monitor = Process.monitor(controller)
+    send(controller, {:swarm_control_barrier, self(), reference})
+
+    receive do
+      {:release_swarm_control_barrier, ^reference} ->
+        Process.demonitor(monitor, [:flush])
+        %State{state | control_barrier: nil}
+
+      {:DOWN, ^monitor, :process, ^controller, _reason} ->
+        throw({:durable_run_fenced, :control_barrier_owner_down})
+    end
+  end
+
+  defp await_control_barrier(state), do: state
+
   defp wait_for_resume_or_cancel(%State{session_id: session_id} = state) do
     state = ensure_durable_run_active!(state)
 
@@ -505,15 +533,11 @@ defmodule IexCode.Engine.SwarmCoordinator do
         Logger.info("[SwarmCoordinator] Durable run #{run_id} cancelled while paused.")
         handle_cancel_and_terminate(state, action: :rollback)
 
-      {:run_control, run_id, control_id, :steer, %{"guidance" => steer_text}}
+      {:run_control, run_id, control_id, :steer, %{"guidance" => _steer_text}}
       when run_id == state.run_id ->
-        if acknowledge_control(control_id, state, "steer") == :ok do
-          state
-          |> ingest_steering(steer_text, "durable run control while paused")
-          |> wait_for_resume_or_cancel()
-        else
-          wait_for_resume_or_cancel(state)
-        end
+        state
+        |> reconcile_durable_steering(control_id, "durable run control while paused")
+        |> wait_for_resume_or_cancel()
 
       {:resume, ^session_id} ->
         Logger.info("[SwarmCoordinator] Session #{session_id} resumed.")
@@ -552,9 +576,12 @@ defmodule IexCode.Engine.SwarmCoordinator do
     end
   end
 
-  defp ingest_steering(%State{session_id: session_id} = state, steer_text, source) do
+  defp ingest_steering(%State{session_id: session_id} = state, steer_text, _source) do
     steer_text = normalize_steering(steer_text)
-    Logger.info("[SwarmCoordinator] Ingested steering from #{source}: #{steer_text}")
+
+    Logger.info(
+      "[SwarmCoordinator] Ingested interactive steering session=#{session_id} bytes=#{byte_size(steer_text)}"
+    )
 
     duplicate? = steer_text == "" or steer_text in state.steer_directives
     addition = "\n\n[Real-time User Guidance]: " <> steer_text
@@ -572,7 +599,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
         [steer_text | state.steer_directives] |> Enum.take(@max_steering_directives)
       end
 
-    if steer_text != "" do
+    if steer_text != "" and not duplicate? do
       broadcast(
         session_id,
         {:swarm_steered,
@@ -760,6 +787,14 @@ defmodule IexCode.Engine.SwarmCoordinator do
   end
 
   defp acknowledge_control(control_id, state, action) do
+    with {:ok, control} <- validate_control(control_id, state, action) do
+      resolve_or_accept_control(control, state, action)
+    else
+      _ -> :stale
+    end
+  end
+
+  defp validate_control(control_id, state, action) do
     with %{
            run_id: run_id,
            kind: kind,
@@ -783,16 +818,108 @@ defmodule IexCode.Engine.SwarmCoordinator do
          } <- Runs.get_run(run_id),
          true <- run_status in ["running", "paused"],
          true <- DateTime.compare(lease_expires_at, DateTime.utc_now()) == :gt do
-      resolve_or_accept_control(control, state, action)
+      {:ok, control}
     else
-      _ -> :stale
+      _ -> {:error, :stale}
     end
   end
 
+  # The control row is already the durable, idempotent steering intent. Apply
+  # its persisted payload to memory before resolving the durable receipt so a
+  # crash can only leave the control claimed for safe replay, never applied but
+  # absent from the coordinator state.
+  @doc false
+  def reconcile_durable_steering(%State{} = state, control_id, source \\ "durable run control")
+      when is_binary(control_id) and is_binary(source) do
+    case validate_control(control_id, state, "steer") do
+      {:ok, control} ->
+        guidance = value(control.payload, "guidance")
+
+        case persist_durable_steering(state, control, guidance) do
+          :ok ->
+            next_state =
+              if is_binary(guidance), do: put_steering(state, guidance), else: state
+
+            case resolve_or_accept_control(control, next_state, "steer") do
+              :ok ->
+                notify_durable_steering(state, next_state, guidance, source)
+                next_state
+
+              :stale ->
+                state
+            end
+
+          {:error, reason} ->
+            Logger.warning(
+              "Could not persist durable swarm steering #{control.id}: #{inspect(reason)}"
+            )
+
+            state
+        end
+
+      {:error, :stale} ->
+        state
+    end
+  end
+
+  defp persist_durable_steering(state, control, guidance) when is_binary(guidance) do
+    attrs = %{
+      session_id: state.session_id,
+      role: "user",
+      agent_name: "User (Steer)",
+      content: "Steering guidance: " <> normalize_steering(guidance),
+      metadata: %{
+        "run_id" => state.run_id,
+        "control_id" => control.id,
+        "intent" => "steer"
+      }
+    }
+
+    case Sessions.create_message_once(attrs, "swarm-steer:#{control.id}") do
+      {:ok, message, :created} ->
+        broadcast(state.session_id, {:message_created, message})
+        :ok
+
+      {:ok, _message, :existing} ->
+        :ok
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp persist_durable_steering(_state, _control, _guidance),
+    do: {:error, :invalid_steering_guidance}
+
+  defp notify_durable_steering(previous, updated, guidance, _source) when is_binary(guidance) do
+    normalized = normalize_steering(guidance)
+
+    if normalized != "" and normalized not in previous.steer_directives and
+         normalized in updated.steer_directives do
+      Logger.info(
+        "[SwarmCoordinator] Ingested durable steering run=#{updated.run_id} bytes=#{byte_size(normalized)}"
+      )
+
+      broadcast(
+        updated.session_id,
+        {:swarm_steered,
+         %{
+           session_id: updated.session_id,
+           steering: normalized,
+           updated_prompt: updated.user_prompt
+         }}
+      )
+    end
+
+    :ok
+  end
+
+  defp notify_durable_steering(_previous, _updated, _guidance, _source), do: :ok
+
   # Legacy pause/resume transitions atomically resolve their receipt in the
   # dispatcher before delivery. Steering remains claimed until the coordinator
-  # journals its ingestion. Both paths are safe only after the exact lineage
-  # checks in acknowledge_control/3 above.
+  # has applied the durable control payload to its state. Both paths are safe
+  # only after the exact lineage checks in validate_control/3 above.
   defp resolve_or_accept_control(%{status: "applied"}, _state, _action), do: :ok
 
   defp resolve_or_accept_control(%{status: "claimed"} = control, state, action) do
@@ -820,19 +947,13 @@ defmodule IexCode.Engine.SwarmCoordinator do
 
   defp replay_claimed_controls(%State{run_id: run_id} = state) when is_binary(run_id) do
     case Runs.list_controls(run_id, status: "claimed", limit: 1) do
-      [%{kind: "steer", payload: payload} = control] ->
-        guidance = value(payload, "guidance")
-        applied? = acknowledge_control(control.id, state, "steer") == :ok
+      [%{kind: "steer"} = control] ->
+        next_state =
+          reconcile_durable_steering(state, control.id, "durable control poll")
 
-        if applied? do
-          next_state =
-            if is_binary(guidance),
-              do: ingest_steering(state, guidance, "durable control poll"),
-              else: state
-
-          replay_claimed_controls(next_state)
-        else
-          state
+        case Runs.get_control(control.id) do
+          %{status: "applied"} -> replay_claimed_controls(next_state)
+          _unresolved -> state
         end
 
       [%{kind: "pause"} = control] ->
@@ -855,6 +976,38 @@ defmodule IexCode.Engine.SwarmCoordinator do
   end
 
   defp replay_claimed_controls(state), do: state
+
+  @doc false
+  def restore_durable_steering(%State{run_id: run_id} = state) when is_binary(run_id) do
+    run_id
+    |> Runs.list_controls(status: "applied", kind: "steer", limit: 1_000)
+    |> Enum.take(-@max_steering_directives)
+    |> Enum.reduce(state, fn control, current ->
+      guidance = value(control.payload, "guidance")
+      if is_binary(guidance), do: put_steering(current, guidance), else: current
+    end)
+  end
+
+  def restore_durable_steering(state), do: state
+
+  defp put_steering(state, steer_text) do
+    steer_text = normalize_steering(steer_text)
+    duplicate? = steer_text == "" or steer_text in state.steer_directives
+    addition = "\n\n[Real-time User Guidance]: " <> steer_text
+
+    new_prompt =
+      if duplicate? or
+           byte_size(state.user_prompt) + byte_size(addition) > @max_steering_context_bytes,
+         do: state.user_prompt,
+         else: state.user_prompt <> addition
+
+    directives =
+      if duplicate?,
+        do: state.steer_directives,
+        else: [steer_text | state.steer_directives] |> Enum.take(@max_steering_directives)
+
+    %State{state | user_prompt: new_prompt, steer_directives: directives}
+  end
 
   defp align_durable_control_state(
          %State{
@@ -959,6 +1112,58 @@ defmodule IexCode.Engine.SwarmCoordinator do
   end
 
   defp attach_durable_fleet(state), do: state
+
+  defp apply_execution_policy!(session, nil), do: session
+
+  defp apply_execution_policy!(session, policy) when is_map(policy) do
+    provider =
+      Map.get(policy, "model_provider") || Map.get(policy, :model_provider) ||
+        session.model_provider
+
+    model = Map.get(policy, "model_name") || Map.get(policy, :model_name) || session.model_name
+
+    temperature =
+      Map.get(policy, "temperature") || Map.get(policy, :temperature) || session.temperature
+
+    temperature = if is_number(temperature), do: temperature * 1.0, else: temperature
+
+    cond do
+      provider not in ["openai", "anthropic"] ->
+        raise ArgumentError, "invalid snapshotted model provider"
+
+      not Limits.valid_model_name?(model) ->
+        raise ArgumentError, "invalid snapshotted model name"
+
+      not is_float(temperature) or temperature < 0.0 or temperature > 2.0 ->
+        raise ArgumentError, "invalid snapshotted model temperature"
+
+      true ->
+        %{session | model_provider: provider, model_name: model, temperature: temperature}
+    end
+  end
+
+  defp apply_execution_policy!(_session, _policy),
+    do: raise(ArgumentError, "invalid snapshotted execution policy")
+
+  defp ensure_durable_user_message(%State{run_id: run_id} = state) when is_binary(run_id) do
+    case run_id |> Runs.get_run() |> Sessions.ensure_run_user_message() do
+      {:ok, message, :created} ->
+        broadcast(state.session_id, {:message_created, message})
+
+      {:ok, _message, :existing} ->
+        :ok
+
+      {:error, reason} ->
+        raise "could not persist durable swarm user turn: #{inspect(reason)}"
+    end
+
+    state
+  end
+
+  defp ensure_durable_user_message(state), do: state
+
+  defp bounded_max_retries(value) when is_integer(value), do: value |> max(0) |> min(10)
+  defp bounded_max_retries(_value), do: 3
 
   defp ensure_legacy_agents(%State{run_id: run_id, fleet_agents: agents} = state)
        when is_binary(run_id) and agents != [],
@@ -1136,6 +1341,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
           run_id: state.run_id,
           steer_directives: state.steer_directives ++ targeted_steering,
           allowed_tools: state.allowed_tools,
+          execution_policy: state.execution_policy,
           workspace_lock_delegation: state.workspace_lock_delegation
         )
       end)
@@ -1248,6 +1454,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
       diagnostics: state.verifier_result,
       steer_directives: state.steer_directives,
       allowed_tools: state.allowed_tools,
+      execution_policy: state.execution_policy,
       workspace_lock_delegation: state.workspace_lock_delegation
     ]
 

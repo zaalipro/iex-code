@@ -7,7 +7,7 @@ defmodule IexCode.Research.DagAdapter do
   fanout limits; no manifest-supplied module or executable callback is accepted.
   """
 
-  alias IexCode.Research.{GroundedSearch, LevelPolicy, Registry}
+  alias IexCode.Research.{GroundedSearch, Launch, LevelPolicy, Registry}
 
   @required_kinds ~w(
     research_plan
@@ -47,8 +47,10 @@ defmodule IexCode.Research.DagAdapter do
          {:ok, grounded} <- grounded_providers(Keyword.get(opts, :grounded_providers, [])),
          :ok <- evidence_plane(ranked, grounded),
          {:ok, level_policy} <- LevelPolicy.fetch(Keyword.get(opts, :level, "medium")),
+         {:ok, max_sources} <- Launch.normalize_max_sources(Keyword.get(opts, :max_sources)),
          :ok <- validate_round_override(opts[:max_rounds], level_policy.multistep_rounds),
          :ok <- manifest_size(level_policy.multistep_rounds, length(ranked) + length(grounded)) do
+      opts = Keyword.put(opts, :max_sources, max_sources)
       nodes = nodes(objective, ranked, grounded, level_policy.multistep_rounds, opts)
       {:ok, apply_level_policy(nodes, level_policy)}
     end
@@ -152,7 +154,7 @@ defmodule IexCode.Research.DagAdapter do
       Enum.map(searches, & &1.key) ++ List.wrap(prior_audit),
       %{
         "round" => round,
-        "max_sources" => bounded(opts[:max_sources], 1, 250, 40),
+        "max_sources" => bounded(opts[:max_sources], 1, Launch.max_sources(), 40),
         "preserve_provider_rank" => true,
         "grounded_answers_are_not_ranked_rows" => true,
         "canonicalize_urls" => true,
@@ -170,8 +172,8 @@ defmodule IexCode.Research.DagAdapter do
       [merge_key],
       %{
         "round" => round,
-        "max_sources" => bounded(opts[:max_sources], 1, 250, 40),
-        "max_requests" => bounded(opts[:max_sources], 1, 250, 40),
+        "max_sources" => bounded(opts[:max_sources], 1, Launch.max_sources(), 40),
+        "max_requests" => bounded(opts[:max_sources], 1, Launch.max_sources(), 40),
         "max_cost_cents" => bounded(opts[:source_fetch_cost_cents], 0, 100_000, 0),
         "max_parallel_fetches" => bounded(opts[:fetch_parallelism], 1, 16, 6),
         "max_body_bytes" => bounded(opts[:max_body_bytes], 1_000, 5_000_000, 750_000),
@@ -212,6 +214,7 @@ defmodule IexCode.Research.DagAdapter do
         "max_input_tokens" => bounded(opts[:synthesis_input_tokens], 256, 200_000, 64_000),
         "max_output_tokens" => bounded(opts[:synthesis_output_tokens], 256, 100_000, 12_000),
         "max_cost_cents" => bounded(opts[:synthesis_cost_cents], 0, 100_000, 2_000),
+        "provider_snapshot_ref" => provider_snapshot_ref(opts[:provider_snapshot_ref]),
         "require_claim_ledger" => true,
         "attachment_refs" => attachment_refs(opts[:attachment_refs]),
         "artifact_kind" => "research_report_draft"

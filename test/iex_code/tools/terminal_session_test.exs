@@ -154,9 +154,148 @@ defmodule IexCode.Tools.TerminalSessionTest do
       assert :ok = TerminalSession.set_occupant(session_id, :user)
       assert_receive {:terminal_occupant, %{session_id: ^session_id, occupant: :user}}, 3_000
     end
+
+    test "interrupt holds a raw-input workspace reservation until a shell boundary", %{
+      session_id: session_id
+    } do
+      {:ok, pid} =
+        start_supervised(
+          {TerminalSession,
+           [
+             session_id: session_id,
+             project_root: File.cwd!(),
+             interrupt_signal_delay_ms: 10_000
+           ]}
+        )
+
+      _ = :sys.get_state(pid)
+      assert :ok = TerminalSession.send_input(session_id, "printf raw-lock\n")
+      locked = :sys.get_state(pid)
+      assert locked.raw_input_lock?
+      assert %IexCode.WorkspaceLocks{} = locked.workspace_lock_handle
+
+      assert :ok = TerminalSession.send_signal(session_id, :sigint)
+      scheduled = :sys.get_state(pid)
+      assert scheduled.raw_input_lock?
+      assert scheduled.workspace_lock_handle == locked.workspace_lock_handle
+      assert %{delivered?: false} = scheduled.pending_interrupt
+
+      delivered =
+        :sys.replace_state(pid, fn state ->
+          cancel_test_timer(state.pending_interrupt.signal_timer)
+
+          %{
+            state
+            | pending_interrupt: %{
+                state.pending_interrupt
+                | signal_timer: nil,
+                  delivered?: true
+              }
+          }
+        end)
+
+      # The shim sends this protocol acknowledgement only after tcgetpgrp/1
+      # reports that the original shell owns the PTY foreground again.
+      send(
+        pid,
+        {delivered.adapter.port,
+         {:data, <<4, delivered.pending_interrupt.boundary_id::unsigned-big-64>>}}
+      )
+
+      settled = :sys.get_state(pid)
+
+      refute settled.raw_input_lock?
+      assert is_nil(settled.pending_interrupt)
+      assert is_nil(settled.workspace_lock_handle)
+    end
+
+    test "ignored interrupt keeps the lock until the bounded forced-restart boundary", %{
+      session_id: session_id
+    } do
+      {:ok, pid} =
+        start_supervised(
+          {TerminalSession,
+           [
+             session_id: session_id,
+             project_root: File.cwd!(),
+             interrupt_signal_delay_ms: 10_000,
+             interrupt_force_timeout_ms: 10_000
+           ]}
+        )
+
+      original = :sys.get_state(pid)
+      ready_token = "IGNORING_SIGINT_#{System.unique_integer([:positive])}"
+
+      assert :ok =
+               TerminalSession.send_input(
+                 session_id,
+                 "trap '' INT; printf #{ready_token}; sleep 30\n"
+               )
+
+      assert {:ok, _output} = receive_matching_output(session_id, ready_token)
+      assert :ok = TerminalSession.send_signal(session_id, :sigint)
+
+      scheduled = :sys.get_state(pid)
+      cancel_test_timer(scheduled.pending_interrupt.signal_timer)
+
+      send(
+        pid,
+        {:deferred_signal, scheduled.pending_interrupt.request_id, :sigint,
+         scheduled.pending_interrupt.generation, scheduled.pending_interrupt.port}
+      )
+
+      delivered = :sys.get_state(pid)
+
+      assert delivered.raw_input_lock?
+      assert delivered.pending_interrupt.delivered?
+      assert %IexCode.WorkspaceLocks{} = delivered.workspace_lock_handle
+
+      send(
+        pid,
+        {:interrupt_force_timeout, delivered.pending_interrupt.request_id,
+         delivered.pending_interrupt.generation, delivered.pending_interrupt.port}
+      )
+
+      restarted = :sys.get_state(pid)
+      assert restarted.status == :running
+      assert restarted.adapter_generation > original.adapter_generation
+      refute restarted.adapter.port == original.adapter.port
+      refute restarted.raw_input_lock?
+      assert is_nil(restarted.pending_interrupt)
+      assert is_nil(restarted.workspace_lock_handle)
+    end
   end
 
   describe "ring buffer history management" do
+    test "records real structured command history and preserves it across shell restart", %{
+      session_id: session_id
+    } do
+      {:ok, pid} =
+        start_supervised({TerminalSession, [session_id: session_id, project_root: File.cwd!()]})
+
+      _ = :sys.get_state(pid)
+      command = "printf structured-history"
+      assert {:ok, command_id} = TerminalSession.run_command(session_id, command)
+
+      assert_receive {:terminal_command_completed,
+                      %{
+                        session_id: ^session_id,
+                        command_id: ^command_id,
+                        command: ^command,
+                        exit_code: 0
+                      }},
+                     8_000
+
+      assert {:ok, state} = TerminalSession.get_state(session_id)
+      assert [%{command: ^command, exit_code: 0, status: :ok} | _] = state.command_history
+
+      # Restart is a shell lifecycle action, not a privacy clear; the already
+      # bounded/redacted structured history intentionally remains available.
+      assert {:ok, ^pid} = TerminalSession.restart(session_id)
+      assert {:ok, restarted} = TerminalSession.get_state(session_id)
+      assert [%{command: ^command} | _] = restarted.command_history
+    end
+
     test "accumulates history and supports clear", %{session_id: session_id} do
       {:ok, pid} =
         start_supervised({TerminalSession, [session_id: session_id, project_root: File.cwd!()]})
@@ -201,6 +340,154 @@ defmodule IexCode.Tools.TerminalSessionTest do
       assert String.contains?(history, "CHUNK_5_")
       refute String.contains?(history, "CHUNK_1_")
     end
+
+    test "command input is strictly bounded and multibyte truncation stays valid UTF-8", %{
+      session_id: session_id
+    } do
+      {:ok, pid} =
+        start_supervised({TerminalSession, [session_id: session_id, project_root: File.cwd!()]})
+
+      _ = :sys.get_state(pid)
+
+      oversized = "printf x # " <> String.duplicate("界", 11_000)
+      assert byte_size(oversized) > 32 * 1_024
+
+      assert {:error, :terminal_command_too_large} =
+               TerminalSession.run_command(session_id, oversized)
+
+      assert {:error, :invalid_terminal_command_encoding} =
+               TerminalSession.run_command(session_id, <<255, 254, 128>>)
+
+      assert {:error, :invalid_terminal_command_characters} =
+               TerminalSession.run_command(session_id, "printf ok\0")
+
+      assert TerminalSession.command_summary(oversized) |> String.valid?()
+      assert byte_size(TerminalSession.command_summary(oversized)) <= 4 * 1_024
+
+      state = :sys.get_state(pid)
+      assert state.active_command == nil
+      assert :queue.is_empty(state.command_queue)
+      refute state.raw_input_lock?
+    end
+
+    test "raw input preserves binary controls but rejects huge paste before locking", %{
+      session_id: session_id
+    } do
+      {:ok, pid} =
+        start_supervised({TerminalSession, [session_id: session_id, project_root: File.cwd!()]})
+
+      _ = :sys.get_state(pid)
+
+      assert :ok = TerminalSession.validate_raw_input(<<255, 254, 128, 3, 4>>)
+
+      assert {:error, :terminal_input_too_large} =
+               TerminalSession.send_input(session_id, :binary.copy(<<0>>, 256 * 1_024 + 1))
+
+      state = :sys.get_state(pid)
+      refute state.raw_input_lock?
+      assert state.buffer_bytes == 0
+    end
+
+    test "structured history redacts secrets and enforces per-entry and total byte caps", %{
+      session_id: session_id
+    } do
+      {:ok, pid} =
+        start_supervised({TerminalSession, [session_id: session_id, project_root: File.cwd!()]})
+
+      _ = :sys.get_state(pid)
+
+      oversized_history =
+        Enum.map(1..100, fn index ->
+          %{
+            command_id: "legacy-#{index}",
+            command: "printf ok # " <> String.duplicate("a", 8_000),
+            exit_code: 0,
+            status: :ok,
+            duration_ms: 1,
+            completed_at: DateTime.utc_now()
+          }
+        end)
+
+      :sys.replace_state(pid, &%{&1 | command_history: oversized_history})
+
+      secret = "super-secret-value"
+      command = "printf history-safe # OPENAI_API_KEY=#{secret}"
+      assert {:ok, command_id} = TerminalSession.run_command(session_id, command)
+
+      assert_receive {:terminal_command_completed,
+                      %{session_id: ^session_id, command_id: ^command_id, command: public_command}},
+                     8_000
+
+      refute public_command =~ secret
+      assert public_command =~ "[REDACTED]"
+
+      assert {:ok, state} = TerminalSession.get_state(session_id)
+      assert length(state.command_history) <= 100
+      assert Enum.all?(state.command_history, &(byte_size(&1.command) <= 4 * 1_024))
+      assert Enum.sum(Enum.map(state.command_history, &byte_size(&1.command))) <= 128 * 1_024
+      refute inspect(state.command_history) =~ secret
+    end
+
+    test "command summaries redact common authentication headers without broad matches" do
+      secret = "sensitive-value"
+
+      cases = [
+        {"curl -H 'X-API-Key: #{secret}' https://example.test",
+         "curl -H 'X-API-Key: [REDACTED]' https://example.test"},
+        {"curl -H \"API-Key: #{secret}\" https://example.test",
+         "curl -H \"API-Key: [REDACTED]\" https://example.test"},
+        {"curl -H 'X-Goog-API-Key: #{secret}' https://example.test",
+         "curl -H 'X-Goog-API-Key: [REDACTED]' https://example.test"},
+        {"curl -H Ocp-Apim-Subscription-Key:#{secret} https://example.test",
+         "curl -H Ocp-Apim-Subscription-Key:[REDACTED] https://example.test"},
+        {"curl -H 'Authorization: Basic #{secret}' https://example.test",
+         "curl -H 'Authorization: Basic [REDACTED]' https://example.test"},
+        {"curl -H 'Proxy-Authorization: Bearer #{secret}' https://example.test",
+         "curl -H 'Proxy-Authorization: Bearer [REDACTED]' https://example.test"}
+      ]
+
+      for {command, expected} <- cases do
+        assert TerminalSession.command_summary(command) == expected
+        refute TerminalSession.command_summary(command) =~ secret
+      end
+
+      harmless = "echo api-keyboard:layout authorization:custom x-api-key-note:public"
+      assert TerminalSession.command_summary(harmless) == harmless
+    end
+
+    test "clear removes structured history and suppresses an active command from reappearing", %{
+      session_id: session_id
+    } do
+      {:ok, pid} =
+        start_supervised({TerminalSession, [session_id: session_id, project_root: File.cwd!()]})
+
+      _ = :sys.get_state(pid)
+      assert {:ok, completed_id} = TerminalSession.run_command(session_id, "printf before-clear")
+
+      assert_receive {:terminal_command_completed,
+                      %{session_id: ^session_id, command_id: ^completed_id}},
+                     8_000
+
+      assert {:ok, %{command_history: [_ | _]}} = TerminalSession.get_state(session_id)
+      assert :ok = TerminalSession.clear_history(session_id)
+
+      assert {:ok, %{command_history: []}} = TerminalSession.get_state(session_id)
+
+      assert {:ok, active_id} =
+               TerminalSession.run_command(session_id, "sleep 0.2; printf after-clear")
+
+      assert_receive {:terminal_command_started,
+                      %{session_id: ^session_id, command_id: ^active_id}},
+                     3_000
+
+      assert :ok = TerminalSession.clear_history(session_id)
+
+      assert_receive {:terminal_command_completed,
+                      %{session_id: ^session_id, command_id: ^active_id}},
+                     8_000
+
+      assert {:ok, %{command_history: []}} = TerminalSession.get_state(session_id)
+    end
   end
 
   describe "restart and process lifecycle" do
@@ -216,6 +503,51 @@ defmodule IexCode.Tools.TerminalSessionTest do
       token = "POST_RESTART_#{:erlang.unique_integer([:positive])}"
       assert :ok = TerminalSession.send_input(session_id, "echo #{token}\n")
       assert {:ok, _} = receive_matching_output(session_id, token)
+    end
+
+    test "a deferred SIGINT from an old adapter generation cannot interrupt its replacement", %{
+      session_id: session_id
+    } do
+      {:ok, pid} =
+        start_supervised({TerminalSession, [session_id: session_id, project_root: File.cwd!()]})
+
+      original = :sys.get_state(pid)
+      assert is_port(original.adapter.port)
+      assert is_integer(original.adapter_generation)
+
+      # This schedules the real delayed signal for the original adapter.
+      assert :ok = TerminalSession.send_signal(session_id, :sigint)
+      assert {:ok, ^pid} = TerminalSession.restart(session_id)
+
+      replacement = :sys.get_state(pid)
+      assert replacement.adapter_generation > original.adapter_generation
+      refute replacement.adapter.port == original.adapter.port
+
+      assert {:ok, command_id} = TerminalSession.run_command(session_id, "sleep 2")
+
+      assert_receive {:terminal_command_started,
+                      %{session_id: ^session_id, command_id: ^command_id}},
+                     3_000
+
+      # Reproduce delivery after the restart and force GenServer synchronization.
+      send(
+        pid,
+        {:deferred_signal, make_ref(), :sigint, original.adapter_generation,
+         original.adapter.port}
+      )
+
+      _ = :sys.get_state(pid)
+
+      refute_receive {:terminal_command_completed,
+                      %{session_id: ^session_id, command_id: ^command_id}},
+                     300
+
+      # A signal bound to the current adapter still works and cleans up quickly.
+      assert :ok = TerminalSession.send_signal(session_id, :sigint)
+
+      assert_receive {:terminal_command_completed,
+                      %{session_id: ^session_id, command_id: ^command_id}},
+                     5_000
     end
 
     test "handles shell exit command cleanly", %{session_id: session_id} do
@@ -356,6 +688,13 @@ defmodule IexCode.Tools.TerminalSessionTest do
   end
 
   # Helper to accumulate chunks until token is found
+  defp cancel_test_timer(nil), do: :ok
+
+  defp cancel_test_timer(timer) do
+    _ = Process.cancel_timer(timer, async: false, info: false)
+    :ok
+  end
+
   defp receive_matching_output(session_id, token, acc \\ "", timeout \\ 8_000) do
     receive do
       {:terminal_output, %{session_id: ^session_id, data: data}} ->

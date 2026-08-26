@@ -176,15 +176,18 @@ defmodule IexCodeWeb.WorkspaceLiveAsyncRunsTest do
         "mode" => "research",
         "priority" => "high",
         "max_attempts" => "4",
-        "token_budget" => "25000",
-        "cost_budget_cents" => "500",
+        "token_budget" => "100000",
+        "cost_budget_cents" => "5000",
         "time_budget_minutes" => "45",
-        "research_depth" => "deep",
+        "research_level" => "high",
         "research_max_sources" => "18",
         "providers" => %{"duckduckgo" => "true"}
       }
     })
     |> render_change()
+
+    assert has_element?(view, "#run-setup-research-attempt-policy")
+    refute has_element?(view, "#run-setup-max-attempts")
 
     view
     |> form("#prompt-form", %{"prompt" => "/research compare durable agent control planes"})
@@ -196,8 +199,8 @@ defmodule IexCodeWeb.WorkspaceLiveAsyncRunsTest do
     assert run.execution_engine == "dag_v1"
     assert run.priority == "high"
     assert run.max_attempts == 1
-    assert run.token_budget == 25_000
-    assert run.cost_budget_cents == 500
+    assert run.token_budget == 100_000
+    assert run.cost_budget_cents == 5_000
     assert run.time_budget_ms == 2_700_000
 
     assert run.metadata["research"]["level"] == "high"
@@ -225,8 +228,8 @@ defmodule IexCodeWeb.WorkspaceLiveAsyncRunsTest do
            )
 
     assert has_element?(view, "#async-run-research-manifest")
-    assert has_element?(view, "#async-run-token-budget[data-budget-limit='25000']")
-    assert has_element?(view, "#async-run-cost-budget", "Cost · reported only")
+    assert has_element?(view, "#async-run-token-budget[data-budget-limit='100000']")
+    assert has_element?(view, "#async-run-cost-budget", "Cost · reported or reserved")
   end
 
   defp typed_dag_manifest do
@@ -294,7 +297,7 @@ defmodule IexCodeWeb.WorkspaceLiveAsyncRunsTest do
     |> form("#run-setup-panel", %{
       "run_setup" => %{
         "mode" => "research",
-        "research_depth" => "quick",
+        "research_level" => "low",
         "providers" => %{"duckduckgo" => "true"}
       }
     })

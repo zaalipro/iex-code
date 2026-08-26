@@ -163,6 +163,30 @@ defmodule IexCode.Tools.PTYAdapter do
 
   def send_signal(_target, _signal), do: {:error, :invalid_target}
 
+  @doc false
+  @spec send_tracked_signal(t(), signal(), non_neg_integer()) :: :ok | {:error, term()}
+  def send_tracked_signal(
+        %__MODULE__{port: port, mode: :pty},
+        signal,
+        boundary_id
+      )
+      when is_integer(boundary_id) and boundary_id >= 0 and boundary_id <= 0xFFFFFFFFFFFFFFFF do
+    sig_num = signal_to_int(signal)
+
+    try do
+      Port.command(port, <<3, sig_num::8, boundary_id::unsigned-big-64>>)
+      :ok
+    rescue
+      e in ArgumentError -> {:error, {:port_error, e}}
+    end
+  end
+
+  def send_tracked_signal(%__MODULE__{} = adapter, signal, _boundary_id) do
+    send_signal(adapter, signal)
+  end
+
+  def send_tracked_signal(_adapter, _signal, _boundary_id), do: {:error, :invalid_target}
+
   @doc """
   Closes the port and cleanly tears down child processes.
   """
@@ -206,12 +230,15 @@ defmodule IexCode.Tools.PTYAdapter do
 
   @doc """
   Processes a raw message from the Erlang Port.
-  Returns `{:output, data, adapter}`, `{:exit, exit_code, adapter}`, `{:ready, os_pid, adapter}`, `{:noop, adapter}`, or `:unknown`.
+  Returns `{:output, data, adapter}`, `{:exit, exit_code, adapter}`,
+  `{:ready, os_pid, adapter}`, `{:interrupt_boundary, id, adapter}`,
+  `{:noop, adapter}`, or `:unknown`.
   """
   @spec handle_port_message(adapter :: t(), msg :: term()) ::
           {:output, binary(), t()}
           | {:exit, integer(), t()}
           | {:ready, integer(), t()}
+          | {:interrupt_boundary, non_neg_integer(), t()}
           | {:noop, t()}
           | :unknown
   def handle_port_message(%__MODULE__{port: port, mode: :pty} = adapter, {port, {:data, payload}}) do
@@ -227,6 +254,10 @@ defmodule IexCode.Tools.PTYAdapter do
       <<3, child_pid::32-signed-big>> ->
         # OP_READY
         {:ready, child_pid, %{adapter | os_pid: child_pid}}
+
+      <<4, boundary_id::unsigned-big-64>> ->
+        # OP_INTERRUPT_BOUNDARY
+        {:interrupt_boundary, boundary_id, adapter}
 
       _other ->
         {:noop, adapter}

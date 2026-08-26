@@ -15,7 +15,12 @@ defmodule IexCode.Tools.TerminalWorkspaceLockTest do
 
     session_id = "terminal-lock-#{System.unique_integer([:positive])}"
     :ok = Phoenix.PubSub.subscribe(@pubsub_server, "session:#{session_id}:terminal")
-    {:ok, _pid} = TerminalServer.ensure_started(session_id, workspace_path: root)
+
+    {:ok, _pid} =
+      TerminalServer.ensure_started(session_id,
+        workspace_path: root,
+        interrupt_signal_delay_ms: 10_000
+      )
 
     on_exit(fn ->
       Phoenix.PubSub.unsubscribe(@pubsub_server, "session:#{session_id}:terminal")
@@ -67,6 +72,55 @@ defmodule IexCode.Tools.TerminalWorkspaceLockTest do
              WorkspaceLocks.acquire(context.project, [:project], owner_id: "competing-run")
 
     assert :ok = TerminalServer.kill(context.session_id)
+    assert Runs.list_workspace_locks(project_id: context.project.id, active: true) == []
+  end
+
+  test "SIGINT retains the managed lease through delivery until the shell idle boundary",
+       context do
+    assert :ok = TerminalServer.send_input(context.session_id, "\n")
+    pid = TerminalServer.whereis(context.session_id)
+
+    assert [%{status: "held", owner_id: owner}] =
+             Runs.list_workspace_locks(project_id: context.project.id, active: true)
+
+    assert owner == "terminal-session:#{context.session_id}"
+    assert :ok = TerminalServer.send_signal(context.session_id, :sigint)
+
+    scheduled = :sys.get_state(pid)
+    assert scheduled.raw_input_lock?
+    assert %{delivered?: false} = scheduled.pending_interrupt
+
+    assert [%{status: "held"}] =
+             Runs.list_workspace_locks(project_id: context.project.id, active: true)
+
+    delivered =
+      :sys.replace_state(pid, fn state ->
+        _ = Process.cancel_timer(state.pending_interrupt.signal_timer, async: false, info: false)
+
+        pending = %{
+          state.pending_interrupt
+          | signal_timer: nil,
+            delivered?: true
+        }
+
+        %{state | pending_interrupt: pending}
+      end)
+
+    assert delivered.raw_input_lock?
+
+    assert [%{status: "held"}] =
+             Runs.list_workspace_locks(project_id: context.project.id, active: true)
+
+    send(
+      pid,
+      {delivered.adapter.port,
+       {:data, <<4, delivered.pending_interrupt.boundary_id::unsigned-big-64>>}}
+    )
+
+    settled = :sys.get_state(pid)
+
+    refute settled.raw_input_lock?
+    assert is_nil(settled.pending_interrupt)
     assert Runs.list_workspace_locks(project_id: context.project.id, active: true) == []
   end
 

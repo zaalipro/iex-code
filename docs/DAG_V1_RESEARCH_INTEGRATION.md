@@ -72,7 +72,17 @@ Persistent Research settings include the default exact level, maximum sources, c
 requirement, maximum cost in cents, maximum tokens, and time budget in minutes, alongside the
 ranked-provider configuration and order. The launcher requires at least one selected,
 automatically selectable ranked provider and fails before inserting a run when that selection is
-empty; credential and provider availability are still checked at execution.
+empty or not launch-ready. Launch readiness requires an enabled, non-retired provider and its
+required key; SearxNG additionally requires its instance URL and Google Programmable Search its
+engine ID. Credentials are never copied into the manifest and are resolved again from live
+settings at effect time.
+
+The canonical launch boundary is shared by the dedicated page, workspace `/research` command,
+Run setup Research mode, and local `mix iex_code.run /research ...`. New launchers use the exact
+`low`, `medium`, `high`, and `ultra` names. The legacy quick/standard/deep setting remains for
+already-persisted `legacy_v1` compatibility and does not reinterpret new DAG rows. All launchers
+enforce `max_sources` in `1..40`; values above 40 fail validation rather than being truncated, and
+the same limit is enforced by evidence envelopes and final materialization.
 
 ## Domain-neutral scheduler boundary
 
@@ -171,9 +181,12 @@ cancellation, retries, health, and costs are visible at that boundary. Its query
 must retain each request separately. A future bounded-expansion revision should use one node per
 request with deterministic keys derived from round, normalized query, plane, and provider.
 Provider credentials are resolved from application settings immediately before execution and do
-not enter step params, results, events, or artifacts. The manifest retains a non-secret provider
-snapshot reference for identity, but current v1 execution still reads the live provider settings;
-freezing revisioned selection and filter configuration remains future work.
+not enter step params, results, events, or artifacts. New manifests retain a v2 SHA-256 reference
+over the selected providers' non-secret effective order, endpoints, engines/options, grounded
+models, and synthesis route. Credential-only rotation is allowed because credentials are omitted
+from that digest. Any non-secret routing change is detected against live settings before the next
+provider effect and fails the run for a newly reviewed launch rather than silently rerouting it;
+legacy current-settings references remain executable for persisted-manifest compatibility.
 
 ## Evidence and citation boundaries
 
@@ -226,10 +239,24 @@ verified envelope can become a ready `ResearchResult`; failed or cancelled work 
 terminal without report files. A future adaptive-expansion protocol must not bypass the original
 run ceilings.
 
+At launch, the adapter totals the conservative token and cost reservations declared by every
+provider-effect node. An explicit whole-run token or cost cap below those totals is rejected
+before the run is inserted; when absent, the run defaults to the calculated requirement. This
+does not promise universal pricing accuracy: provider-effect receipts reserve and settle the
+declared dimensions, while broader versioned price catalogs remain future work.
+
 ## Control and recovery semantics
 
 The active runner already prevents new claims while paused, propagates cancellation through
-supervised control tokens, and fences retry attempts. Research steering and targeted
+supervised control tokens, and fences step retry attempts. Exact research rows set
+`max_attempts: 1` and persist a manual-review/non-replayable whole-run policy, so an interrupted,
+failed, or cancelled research run is not requeued as a second paid run attempt. Start a new
+research launch after review instead. Replay-safe steps and verified provider response receipts
+can still support bounded step attempts while the same parent run lease/generation remains
+authoritative. Process/application loss interrupts the outer run; it never resumes arbitrary
+code at an instruction checkpoint.
+
+Research steering and targeted
 query/provider controls are not implemented. Their future contract is append-only: steering is
 consumed by a specific planning attempt and may influence a later round but cannot rewrite
 completed evidence. Targeted cancel affects one query/provider node and lets merge/audit decide

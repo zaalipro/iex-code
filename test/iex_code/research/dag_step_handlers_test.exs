@@ -45,6 +45,25 @@ defmodule IexCode.Research.DagStepHandlersTest do
     end)
   end
 
+  test "v1 synthesis validation remains compatible with manifests predating routing refs" do
+    assert {:ok, nodes} =
+             DagAdapter.build("Legacy synthesis manifest",
+               level: "low",
+               ranked_providers: ["tavily"]
+             )
+
+    synthesis = find(nodes, "research.report.synthesize")
+    legacy_params = Map.delete(synthesis.params, "provider_snapshot_ref")
+
+    assert :ok = ReportSynthesize.validate_params(legacy_params, synthesis.depends_on)
+
+    assert {:error, {:params, :invalid_fields}} =
+             ReportSynthesize.validate_params(
+               Map.put(legacy_params, "unexpected", true),
+               synthesis.depends_on
+             )
+  end
+
   test "executes one finite round through typed evidence and verified report boundaries" do
     assert {:ok, nodes} =
              DagAdapter.build("Research durable evidence",

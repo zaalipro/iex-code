@@ -120,6 +120,43 @@ defmodule IexCode.Engine.InteractiveSwarmOwnershipTest do
              SessionServer.cancel_session(context.session.id, project_root: context.root)
 
     assert_receive {:DOWN, ^owner_ref, :process, ^owner, :normal}, 5_000
+
+    assert Enum.count(
+             Sessions.list_messages(context.session.id),
+             &String.contains?(&1.content, "Session Stopped")
+           ) == 1
+  end
+
+  test "interactive steering logs size but never guidance content", context do
+    secret = "interactive-secret-steer-#{Ecto.UUID.generate()}"
+    previous_level = Logger.level()
+    Logger.configure(level: :info)
+    on_exit(fn -> Logger.configure(level: previous_level) end)
+
+    log =
+      ExUnit.CaptureLog.capture_log([level: :info], fn ->
+        {:ok, owner} =
+          SwarmCoordinator.run_swarm(
+            context.session.id,
+            "Capture steering log safety",
+            context.root
+          )
+
+        assert_receive {:swarm_stage_changed, %{stage: :init}}, 5_000
+        {:ok, _server} = SessionServer.ensure_started(context.session.id)
+        assert {:ok, ^secret} = SessionServer.send_steering(context.session.id, secret)
+        assert_receive {:swarm_steered, %{steering: ^secret}}, 2_000
+
+        owner_ref = Process.monitor(owner)
+
+        assert {:ok, %{status: :stopped}} =
+                 SessionServer.cancel_session(context.session.id, project_root: context.root)
+
+        assert_receive {:DOWN, ^owner_ref, :process, ^owner, :normal}, 5_000
+      end)
+
+    refute log =~ secret
+    assert log =~ "bytes=#{byte_size(secret)}"
   end
 
   test "SessionServer restart adopts the registered coordinator", context do
@@ -455,6 +492,7 @@ defmodule IexCode.Engine.InteractiveSwarmOwnershipTest do
     on_exit(fn -> IexCode.Engine.FleetSupervisor.stop(run.id) end)
     {:ok, paused} = Runs.transition_run_worker(run, "paused", %{}, authority(run))
     parent = self()
+    barrier_ref = make_ref()
 
     coordinator =
       start_supervised!(
@@ -468,7 +506,8 @@ defmodule IexCode.Engine.InteractiveSwarmOwnershipTest do
                  run_lease_owner: paused.lease_owner,
                  run_attempt: paused.attempt,
                  run_lease_generation: paused.lease_generation,
-                 run_lease_ms: 30_000
+                 run_lease_ms: 30_000,
+                 control_barrier: {parent, barrier_ref}
                )
 
              send(parent, {:stale_control_result, result})
@@ -479,8 +518,7 @@ defmodule IexCode.Engine.InteractiveSwarmOwnershipTest do
 
     assert {:ok, ^coordinator, _metadata} = await_swarm_owner(context.session.id)
     assert_receive {:swarm_stage_changed, %{stage: :init}}, 2_000
-    :erlang.suspend_process(coordinator)
-    on_exit(fn -> if Process.alive?(coordinator), do: :erlang.resume_process(coordinator) end)
+    assert_receive {:swarm_control_barrier, ^coordinator, ^barrier_ref}, 2_000
 
     replacement_owner = "dispatcher:replacement"
 
@@ -500,7 +538,7 @@ defmodule IexCode.Engine.InteractiveSwarmOwnershipTest do
 
     assert {:ok, claimed} = Runs.claim_control(pending, replacement_owner)
     send(coordinator, {:run_control, replacement.id, claimed.id, :resume, %{}})
-    :erlang.resume_process(coordinator)
+    send(coordinator, {:release_swarm_control_barrier, barrier_ref})
 
     assert_receive {:stale_control_result, {:error, {:durable_run_fenced, :lease_not_owned}}},
                    2_000
@@ -514,11 +552,12 @@ defmodule IexCode.Engine.InteractiveSwarmOwnershipTest do
     on_exit(fn -> IexCode.Engine.FleetSupervisor.stop(run.id) end)
     {:ok, paused} = Runs.transition_run_worker(run, "paused", %{}, authority(run))
     parent = self()
+    barrier_ref = make_ref()
 
-    # Persist the replacement lineage's snapshot before suspending the stale
-    # coordinator. Suspending a process at an arbitrary instruction can freeze
-    # it while it owns the single SQL Sandbox connection and make this setup
-    # race the checkout queue in the full suite.
+    # Persist the replacement lineage's snapshot before starting the stale
+    # coordinator. The explicit control barrier below pauses only after init
+    # persistence returns, so no process can be frozen while holding the shared
+    # SQL Sandbox connection.
     path = Path.join(context.root, "replacement.txt")
     File.write!(path, "replacement")
     transaction_id = "replacement-#{System.unique_integer([:positive])}"
@@ -552,7 +591,8 @@ defmodule IexCode.Engine.InteractiveSwarmOwnershipTest do
                  run_lease_owner: paused.lease_owner,
                  run_attempt: paused.attempt,
                  run_lease_generation: paused.lease_generation,
-                 run_lease_ms: 30_000
+                 run_lease_ms: 30_000,
+                 control_barrier: {parent, barrier_ref}
                )
 
              send(parent, {:stale_terminal_result, result})
@@ -563,8 +603,7 @@ defmodule IexCode.Engine.InteractiveSwarmOwnershipTest do
 
     assert {:ok, ^coordinator, _metadata} = await_swarm_owner(context.session.id)
     assert_receive {:swarm_stage_changed, %{stage: :init}}, 2_000
-    :erlang.suspend_process(coordinator)
-    on_exit(fn -> if Process.alive?(coordinator), do: :erlang.resume_process(coordinator) end)
+    assert_receive {:swarm_control_barrier, ^coordinator, ^barrier_ref}, 2_000
 
     Repo.update_all(from(candidate in Run, where: candidate.id == ^paused.id),
       inc: [lease_generation: 1],
@@ -583,7 +622,7 @@ defmodule IexCode.Engine.InteractiveSwarmOwnershipTest do
              )
 
     send(coordinator, {:run_control, paused.id, :cancel, %{}})
-    :erlang.resume_process(coordinator)
+    send(coordinator, {:release_swarm_control_barrier, barrier_ref})
 
     assert_receive {:stale_terminal_result, {:error, {:durable_run_fenced, :lease_not_owned}}},
                    2_000
@@ -698,6 +737,16 @@ defmodule IexCode.Engine.InteractiveSwarmOwnershipTest do
     assert_receive {:test_run_resumed, ^run_id}, 2_000
     assert Runs.get_run!(run_id).status == "running"
     refute_receive {:resume, _session_id}, 100
+
+    guidance = "Durable steering is persisted only by its execution coordinator"
+    assert {:ok, ^guidance} = SessionServer.send_steering(context.session.id, guidance)
+    assert_receive {:test_run_steered, ^run_id, ^guidance}, 2_000
+
+    # This executor acknowledges the durable control but intentionally does not
+    # journal a steering message. SessionServer must not create a second,
+    # non-idempotent message or announce application before the real coordinator.
+    assert Sessions.list_messages(context.session.id) == []
+    refute_receive {:swarm_steered, %{steering: ^guidance}}, 100
 
     assert {:error, :durable_cancel_action_unsupported} =
              SessionServer.cancel_session(context.session.id, action: :commit)

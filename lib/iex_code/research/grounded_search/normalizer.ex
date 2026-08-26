@@ -2,6 +2,7 @@ defmodule IexCode.Research.GroundedSearch.Normalizer do
   @moduledoc false
 
   alias IexCode.Research.GroundedSearch.GroundedAnswer
+  alias IexCode.Execution.Limits
 
   @max_answer_bytes 250_000
   @max_citations 200
@@ -59,7 +60,8 @@ defmodule IexCode.Research.GroundedSearch.Normalizer do
   def credentials(opts) do
     with api_key when is_binary(api_key) and api_key != "" and byte_size(api_key) <= 16_000 <-
            opts[:api_key],
-         model when is_binary(model) and model != "" and byte_size(model) <= 500 <- opts[:model] do
+         model when is_binary(model) <- opts[:model],
+         true <- Limits.valid_model_name?(model) do
       {:ok, api_key, model}
     else
       nil -> {:error, {:configuration, :missing_api_key_or_model}}

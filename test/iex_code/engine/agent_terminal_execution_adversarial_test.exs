@@ -411,16 +411,32 @@ defmodule IexCode.Engine.AgentTerminalExecutionAdversarialTest do
 
       flood_count = 30
 
-      # Start agent task that takes ~800ms
+      # A FIFO provides an explicit completion barrier: once occupancy is
+      # observed, the agent remains blocked until every flood result is
+      # collected. This tests the lock rather than scheduler timing.
+      barrier_path =
+        Path.join(
+          System.tmp_dir!(),
+          "iex-code-agent-lock-#{:erlang.unique_integer([:positive])}.fifo"
+        )
+
+      {_output, 0} = System.cmd("mkfifo", [barrier_path])
+      on_exit(fn -> File.rm(barrier_path) end)
+
+      escaped_barrier_path = barrier_path |> String.replace("'", "'\\''")
+
       agent_task =
         Task.async(fn ->
-          # Introduce artificial command sleep so we have a wide window to flood keystrokes
-          cmd = "sleep 0.8; echo '#{agent_token}'"
+          cmd = "read _ < '#{escaped_barrier_path}'; echo '#{agent_token}'"
           TerminalServer.run_agent_command(session_id, cmd, "VerifierAgent", timeout_ms: 10_000)
         end)
 
-      # Give GenServer time to register agent occupant
-      Process.sleep(50)
+      assert_receive {:terminal_occupant,
+                      %{
+                        session_id: ^session_id,
+                        occupant: {:agent, "VerifierAgent", _operation_id}
+                      }},
+                     5_000
 
       # Verify state reflects agent occupancy
       {:ok, state_mid} = TerminalServer.get_state(session_id)
@@ -443,13 +459,12 @@ defmodule IexCode.Engine.AgentTerminalExecutionAdversarialTest do
       # Collect all user flood responses
       user_results = Task.await_many(user_flood_tasks, 5_000)
 
-      # All user inputs during agent occupation MUST return {:error, :agent_occupied}
-      # (or :ok only if finished after agent unlocks, but during sleep they must be rejected)
-      occupied_rejections =
-        Enum.count(user_results, fn res -> res == {:error, :agent_occupied} end)
+      # Every send occurs before the barrier is released, so 100% rejection is
+      # required. An accepted input would prove an occupant-lock regression.
+      assert Enum.all?(user_results, &(&1 == {:error, :agent_occupied})),
+             "Expected every user input to be rejected with :agent_occupied, got: #{inspect(user_results)}"
 
-      assert occupied_rejections > 0,
-             "Expected user inputs to be rejected with :agent_occupied, got: #{inspect(user_results)}"
+      assert :ok = File.write(barrier_path, "continue\n")
 
       # Wait for agent command to finish
       assert {:ok, agent_res} = Task.await(agent_task, 10_000)

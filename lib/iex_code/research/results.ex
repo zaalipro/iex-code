@@ -12,6 +12,13 @@ defmodule IexCode.Research.Results do
   @max_attachment_context_bytes 90_000
   @max_public_id 9_223_372_036_854_775_807
 
+  @doc "Subscribes the caller to durable research-result lifecycle notifications for a session."
+  def subscribe_session(session_id) when is_binary(session_id) and session_id != "" do
+    Phoenix.PubSub.subscribe(IexCode.PubSub, "research:session:#{session_id}")
+  end
+
+  def subscribe_session(_session_id), do: {:error, :invalid_session_id}
+
   @doc "Registers one monotonically increasing public research ID for a deep-research run."
   def register(run, level, metadata \\ %{})
 
@@ -261,11 +268,23 @@ defmodule IexCode.Research.Results do
              Keyword.put(opts, :metadata, commit_metadata),
              authority
            ) do
-      materialize_accepted_paths(
-        ready,
-        root,
-        [{markdown_object, result_path}, {html_object, html_path}]
-      )
+      publication =
+        materialize_accepted_paths(
+          ready,
+          root,
+          [{markdown_object, result_path}, {html_object, html_path}]
+        )
+
+      case publication do
+        :complete ->
+          broadcast_lifecycle(ready, :ready, %{publication: :complete})
+
+        {:repairable_failure, failures} ->
+          broadcast_lifecycle(ready, :materialization_failed, %{
+            publication: :repairable_failure,
+            failures: failures
+          })
+      end
 
       {:ok, ready}
     else
@@ -500,17 +519,52 @@ defmodule IexCode.Research.Results do
   # paths. An existing mismatched destination remains an integrity error; it is
   # never silently replaced or served around.
   defp materialize_accepted_paths(ready, root, objects_and_paths) do
-    Enum.each(objects_and_paths, fn {object, path} ->
-      case ResultStore.materialize(root, object, path) do
-        {:ok, _path} ->
-          :ok
+    failures =
+      Enum.reduce(objects_and_paths, [], fn {object, path}, failures ->
+        case ResultStore.materialize(root, object, path) do
+          {:ok, _path} ->
+            failures
 
-        {:error, reason} ->
-          Logger.warning(
-            "Research result #{ready.id} accepted object #{object.digest} but path publication failed: #{inspect(reason)}"
-          )
-      end
-    end)
+          {:error, reason} ->
+            Logger.warning(
+              "Research result #{ready.id} accepted object #{object.digest} but path publication failed: #{inspect(reason)}"
+            )
+
+            [%{path: path, reason: stable_publication_reason(reason)} | failures]
+        end
+      end)
+
+    case Enum.reverse(failures) do
+      [] ->
+        :complete
+
+      failures ->
+        {:repairable_failure, failures}
+    end
+  end
+
+  defp stable_publication_reason(reason) when is_atom(reason), do: Atom.to_string(reason)
+
+  defp stable_publication_reason({reason, _detail}) when is_atom(reason),
+    do: Atom.to_string(reason)
+
+  defp stable_publication_reason(_reason), do: "publication_failed"
+
+  defp broadcast_lifecycle(%ResearchResult{} = result, lifecycle, details)
+       when is_atom(lifecycle) and is_map(details) do
+    payload = %{result: result, lifecycle: lifecycle, details: details}
+
+    Phoenix.PubSub.broadcast(
+      IexCode.PubSub,
+      "research:session:#{result.session_id}",
+      {:research_result_updated, payload}
+    )
+
+    :ok
+  rescue
+    _error -> :ok
+  catch
+    _kind, _reason -> :ok
   end
 
   defp transition(result_or_id, status, attrs) do
@@ -542,7 +596,9 @@ defmodule IexCode.Research.Results do
           end)
         end)
 
-      unwrap_transaction(transaction)
+      transaction
+      |> unwrap_transaction()
+      |> broadcast_transition_result()
     else
       nil -> {:error, :not_found}
     end
@@ -578,7 +634,9 @@ defmodule IexCode.Research.Results do
           end)
         end)
 
-      unwrap_transaction(transaction)
+      transaction
+      |> unwrap_transaction()
+      |> broadcast_transition_result()
     else
       nil -> {:error, :not_found}
       {:error, _reason} = error -> error
@@ -591,6 +649,19 @@ defmodule IexCode.Research.Results do
 
   defp transition_allowed?(from, to),
     do: {:error, {:invalid_research_result_transition, from, to}}
+
+  defp broadcast_transition_result({:ok, %ResearchResult{} = result} = success) do
+    broadcast_lifecycle(result, lifecycle_atom(result.status), %{})
+    success
+  end
+
+  defp broadcast_transition_result(other), do: other
+
+  defp lifecycle_atom("queued"), do: :queued
+  defp lifecycle_atom("running"), do: :running
+  defp lifecycle_atom("ready"), do: :ready
+  defp lifecycle_atom("failed"), do: :failed
+  defp lifecycle_atom("cancelled"), do: :cancelled
 
   defp validate_worker_authority(authority) do
     owner = authority[:lease_owner]

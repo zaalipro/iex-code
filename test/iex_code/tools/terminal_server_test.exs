@@ -191,6 +191,53 @@ defmodule IexCode.Tools.TerminalServerTest do
       assert result.exit_code == 7
     end
 
+    test "redacts bounded agent commands from every dispatch and completion telemetry event", %{
+      session_id: session_id
+    } do
+      test_pid = self()
+      handler_id = "terminal-command-redaction-#{System.unique_integer([:positive])}"
+      secret = "telemetry-secret-#{System.unique_integer([:positive])}"
+      header_secret = "header-secret-#{System.unique_integer([:positive])}"
+
+      :ok =
+        :telemetry.attach_many(
+          handler_id,
+          [
+            [:iex_code, :terminal, :command_dispatched],
+            [:iex_code, :terminal, :command_completed]
+          ],
+          fn event, _measurements, %{session_id: ^session_id} = metadata, _config ->
+            send(test_pid, {:agent_command_telemetry, event, metadata})
+          end,
+          nil
+        )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      assert {:ok, %{exit_code: 0}} =
+               TerminalServer.run_agent_command(
+                 session_id,
+                 "API_KEY=#{secret} true # curl -H 'X-API-Key: #{header_secret}'",
+                 "VerifierAgent",
+                 timeout_ms: 8_000
+               )
+
+      assert_receive {:agent_command_telemetry, [:iex_code, :terminal, :command_dispatched],
+                      dispatched}
+
+      assert_receive {:agent_command_telemetry, [:iex_code, :terminal, :command_completed],
+                      completed}
+
+      for metadata <- [dispatched, completed] do
+        assert metadata.command ==
+                 "API_KEY=[REDACTED] true # curl -H 'X-API-Key: [REDACTED]'"
+
+        refute metadata.command =~ secret
+        refute metadata.command =~ header_secret
+        assert byte_size(metadata.command) <= 4 * 1_024
+      end
+    end
+
     test "emits completion telemetry when the terminal disappears after dispatch", %{
       session_id: session_id
     } do

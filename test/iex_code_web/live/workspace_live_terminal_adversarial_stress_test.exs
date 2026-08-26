@@ -251,8 +251,18 @@ defmodule IexCodeWeb.WorkspaceLiveTerminalAdversarialStressTest do
           )
         end)
 
-      # Give brief time for occupant lock to register
-      Process.sleep(50)
+      # Synchronize on the actual occupant transition instead of assuming the
+      # lock and LiveView PubSub delivery complete within a scheduler delay.
+      assert_receive {:terminal_occupant,
+                      %{
+                        session_id: session_id,
+                        occupant: {:agent, "VerifierAgent", _op_id}
+                      }},
+                     5_000
+
+      assert session_id == session.id
+
+      _ = :sys.get_state(view.pid)
 
       # Banner appears
       assert has_element?(view, "#terminal-agent-banner")
@@ -270,6 +280,12 @@ defmodule IexCodeWeb.WorkspaceLiveTerminalAdversarialStressTest do
       assert {:ok, agent_res} = Task.await(agent_task, 8_000)
       assert agent_res.exit_code == 0
       assert String.contains?(agent_res.output, agent_token)
+
+      assert_receive {:terminal_occupant, %{session_id: released_session_id, occupant: :user}},
+                     5_000
+
+      assert released_session_id == session.id
+      _ = :sys.get_state(view.pid)
 
       # Banner disappears
       refute has_element?(view, "#terminal-agent-banner")

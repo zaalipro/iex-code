@@ -166,6 +166,8 @@ defmodule IexCode.Tools.MultiPatch.Snapshot do
     :ok
   rescue
     _ -> :ok
+  catch
+    _, _ -> :ok
   end
 
   @doc """
@@ -197,6 +199,8 @@ defmodule IexCode.Tools.MultiPatch.Snapshot do
     :ok
   rescue
     _ -> :ok
+  catch
+    _, _ -> :ok
   end
 
   defp get_durable_snapshot(tx_id) do
@@ -206,6 +210,8 @@ defmodule IexCode.Tools.MultiPatch.Snapshot do
     end
   rescue
     _ -> {:error, :not_found}
+  catch
+    _, _ -> {:error, :not_found}
   end
 
   defp list_durable_snapshots(session_id) do
@@ -226,6 +232,8 @@ defmodule IexCode.Tools.MultiPatch.Snapshot do
     query |> Repo.all() |> Enum.map(&hydrate_record/1)
   rescue
     _ -> []
+  catch
+    _, _ -> []
   end
 
   defp hydrate_record(record) do
@@ -248,6 +256,8 @@ defmodule IexCode.Tools.MultiPatch.Snapshot do
     |> Enum.map(&hydrate_record/1)
   rescue
     _ -> []
+  catch
+    _, _ -> []
   end
 
   defp serialize_patch(patch) do

@@ -27,7 +27,8 @@ defmodule IexCode.Research.DagStepHandlers.EvidenceMerge do
     with true <- dependencies != [] or {:error, :merge_requires_dependencies},
          :ok <- DagContracts.exact_fields(params, @fields),
          :ok <- DagContracts.integer(params["round"], 1..6, :round),
-         :ok <- DagContracts.integer(params["max_sources"], 1..250, :max_sources),
+         :ok <-
+           DagContracts.integer(params["max_sources"], 1..@max_durable_sources, :max_sources),
          :ok <- DagContracts.boolean(params["preserve_provider_rank"], :rank),
          :ok <- DagContracts.boolean(params["grounded_answers_are_not_ranked_rows"], :grounded),
          :ok <- DagContracts.boolean(params["canonicalize_urls"], :canonicalize),
@@ -51,7 +52,7 @@ defmodule IexCode.Research.DagStepHandlers.EvidenceMerge do
       grounded =
         context |> DagContracts.dependencies("research.grounded_batch") |> grounded_sources()
 
-      requested = min(params["max_sources"], @max_durable_sources)
+      requested = params["max_sources"]
       sources = deduplicate(prior ++ ranked ++ grounded) |> Enum.take(requested)
 
       if sources == [] do
@@ -62,7 +63,7 @@ defmodule IexCode.Research.DagStepHandlers.EvidenceMerge do
           "sources" => sources,
           "source_count" => length(sources),
           "requested_max_sources" => params["max_sources"],
-          "truncated" => params["max_sources"] > @max_durable_sources,
+          "truncated" => false,
           "ranked_and_grounded_planes_preserved" => true
         })
       end

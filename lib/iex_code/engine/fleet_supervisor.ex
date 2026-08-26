@@ -3,6 +3,7 @@ defmodule IexCode.Engine.FleetSupervisor do
   use DynamicSupervisor
 
   alias IexCode.Engine.{AgentRegistry, FleetManager, FleetTopology, RunFleetSupervisor}
+  alias IexCode.Execution.Limits
 
   def start_link(opts \\ []) do
     DynamicSupervisor.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
@@ -63,10 +64,11 @@ defmodule IexCode.Engine.FleetSupervisor do
          :ok <- validate_execution_engine(persisted),
          :ok <- validate_run_lineage(persisted, run),
          :ok <- validate_delegation(persisted, opts[:workspace_lock_delegation]),
-         %IexCode.Sessions.Session{} = session <-
+         %IexCode.Sessions.Session{} = stored_session <-
            IexCode.Sessions.get_session(persisted.session_id),
-         project <- IexCode.Projects.get_project!(persisted.project_id) do
-      count = Keyword.get(opts, :agent_count, IexCode.Settings.get_settings().swarm_agent_count)
+         project <- IexCode.Projects.get_project!(persisted.project_id),
+         {:ok, count} <- effective_agent_count(persisted, opts),
+         {:ok, session} <- effective_session(persisted, stored_session) do
       manifest = FleetTopology.manifest(count)
 
       trusted_opts =
@@ -120,4 +122,82 @@ defmodule IexCode.Engine.FleetSupervisor do
   end
 
   defp validate_delegation(_run, _delegation), do: {:error, :invalid_workspace_delegation}
+
+  defp effective_agent_count(run, opts) do
+    case snapshotted_agent_count(run.metadata) do
+      {:ok, count} ->
+        {:ok, count}
+
+      :missing ->
+        legacy_count =
+          Keyword.get_lazy(opts, :agent_count, fn ->
+            IexCode.Settings.get_settings().swarm_agent_count
+          end)
+
+        {:ok, normalize_legacy_count(legacy_count)}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp snapshotted_agent_count(metadata) when is_map(metadata) do
+    policy = Map.get(metadata, "execution_policy") || Map.get(metadata, :execution_policy)
+
+    case policy do
+      nil ->
+        :missing
+
+      policy when is_map(policy) ->
+        case Map.get(policy, "swarm_agent_count") || Map.get(policy, :swarm_agent_count) do
+          nil -> :missing
+          count when is_integer(count) and count in 4..32 -> {:ok, count}
+          _invalid -> {:error, :invalid_snapshotted_swarm_agent_count}
+        end
+
+      _invalid ->
+        {:error, :invalid_execution_policy}
+    end
+  end
+
+  defp snapshotted_agent_count(_metadata), do: :missing
+
+  defp normalize_legacy_count(value) when is_integer(value), do: value |> max(4) |> min(32)
+  defp normalize_legacy_count(_value), do: 4
+
+  defp effective_session(run, session) do
+    policy =
+      case run.metadata do
+        metadata when is_map(metadata) ->
+          Map.get(metadata, "execution_policy") || Map.get(metadata, :execution_policy) || %{}
+
+        _metadata ->
+          %{}
+      end
+
+    provider =
+      Map.get(policy, "model_provider") || Map.get(policy, :model_provider) ||
+        session.model_provider
+
+    model = Map.get(policy, "model_name") || Map.get(policy, :model_name) || session.model_name
+
+    temperature =
+      Map.get(policy, "temperature") || Map.get(policy, :temperature) || session.temperature
+
+    temperature = if is_number(temperature), do: temperature * 1.0, else: temperature
+
+    cond do
+      provider not in ["openai", "anthropic"] ->
+        {:error, :invalid_snapshotted_model_provider}
+
+      not Limits.valid_model_name?(model) ->
+        {:error, :invalid_snapshotted_model}
+
+      not is_float(temperature) or temperature < 0.0 or temperature > 2.0 ->
+        {:error, :invalid_snapshotted_temperature}
+
+      true ->
+        {:ok, %{session | model_provider: provider, model_name: model, temperature: temperature}}
+    end
+  end
 end

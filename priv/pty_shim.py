@@ -30,6 +30,7 @@ OP_CLOSE = 0x04
 OP_OUTPUT = 0x01
 OP_EXIT = 0x02
 OP_READY = 0x03
+OP_INTERRUPT_BOUNDARY = 0x04
 
 
 def send_packet(opcode: int, payload: bytes = b""):
@@ -221,6 +222,7 @@ def main():
     sel.register(master_fd, selectors.EVENT_READ, data="pty")
 
     stdin_buf = bytearray()
+    pending_interrupt_boundaries = []
     running = True
 
     try:
@@ -247,6 +249,19 @@ def main():
             except (ChildProcessError, OSError):
                 running = False
                 break
+
+            # A SIGINT acknowledgement alone is not a safe mutation boundary:
+            # the foreground job may ignore it. Only tell the BEAM owner that
+            # the boundary was reached after the PTY's foreground process group
+            # returns to the original interactive shell.
+            if pending_interrupt_boundaries:
+                try:
+                    if os.tcgetpgrp(master_fd) == child_pid:
+                        for boundary in pending_interrupt_boundaries:
+                            send_packet(OP_INTERRUPT_BOUNDARY, boundary)
+                        pending_interrupt_boundaries.clear()
+                except OSError:
+                    pass
 
             for key, _mask in events:
                 if key.data == "stdin":
@@ -296,6 +311,8 @@ def main():
                                 input_chunks = []
                             if len(payload) >= 1:
                                 sig = payload[0]
+                                if len(payload) >= 9:
+                                    pending_interrupt_boundaries.append(payload[1:9])
                                 try:
                                     # Interactive shells put foreground jobs in
                                     # their own process group. Signalling the

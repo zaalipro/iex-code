@@ -5,6 +5,7 @@ defmodule IexCode.Research.DagStepHandlers.SourceFetch do
   alias IexCode.Research.{DagContracts, DagRuntime}
 
   @fields ~w(round max_sources max_requests max_cost_cents max_parallel_fetches max_body_bytes max_text_chars require_public_destination artifact_kind level_policy)
+  @max_sources 40
 
   @impl true
   def descriptor do
@@ -24,7 +25,7 @@ defmodule IexCode.Research.DagStepHandlers.SourceFetch do
   def validate_params(params, [_evidence]) do
     with :ok <- DagContracts.exact_fields(params, @fields),
          :ok <- DagContracts.integer(params["round"], 1..6, :round),
-         :ok <- DagContracts.integer(params["max_sources"], 1..250, :max_sources),
+         :ok <- DagContracts.integer(params["max_sources"], 1..@max_sources, :max_sources),
          true <-
            params["max_requests"] == params["max_sources"] or
              {:error, {:params, :max_requests}},

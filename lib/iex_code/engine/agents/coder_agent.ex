@@ -6,12 +6,14 @@ defmodule IexCode.Engine.Agents.CoderAgent do
   use GenServer, restart: :transient
   require Logger
   alias IexCode.Engine.{AgentRegistry, OperationManager}
-  alias IexCode.{Sessions, Tools, LLM}
+  alias IexCode.Execution.ModelRoute
+  alias IexCode.{Sessions, Settings, Tools, LLM}
   alias IexCode.Tools.AutoFix
 
   @outer_timeout 90_000
   @inner_timeout 60_000
-  @max_tool_iterations 5
+  @legacy_max_tool_iterations 5
+  @max_configured_tool_iterations 20
 
   defmodule State do
     defstruct [
@@ -19,6 +21,7 @@ defmodule IexCode.Engine.Agents.CoderAgent do
       :session,
       :project_root,
       :control_token,
+      :llm,
       status: :idle,
       current_op_id: nil,
       last_result: nil,
@@ -90,6 +93,7 @@ defmodule IexCode.Engine.Agents.CoderAgent do
       session: session,
       project_root: project_root,
       control_token: opts[:control_token],
+      llm: Keyword.get(opts, :llm, LLM),
       status: :idle
     }
 
@@ -173,6 +177,8 @@ defmodule IexCode.Engine.Agents.CoderAgent do
             ]
 
             with :ok <- apply_explicit_patches(opts, project_root, progress),
+                 {:ok, max_tool_iterations} <-
+                   max_tool_iterations(opts[:execution_policy]),
                  {:ok, code_text} <-
                    run_tool_loop(
                      session_id,
@@ -186,6 +192,9 @@ defmodule IexCode.Engine.Agents.CoderAgent do
                      opts[:workspace_lock_delegation],
                      Keyword.get(opts, :allowed_tools, :all),
                      cancelled_fun(state),
+                     state.llm,
+                     opts[:execution_policy],
+                     max_tool_iterations,
                      runtime_owner,
                      progress,
                      0
@@ -272,70 +281,111 @@ defmodule IexCode.Engine.Agents.CoderAgent do
          workspace_lock_delegation,
          allowed_tools,
          cancelled?,
+         llm,
+         execution_policy,
+         max_tool_iterations,
          usage_context,
          progress,
          iteration
        ) do
-    if iteration >= @max_tool_iterations do
-      {:error, {:tool_iteration_limit_reached, @max_tool_iterations}}
+    if iteration >= max_tool_iterations do
+      {:error, {:tool_iteration_limit_reached, max_tool_iterations}}
     else
       progress.(
         min(90, 40 + iteration * 10),
-        "LLM iteration #{iteration + 1}/#{@max_tool_iterations}..."
+        "LLM iteration #{iteration + 1}/#{max_tool_iterations}..."
       )
 
-      case LLM.chat(messages, system_prompt, session, fn _c -> :ok end,
-             cancelled?: cancelled?,
-             allowed_tools: allowed_tools
-           ) do
-        {:ok, %{text: text, tool_calls: tool_calls} = response} when tool_calls != [] ->
-          with :ok <- persist_run_usage(run_id, response, usage_context) do
-            progress.(60, "Executing #{length(tool_calls)} tool call(s)...")
+      base_llm_opts = [cancelled?: cancelled?, allowed_tools: allowed_tools]
 
-            tool_messages =
-              Enum.map(
-                tool_calls,
-                &execute_tool_call(
-                  &1,
-                  session_id,
-                  project_root,
-                  parent_op_id,
-                  run_id,
-                  project_id,
-                  workspace_lock_delegation,
-                  allowed_tools
+      with {:ok, llm_opts} <- durable_model_options(execution_policy, llm, base_llm_opts) do
+        case llm.chat(messages, system_prompt, session, fn _c -> :ok end, llm_opts) do
+          {:ok, %{text: text, tool_calls: tool_calls} = response} when tool_calls != [] ->
+            with :ok <- persist_run_usage(run_id, response, usage_context) do
+              progress.(60, "Executing #{length(tool_calls)} tool call(s)...")
+
+              tool_messages =
+                Enum.map(
+                  tool_calls,
+                  &execute_tool_call(
+                    &1,
+                    session_id,
+                    project_root,
+                    parent_op_id,
+                    run_id,
+                    project_id,
+                    workspace_lock_delegation,
+                    allowed_tools
+                  )
                 )
+
+              run_tool_loop(
+                session_id,
+                messages ++ assistant_messages(text) ++ tool_messages,
+                system_prompt,
+                session,
+                project_root,
+                parent_op_id,
+                run_id,
+                project_id,
+                workspace_lock_delegation,
+                allowed_tools,
+                cancelled?,
+                llm,
+                execution_policy,
+                max_tool_iterations,
+                usage_context,
+                progress,
+                iteration + 1
               )
+            end
 
-            run_tool_loop(
-              session_id,
-              messages ++ assistant_messages(text) ++ tool_messages,
-              system_prompt,
-              session,
-              project_root,
-              parent_op_id,
-              run_id,
-              project_id,
-              workspace_lock_delegation,
-              allowed_tools,
-              cancelled?,
-              usage_context,
-              progress,
-              iteration + 1
-            )
-          end
+          {:ok, %{text: text} = response} ->
+            with :ok <- persist_run_usage(run_id, response, usage_context), do: {:ok, text || ""}
 
-        {:ok, %{text: text} = response} ->
-          with :ok <- persist_run_usage(run_id, response, usage_context), do: {:ok, text || ""}
+          {:ok, other} ->
+            {:error, {:unexpected_llm_response, other}}
 
-        {:ok, other} ->
-          {:error, {:unexpected_llm_response, other}}
-
-        {:error, reason} ->
-          {:error, reason}
+          {:error, reason} ->
+            {:error, reason}
+        end
       end
     end
   end
+
+  defp durable_model_options(nil, _llm, opts), do: {:ok, opts}
+
+  defp durable_model_options(policy, llm, opts) when is_map(policy) do
+    with {:ok, route} <- ModelRoute.resolve(policy, Settings.get_settings()) do
+      if llm == LLM,
+        do: {:ok, Keyword.put(opts, :resolved_route, route)},
+        else: {:ok, opts}
+    end
+  end
+
+  defp durable_model_options(_policy, _llm, _opts), do: {:error, :invalid_execution_policy}
+
+  # Policies are normalized and snapshotted before a durable run is queued. Read
+  # the bound once per coder invocation so a Settings edit cannot alter an
+  # in-flight swarm or one of its later diagnostic-repair invocations. Legacy
+  # callers and policies created before this setting existed keep the original
+  # five-turn behavior.
+  defp max_tool_iterations(nil), do: {:ok, @legacy_max_tool_iterations}
+
+  defp max_tool_iterations(policy) when is_map(policy) do
+    case Map.get(policy, "agent_max_turns") || Map.get(policy, :agent_max_turns) do
+      nil ->
+        {:ok, @legacy_max_tool_iterations}
+
+      turns when is_integer(turns) and turns in 1..@max_configured_tool_iterations ->
+        {:ok, turns}
+
+      _invalid ->
+        {:error, :invalid_agent_max_turns}
+    end
+  end
+
+  defp max_tool_iterations(_policy), do: {:error, :invalid_execution_policy}
 
   defp execute_tool_call(
          tc,

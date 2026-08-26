@@ -57,6 +57,33 @@ the canonical hash after claim. `dag_v1` is dispatchable for explicit static wor
 cannot fall through to `legacy_v1`. Generic post-creation step insertion cannot mutate its
 persisted manifest.
 
+### Shared intake and durable single-agent work
+
+The workspace composer and local Mix launcher pass exact parsed intents through the same
+execution router. The router verifies the persisted project/session relationship, resolves a
+bounded policy once, strips credential/endpoint-shaped caller metadata, and stores only the
+secret-free effective policy with the run. Every durable submission carries a session-scoped
+request key. Reusing the key returns the same run only when its immutable request fingerprint
+matches; semantic conflicts fail rather than aliasing new work onto an old run.
+The policy includes only a SHA-256 digest of the effective provider/model/base-URL route, never
+the endpoint or credential itself. Before each durable single-agent or swarm model effect, the
+live non-secret route must reproduce that digest; credential-only rotation is allowed, while
+provider/model/endpoint drift fails before transport. Interactive session chat remains a
+process-local live-settings path by design.
+
+`coding_agent` / `single` runs use a bounded model/tool loop rather than the process-local
+one-request chat path. Each tool request receives an attempt-scoped idempotency key and a
+`run_commands` lifecycle. Command creation, transition, usage, steering consumption, and final
+message persistence require the current parent lease owner, run attempt, and lease generation.
+Pause waits at explicit model/tool checkpoints; cancel and lost authority fail the checkpoint.
+
+These records do not make native tool effects transactional. A completed or failed command can
+be replayed from its recorded result only when the same logical command is revisited in the same
+run attempt. An ambiguous in-flight command is not silently declared successful. Process or
+application loss interrupts the outer run, and an explicit whole-run retry advances the run
+attempt when allowed; a new attempt may execute tool effects again. There is no instruction-level
+resume of arbitrary code.
+
 ### Static DAG manifest and handler authority
 
 `dag_v1` accepts a non-empty plain JSON graph with no executable closure or persisted MFA/module

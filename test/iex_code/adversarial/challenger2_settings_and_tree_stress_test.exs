@@ -90,16 +90,16 @@ defmodule IexCode.Adversarial.Challenger2SettingsAndTreeStressTest do
       end
     end
 
-    test "strictly enforces swarm_agent_count boundaries [1 .. 32]" do
+    test "strictly enforces swarm_agent_count boundaries [4 .. 32]" do
       settings = Settings.get_settings()
 
-      assert {:ok, s1} = Settings.update_settings(%{swarm_agent_count: 1})
-      assert s1.swarm_agent_count == 1
+      assert {:ok, s4} = Settings.update_settings(%{swarm_agent_count: 4})
+      assert s4.swarm_agent_count == 4
 
       assert {:ok, s32} = Settings.update_settings(%{swarm_agent_count: 32})
       assert s32.swarm_agent_count == 32
 
-      for invalid_count <- [0, -1, 33, 64, 100] do
+      for invalid_count <- [0, -1, 1, 2, 3, 33, 64, 100] do
         cs = Settings.change_settings(settings, %{swarm_agent_count: invalid_count})
         refute cs.valid?, "Expected swarm_agent_count #{invalid_count} to be invalid"
         assert %{swarm_agent_count: _} = errors_on(cs)
@@ -208,7 +208,7 @@ defmodule IexCode.Adversarial.Challenger2SettingsAndTreeStressTest do
                 default_model: model,
                 temperature: temp,
                 max_tokens: tokens,
-                swarm_agent_count: min(32, max(1, rem(i, 16) + 1))
+                swarm_agent_count: min(32, max(4, rem(i, 16) + 4))
               })
 
             case result do

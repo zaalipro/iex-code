@@ -207,6 +207,12 @@ defmodule IexCode.Research.DagEndToEndTest do
                 }
               }
             },
+            "synthesis_providers" => %{
+              "openai" => %{
+                "api_key" => "test-key",
+                "base_url" => "https://models.example.test"
+              }
+            },
             "grounded_providers" => %{}
           }
         end,
@@ -247,7 +253,13 @@ defmodule IexCode.Research.DagEndToEndTest do
              usage: %{input_tokens: 40, output_tokens: 15}
            }}
         end,
-        session_resolver: fn _session_id -> %{id: "research-session"} end
+        session_resolver: fn _session_id ->
+          %{
+            id: "research-session",
+            model_provider: "openai",
+            model_name: "gpt-test"
+          }
+        end
       )
     else
       module.execute(claim.step.params, step_context)

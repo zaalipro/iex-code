@@ -240,7 +240,7 @@ defmodule IexCodeWeb.WorkspaceLiveSmokeRegressionTest do
     assert updated.model_provider == "openai"
   end
 
-  test "Usage History View all opens real state, renders records, and closes", %{
+  test "session Settings route renders scoped provider-reported usage", %{
     conn: conn,
     workspace_path: path
   } do
@@ -256,20 +256,13 @@ defmodule IexCodeWeb.WorkspaceLiveSmokeRegressionTest do
         content: "Usage regression record"
       })
 
-    {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
-    render_click(view, "toggle_settings_modal")
-    assert has_element?(view, "#usage-view-all-btn[phx-click='toggle_all_usage_modal']")
+    {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}/settings")
 
-    view |> element("#usage-view-all-btn") |> render_click()
-
-    assert has_element?(view, "#all-usage-modal[role='dialog'][aria-modal='true']")
-    assigns = live_assigns(view)
-    assert assigns.show_all_usage_modal
-    assert Enum.any?(assigns.all_usage_history, &(&1.id == usage_message.id))
-
-    render_click(view, "close_all_usage_modal")
-    refute has_element?(view, "#all-usage-modal")
-    refute live_assigns(view).show_all_usage_modal
+    assert has_element?(view, "#settings-page")
+    assert has_element?(view, "#settings-session-context", session.title)
+    assert has_element?(view, "#settings-usage-ready")
+    assert has_element?(view, "#settings-usage-row-#{usage_message.id}")
+    assert has_element?(view, "#settings-return-workspace[href='/sessions/#{session.id}']")
   end
 
   test "focus-time cancel reverts drafts while custom Apply commits status and interval", %{
@@ -406,7 +399,12 @@ defmodule IexCodeWeb.WorkspaceLiveSmokeRegressionTest do
     view |> element("#palette-item-0[role='option']") |> render_click()
 
     refute has_element?(view, "#command-palette-modal")
-    assert has_element?(view, "#header-swarm-toggle[aria-label='Swarm mode: on']")
+
+    assert has_element?(
+             view,
+             "#header-swarm-toggle[aria-label='Interactive swarm mode: on']"
+           )
+
     assert Sessions.get_session!(session.id).swarm_mode
   end
 
@@ -493,9 +491,20 @@ defmodule IexCodeWeb.WorkspaceLiveSmokeRegressionTest do
     assert_modal(view, "expanded-message-modal", "close_expand_message")
     render_click(view, "close_expand_message")
 
-    render_click(view, "toggle_settings_modal")
-    assert_modal(view, "settings-modal", "toggle_settings_modal")
-    render_click(view, "toggle_settings_modal")
+    assert has_element?(
+             view,
+             "#workspace-settings-models[href='/sessions/#{session.id}/settings#models']"
+           )
+
+    assert has_element?(
+             view,
+             "#workspace-settings-general[href='/sessions/#{session.id}/settings#execution']"
+           )
+
+    assert has_element?(
+             view,
+             "#profile-settings-card[href='/sessions/#{session.id}/settings#runtime']"
+           )
 
     render_click(view, "toggle_project_modal")
     assert_modal(view, "project-modal", "close_project_modal")

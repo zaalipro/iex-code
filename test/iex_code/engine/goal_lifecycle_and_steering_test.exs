@@ -398,6 +398,130 @@ defmodule IexCode.Engine.GoalLifecycleAndSteeringTest do
   end
 
   describe "5. Edge Cases & Resilience" do
+    test "cancel_session reports ambiguity instead of replaying after a pre-handle exit", %{
+      session: session,
+      test_root: test_root
+    } do
+      {:ok, server} = SessionServer.ensure_started(session.id)
+      :ok = :sys.suspend(server)
+
+      cancel_task =
+        Task.async(fn ->
+          SessionServer.cancel_session(session.id,
+            project_root: test_root,
+            action: :rollback
+          )
+        end)
+
+      assert wait_for_session_call(server, &match?({:cancel_session, _opts}, &1))
+
+      server_ref = Process.monitor(server)
+      Process.exit(server, :kill)
+      assert_receive {:DOWN, ^server_ref, :process, ^server, :killed}, 2_000
+
+      assert {:error, {:session_call_ambiguous, _reason}} = Task.await(cancel_task, 5_000)
+      assert Sessions.get_session!(session.id).status == "idle"
+      assert Sessions.list_messages(session.id) == []
+
+      # The caller can reconcile durable status and explicitly retry when it
+      # knows the first server never handled the request.
+      assert {:ok, %{status: :stopped, action: :rollback}} =
+               SessionServer.cancel_session(session.id,
+                 project_root: test_root,
+                 action: :rollback
+               )
+    end
+
+    test "a lost post-effect cancel reply is ambiguous and never repeats effects", %{
+      session: session,
+      test_root: test_root
+    } do
+      {:ok, server} = SessionServer.ensure_started(session.id)
+      parent = self()
+      barrier_ref = make_ref()
+
+      cancel_task =
+        Task.async(fn ->
+          SessionServer.cancel_session(session.id,
+            project_root: test_root,
+            action: :rollback,
+            cancel_reply_barrier: {parent, barrier_ref}
+          )
+        end)
+
+      assert_receive {:cancel_reply_barrier, ^server, ^barrier_ref}, 5_000
+      assert Sessions.get_session!(session.id).status == "stopped"
+      assert cancellation_message_count(session.id) == 1
+
+      server_ref = Process.monitor(server)
+      Process.exit(server, :kill)
+      assert_receive {:DOWN, ^server_ref, :process, ^server, :killed}, 2_000
+      assert {:error, {:session_call_ambiguous, _reason}} = Task.await(cancel_task, 5_000)
+
+      # Status reconciliation proves the cancel landed. A repeated call returns
+      # the durable stopped state without rollback or another message.
+      assert {:ok, %{status: :stopped, action: :already_stopped}} =
+               SessionServer.cancel_session(session.id, action: :rollback)
+
+      assert cancellation_message_count(session.id) == 1
+    end
+
+    test "synchronous APIs retry only idempotent calls after an ambiguous server exit", %{
+      session: session
+    } do
+      {:ok, first_server} = SessionServer.ensure_started(session.id)
+      :ok = :sys.suspend(first_server)
+
+      state_task = Task.async(fn -> SessionServer.get_state(session.id) end)
+      assert wait_for_session_call(first_server, &(&1 == :get_state))
+
+      first_ref = Process.monitor(first_server)
+      Process.exit(first_server, :kill)
+      assert_receive {:DOWN, ^first_ref, :process, ^first_server, :killed}, 2_000
+
+      assert %{session_id: session_id} = Task.await(state_task, 5_000)
+      assert session_id == session.id
+
+      {:ok, second_server} = SessionServer.ensure_started(session.id)
+      :ok = :sys.suspend(second_server)
+
+      toggle_task = Task.async(fn -> SessionServer.toggle_swarm(session.id) end)
+      assert wait_for_session_call(second_server, &(&1 == :toggle_swarm))
+
+      second_ref = Process.monitor(second_server)
+      Process.exit(second_server, :kill)
+      assert_receive {:DOWN, ^second_ref, :process, ^second_server, :killed}, 2_000
+
+      assert {:error, {:session_unavailable, _reason}} = Task.await(toggle_task, 5_000)
+      assert Sessions.get_session!(session.id).swarm_mode == session.swarm_mode
+
+      {:ok, third_server} = SessionServer.ensure_started(session.id)
+      :ok = :sys.suspend(third_server)
+
+      prompt_task =
+        Task.async(fn -> SessionServer.send_prompt(session.id, "must not be lost") end)
+
+      assert wait_for_session_call(
+               third_server,
+               &match?({:send_prompt, "must not be lost", []}, &1)
+             )
+
+      third_ref = Process.monitor(third_server)
+      Process.exit(third_server, :kill)
+      assert_receive {:DOWN, ^third_ref, :process, ^third_server, :killed}, 2_000
+
+      assert {:error, {:session_unavailable, _reason}} = Task.await(prompt_task, 5_000)
+      assert Sessions.list_messages(session.id) == []
+    end
+
+    test "ensure_started does not create an in-memory server for a deleted session", %{
+      session: session
+    } do
+      assert {:ok, _deleted} = Sessions.delete_session(session)
+      assert {:error, :session_not_found} = SessionServer.ensure_started(session.id)
+      assert Registry.lookup(IexCode.SessionRegistry, session.id) == []
+    end
+
     test "cancel_session when idle or with non-existent tasks is safe and idempotent", %{
       session: session
     } do
@@ -407,12 +531,47 @@ defmodule IexCode.Engine.GoalLifecycleAndSteeringTest do
       # Calling cancel a second time is safe
       {:ok, res2} = SessionServer.cancel_session(session.id, action: :rollback)
       assert res2.status == :stopped
+      assert res2.action == :already_stopped
+      assert cancellation_message_count(session.id) == 1
     end
 
     test "send_steering with empty text is a no-op", %{session: session} do
       {:ok, _} = SessionServer.ensure_started(session.id)
       assert {:ok, ""} = SessionServer.send_steering(session.id, "   ")
       refute_receive {:steer_message, _}, 500
+    end
+  end
+
+  defp cancellation_message_count(session_id) do
+    session_id
+    |> Sessions.list_messages()
+    |> Enum.count(&String.contains?(&1.content, "Session Stopped"))
+  end
+
+  defp wait_for_session_call(pid, predicate, attempts \\ 1_000)
+
+  defp wait_for_session_call(_pid, _predicate, 0), do: false
+
+  defp wait_for_session_call(pid, predicate, attempts) do
+    queued? =
+      case Process.info(pid, :messages) do
+        {:messages, messages} ->
+          Enum.any?(messages, fn
+            {:"$gen_call", _from, request} -> predicate.(request)
+            _message -> false
+          end)
+
+        nil ->
+          false
+      end
+
+    if queued? do
+      true
+    else
+      receive do
+      after
+        1 -> wait_for_session_call(pid, predicate, attempts - 1)
+      end
     end
   end
 end

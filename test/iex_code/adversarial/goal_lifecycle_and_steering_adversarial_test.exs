@@ -205,6 +205,12 @@ defmodule IexCode.Adversarial.GoalLifecycleAndSteeringAdversarialTest do
 
       assert File.read!(sample_file) =~ "999"
 
+      # Keep the session control plane alive independently of the sandbox-backed
+      # worker being murdered below. Killing that worker can recycle the shared
+      # SQLite test connection, but cancellation must still reach this exact OTP
+      # owner and complete its in-memory/file cleanup.
+      assert {:ok, _server} = SessionServer.ensure_started(session.id)
+
       # Launch a swarm task and obtain PID
       {:ok, task_pid} = SwarmCoordinator.run_swarm(session.id, "Task to be murdered", test_root)
 

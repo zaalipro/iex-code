@@ -6,7 +6,8 @@ defmodule IexCode.Engine.Agents.PlannerAgent do
   use GenServer, restart: :transient
   require Logger
   alias IexCode.Engine.{AgentRegistry, OperationManager}
-  alias IexCode.{Sessions, Tools, LLM}
+  alias IexCode.Execution.ModelRoute
+  alias IexCode.{Sessions, Settings, Tools, LLM}
 
   @outer_timeout 90_000
   @inner_timeout 60_000
@@ -17,6 +18,7 @@ defmodule IexCode.Engine.Agents.PlannerAgent do
       :session,
       :project_root,
       :control_token,
+      :llm,
       status: :idle,
       current_op_id: nil,
       last_result: nil,
@@ -80,6 +82,7 @@ defmodule IexCode.Engine.Agents.PlannerAgent do
       session: session,
       project_root: project_root,
       control_token: opts[:control_token],
+      llm: Keyword.get(opts, :llm, LLM),
       status: :idle
     }
 
@@ -178,29 +181,34 @@ defmodule IexCode.Engine.Agents.PlannerAgent do
               %{role: "user", content: append_steer_directives(base_content, steer_directives)}
             ]
 
-            case LLM.chat(messages, system_prompt, session, fn _c -> :ok end,
-                   cancelled?: cancelled_fun(state),
-                   allowed_tools: Keyword.get(opts, :allowed_tools, :all)
-                 ) do
-              {:ok, %{text: plan_text} = response}
-              when is_binary(plan_text) and byte_size(plan_text) > 0 ->
-                with :ok <-
-                       persist_run_usage(Keyword.get(opts, :run_id), response, runtime_owner) do
-                  progress.(100, "Plan ready")
-                  {:ok, plan_text}
-                end
+            base_llm_opts = [
+              cancelled?: cancelled_fun(state),
+              allowed_tools: Keyword.get(opts, :allowed_tools, :all)
+            ]
 
-              _ ->
-                fallback_plan =
-                  """
-                  1. Inspect workspace structure and relevant modules.
-                  2. Implement required changes or functions.
-                  3. Run tests and verify code compilation.
-                  """
-                  |> String.trim()
+            with {:ok, llm_opts} <-
+                   durable_model_options(opts[:execution_policy], state.llm, base_llm_opts) do
+              case state.llm.chat(messages, system_prompt, session, fn _c -> :ok end, llm_opts) do
+                {:ok, %{text: plan_text} = response}
+                when is_binary(plan_text) and byte_size(plan_text) > 0 ->
+                  with :ok <-
+                         persist_run_usage(Keyword.get(opts, :run_id), response, runtime_owner) do
+                    progress.(100, "Plan ready")
+                    {:ok, plan_text}
+                  end
 
-                progress.(100, "Default plan created")
-                {:ok, fallback_plan}
+                _ ->
+                  fallback_plan =
+                    """
+                    1. Inspect workspace structure and relevant modules.
+                    2. Implement required changes or functions.
+                    3. Run tests and verify code compilation.
+                    """
+                    |> String.trim()
+
+                  progress.(100, "Default plan created")
+                  {:ok, fallback_plan}
+              end
             end
           end,
           Keyword.get(opts, :inner_timeout, @inner_timeout)
@@ -231,6 +239,18 @@ defmodule IexCode.Engine.Agents.PlannerAgent do
 
   defp format_reason(reason) when is_binary(reason), do: reason
   defp format_reason(reason), do: inspect(reason)
+
+  defp durable_model_options(nil, _llm, opts), do: {:ok, opts}
+
+  defp durable_model_options(policy, llm, opts) when is_map(policy) do
+    with {:ok, route} <- ModelRoute.resolve(policy, Settings.get_settings()) do
+      if llm == LLM,
+        do: {:ok, Keyword.put(opts, :resolved_route, route)},
+        else: {:ok, opts}
+    end
+  end
+
+  defp durable_model_options(_policy, _llm, _opts), do: {:error, :invalid_execution_policy}
 
   defp persist_run_usage(nil, _response, _state), do: :ok
 

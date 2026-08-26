@@ -308,6 +308,30 @@ defmodule IexCodeWeb.WorkspaceComponentsTest do
       assert html =~ "def schema, do: :ok"
       assert html =~ "Copy"
     end
+
+    test "exposes the configured autosave policy to the editor hook" do
+      assigns = %{
+        files: ["lib/user.ex"],
+        filter: "",
+        selected_file: "lib/user.ex",
+        file_content: "defmodule User, do: nil",
+        auto_save: true
+      }
+
+      html =
+        rendered_to_string(~H"""
+        <.file_explorer
+          files={@files}
+          filter={@filter}
+          selected_file={@selected_file}
+          file_content={@file_content}
+          auto_save={@auto_save}
+        />
+        """)
+
+      assert html =~ ~s(id="code-editor-viewport")
+      assert html =~ ~s(data-auto-save="true")
+    end
   end
 
   # ============================================================================

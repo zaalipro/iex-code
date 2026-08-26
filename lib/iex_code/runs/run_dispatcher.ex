@@ -15,9 +15,8 @@ defmodule IexCode.Runs.RunDispatcher do
 
   alias IexCode.{Kanban, Projects, Runs, Sessions, WorkspaceLocks}
   alias IexCode.Engine.{AgentRegistry, FleetManager}
-  alias IexCode.Research.{DagAdapter, DagFinalizer, LevelPolicy, ProviderEffect, Results}
+  alias IexCode.Research.{DagAdapter, DagFinalizer, Launch, LevelPolicy, ProviderEffect, Results}
   alias IexCode.Runs.{DagRunner, DagScheduler, Run}
-  alias IexCode.Runs.DagStepRegistry
   alias IexCode.Runs.ExecutionEngine
 
   @default_poll_interval 1_000
@@ -70,16 +69,25 @@ defmodule IexCode.Runs.RunDispatcher do
 
   @doc "Persists and schedules a typed run."
   def enqueue(attrs, server \\ __MODULE__) when is_map(attrs) do
+    with {:ok, run} <- persist(attrs) do
+      dispatch(server)
+      {:ok, run}
+    end
+  end
+
+  @doc "Persists queued work without waking a process-local dispatcher."
+  def persist(attrs) when is_map(attrs) do
     attrs = force_queued(attrs)
     steps = initial_steps(attrs)
 
     with :ok <- validate_typed_attrs(attrs),
          :ok <- ExecutionEngine.validate_manifest(attrs, steps),
          {:ok, run} <- Runs.create_run_with_steps(attrs, steps) do
-      dispatch(server)
       {:ok, run}
     end
   end
+
+  def persist(_attrs), do: {:error, :invalid_run}
 
   @doc "Persists a durable draft without making it claimable."
   def create_draft(attrs) when is_map(attrs) do
@@ -99,6 +107,16 @@ defmodule IexCode.Runs.RunDispatcher do
   def enqueue_dag(attrs, steps, server \\ __MODULE__)
 
   def enqueue_dag(attrs, steps, server) when is_map(attrs) and is_list(steps) do
+    with {:ok, run} <- persist_dag(attrs, steps) do
+      dispatch(server)
+      {:ok, run}
+    end
+  end
+
+  def enqueue_dag(_attrs, _steps, _server), do: {:error, :invalid_dag_run}
+
+  @doc "Persists a queued typed DAG without waking a process-local dispatcher."
+  def persist_dag(attrs, steps) when is_map(attrs) and is_list(steps) do
     attrs =
       attrs
       |> force_queued()
@@ -109,7 +127,6 @@ defmodule IexCode.Runs.RunDispatcher do
          :ok <- validate_typed_attrs(attrs),
          :ok <- ExecutionEngine.validate_manifest(attrs, steps),
          {:ok, run} <- Runs.create_run_with_steps(attrs, steps) do
-      dispatch(server)
       {:ok, run}
     else
       false -> {:error, {:execution_engine_unavailable, "dag_v1"}}
@@ -117,72 +134,65 @@ defmodule IexCode.Runs.RunDispatcher do
     end
   end
 
-  def enqueue_dag(_attrs, _steps, _server), do: {:error, :invalid_dag_run}
+  def persist_dag(_attrs, _steps), do: {:error, :invalid_dag_run}
 
   @doc "Builds, persists, and schedules an exact finite deep-research DAG."
   def enqueue_research(attrs, research, server \\ __MODULE__)
 
   def enqueue_research(attrs, research, server) when is_map(attrs) and is_map(research) do
+    with {:ok, run} <- persist_research(attrs, research) do
+      dispatch(server)
+      {:ok, run}
+    end
+  end
+
+  def enqueue_research(_attrs, _research, _server), do: {:error, :invalid_research_run}
+
+  @doc "Persists queued exact research without waking a process-local dispatcher."
+  def persist_research(attrs, research) when is_map(attrs) and is_map(research) do
     objective = Map.get(attrs, :objective) || Map.get(attrs, "objective")
-    level = Map.get(research, :level) || Map.get(research, "level")
-    ranked = Map.get(research, :ranked_providers) || Map.get(research, "ranked_providers") || []
-
-    grounded =
-      Map.get(research, :grounded_providers) || Map.get(research, "grounded_providers") || []
-
-    max_sources =
-      research
-      |> then(&(Map.get(&1, :max_sources) || Map.get(&1, "max_sources")))
-      |> bounded_research_integer(1, 250, 40)
-
-    fetch_parallelism =
-      research
-      |> then(&(Map.get(&1, :fetch_parallelism) || Map.get(&1, "fetch_parallelism")))
-      |> bounded_research_integer(1, 16, 6)
-
-    require_conflict_audit =
-      Map.get(
-        research,
-        :require_conflict_audit,
-        Map.get(research, "require_conflict_audit", true)
-      )
-
     session_id = Map.get(attrs, :session_id) || Map.get(attrs, "session_id")
     metadata = Map.get(attrs, :metadata) || Map.get(attrs, "metadata") || %{}
 
     attachment_ids =
       Map.get(metadata, "research_result_ids", Map.get(metadata, :research_result_ids, []))
 
-    with {:ok, policy} <- LevelPolicy.fetch(level),
+    with {:ok, launch} <- Launch.normalize_request(research),
+         :ok <- Launch.validate_new_snapshot_ref(launch.provider_snapshot_ref),
+         {:ok, policy} <- LevelPolicy.fetch(launch.level),
          {:ok, attachment_refs} <- Results.attachment_refs(attachment_ids, session_id),
          {:ok, steps} <-
            DagAdapter.build(objective,
-             ranked_providers: ranked,
-             grounded_providers: grounded,
-             level: level,
-             max_sources: max_sources,
-             fetch_parallelism: fetch_parallelism,
-             require_conflict_audit: require_conflict_audit,
+             ranked_providers: launch.ranked_providers,
+             grounded_providers: launch.grounded_providers,
+             level: launch.level,
+             max_sources: launch.max_sources,
+             fetch_parallelism: launch.fetch_parallelism,
+             require_conflict_audit: launch.require_conflict_audit,
+             provider_snapshot_ref: launch.provider_snapshot_ref,
              attachment_refs: attachment_refs
-           ) do
+           ),
+         requirements <- Launch.manifest_budget_requirements(steps),
+         :ok <- Launch.validate_explicit_budgets(attrs, requirements) do
       attrs =
         research_run_attrs(
           attrs,
           policy,
-          ranked,
-          grounded,
-          max_sources,
-          fetch_parallelism,
-          require_conflict_audit,
+          launch.ranked_providers,
+          launch.grounded_providers,
+          launch.max_sources,
+          launch.fetch_parallelism,
+          launch.require_conflict_audit,
+          launch.provider_snapshot_ref,
           attachment_refs,
-          steps
+          requirements
         )
 
-      enqueue_dag(attrs, steps, server)
+      persist_dag(attrs, steps)
     end
   end
 
-  def enqueue_research(_attrs, _research, _server), do: {:error, :invalid_research_run}
+  def persist_research(_attrs, _research), do: {:error, :invalid_research_run}
 
   @doc "Wakes the dispatcher without blocking the caller."
   def dispatch(server \\ __MODULE__) do
@@ -197,6 +207,30 @@ defmodule IexCode.Runs.RunDispatcher do
   @doc "Requeues an eligible terminal/interrupted run as a new attempt."
   def retry(run_or_id, server \\ __MODULE__) do
     GenServer.call(server, {:retry, run_id(run_or_id)}, 30_000)
+  end
+
+  @doc "Requeues a run durably without waking or starting a process-local dispatcher."
+  def retry_offline(run_or_id) do
+    case Runs.get_run(run_id(run_or_id)) do
+      %Run{} = run -> retry_run(run)
+      nil -> {:error, :not_found}
+    end
+  end
+
+  @doc "Validates and queues a durable draft without waking a local dispatcher."
+  def start_draft_offline(run_or_id) do
+    case Runs.get_run(run_id(run_or_id)) do
+      %Run{status: "draft", attempt: 0, lease_owner: nil} = run ->
+        with :ok <- ExecutionEngine.validate_manifest(run, persisted_manifest(run)) do
+          Runs.transition_run(run, "queued")
+        end
+
+      %Run{} = run ->
+        {:error, {:invalid_transition, run.status, "queued"}}
+
+      nil ->
+        {:error, :not_found}
+    end
   end
 
   @doc "Pauses an active worker without discarding its process or context."
@@ -415,19 +449,7 @@ defmodule IexCode.Runs.RunDispatcher do
   def handle_call({:retry, nil}, _from, state), do: {:reply, {:error, :not_found}, state}
 
   def handle_call({:retry, run_id}, _from, state) do
-    result =
-      with %Run{} = run <- Runs.get_run(run_id) do
-        steps = if run.execution_engine == "dag_v1", do: [], else: retry_attempt_steps(run)
-
-        validation_steps =
-          if run.execution_engine == "dag_v1", do: persisted_manifest(run), else: steps
-
-        with :ok <- ExecutionEngine.validate_manifest(run, validation_steps) do
-          Runs.retry_run(run, steps: steps)
-        end
-      else
-        nil -> {:error, :not_found}
-      end
+    result = retry_offline(run_id)
 
     if match?({:ok, _}, result), do: send(self(), :drain)
     {:reply, result, state}
@@ -493,7 +515,13 @@ defmodule IexCode.Runs.RunDispatcher do
     _ = Runs.reconcile_run_controls(worker_id: state.worker_id)
     Enum.each(interrupted, &reconcile_terminal_dag/1)
     Enum.each(interrupted, &project_terminal_task/1)
-    {:noreply, state |> reconcile_finalization_retry_state() |> drain_capacity()}
+
+    {:noreply,
+     state
+     |> drain_external_cancellations()
+     |> drain_pending_controls()
+     |> reconcile_finalization_retry_state()
+     |> drain_capacity()}
   end
 
   def handle_info(:reconcile_research_results, state) do
@@ -505,6 +533,7 @@ defmodule IexCode.Runs.RunDispatcher do
 
   def handle_info(:heartbeat, state) do
     schedule_heartbeat(state.heartbeat_interval)
+    state = drain_external_cancellations(state)
 
     Enum.each(state.workers, fn {_ref, worker} ->
       unless MapSet.member?(state.cancelling, worker.run_id) or
@@ -612,27 +641,12 @@ defmodule IexCode.Runs.RunDispatcher do
   end
 
   def handle_info({:run_lease_heartbeat_failed, run_id, reason}, state) do
-    case Map.get(state.run_refs, run_id) do
-      nil ->
-        if Map.has_key?(state.lock_waiters, run_id) do
-          Logger.warning(
-            "Run #{run_id} lost its lease while waiting for a workspace lock: #{inspect(reason)}"
-          )
+    case Runs.get_run(run_id) do
+      %Run{cancellation_requested_at: %DateTime{}} ->
+        {:noreply, drain_external_cancellations(state)}
 
-          {:noreply, remove_lock_waiter(state, run_id)}
-        else
-          {:noreply, state}
-        end
-
-      ref ->
-        worker = Map.fetch!(state.workers, ref)
-
-        if Process.alive?(worker.pid) do
-          _ = Task.Supervisor.terminate_child(state.task_supervisor, worker.pid)
-        end
-
-        {:noreply,
-         put_in(state.workers[ref], Map.put(worker, :lock_failure, {:run_lease_lost, reason}))}
+      _not_cancelled ->
+        handle_run_lease_heartbeat_failure(state, run_id, reason)
     end
   end
 
@@ -699,6 +713,31 @@ defmodule IexCode.Runs.RunDispatcher do
 
   def handle_info(_message, state), do: {:noreply, state}
 
+  defp handle_run_lease_heartbeat_failure(state, run_id, reason) do
+    case Map.get(state.run_refs, run_id) do
+      nil ->
+        if Map.has_key?(state.lock_waiters, run_id) do
+          Logger.warning(
+            "Run #{run_id} lost its lease while waiting for a workspace lock: #{inspect(reason)}"
+          )
+
+          {:noreply, remove_lock_waiter(state, run_id)}
+        else
+          {:noreply, state}
+        end
+
+      ref ->
+        worker = Map.fetch!(state.workers, ref)
+
+        if Process.alive?(worker.pid) do
+          _ = Task.Supervisor.terminate_child(state.task_supervisor, worker.pid)
+        end
+
+        {:noreply,
+         put_in(state.workers[ref], Map.put(worker, :lock_failure, {:run_lease_lost, reason}))}
+    end
+  end
+
   defp drain_capacity(state) do
     if active_count(state) < state.max_concurrency do
       opts = [
@@ -761,7 +800,8 @@ defmodule IexCode.Runs.RunDispatcher do
   defp start_claimed_run(state, %Run{execution_engine: "dag_v1"} = run),
     do: start_dag_worker(state, run)
 
-  defp start_claimed_run(state, %Run{kind: "coding_swarm"} = run) do
+  defp start_claimed_run(state, %Run{kind: kind} = run)
+       when kind in ["coding_swarm", "coding_agent"] do
     case acquire_coding_lock(state, run) do
       {:ok, handle} -> start_worker(state, run, handle)
       {:waiting, handle} -> wait_for_workspace_lock(state, run, handle)
@@ -931,7 +971,15 @@ defmodule IexCode.Runs.RunDispatcher do
       retry_timer: timer
     }
 
-    %{state | lock_waiters: Map.put(state.lock_waiters, run.id, waiter)}
+    state = %{state | lock_waiters: Map.put(state.lock_waiters, run.id, waiter)}
+
+    # A durable cancellation can arrive after the run claim but before this
+    # waiter is installed. Close that registration window immediately instead
+    # of waiting for a later poll/heartbeat.
+    case Runs.get_run(run.id) do
+      %Run{cancellation_requested_at: %DateTime{}} -> drain_external_cancellations(state)
+      _current -> state
+    end
   end
 
   defp retry_workspace_lock(state, waiter) do
@@ -1350,44 +1398,167 @@ defmodule IexCode.Runs.RunDispatcher do
          true <- Map.has_key?(state.run_refs, run_id),
          {:ok, control} <-
            persist_and_claim_control(run, Atom.to_string(kind), %{}, state.worker_id) do
-      transition =
-        if run.execution_engine == "legacy_v1" do
-          case Runs.apply_claimed_legacy_control(control, status,
-                 lease_owner: state.worker_id,
-                 run_attempt: run.attempt,
-                 lease_generation: run.lease_generation
-               ) do
-            {:ok, updated, _applied} -> {:ok, updated}
-            {:error, _reason} = error -> error
-          end
-        else
-          Runs.transition_run_worker(run, status, %{},
-            lease_owner: state.worker_id,
-            run_attempt: run.attempt,
-            lease_generation: run.lease_generation
-          )
-        end
-
-      case transition do
-        {:ok, updated} ->
-          case apply_execution_control(state, updated, control, kind) do
-            :ok ->
-              broadcast_session(updated, {:async_run_updated, updated})
-              {:ok, updated}
-
-            {:error, reason} = error ->
-              _ = resolve_owned_control(control, "rejected", %{"reason" => inspect(reason)})
-              error
-          end
-
-        {:error, reason} = error ->
-          _ = resolve_owned_control(control, "rejected", %{"reason" => inspect(reason)})
-          error
-      end
+      apply_claimed_state_control(state, run, control, status, kind)
     else
       nil -> {:error, :not_found}
       false -> {:error, :not_active}
       {:error, _} = error -> error
+    end
+  end
+
+  defp apply_claimed_state_control(state, run, control, status, kind) do
+    transition =
+      if run.execution_engine == "legacy_v1" do
+        case Runs.apply_claimed_legacy_control(control, status,
+               lease_owner: state.worker_id,
+               run_attempt: run.attempt,
+               lease_generation: run.lease_generation
+             ) do
+          {:ok, updated, _applied} -> {:ok, updated}
+          {:error, _reason} = error -> error
+        end
+      else
+        Runs.transition_run_worker(run, status, %{},
+          lease_owner: state.worker_id,
+          run_attempt: run.attempt,
+          lease_generation: run.lease_generation
+        )
+      end
+
+    case transition do
+      {:ok, updated} ->
+        case apply_execution_control(state, updated, control, kind) do
+          :ok ->
+            broadcast_session(updated, {:async_run_updated, updated})
+            {:ok, updated}
+
+          {:error, reason} = error ->
+            _ = resolve_owned_control(control, "rejected", %{"reason" => inspect(reason)})
+            error
+        end
+
+      {:error, reason} = error ->
+        _ = resolve_owned_control(control, "rejected", %{"reason" => inspect(reason)})
+        error
+    end
+  end
+
+  defp drain_pending_controls(state) do
+    state.run_refs
+    |> Map.keys()
+    |> Enum.each(&drain_pending_controls_for_run(state, &1, 32))
+
+    state
+  end
+
+  defp drain_external_cancellations(state) do
+    state =
+      Enum.reduce(state.run_refs, state, fn {run_id, ref}, current_state ->
+        case {Runs.get_run(run_id), Map.get(current_state.workers, ref)} do
+          {%Run{status: status, cancellation_requested_at: %DateTime{}} = run, worker}
+          when status in ["running", "paused"] and is_map(worker) ->
+            :ok = broadcast_run_control(run, :cancel, %{"source" => "durable_request"})
+
+            case transition_cancelled_run(current_state, run, true, true) do
+              {:ok, cancelled} ->
+                stop_durable_fleet(cancelled, "cancelled", worker, current_state.worker_id)
+                project_terminal_task(cancelled)
+                begin_worker_cancellation(current_state, run_id)
+
+              {:error, _reason} ->
+                current_state
+            end
+
+          _not_cancelled_or_missing ->
+            current_state
+        end
+      end)
+
+    state =
+      Enum.reduce(Map.keys(state.lock_waiters), state, fn run_id, current_state ->
+        case Runs.get_run(run_id) do
+          %Run{status: status, cancellation_requested_at: %DateTime{}} = run
+          when status in ["running", "paused"] ->
+            case transition_cancelled_run(current_state, run, true, false) do
+              {:ok, cancelled} ->
+                project_terminal_task(cancelled)
+                remove_lock_waiter(current_state, run_id)
+
+              {:error, _reason} ->
+                current_state
+            end
+
+          _not_cancelled_or_missing ->
+            current_state
+        end
+      end)
+
+    # A retry-lock timer can observe cancellation and remove its in-memory
+    # waiter immediately before the poll arrives. The database lease remains
+    # authoritative, so close any such owner-scoped cancellation orphan here.
+    ["running", "paused"]
+    |> Enum.flat_map(&Runs.list_runs(status: &1, limit: 1_000))
+    |> Enum.filter(fn run ->
+      run.lease_owner == state.worker_id and match?(%DateTime{}, run.cancellation_requested_at) and
+        not Map.has_key?(state.run_refs, run.id) and not Map.has_key?(state.lock_waiters, run.id)
+    end)
+    |> Enum.each(fn run ->
+      case transition_cancelled_run(state, run, true, false) do
+        {:ok, cancelled} -> project_terminal_task(cancelled)
+        {:error, _reason} -> :ok
+      end
+    end)
+
+    state
+  end
+
+  defp drain_pending_controls_for_run(_state, _run_id, 0), do: :ok
+
+  defp drain_pending_controls_for_run(state, run_id, remaining) do
+    case Runs.get_run(run_id) do
+      %Run{} = run ->
+        case Runs.list_controls(run, status: "claimed", limit: 1) do
+          [%{kind: "steer"} = control] ->
+            guidance = Map.get(control.payload || %{}, "guidance")
+            :ok = broadcast_run_control(run, control, :steer, %{"guidance" => guidance})
+            :ok
+
+          [_claimed_control] ->
+            :ok
+
+          [] ->
+            drain_next_pending_control(state, run, remaining)
+        end
+
+      nil ->
+        :ok
+    end
+  end
+
+  defp drain_next_pending_control(state, run, remaining) do
+    case Runs.claim_next_control(run, state.worker_id) do
+      {:ok, %{kind: "pause"} = control} ->
+        _ = apply_claimed_state_control(state, run, control, "paused", :pause)
+        drain_pending_controls_for_run(state, run.id, remaining - 1)
+
+      {:ok, %{kind: "resume"} = control} ->
+        _ = apply_claimed_state_control(state, run, control, "running", :resume)
+        drain_pending_controls_for_run(state, run.id, remaining - 1)
+
+      {:ok, %{kind: "steer"} = control} ->
+        guidance = Map.get(control.payload || %{}, "guidance")
+        :ok = broadcast_run_control(run, control, :steer, %{"guidance" => guidance})
+        :ok
+
+      {:ok, control} ->
+        _ = resolve_owned_control(control, "rejected", %{"reason" => "unsupported_control"})
+        drain_pending_controls_for_run(state, run.id, remaining - 1)
+
+      :none ->
+        :ok
+
+      {:error, _reason} ->
+        :ok
     end
   end
 
@@ -1523,8 +1694,9 @@ defmodule IexCode.Runs.RunDispatcher do
          max_sources,
          fetch_parallelism,
          require_conflict_audit,
+         provider_snapshot_ref,
          attachment_refs,
-         steps
+         budget_requirements
        ) do
     metadata = Map.get(attrs, :metadata) || Map.get(attrs, "metadata") || %{}
 
@@ -1536,10 +1708,14 @@ defmodule IexCode.Runs.RunDispatcher do
       "max_sources" => max_sources,
       "fetch_parallelism" => fetch_parallelism,
       "require_conflict_audit" => require_conflict_audit,
-      "attachment_refs" => attachment_refs
+      "provider_snapshot_ref" => provider_snapshot_ref,
+      "attachment_refs" => attachment_refs,
+      "run_retry_policy" => Launch.retry_policy(),
+      "budget_requirements" => %{
+        "tokens" => budget_requirements.tokens,
+        "cost_cents" => budget_requirements.cost_cents
+      }
     }
-
-    {token_ceiling, cost_ceiling} = research_budget_ceilings(steps)
 
     attrs
     |> normalized_research_attrs()
@@ -1550,25 +1726,9 @@ defmodule IexCode.Runs.RunDispatcher do
       metadata: Map.put(metadata, "research", research),
       max_attempts: 1
     })
-    |> put_default_budget(:token_budget, token_ceiling)
-    |> put_default_budget(:cost_budget_cents, cost_ceiling)
+    |> put_default_budget(:token_budget, budget_requirements.tokens)
+    |> put_default_budget(:cost_budget_cents, budget_requirements.cost_cents)
     |> put_default_budget(:time_budget_ms, research_time_ceiling(policy.level))
-  end
-
-  defp research_budget_ceilings(steps) do
-    Enum.reduce(steps, {0, 0}, fn step, {tokens, cost} ->
-      descriptor = DagStepRegistry.descriptor!(step.kind)
-
-      if descriptor.effect_class == :provider do
-        params = step.params
-        input = Map.get(params, "max_input_tokens", 0)
-        output = Map.get(params, "max_output_tokens", 0)
-        step_cost = Map.get(params, "max_cost_cents", 0)
-        {tokens + input + output, cost + step_cost}
-      else
-        {tokens, cost}
-      end
-    end)
   end
 
   defp put_default_budget(attrs, field, value) do
@@ -1581,17 +1741,11 @@ defmodule IexCode.Runs.RunDispatcher do
   defp research_time_ceiling("high"), do: 40 * 60_000
   defp research_time_ceiling("ultra"), do: 90 * 60_000
 
-  defp bounded_research_integer(value, minimum, maximum, _default)
-       when is_integer(value) and value >= minimum and value <= maximum,
-       do: value
-
-  defp bounded_research_integer(_value, _minimum, _maximum, default), do: default
-
   # Accept either atom- or string-keyed external maps without ever creating
   # atoms from caller input or passing a mixed-key map into Ecto.
   defp normalized_research_attrs(attrs) do
     Enum.reduce(
-      ~w(project_id session_id objective priority token_budget cost_budget_cents time_budget_ms not_before)a,
+      ~w(project_id session_id objective priority token_budget cost_budget_cents time_budget_ms not_before request_key)a,
       %{},
       fn field, normalized ->
         case Map.fetch(attrs, field) do
@@ -1838,6 +1992,17 @@ defmodule IexCode.Runs.RunDispatcher do
       base_steps ++ research_steps(run.attempt + 1, prepare_key, base_position + 2)
     else
       base_steps
+    end
+  end
+
+  defp retry_run(%Run{} = run) do
+    steps = if run.execution_engine == "dag_v1", do: [], else: retry_attempt_steps(run)
+
+    validation_steps =
+      if run.execution_engine == "dag_v1", do: persisted_manifest(run), else: steps
+
+    with :ok <- ExecutionEngine.validate_manifest(run, validation_steps) do
+      Runs.retry_run(run, steps: steps)
     end
   end
 

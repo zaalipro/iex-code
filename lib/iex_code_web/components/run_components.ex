@@ -478,7 +478,7 @@ defmodule IexCodeWeb.RunComponents do
                     phx-disable-with="Retrying…"
                     class="inline-flex items-center gap-1.5 bg-[#ff7e5f] px-3 py-2 font-mono text-[11px] font-semibold text-white transition-colors hover:bg-[#ff6b48] disabled:cursor-wait disabled:opacity-60"
                   >
-                    <.icon name="hero-arrow-path" class="h-3.5 w-3.5" /> Retry safely
+                    <.icon name="hero-arrow-path" class="h-3.5 w-3.5" /> Retry on current workspace
                   </button>
                 </div>
               </div>
@@ -582,7 +582,7 @@ defmodule IexCodeWeb.RunComponents do
                 />
                 <.budget_meter
                   id="async-run-cost-budget"
-                  label="Cost · reported only"
+                  label="Cost · reported or reserved"
                   actual={@selected_run.cost_cents || 0}
                   limit={@selected_run.cost_budget_cents}
                   unit="cost"

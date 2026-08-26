@@ -12,15 +12,16 @@ defmodule IexCode.Research.DagRuntime do
   scheduler remains the only authority that can commit a handler result.
   """
 
-  alias IexCode.Research.{Fetcher, GroundedSearch, Registry, Report, Result, Search}
+  alias IexCode.Research.{Fetcher, GroundedSearch, Launch, Registry, Report, Result, Search}
   alias IexCode.Research.GroundedSearch.GroundedAnswer
+  alias IexCode.Execution.Limits
   alias IexCode.Runs.DagPayload
   alias IexCode.Sessions
   alias IexCode.Settings
 
   @max_query_bytes 50_000
   @max_ranked_results 50
-  @max_sources 250
+  @max_sources 40
   @max_result_bytes 240_000
   @max_answer_chars 100_000
   @max_source_text_chars 200_000
@@ -44,6 +45,7 @@ defmodule IexCode.Research.DagRuntime do
          {:ok, query} <- query(value(params, "query")),
          {:ok, max_results} <- bounded_integer(value(params, "max_results"), 1, 50, 20),
          {:ok, settings} <- resolve_settings(opts),
+         :ok <- validate_provider_snapshot(params, settings, context, opts),
          {:ok, provider_config} <- ranked_provider_config(settings, provider),
          {:ok, identity} <- call_identity(params),
          {:ok, estimate} <- ranked_estimate(params, identity),
@@ -91,6 +93,7 @@ defmodule IexCode.Research.DagRuntime do
          {:ok, provider} <- grounded_provider(value(params, "provider")),
          {:ok, query} <- query(value(params, "query")),
          {:ok, settings} <- resolve_settings(opts),
+         :ok <- validate_provider_snapshot(params, settings, context, opts),
          {:ok, provider_config} <- grounded_provider_config(settings, provider),
          {:ok, provider_opts} <- grounded_options(params, provider_config, context, opts),
          {:ok, identity} <- call_identity(params),
@@ -192,6 +195,8 @@ defmodule IexCode.Research.DagRuntime do
            ),
          {:ok, settings} <- resolve_settings(opts),
          {:ok, session} <- resolve_session(context, opts),
+         :ok <- validate_snapshot_against_session(params, settings, session, context),
+         {:ok, synthesis_route} <- synthesis_route(settings, session),
          {messages, system_prompt} <-
            Report.synthesis_request(objective, evidence, depth, attachment_context),
          {:ok, estimate} <- synthesis_estimate(params),
@@ -209,6 +214,7 @@ defmodule IexCode.Research.DagRuntime do
                  cancelled?: Map.fetch!(context, :cancelled?),
                  max_tokens: max_output_tokens,
                  temperature: 0.1,
+                 resolved_route: synthesis_route,
                  receive_timeout: timeout(value_from_opts(opts, :receive_timeout), 60_000)
                )
              end,
@@ -405,7 +411,9 @@ defmodule IexCode.Research.DagRuntime do
       "evidence_sha256" => sha256(Jason.encode!(evidence)),
       "attachment_context_sha256" => sha256(Jason.encode!(attachment_context)),
       "source_count" => length(evidence),
-      "depth" => bounded_string(value(params, "depth"), 20)
+      "depth" => bounded_string(value(params, "depth"), 20),
+      "provider_snapshot_ref" =>
+        bounded_string(value(params, "provider_snapshot_ref"), 500) || "settings://current"
     }
   end
 
@@ -461,6 +469,16 @@ defmodule IexCode.Research.DagRuntime do
         else: {"", ""}
 
     %{
+      "synthesis_providers" => %{
+        "openai" => %{
+          "api_key" => settings.openai_api_key,
+          "base_url" => settings.openai_base_url
+        },
+        "anthropic" => %{
+          "api_key" => settings.anthropic_api_key,
+          "base_url" => settings.anthropic_base_url
+        }
+      },
       "search" => Settings.search_config(settings),
       "grounded_providers" => %{
         "openai_responses" => %{
@@ -527,10 +545,42 @@ defmodule IexCode.Research.DagRuntime do
 
     with true <- is_map(config),
          {:ok, api_key} <- required_secret(value(config, "api_key")),
-         {:ok, model} <- required_string(value(config, "model"), 500) do
+         {:ok, model} <- required_string(value(config, "model"), Limits.max_model_name_bytes()) do
       {:ok, %{api_key: api_key, model: model, raw: config}}
     else
       _other -> {:error, :provider_unavailable}
+    end
+  end
+
+  defp synthesis_route(settings, session) do
+    provider =
+      IexCode.LLM.effective_provider(
+        value(session, "model_provider"),
+        value(session, "model_name")
+      )
+
+    config =
+      settings
+      |> value("synthesis_providers")
+      |> then(&(&1 || %{}))
+      |> provider_value(provider)
+
+    with true <- provider in ["openai", "anthropic"],
+         true <- is_map(config),
+         {:ok, api_key} <- required_secret(value(config, "api_key")),
+         {:ok, base_url} <- required_string(value(config, "base_url"), 2_048),
+         {:ok, model} <-
+           required_string(value(session, "model_name"), Limits.max_model_name_bytes()) do
+      {:ok,
+       %{
+         "provider" => provider,
+         "model" => model,
+         "api_key" => api_key,
+         "base_url" => base_url,
+         "temperature" => 0.1
+       }}
+    else
+      _reason -> {:error, :provider_unavailable}
     end
   end
 
@@ -980,6 +1030,47 @@ defmodule IexCode.Research.DagRuntime do
     _kind, _reason -> {:error, :session_unavailable}
   end
 
+  defp validate_provider_snapshot(params, settings, context, opts) do
+    reference = value(params, "provider_snapshot_ref")
+
+    if strict_snapshot_ref?(reference) do
+      with {:ok, session} <- resolve_session(context, opts) do
+        validate_snapshot_against_session(params, settings, session, context)
+      end
+    else
+      Launch.validate_snapshot_ref(reference, settings, nil)
+    end
+  end
+
+  defp validate_snapshot_against_session(params, settings, session, context) do
+    {ranked, grounded} = snapshot_provider_scope(context)
+
+    Launch.validate_snapshot_ref(
+      value(params, "provider_snapshot_ref"),
+      settings,
+      session,
+      ranked,
+      grounded
+    )
+  end
+
+  defp strict_snapshot_ref?("settings://research-routing/v2/" <> _digest), do: true
+  defp strict_snapshot_ref?(_reference), do: false
+
+  defp snapshot_provider_scope(context) do
+    research =
+      context
+      |> Map.get(:run, %{})
+      |> Map.get(:metadata, %{})
+      |> value("research")
+
+    if is_map(research) do
+      {value(research, "ranked_providers"), value(research, "grounded_providers")}
+    else
+      {nil, nil}
+    end
+  end
+
   defp query(value), do: required_string(value, @max_query_bytes)
 
   defp safe_provider_errors(errors) when is_map(errors) do
@@ -1076,6 +1167,11 @@ defmodule IexCode.Research.DagRuntime do
   defp normalize_runtime_error(:invalid_runtime_context), do: :invalid_runtime_context
   defp normalize_runtime_error(:invalid_runtime_request), do: :invalid_runtime_request
   defp normalize_runtime_error(:settings_unavailable), do: :settings_unavailable
+
+  defp normalize_runtime_error(:provider_configuration_changed),
+    do: :provider_configuration_changed
+
+  defp normalize_runtime_error(:invalid_provider_snapshot_ref), do: :invalid_provider_snapshot_ref
   defp normalize_runtime_error(:unsupported_provider), do: :unsupported_provider
   defp normalize_runtime_error(:provider_unavailable), do: :provider_unavailable
   defp normalize_runtime_error(:provider_response_too_large), do: :provider_response_too_large

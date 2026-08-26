@@ -78,6 +78,32 @@ defmodule IexCode.Adversarial.TerminalWhiteboxAdversarialTest do
     end
   end
 
+  defp assert_receive_session_output(session_id, expected_substr, timeout) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    do_assert_receive_session_output(session_id, expected_substr, deadline, "")
+  end
+
+  defp do_assert_receive_session_output(session_id, expected_substr, deadline, acc) do
+    remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+
+    receive do
+      {:terminal_output, %{session_id: ^session_id, data: data}} ->
+        output = acc <> data
+
+        if String.contains?(output, expected_substr) do
+          output
+        else
+          do_assert_receive_session_output(session_id, expected_substr, deadline, output)
+        end
+    after
+      remaining ->
+        flunk(
+          "Timed out waiting for terminal_output from #{session_id} containing " <>
+            inspect(expected_substr)
+        )
+    end
+  end
+
   # ============================================================================
   # Dimension 1: PTY Adapter Protocol & Framing Boundary Conditions
   # ============================================================================
@@ -611,13 +637,13 @@ defmodule IexCode.Adversarial.TerminalWhiteboxAdversarialTest do
       assert :ok = TerminalServer.run_command(session_id1, "echo '#{token1}'")
       assert :ok = TerminalServer.run_command(session_id2, "echo '#{token2}'")
 
-      # Receive session 1 output
-      assert_receive {:terminal_output, %{session_id: ^session_id1, data: data1}}, 3_000
+      # PTYs may emit resize/prompt chunks before command output. Accumulate
+      # only the exact session until its unique token is observed.
+      data1 = assert_receive_session_output(session_id1, token1, 3_000)
       assert String.contains?(data1, token1)
       refute String.contains?(data1, token2)
 
-      # Receive session 2 output
-      assert_receive {:terminal_output, %{session_id: ^session_id2, data: data2}}, 3_000
+      data2 = assert_receive_session_output(session_id2, token2, 3_000)
       assert String.contains?(data2, token2)
       refute String.contains?(data2, token1)
 

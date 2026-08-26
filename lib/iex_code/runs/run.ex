@@ -4,12 +4,14 @@ defmodule IexCode.Runs.Run do
   use Ecto.Schema
   import Ecto.Changeset
 
+  alias IexCode.Runs.DagPayload
+
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
 
   @statuses ~w(draft queued running paused completed failed cancelled interrupted)
   @modes ~w(single swarm workflow research)
-  @kinds ~w(coding_swarm analysis deep_research)
+  @kinds ~w(coding_agent coding_swarm analysis deep_research)
   @priorities ~w(low normal high critical)
   @execution_engines ~w(legacy_v1 dag_v1)
 
@@ -111,6 +113,7 @@ defmodule IexCode.Runs.Run do
     run
     |> cast(attrs, @mutable_fields)
     |> reject_manifest_changes(run, attrs)
+    |> reject_execution_policy_change(run, attrs)
     |> validate_changeset()
   end
 
@@ -152,6 +155,7 @@ defmodule IexCode.Runs.Run do
     |> validate_number(:max_attempts, greater_than_or_equal_to: 1, less_than_or_equal_to: 100)
     |> validate_number(:lease_generation, greater_than_or_equal_to: 0)
     |> validate_attempts()
+    |> validate_execution_policy()
     |> foreign_key_constraint(:project_id)
     |> foreign_key_constraint(:session_id)
     |> unique_constraint([:session_id, :request_key], name: :runs_session_id_request_key_index)
@@ -184,6 +188,28 @@ defmodule IexCode.Runs.Run do
   end
 
   defp reject_manifest_changes(changeset, _run, _attrs), do: changeset
+
+  defp reject_execution_policy_change(changeset, %__MODULE__{id: id} = run, attrs)
+       when not is_nil(id) and is_map(attrs) do
+    case manifest_attr(attrs, :metadata) do
+      :absent ->
+        changeset
+
+      {:present, requested_metadata} when is_map(requested_metadata) ->
+        stored_policy = execution_policy(run.metadata)
+        requested_policy = execution_policy(requested_metadata)
+
+        if stored_policy == requested_policy,
+          do: changeset,
+          else:
+            add_error(changeset, :metadata, "execution policy cannot be changed after creation")
+
+      {:present, _invalid} ->
+        changeset
+    end
+  end
+
+  defp reject_execution_policy_change(changeset, _run, _attrs), do: changeset
 
   defp manifest_attr(attrs, field) do
     string_field = Atom.to_string(field)
@@ -223,6 +249,37 @@ defmodule IexCode.Runs.Run do
       changeset
     end
   end
+
+  defp validate_execution_policy(changeset) do
+    validate_change(changeset, :metadata, fn :metadata, metadata ->
+      case execution_policy(metadata) do
+        nil ->
+          []
+
+        policy when is_map(policy) and not is_struct(policy) ->
+          case DagPayload.validate(policy, max_bytes: 32_000) do
+            {:ok, _policy} ->
+              []
+
+            {:error, reason} ->
+              [metadata: "contains an invalid execution policy: #{inspect(reason)}"]
+          end
+
+        _invalid ->
+          [metadata: "execution policy must be a map"]
+      end
+    end)
+  end
+
+  defp execution_policy(metadata) when is_map(metadata) do
+    cond do
+      Map.has_key?(metadata, "execution_policy") -> Map.get(metadata, "execution_policy")
+      Map.has_key?(metadata, :execution_policy) -> Map.get(metadata, :execution_policy)
+      true -> nil
+    end
+  end
+
+  defp execution_policy(_metadata), do: nil
 
   defp validate_nonnegative_optional(changeset, field) do
     validate_number(changeset, field, greater_than_or_equal_to: 0)

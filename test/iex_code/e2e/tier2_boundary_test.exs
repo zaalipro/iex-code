@@ -49,16 +49,19 @@ defmodule IexCode.E2E.Tier2BoundaryTest do
     end
 
     test "T2_F01_02_empty_strings_and_nil_fallbacks" do
-      {:ok, _} =
-        Settings.update_settings(%{
-          openai_api_key: "",
-          openai_base_url: nil
-        })
+      original = Settings.get_settings()
 
+      assert {:error, changeset} =
+               Settings.update_settings(%{
+                 openai_api_key: "",
+                 openai_base_url: nil
+               })
+
+      assert changeset.errors[:openai_base_url]
       settings = Settings.get_settings()
       # Blank keys normalize to nil — no key is ever injected as a default.
-      assert settings.openai_api_key in [nil, ""]
-      assert is_binary(settings.openai_base_url)
+      assert settings.openai_api_key == original.openai_api_key
+      assert settings.openai_base_url == original.openai_base_url
     end
 
     test "T2_F01_03_invalid_types_validation" do
@@ -68,8 +71,8 @@ defmodule IexCode.E2E.Tier2BoundaryTest do
 
     test "T2_F01_04_extreme_string_lengths" do
       huge_url = "https://cli.llmotions.com/v1/" <> String.duplicate("a", 5000)
-      {:ok, updated} = Settings.update_settings(%{openai_base_url: huge_url})
-      assert updated.openai_base_url == huge_url
+      assert {:error, changeset} = Settings.update_settings(%{openai_base_url: huge_url})
+      assert changeset.errors[:openai_base_url]
     end
 
     test "T2_F01_05_empty_attributes_update" do

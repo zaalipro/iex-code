@@ -453,6 +453,39 @@ defmodule IexCode.Runs.RunDispatcherTest do
     assert :ok = WorkspaceLocks.release(blocker)
   end
 
+  test "daemon poll applies durable cancellation while a coding run waits for its lock",
+       context do
+    {:ok, blocker} =
+      WorkspaceLocks.acquire(context.project, [:project],
+        owner_id: "interactive:offline-cancel-test",
+        project_id: context.project.id,
+        lease_seconds: 60,
+        heartbeat_interval_ms: 20_000
+      )
+
+    attrs =
+      context
+      |> run_attrs("offline cancel while waiting")
+      |> Map.merge(%{kind: "coding_swarm", mode: "swarm"})
+
+    assert {:ok, run} = RunDispatcher.enqueue(attrs, @dispatcher)
+    run_id = run.id
+    refute_receive {:test_run_started, ^run_id, _pid}, 100
+    assert Runs.get_run!(run_id).status == "running"
+    assert Map.has_key?(:sys.get_state(@dispatcher).lock_waiters, run_id)
+
+    assert {:ok, requested} = Runs.request_cancellation(run_id, "local-cli")
+    assert %DateTime{} = requested.cancellation_requested_at
+
+    send(@dispatcher, :poll)
+    _ = :sys.get_state(@dispatcher)
+
+    assert Runs.get_run!(run_id).status == "cancelled"
+    assert [%{status: "cancelled"}] = Runs.list_workspace_locks(run_id: run_id)
+    refute_receive {:test_run_started, ^run_id, _pid}, 100
+    assert :ok = WorkspaceLocks.release(blocker)
+  end
+
   test "a crashed coding worker releases its workspace lock after process exit", context do
     attrs =
       context

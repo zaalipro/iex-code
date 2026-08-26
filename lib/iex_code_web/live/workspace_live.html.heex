@@ -335,34 +335,37 @@
           <div class="px-2 pt-1 text-[10px] font-mono text-gray-500 uppercase tracking-wider font-semibold">
             Settings
           </div>
-          <button
-            phx-click="toggle_settings_modal"
+          <.link
+            id="workspace-settings-models"
+            navigate={~p"/sessions/#{@session.id}/settings#models"}
             class="w-full flex items-center gap-2.5 px-3 py-1.5 rounded-xl text-xs text-gray-400 hover:text-gray-200 hover:bg-[#161b22] transition-smooth text-left"
           >
             <.icon name="hero-key" class="w-3.5 h-3.5 text-gray-400" />
             <span>API & Models</span>
-          </button>
-          <button
-            phx-click="toggle_settings_modal"
+          </.link>
+          <.link
+            id="workspace-settings-general"
+            navigate={~p"/sessions/#{@session.id}/settings#execution"}
             class="w-full flex items-center gap-2.5 px-3 py-1.5 rounded-xl text-xs text-gray-400 hover:text-gray-200 hover:bg-[#161b22] transition-smooth text-left"
           >
             <.icon name="hero-cog-6-tooth" class="w-3.5 h-3.5 text-gray-400" />
             <span>General Settings</span>
-          </button>
+          </.link>
 
           <!-- User Profile / OTP Engine Card -->
-          <button
+          <.link
             id="profile-settings-card"
-            type="button"
-            phx-click="toggle_settings_modal"
+            navigate={~p"/sessions/#{@session.id}/settings#runtime"}
             class="mt-2 w-full p-2.5 rounded-2xl bg-[#161b22] border border-[#21262d] hover:border-[#38404a] flex items-center justify-between cursor-pointer transition-smooth group text-left"
           >
             <div class="flex items-center gap-2.5 min-w-0">
               <div class="w-7 h-7 rounded-xl bg-gradient-to-tr from-indigo-500 to-purple-500 flex items-center justify-center text-white font-bold text-xs shrink-0 shadow-sm">
-                Z
+                <.icon name="hero-cpu-chip" class="h-4 w-4" />
               </div>
               <div class="min-w-0">
-                <div class="text-xs font-semibold text-white truncate leading-tight">zaali</div>
+                <div class="text-xs font-semibold text-white truncate leading-tight">
+                  Local runtime
+                </div>
                 <div class="text-[10px] font-mono text-emerald-400 flex items-center gap-1">
                   <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(34,197,94,0.8)]"></span>
                   OTP Active
@@ -373,7 +376,7 @@
               name="hero-chevron-right"
               class="w-3.5 h-3.5 text-gray-500 group-hover:text-white"
             />
-          </button>
+          </.link>
         </div>
       </div>
     </aside>
@@ -585,7 +588,7 @@
             <button
               id="header-swarm-toggle"
               phx-click="toggle_swarm"
-              aria-label={"Swarm mode: #{if @session.swarm_mode, do: "on", else: "off"}"}
+              aria-label={"Interactive swarm mode: #{if @session.swarm_mode, do: "on", else: "off"}"}
               class={[
                 "flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-mono font-medium transition-smooth border",
                 @session.swarm_mode && "bg-amber-500/10 text-amber-400 border-amber-500/30",
@@ -598,16 +601,16 @@
             </button>
             <div class="luxury-tooltip luxury-tooltip-bottom">
               <div class="text-xs font-semibold text-white tracking-tight mb-1">
-                Autonomous Swarm Mode
+                Interactive session mode
               </div>
               <div class="flex items-center justify-between text-[11px] font-mono text-gray-400 pt-1 border-t border-white/10">
-                <span class="text-gray-300">Supervised OTP Tree</span>
+                <span class="text-gray-300">Does not change durable run setup</span>
                 <span class={
                   if @session.swarm_mode,
                     do: "text-amber-400 font-semibold",
                     else: "text-gray-400"
                 }>
-                  {if @session.swarm_mode, do: "4 Agents Active", else: "Single Agent"}
+                  {if @session.swarm_mode, do: "Swarm", else: "Single agent"}
                 </span>
               </div>
             </div>
@@ -2201,15 +2204,14 @@
                     requested execution contract visible before any work begins.
                   </p>
                 </div>
-                <button
+                <.link
                   id="research-open-settings"
-                  type="button"
-                  phx-click="open_research_settings"
+                  navigate={~p"/sessions/#{@session.id}/settings#providers"}
                   class="inline-flex min-h-11 items-center justify-center gap-2 border border-[#303844] bg-[#11161d] px-4 font-mono text-[10px] font-semibold uppercase tracking-wider text-gray-300 transition-colors hover:border-violet-400/40 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60"
                 >
                   <.icon name="hero-adjustments-horizontal" class="h-4 w-4 text-violet-300" />
                   Provider settings
-                </button>
+                </.link>
               </header>
 
               <div class="grid gap-5 xl:grid-cols-[minmax(0,1.15fr)_minmax(22rem,0.85fr)]">
@@ -2220,6 +2222,12 @@
                   phx-submit="submit_deep_research"
                   class="min-w-0 border border-[#29313a] bg-[#0d1218] p-4 sm:p-5"
                 >
+                  <input
+                    id="deep-research-request-id"
+                    type="hidden"
+                    name="research[request_id]"
+                    value={@research_form[:request_id].value}
+                  />
                   <div class="mb-5 flex items-center justify-between gap-4">
                     <div>
                       <h3 class="text-base font-semibold text-white">Research brief</h3>
@@ -2310,7 +2318,7 @@
                       id="deep-research-max-sources"
                       type="number"
                       min="1"
-                      max="100"
+                      max="40"
                       label="Maximum sources"
                       value={@research_launch_sources}
                       class="block min-h-11 w-full border border-[#303844] bg-[#090d12] px-3 py-2 text-sm text-gray-100 outline-none focus:border-violet-500/60"
@@ -2824,6 +2832,7 @@
             is_dirty={@is_dirty?}
             open_buffers={@open_buffers}
             editor_lock={editor_lock(assigns)}
+            auto_save={@settings.auto_save == true}
           />
         <% end %>
 
@@ -3178,7 +3187,7 @@
       <footer
         id="prompt-composer"
         aria-label="Agent prompt composer"
-        class="p-2 pt-0 sm:p-3 sm:pt-0 xl:p-5 xl:pt-0 bg-gradient-to-t from-[#0a0d12] via-[#0a0d12]/95 to-transparent shrink-0"
+        class="max-h-[calc(100dvh-3.5rem)] shrink-0 overflow-y-auto overscroll-contain bg-gradient-to-t from-[#0a0d12] via-[#0a0d12]/95 to-transparent p-2 pt-0 sm:p-3 sm:pt-0 xl:p-5 xl:pt-0"
       >
         <div class="max-w-4xl mx-auto">
           <!-- Announcement Pill -->
@@ -3212,7 +3221,7 @@
                 for={@run_setup_form}
                 id="run-setup-panel"
                 phx-change="update_run_setup"
-                class="mb-3 border-b border-[#29313a] pb-3"
+                class="mb-3 max-h-[min(60dvh,42rem)] overflow-y-auto overscroll-contain border-b border-[#29313a] pb-3 pr-1"
               >
                 <div class="mb-3 flex items-start justify-between gap-4">
                   <div>
@@ -3220,7 +3229,7 @@
                       Durable execution manifest
                     </p>
                     <p class="mt-1 text-[11px] leading-5 text-gray-500">
-                      Persist mode, evidence providers, retry policy, enforced limits, and a display-only cost target.
+                      Persist mode, evidence providers, attempt policy, enforced token/time limits, and reported-cost budget.
                     </p>
                   </div>
                   <button
@@ -3240,11 +3249,12 @@
                     type="select"
                     label="Mission type"
                     options={[
-                      Code: "code",
+                      "Single agent": "single",
+                      "Coding swarm": "swarm",
                       "Deep research": "research",
                       "Typed DAG (non-mutating)": "dag"
                     ]}
-                    value={@run_setup_mode}
+                    value={@run_setup_form[:mode].value}
                     class="w-full border border-[#30363d] bg-[#0b0f14] px-2.5 py-2 text-xs text-white outline-none focus:border-[#ff7e5f]/60"
                   />
                   <.input
@@ -3253,19 +3263,30 @@
                     type="select"
                     label="Queue priority"
                     options={[Low: "low", Normal: "normal", High: "high", Critical: "critical"]}
-                    value={@run_setup_priority}
+                    value={@run_setup_form[:priority].value}
                     class="w-full border border-[#30363d] bg-[#0b0f14] px-2.5 py-2 text-xs text-white outline-none focus:border-[#ff7e5f]/60"
                   />
                   <.input
+                    :if={@run_setup_mode != "research"}
                     field={@run_setup_form[:max_attempts]}
                     id="run-setup-max-attempts"
                     type="number"
                     min="1"
                     max="10"
-                    label="Max attempts"
-                    value={@run_setup_max_attempts}
+                    label="Manual retry ceiling"
+                    value={@run_setup_form[:max_attempts].value}
                     class="w-full border border-[#30363d] bg-[#0b0f14] px-2.5 py-2 text-xs text-white outline-none focus:border-[#ff7e5f]/60"
                   />
+                  <div
+                    :if={@run_setup_mode == "research"}
+                    id="run-setup-research-attempt-policy"
+                    class="border border-amber-400/25 bg-amber-400/[0.05] px-3 py-2"
+                  >
+                    <p class="text-xs font-semibold text-amber-100">One paid run attempt</p>
+                    <p class="mt-1 text-[10px] leading-4 text-amber-200/70">
+                      Whole-run replay is disabled. Review failures before launching a new research run.
+                    </p>
+                  </div>
                   <.input
                     field={@run_setup_form[:time_budget_minutes]}
                     id="run-setup-time-budget"
@@ -3273,7 +3294,7 @@
                     min="1"
                     max="10080"
                     label="Time budget (min)"
-                    value={@run_setup_time_budget_minutes}
+                    value={@run_setup_form[:time_budget_minutes].value}
                     placeholder="Unset"
                     class="w-full border border-[#30363d] bg-[#0b0f14] px-2.5 py-2 text-xs text-white outline-none focus:border-[#ff7e5f]/60"
                   />
@@ -3283,7 +3304,7 @@
                     type="number"
                     min="1"
                     label="Token budget"
-                    value={@run_setup_token_budget}
+                    value={@run_setup_form[:token_budget].value}
                     placeholder="Unset"
                     class="w-full border border-[#30363d] bg-[#0b0f14] px-2.5 py-2 text-xs text-white outline-none focus:border-[#ff7e5f]/60"
                   />
@@ -3292,18 +3313,49 @@
                     id="run-setup-cost-budget"
                     type="number"
                     min="1"
-                    label="Cost target (¢ · display only)"
-                    value={@run_setup_cost_budget_cents}
+                    label="Reported cost budget (¢)"
+                    value={@run_setup_form[:cost_budget_cents].value}
                     placeholder="Unset"
                     class="w-full border border-[#30363d] bg-[#0b0f14] px-2.5 py-2 text-xs text-white outline-none focus:border-[#ff7e5f]/60"
                   />
                   <.input
-                    field={@run_setup_form[:research_depth]}
-                    id="run-setup-research-depth"
+                    field={@run_setup_form[:agent_max_turns]}
+                    id="run-setup-agent-max-turns"
+                    type="number"
+                    min="1"
+                    max="20"
+                    label="Agent / coder turn limit"
+                    aria-description="Applies to the single-agent loop or each durable swarm coding and diagnostic repair pass."
+                    value={@run_setup_form[:agent_max_turns].value}
+                    class="w-full border border-[#30363d] bg-[#0b0f14] px-2.5 py-2 text-xs text-white outline-none focus:border-[#ff7e5f]/60"
+                  />
+                  <.input
+                    field={@run_setup_form[:swarm_agent_count]}
+                    id="run-setup-swarm-agent-count"
+                    type="number"
+                    min="4"
+                    max="32"
+                    label="Swarm agents"
+                    value={@run_setup_form[:swarm_agent_count].value}
+                    class="w-full border border-[#30363d] bg-[#0b0f14] px-2.5 py-2 text-xs text-white outline-none focus:border-[#ff7e5f]/60"
+                  />
+                  <.input
+                    field={@run_setup_form[:swarm_max_retries]}
+                    id="run-setup-swarm-max-retries"
+                    type="number"
+                    min="0"
+                    max="10"
+                    label="Swarm correction retries"
+                    value={@run_setup_form[:swarm_max_retries].value}
+                    class="w-full border border-[#30363d] bg-[#0b0f14] px-2.5 py-2 text-xs text-white outline-none focus:border-[#ff7e5f]/60"
+                  />
+                  <.input
+                    field={@run_setup_form[:research_level]}
+                    id="run-setup-research-level"
                     type="select"
-                    label="Research depth"
-                    options={[Quick: "quick", Standard: "standard", Deep: "deep"]}
-                    value={@run_setup_research_depth}
+                    label="Research effort"
+                    options={[Low: "low", Medium: "medium", High: "high", Ultra: "ultra"]}
+                    value={@run_setup_form[:research_level].value}
                     class="w-full border border-[#30363d] bg-[#0b0f14] px-2.5 py-2 text-xs text-white outline-none focus:border-violet-500/60"
                   />
                   <.input
@@ -3311,12 +3363,21 @@
                     id="run-setup-research-sources"
                     type="number"
                     min="1"
-                    max="100"
+                    max="40"
                     label="Maximum sources"
-                    value={@run_setup_research_sources}
+                    value={@run_setup_form[:research_max_sources].value}
                     class="w-full border border-[#30363d] bg-[#0b0f14] px-2.5 py-2 text-xs text-white outline-none focus:border-violet-500/60"
                   />
                 </div>
+
+                <p
+                  :if={@run_setup_policy_error}
+                  id="run-setup-policy-error"
+                  role="alert"
+                  class="mt-3 border border-rose-400/30 bg-rose-400/[0.06] px-3 py-2 text-xs leading-5 text-rose-200"
+                >
+                  {@run_setup_policy_error}. The submitted value is preserved; fix it before queueing work.
+                </p>
 
                 <div
                   :if={@run_setup_mode == "dag"}
@@ -3359,9 +3420,11 @@
 
                 <fieldset
                   id="run-setup-providers"
+                  disabled={@run_setup_mode != "research"}
+                  aria-disabled={if(@run_setup_mode != "research", do: "true", else: "false")}
                   class={[
                     "mt-2 border border-[#252c35] bg-[#0b0f14] px-3 py-2",
-                    @run_setup_mode != "research" && "opacity-40"
+                    @run_setup_mode != "research" && "cursor-not-allowed opacity-40"
                   ]}
                 >
                   <legend class="px-1 font-mono text-[9px] font-semibold uppercase tracking-wider text-gray-500">
@@ -3370,7 +3433,7 @@
                   <div class="flex flex-wrap gap-x-4 gap-y-1">
                     <label
                       :for={provider <- @settings.search_provider_order || ["duckduckgo"]}
-                      class="inline-flex cursor-pointer items-center gap-1.5 font-mono text-[10px] text-gray-400"
+                      class="inline-flex min-h-8 cursor-pointer items-center gap-1.5 font-mono text-[11px] text-gray-400"
                     >
                       <input
                         type="hidden"
@@ -3383,7 +3446,7 @@
                         name={"run_setup[providers][#{provider}]"}
                         value="true"
                         checked={provider in @run_setup_providers}
-                        class="h-3.5 w-3.5 border-[#3b4551] bg-[#11161d] accent-violet-400"
+                        class="h-4 w-4 border-[#3b4551] bg-[#11161d] accent-violet-400"
                       />
                       {provider |> String.replace("_", " ") |> String.capitalize()}
                     </label>
@@ -3397,6 +3460,12 @@
                 phx-submit="submit_prompt"
                 class="flex flex-col gap-2"
               >
+                <input
+                  id="prompt-request-id"
+                  type="hidden"
+                  name="request_id"
+                  value={@prompt_form[:request_id].value}
+                />
                 <div
                   :if={MapSet.size(@research_attachments) > 0}
                   id="prompt-research-attachments"
@@ -3459,7 +3528,7 @@
                         type="button"
                         phx-click="set_dispatch_mode"
                         phx-value-mode="background"
-                        aria-pressed={@dispatch_mode == "background"}
+                        aria-pressed={to_string(@dispatch_mode == "background")}
                         title="Persist and run asynchronously"
                         class={[
                           "flex items-center gap-1 px-2 py-1 font-mono text-[10px] transition-colors",
@@ -3475,7 +3544,7 @@
                         type="button"
                         phx-click="set_dispatch_mode"
                         phx-value-mode="interactive"
-                        aria-pressed={@dispatch_mode == "interactive"}
+                        aria-pressed={to_string(@dispatch_mode == "interactive")}
                         title="Send to the live session"
                         class={[
                           "flex items-center gap-1 px-2 py-1 font-mono text-[10px] transition-colors",
@@ -3579,39 +3648,6 @@
                                                                         ),
                                                                         do: "Active",
                                                                         else: "Disabled"}</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div class="tooltip-trigger">
-                      <button
-                        type="button"
-                        phx-click="toggle_tool"
-                        phx-value-tool="swarm"
-                        aria-label="Toggle agent swarm coordinator tool"
-                        aria-pressed={MapSet.member?(@active_tools, "swarm")}
-                        class={[
-                          "p-1.5 rounded-lg border transition-smooth",
-                          MapSet.member?(@active_tools, "swarm") &&
-                            "bg-amber-500/20 text-amber-300 border-amber-500/40 shadow-xs",
-                          !MapSet.member?(@active_tools, "swarm") &&
-                            "bg-[#161b22] border-[#21262d] text-gray-400 hover:text-white"
-                        ]}
-                      >
-                        <.icon name="hero-cpu-chip" class="w-3.5 h-3.5" />
-                      </button>
-                      <div class="luxury-tooltip">
-                        <div class="text-xs font-semibold text-white tracking-tight mb-1">
-                          Agent Swarm Coordinator
-                        </div>
-                        <div class="flex items-center justify-between text-[11px] font-mono text-gray-400 pt-1 border-t border-white/10">
-                          <span class="text-gray-300">Planner & Coder & Verifier</span>
-                          <span class="text-amber-400 font-semibold">{if MapSet.member?(
-                                                                           @active_tools,
-                                                                           "swarm"
-                                                                         ),
-                                                                         do: "Active",
-                                                                         else: "Disabled"}</span>
                         </div>
                       </div>
                     </div>
@@ -3847,7 +3883,7 @@
               type="checkbox"
               name="goal[auto_start]"
               value="true"
-              checked
+              checked={@goal_form[:auto_start].value in [true, "true", "on", "1", 1]}
               id="goal-auto-start"
               class="rounded bg-[#0d1117] border-[#30363d] text-amber-500 focus:ring-0"
             />
@@ -3877,7 +3913,9 @@
                 </dd>
               </div>
               <div>
-                <dt class="text-[9px] uppercase tracking-wider text-gray-600">Max attempts</dt>
+                <dt class="text-[9px] uppercase tracking-wider text-gray-600">
+                  Manual retry ceiling
+                </dt>
                 <dd id="goal-policy-max-attempts" class="mt-0.5 text-[11px] text-gray-300">
                   {@run_setup_max_attempts}
                 </dd>
@@ -4477,7 +4515,7 @@
                   type="number"
                   label="Max sources"
                   min="1"
-                  max="100"
+                  max="40"
                   class="mt-1 w-full border border-[#30363d] bg-[#090d12] px-2 py-1.5 text-[10px] normal-case text-white outline-none focus-visible:ring-2 focus-visible:ring-violet-400/50"
                 />
                 <.input
@@ -4537,11 +4575,14 @@
             <!-- Swarm Agent Count, Temperature, Max Tokens & Auto-Save -->
             <div class="grid grid-cols-2 gap-3 pt-2 border-t border-[#21262d]">
               <div>
-                <label class="block text-gray-400 mb-1">Swarm Agents (1-32)</label>
+                <label for="legacy-settings-swarm-agent-count" class="block text-gray-400 mb-1">
+                  Swarm Agents (4-32)
+                </label>
                 <input
+                  id="legacy-settings-swarm-agent-count"
                   type="number"
                   name="settings[swarm_agent_count]"
-                  min="1"
+                  min="4"
                   max="32"
                   value={@settings.swarm_agent_count}
                   class="w-full bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-2 text-white font-mono text-xs focus:border-cyan-500 focus:outline-none"

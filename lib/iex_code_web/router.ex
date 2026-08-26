@@ -20,8 +20,10 @@ defmodule IexCodeWeb.Router do
 
     live "/", WorkspaceLive, :index
     live "/research", WorkspaceLive, :research
+    live "/settings", SettingsLive, :index
     live "/sessions/:id", WorkspaceLive, :show
     live "/sessions/:id/research", WorkspaceLive, :research
+    live "/sessions/:id/settings", SettingsLive, :session
 
     get "/research/:id/report", ResearchReportController, :show
     get "/research/:id/report/download", ResearchReportController, :download_html

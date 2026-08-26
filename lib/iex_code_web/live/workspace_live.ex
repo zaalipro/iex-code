@@ -3,12 +3,13 @@ defmodule IexCodeWeb.WorkspaceLive do
   require Logger
   alias IexCode.{Projects, Runs, Sessions, Settings, Kanban, WorkspaceLocks, WorkspacePath}
   alias IexCode.Engine.SessionServer
+  alias IexCode.Execution.{CommandError, CommandParser, Intent, Router}
   alias IexCode.Runs.{DagProjection, DagScheduler, RunDispatcher}
   alias IexCode.Research.Results, as: ResearchResults
   alias IexCode.Research.Registry, as: SearchRegistry
   alias IexCode.Tools.Git
   alias IexCode.Tools.Git.{DiffParser, HunkOps}
-  alias IexCode.Tools.TerminalServer
+  alias IexCode.Tools.{TerminalServer, TerminalSession}
   alias IexCodeWeb.CommandPalette
   alias Phoenix.PubSub
   import IexCodeWeb.WorkspaceComponents
@@ -74,6 +75,8 @@ defmodule IexCodeWeb.WorkspaceLive do
       Runs.subscribe_session(session.id)
       Runs.subscribe_workspace_locks(project.id)
       Kanban.subscribe(project.id)
+      ResearchResults.subscribe_session(session.id)
+      Settings.subscribe()
       SessionServer.ensure_started(session.id)
       _ = TerminalServer.ensure_started(session.id, workspace_path: project.root_path)
     end
@@ -112,6 +115,12 @@ defmodule IexCodeWeb.WorkspaceLive do
     terminal_rows = Map.get(terminal_state, :rows, 24)
     terminal_occupant = Map.get(terminal_state, :occupant, :user)
 
+    terminal_history =
+      terminal_state
+      |> Map.get(:command_history, [])
+      |> Enum.map(&Map.get(&1, :command))
+      |> Enum.filter(&(is_binary(&1) and String.trim(&1) != ""))
+
     socket =
       socket
       |> assign(:page_title, "#{session.title} · #{project.name}")
@@ -142,17 +151,21 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:run_count, length(durable_runs))
       |> assign(:run_counts, run_counts(durable_runs, pending_approval_count))
       |> assign(:run_dispatcher_stats, safe_dispatcher_stats())
-      |> assign(:dispatch_mode, "background")
+      |> assign(:dispatch_mode, settings.default_dispatch_mode || "background")
       |> assign(:run_setup_open?, false)
-      |> assign(:run_setup_mode, "code")
-      |> assign(:run_setup_priority, "normal")
-      |> assign(:run_setup_max_attempts, 3)
-      |> assign(:run_setup_token_budget, nil)
-      |> assign(:run_setup_cost_budget_cents, nil)
-      |> assign(:run_setup_time_budget_minutes, nil)
+      |> assign(:run_setup_mode, settings.default_run_mode || "swarm")
+      |> assign(:run_setup_priority, settings.default_run_priority || "normal")
+      |> assign(:run_setup_max_attempts, settings.default_run_max_attempts || 3)
+      |> assign(:run_setup_token_budget, settings.default_run_token_budget)
+      |> assign(:run_setup_cost_budget_cents, settings.default_run_cost_budget_cents)
+      |> assign(:run_setup_time_budget_minutes, settings.default_run_time_budget_minutes)
+      |> assign(:run_setup_agent_max_turns, settings.agent_max_turns || 8)
+      |> assign(:run_setup_swarm_agent_count, settings.swarm_agent_count || 4)
+      |> assign(:run_setup_swarm_max_retries, settings.swarm_max_retries || 3)
+      |> assign(:run_setup_policy_error, nil)
       |> assign(:run_setup_dag_manifest_json, @dag_manifest_sample)
       |> assign(:run_setup_dag_error, nil)
-      |> assign(:run_setup_research_depth, settings.research_depth || "standard")
+      |> assign(:run_setup_research_level, settings.research_level || "medium")
       |> assign(:run_setup_research_sources, settings.research_max_sources || 12)
       |> assign(:run_setup_providers, enabled_search_providers(settings))
       |> assign(:research_runs, research_runs(durable_runs))
@@ -216,13 +229,7 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:terminal_occupant, terminal_occupant)
       |> assign(:terminal_active_cmd, nil)
       |> assign(:terminal_port, nil)
-      |> assign(:terminal_history, [
-        "iex -S mix",
-        "mix test",
-        "mix precommit",
-        "git status",
-        "git diff"
-      ])
+      |> assign(:terminal_history, terminal_history)
       |> assign(:terminal_form, to_form(%{"command" => ""}))
       # Goal & Steering assigns
       |> assign(:show_goal_modal, false)
@@ -237,7 +244,7 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:active_worker_pid, nil)
       |> assign(:swarm_iteration, 1)
       |> assign(:max_retries, 3)
-      |> assign(:active_tools, MapSet.new(["ast_search", "swarm"]))
+      |> assign(:active_tools, default_active_tools(settings))
       # Dropdown & Modal state
       |> assign(:open_dropdown, nil)
       |> assign(:show_settings_modal, false)
@@ -280,14 +287,18 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:workspace_search_form, to_form(%{"query" => ""}))
       |> assign(:file_filter_form, to_form(%{"filter" => ""}))
       |> assign(:custom_time_form, to_form(%{"custom_time" => ""}))
-      |> assign(:prompt_form, to_form(%{"prompt" => ""}))
+      |> assign(
+        :prompt_form,
+        to_form(%{"prompt" => "", "request_id" => Ecto.UUID.generate()})
+      )
       |> assign(
         :research_form,
         to_form(
           %{
             "objective" => "",
             "level" => settings.research_level || "medium",
-            "max_sources" => to_string(settings.research_max_sources || 12)
+            "max_sources" => to_string(settings.research_max_sources || 12),
+            "request_id" => Ecto.UUID.generate()
           },
           as: :research
         )
@@ -298,7 +309,7 @@ defmodule IexCodeWeb.WorkspaceLive do
         to_form(%{
           "title" => "",
           "description" => "",
-          "auto_start" => "true",
+          "auto_start" => to_string(settings.goal_auto_start != false),
           "request_id" => Ecto.UUID.generate()
         })
       )
@@ -315,7 +326,7 @@ defmodule IexCodeWeb.WorkspaceLive do
       )
       |> assign(:settings_form, Settings.change_settings(settings) |> to_form(as: :settings))
       |> assign(:project_form, to_form(%{"path" => "", "name" => ""}))
-      |> assign(:terminal_form, to_form(%{"command" => "mix test"}))
+      |> assign(:terminal_form, to_form(%{"command" => ""}))
       # Command Palette assigns
       |> assign(:show_command_palette, false)
       |> assign(:command_palette_query, "")
@@ -403,9 +414,11 @@ defmodule IexCodeWeb.WorkspaceLive do
                 PubSub.unsubscribe(IexCode.PubSub, "session:#{old_id}")
                 PubSub.unsubscribe(IexCode.PubSub, "session:#{old_id}:terminal")
                 PubSub.unsubscribe(IexCode.PubSub, "runs:session:#{old_id}")
+                PubSub.unsubscribe(IexCode.PubSub, "research:session:#{old_id}")
                 PubSub.subscribe(IexCode.PubSub, "session:#{new_session.id}")
                 PubSub.subscribe(IexCode.PubSub, "session:#{new_session.id}:terminal")
                 Runs.subscribe_session(new_session.id)
+                ResearchResults.subscribe_session(new_session.id)
 
                 if new_session.project_id != old_project_id do
                   PubSub.unsubscribe(IexCode.PubSub, "kanban:#{old_project_id}")
@@ -493,10 +506,7 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("switch_tab", %{"tab" => tab}, socket) when tab in @workspace_tabs do
-    socket =
-      socket
-      |> assign(:active_tab, tab)
-      |> maybe_set_tab_dispatch_mode(tab)
+    socket = assign(socket, :active_tab, tab)
 
     socket = if tab == "changes", do: refresh_git_state(socket), else: socket
 
@@ -522,10 +532,7 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   def handle_event("switch_tab", %{"sidebar_tab" => tab}, socket)
       when tab in @workspace_tabs do
-    socket =
-      socket
-      |> assign(:active_tab, tab)
-      |> maybe_set_tab_dispatch_mode(tab)
+    socket = assign(socket, :active_tab, tab)
 
     socket = if tab == "changes", do: refresh_git_state(socket), else: socket
 
@@ -1276,15 +1283,21 @@ defmodule IexCodeWeb.WorkspaceLive do
 
           files = list_project_files(socket.assigns.project.root_path)
 
-          {:noreply,
-           socket
-           |> assign(:file_content, content)
-           |> assign(:dirty_content, content)
-           |> assign(:is_dirty?, false)
-           |> assign(:open_buffers, buffers)
-           |> assign(:project_files, files)
-           |> refresh_git_state()
-           |> put_flash(:info, "Saved #{file_path}")}
+          socket =
+            socket
+            |> assign(:file_content, content)
+            |> assign(:dirty_content, content)
+            |> assign(:is_dirty?, false)
+            |> assign(:open_buffers, buffers)
+            |> assign(:project_files, files)
+            |> refresh_git_state()
+
+          socket =
+            if params["autosave"] in [true, "true", "1"],
+              do: socket,
+              else: put_flash(socket, :info, "Saved #{file_path}")
+
+          {:noreply, socket}
 
         {:error, {:workspace_lock_waiting, _locks}} ->
           {:noreply,
@@ -2125,70 +2138,110 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("create_goal", params, socket) do
-    if socket.assigns.submitting? do
-      {:noreply, socket}
-    else
-      goal_params = params["goal"] || params
-      title = goal_params["title"] || ""
-      desc = goal_params["description"] || ""
-      auto_start = goal_params["auto_start"] in [true, "true", "on", "1", 1]
-      request_id = normalize_goal_request_id(goal_params["request_id"])
+    cond do
+      socket.assigns.submitting? ->
+        {:noreply, socket}
 
-      if String.trim(to_string(title)) != "" do
-        title = title |> to_string() |> String.trim()
-        description = desc |> to_string() |> String.trim()
-        objective = durable_goal_objective(title, description)
-        socket = assign(socket, :submitting?, true)
+      socket.assigns.run_setup_policy_error ->
+        {:noreply,
+         put_flash(
+           socket,
+           :error,
+           "Fix Run setup before creating this goal: #{socket.assigns.run_setup_policy_error}"
+         )}
 
-        socket =
-          try do
-            if auto_start do
-              attrs =
-                durable_goal_attrs(socket, title, description, objective, request_id, auto_start)
+      true ->
+        goal_params = params["goal"] || params
+        title = goal_params["title"] || ""
+        desc = goal_params["description"] || ""
+        auto_start = goal_params["auto_start"] in [true, "true", "on", "1", 1]
+        request_id = normalize_goal_request_id(goal_params["request_id"])
 
-              case RunDispatcher.enqueue(attrs) do
-                {:ok, run} ->
-                  durable_goal_created(
-                    socket,
+        if String.trim(to_string(title)) != "" do
+          title = title |> to_string() |> String.trim()
+          description = desc |> to_string() |> String.trim()
+          objective = durable_goal_objective(title, description)
+          socket = assign(socket, :submitting?, true)
+
+          socket =
+            try do
+              goal_description =
+                if MapSet.size(socket.assigns.research_attachments) == 0 do
+                  description
+                else
+                  base =
+                    if description == "",
+                      do: "Use the attached research as evidence.",
+                      else: description
+
+                  case prompt_with_research_context(socket, base) do
+                    {:ok, contextual_description} -> contextual_description
+                    {:error, reason} -> throw({:goal_context_error, reason})
+                  end
+                end
+
+              intent = %Intent{
+                kind: :goal,
+                objective: objective,
+                durability: :durable,
+                mode: :swarm,
+                draft?: not auto_start,
+                raw_command: nil,
+                source: "goal_modal"
+              }
+
+              context =
+                socket
+                |> composer_router_context(%{"request_id" => request_id})
+                |> Map.put(:goal_title, title)
+                |> Map.put(:goal_description, goal_description)
+                |> update_in([:overrides], &Map.put(&1, :goal_auto_start, auto_start))
+                |> update_in([:overrides], fn overrides ->
+                  Map.put(overrides, :allowed_tools, enabled_tools(socket.assigns.active_tools))
+                end)
+                |> update_in([:metadata], fn metadata ->
+                  Map.merge(metadata || %{}, %{
+                    "research_result_ids" =>
+                      socket.assigns.research_attachments |> MapSet.to_list() |> Enum.sort()
+                  })
+                end)
+
+              case Router.route(intent, context) do
+                {:ok, %{run: run, action: {:run, _run}}} ->
+                  socket
+                  |> clear_research_attachments()
+                  |> durable_goal_created(
                     run,
                     "Goal created and queued as a durable multi-agent run"
                   )
 
-                {:error, reason} ->
-                  put_flash(
-                    socket,
-                    :error,
-                    "Failed to queue durable goal: #{format_run_error(reason)}"
-                  )
-              end
-            else
-              attrs =
-                durable_goal_attrs(socket, title, description, objective, request_id, auto_start)
-
-              case RunDispatcher.create_draft(attrs) do
-                {:ok, run} ->
-                  durable_goal_created(socket, run, "Goal saved as a durable draft")
+                {:ok, %{run: run, action: {:draft, _run}}} ->
+                  socket
+                  |> clear_research_attachments()
+                  |> durable_goal_created(run, "Goal saved as a durable draft")
 
                 {:error, reason} ->
                   put_flash(socket, :error, "Failed to create goal: #{format_run_error(reason)}")
               end
+            rescue
+              e ->
+                Logger.error("create_goal failed: #{Exception.message(e)}")
+                put_flash(socket, :error, "Failed to create goal: #{Exception.message(e)}")
+            catch
+              {:goal_context_error, reason} ->
+                put_flash(socket, :error, reason)
+
+              :exit, {:timeout, _} ->
+                put_flash(socket, :error, "Creating the goal timed out — try again shortly")
+
+              :exit, reason ->
+                put_flash(socket, :error, "Failed to create goal: #{inspect(reason)}")
             end
-          rescue
-            e ->
-              Logger.error("create_goal failed: #{Exception.message(e)}")
-              put_flash(socket, :error, "Failed to create goal: #{Exception.message(e)}")
-          catch
-            :exit, {:timeout, _} ->
-              put_flash(socket, :error, "Creating the goal timed out — try again shortly")
 
-            :exit, reason ->
-              put_flash(socket, :error, "Failed to create goal: #{inspect(reason)}")
-          end
-
-        {:noreply, assign(socket, :submitting?, false)}
-      else
-        {:noreply, put_flash(socket, :error, "Goal title is required")}
-      end
+          {:noreply, assign(socket, :submitting?, false)}
+        else
+          {:noreply, put_flash(socket, :error, "Goal title is required")}
+        end
     end
   end
 
@@ -2275,12 +2328,23 @@ defmodule IexCodeWeb.WorkspaceLive do
 
       socket =
         try do
-          SessionServer.cancel_session(socket.assigns.session.id, opts)
+          case SessionServer.cancel_session(socket.assigns.session.id, opts) do
+            {:ok, _result} ->
+              socket
+              |> assign(:session, %{socket.assigns.session | status: "stopped"})
+              |> assign(:show_cancel_modal, false)
+              |> put_flash(:info, "Session stopped (#{mode} executed)")
 
-          socket
-          |> assign(:session, %{socket.assigns.session | status: "stopped"})
-          |> assign(:show_cancel_modal, false)
-          |> put_flash(:info, "Session stopped (#{mode} executed)")
+            {:error, reason} ->
+              put_flash(
+                socket,
+                :error,
+                "Unable to stop the session: #{format_run_error(reason)}"
+              )
+
+            other ->
+              put_flash(socket, :error, "Unable to stop the session: #{inspect(other)}")
+          end
         rescue
           e ->
             Logger.error("cancel_session failed: #{Exception.message(e)}")
@@ -2306,15 +2370,27 @@ defmodule IexCodeWeb.WorkspaceLive do
     text = String.trim(params["steering"] || params["text"] || "")
 
     if text != "" do
-      SessionServer.send_steering(socket.assigns.session.id, text)
+      case SessionServer.send_steering(socket.assigns.session.id, text) do
+        {:ok, _result} ->
+          {:noreply,
+           socket
+           |> assign(:steer_text, "")
+           |> put_flash(:info, "Steering guidance delivered to active swarm")}
 
-      {:noreply,
-       socket
-       |> assign(:steer_text, "")
-       |> put_flash(:info, "Steering guidance delivered to active swarm")}
+        {:error, reason} ->
+          {:noreply,
+           put_flash(socket, :error, "Steering was not delivered: #{format_run_error(reason)}")}
+
+        other ->
+          {:noreply, put_flash(socket, :error, "Steering was not delivered: #{inspect(other)}")}
+      end
     else
       {:noreply, socket}
     end
+  catch
+    :exit, reason ->
+      {:noreply,
+       put_flash(socket, :error, "Steering was not delivered: #{format_run_error(reason)}")}
   end
 
   # ============================================================================
@@ -2992,38 +3068,52 @@ defmodule IexCodeWeb.WorkspaceLive do
         {:noreply, put_flash(socket, :error, "Select at least one ranked research provider")}
 
       true ->
-        attrs = %{
+        intent = %Intent{
+          kind: :research,
+          objective: objective,
+          durability: :durable,
+          mode: :research,
+          level: socket.assigns.research_launch_level,
+          draft?: false,
+          raw_command: nil,
+          source: "research_workspace"
+        }
+
+        context = %{
           project_id: socket.assigns.project.id,
           session_id: socket.assigns.session.id,
-          objective: objective,
-          priority: socket.assigns.run_setup_priority,
-          token_budget: socket.assigns.settings.research_max_tokens,
-          cost_budget_cents: socket.assigns.settings.research_max_cost_cents,
-          time_budget_ms: minutes_to_ms(socket.assigns.settings.research_time_budget_minutes),
-          metadata: %{
-            "source" => "research_workspace",
-            "allowed_tools" => [],
-            "research_result_ids" =>
-              socket.assigns.research_attachments |> MapSet.to_list() |> Enum.sort()
+          settings: socket.assigns.settings,
+          request_key: normalize_goal_request_id(params["request_id"]),
+          source: "research_workspace",
+          overrides: %{
+            dispatch_mode: "background",
+            run_mode: "research",
+            run_priority: socket.assigns.run_setup_priority,
+            allowed_tools: []
+          },
+          attachment_ids: socket.assigns.research_attachments |> MapSet.to_list() |> Enum.sort(),
+          research: %{
+            level: socket.assigns.research_launch_level,
+            ranked_providers: socket.assigns.research_launch_providers,
+            grounded_providers: [],
+            max_sources: socket.assigns.research_launch_sources,
+            fetch_parallelism: socket.assigns.settings.research_parallelism || 4,
+            require_conflict_audit:
+              socket.assigns.settings.research_require_conflict_audit != false,
+            token_budget: socket.assigns.settings.research_max_tokens,
+            cost_budget_cents: socket.assigns.settings.research_max_cost_cents,
+            time_budget_minutes: socket.assigns.settings.research_time_budget_minutes
           }
         }
 
-        research = %{
-          level: socket.assigns.research_launch_level,
-          ranked_providers: socket.assigns.research_launch_providers,
-          grounded_providers: [],
-          max_sources: socket.assigns.research_launch_sources,
-          fetch_parallelism: socket.assigns.settings.research_parallelism || 4,
-          require_conflict_audit: socket.assigns.settings.research_require_conflict_audit != false
-        }
-
-        case RunDispatcher.enqueue_research(attrs, research) do
-          {:ok, run} ->
+        case Router.route(intent, context) do
+          {:ok, %{run: run}} ->
             params = %{
               "objective" => "",
               "level" => socket.assigns.research_launch_level,
               "max_sources" => to_string(socket.assigns.research_launch_sources),
-              "providers" => Map.new(socket.assigns.research_launch_providers, &{&1, "true"})
+              "providers" => Map.new(socket.assigns.research_launch_providers, &{&1, "true"}),
+              "request_id" => Ecto.UUID.generate()
             }
 
             public_id = ResearchResults.get_by_run(run).id
@@ -3092,6 +3182,8 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("update_run_setup", %{"run_setup" => params}, socket) do
+    params = Map.merge(current_run_setup_params(socket), params)
+
     providers =
       params
       |> Map.get("providers", %{})
@@ -3105,25 +3197,145 @@ defmodule IexCodeWeb.WorkspaceLive do
 
     params = Map.put(params, "dag_manifest_json", dag_manifest_json)
 
+    {mode, mode_error} =
+      strict_enum_param(
+        params,
+        "mode",
+        socket.assigns.run_setup_mode,
+        ~w(single swarm research dag),
+        "Mission type"
+      )
+
+    {priority, priority_error} =
+      strict_enum_param(
+        params,
+        "priority",
+        socket.assigns.run_setup_priority,
+        ~w(low normal high critical),
+        "Queue priority"
+      )
+
+    {max_attempts, attempts_error} =
+      strict_integer_param(
+        params,
+        "max_attempts",
+        socket.assigns.run_setup_max_attempts,
+        1,
+        10,
+        "Manual retry ceiling"
+      )
+
+    {token_budget, token_error} =
+      strict_optional_integer_param(
+        params,
+        "token_budget",
+        socket.assigns.run_setup_token_budget,
+        1,
+        10_000_000,
+        "Token budget"
+      )
+
+    {cost_budget, cost_error} =
+      strict_optional_integer_param(
+        params,
+        "cost_budget_cents",
+        socket.assigns.run_setup_cost_budget_cents,
+        1,
+        10_000_000,
+        "Reported cost budget"
+      )
+
+    {time_budget, time_error} =
+      strict_optional_integer_param(
+        params,
+        "time_budget_minutes",
+        socket.assigns.run_setup_time_budget_minutes,
+        1,
+        10_080,
+        "Time budget"
+      )
+
+    {agent_turns, turns_error} =
+      strict_integer_param(
+        params,
+        "agent_max_turns",
+        socket.assigns.run_setup_agent_max_turns,
+        1,
+        20,
+        "Agent / coder turn limit"
+      )
+
+    {swarm_agents, agents_error} =
+      strict_integer_param(
+        params,
+        "swarm_agent_count",
+        socket.assigns.run_setup_swarm_agent_count,
+        4,
+        32,
+        "Swarm agents"
+      )
+
+    {swarm_retries, retries_error} =
+      strict_integer_param(
+        params,
+        "swarm_max_retries",
+        socket.assigns.run_setup_swarm_max_retries,
+        0,
+        10,
+        "Swarm correction retries"
+      )
+
+    {research_level, research_level_error} =
+      strict_enum_param(
+        params,
+        "research_level",
+        socket.assigns.run_setup_research_level,
+        ~w(low medium high ultra),
+        "Research effort"
+      )
+
+    {research_sources, sources_error} =
+      strict_integer_param(
+        params,
+        "research_max_sources",
+        socket.assigns.run_setup_research_sources,
+        1,
+        40,
+        "Maximum sources"
+      )
+
+    policy_error =
+      Enum.find(
+        [
+          mode_error,
+          priority_error,
+          attempts_error,
+          token_error,
+          cost_error,
+          time_error,
+          turns_error,
+          agents_error,
+          retries_error,
+          research_level_error,
+          sources_error
+        ],
+        &is_binary/1
+      )
+
     {:noreply,
      socket
-     |> assign(:run_setup_mode, normalize_run_mode(params["mode"]))
-     |> assign(:run_setup_priority, normalize_run_priority(params["priority"]))
-     |> assign(:run_setup_max_attempts, bounded_integer(params["max_attempts"], 3, 1, 10))
-     |> assign(:run_setup_token_budget, optional_integer(params["token_budget"], 1, 10_000_000))
-     |> assign(
-       :run_setup_cost_budget_cents,
-       optional_integer(params["cost_budget_cents"], 1, 10_000_000)
-     )
-     |> assign(
-       :run_setup_time_budget_minutes,
-       optional_integer(params["time_budget_minutes"], 1, 10_080)
-     )
-     |> assign(:run_setup_research_depth, normalize_research_depth(params["research_depth"]))
-     |> assign(
-       :run_setup_research_sources,
-       bounded_integer(params["research_max_sources"], 12, 1, 100)
-     )
+     |> assign(:run_setup_mode, mode)
+     |> assign(:run_setup_priority, priority)
+     |> assign(:run_setup_max_attempts, max_attempts)
+     |> assign(:run_setup_token_budget, token_budget)
+     |> assign(:run_setup_cost_budget_cents, cost_budget)
+     |> assign(:run_setup_time_budget_minutes, time_budget)
+     |> assign(:run_setup_agent_max_turns, agent_turns)
+     |> assign(:run_setup_swarm_agent_count, swarm_agents)
+     |> assign(:run_setup_swarm_max_retries, swarm_retries)
+     |> assign(:run_setup_policy_error, policy_error)
+     |> assign(:run_setup_research_level, research_level)
+     |> assign(:run_setup_research_sources, research_sources)
      |> assign(
        :run_setup_providers,
        providers
@@ -3165,35 +3377,39 @@ defmodule IexCodeWeb.WorkspaceLive do
   def handle_event("decide_run_approval", _params, socket), do: {:noreply, socket}
 
   @impl true
-  def handle_event("submit_prompt", %{"prompt" => prompt_text}, socket) do
+  def handle_event("submit_prompt", %{"prompt" => prompt_text} = params, socket) do
     text = String.trim(prompt_text)
 
-    case parse_deep_research_attachment_command(text) do
-      :empty ->
+    cond do
+      text == "" ->
         {:noreply, socket}
 
-      :picker ->
+      text == "/goal" ->
+        {:noreply,
+         socket
+         |> assign(:show_goal_modal, true)
+         |> reset_prompt_form()
+         |> put_flash(:info, "Describe the durable goal and choose whether to queue it now")}
+
+      text == "/research" ->
         {:noreply,
          socket
          |> assign(:active_tab, "research")
-         |> assign(:research_attachment_picker_open?, true)
-         |> assign(:prompt_form, to_form(%{"prompt" => ""}))
+         |> reset_prompt_form()
          |> refresh_research_results()
-         |> put_flash(:info, "Choose a ready research result to attach")}
+         |> put_flash(:info, "Define an exact bounded research objective")}
 
-      {:attach, public_id} ->
-        attach_research_result_from_command(socket, public_id)
+      true ->
+        case CommandParser.parse(text, source: "workspace_composer") do
+          {:ok, intent} ->
+            route_composer_intent(socket, intent, params)
 
-      :invalid ->
-        {:noreply,
-         put_flash(
-           socket,
-           :error,
-           "Use /deep_research or /deep_research N with one result number"
-         )}
+          {:error, %CommandError{message: message}} ->
+            {:noreply, put_flash(socket, :error, message)}
 
-      :ordinary_prompt ->
-        submit_regular_prompt(socket, text)
+          {:error, reason} ->
+            {:noreply, put_flash(socket, :error, format_run_error(reason))}
+        end
     end
   end
 
@@ -3259,10 +3475,7 @@ defmodule IexCodeWeb.WorkspaceLive do
 
     case Sessions.create_session(%{
            project_id: project.id,
-           title: "Coding Session #{count}",
-           swarm_mode: socket.assigns.session.swarm_mode,
-           model_provider: socket.assigns.session.model_provider,
-           model_name: socket.assigns.session.model_name
+           title: "Coding Session #{count}"
          }) do
       {:ok, session} ->
         sessions = Sessions.list_sessions_for_project(project.id)
@@ -3367,8 +3580,10 @@ defmodule IexCodeWeb.WorkspaceLive do
     if String.trim(cmd) != "" do
       command_result = TerminalServer.run_command_with_id(session_id, cmd)
 
+      public_cmd = TerminalSession.command_summary(cmd)
+
       updated_history =
-        [cmd | Enum.reject(socket.assigns.terminal_history, &(&1 == cmd))]
+        [public_cmd | Enum.reject(socket.assigns.terminal_history, &(&1 == public_cmd))]
         |> Enum.take(25)
 
       case command_result do
@@ -3376,8 +3591,8 @@ defmodule IexCodeWeb.WorkspaceLive do
           {:noreply,
            socket
            |> assign(:terminal_history, updated_history)
-           |> assign(:terminal_active_cmd, cmd)
-           |> assign(:terminal_form, to_form(%{"command" => cmd}))}
+           |> assign(:terminal_active_cmd, public_cmd)
+           |> assign(:terminal_form, to_form(%{"command" => ""}))}
 
         {:error, reason} ->
           {:noreply, put_flash(socket, :error, "Terminal command failed: #{inspect(reason)}")}
@@ -3482,36 +3697,13 @@ defmodule IexCodeWeb.WorkspaceLive do
   end
 
   @impl true
+  def handle_event("open_settings_page", _params, socket) do
+    {:noreply, push_navigate(socket, to: ~p"/sessions/#{socket.assigns.session.id}/settings")}
+  end
+
+  @impl true
   def handle_event("save_settings", %{"settings" => params}, socket) do
-    # Only overwrite the stored API key when the submitted value is non-empty
-    clean_params =
-      params
-      |> then(fn p ->
-        case p["openai_api_key"] do
-          key when is_binary(key) ->
-            if String.trim(key) == "",
-              do: Map.delete(p, "openai_api_key"),
-              else: Map.put(p, "openai_api_key", String.trim(key))
-
-          _ ->
-            Map.delete(p, "openai_api_key")
-        end
-      end)
-      |> then(fn p ->
-        case p["anthropic_api_key"] do
-          key when is_binary(key) ->
-            if String.trim(key) == "",
-              do: Map.delete(p, "anthropic_api_key"),
-              else: Map.put(p, "anthropic_api_key", String.trim(key))
-
-          _ ->
-            Map.delete(p, "anthropic_api_key")
-        end
-      end)
-      |> merge_search_provider_settings(socket.assigns.settings)
-      |> sanitize_settings_params()
-
-    case Settings.update_settings(clean_params) do
+    case Settings.update_settings_from_form(socket.assigns.settings, params) do
       {:ok, updated} ->
         {:noreply,
          socket
@@ -3527,8 +3719,14 @@ defmodule IexCodeWeb.WorkspaceLive do
          |> assign(:show_all_usage_modal, false)
          |> put_flash(:info, "Settings saved successfully")}
 
-      {:error, changeset} ->
+      {:error, %Ecto.Changeset{} = changeset} ->
         {:noreply, assign(socket, :settings_form, to_form(changeset, as: :settings))}
+
+      {:error, {:db_error, _reason}} ->
+        {:noreply, put_flash(socket, :error, "Settings could not be saved to the local database")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Settings could not be saved: #{inspect(reason)}")}
     end
   end
 
@@ -3548,8 +3746,7 @@ defmodule IexCodeWeb.WorkspaceLive do
       {:ok, project} ->
         case Sessions.create_session(%{
                project_id: project.id,
-               title: "Coding Session 1",
-               swarm_mode: true
+               title: "Coding Session 1"
              }) do
           {:ok, session} ->
             {:noreply,
@@ -3628,6 +3825,24 @@ defmodule IexCodeWeb.WorkspaceLive do
      socket
      |> assign(:all_messages, all_messages)
      |> assign(:messages, all_messages)}
+  end
+
+  @impl true
+  def handle_info(
+        {:research_result_updated, %{result: %{session_id: session_id}}},
+        %{assigns: %{session: %{id: session_id}}} = socket
+      ) do
+    {:noreply, refresh_research_results(socket)}
+  end
+
+  @impl true
+  def handle_info({:settings_updated, settings}, socket) do
+    {:noreply,
+     socket
+     |> assign(:settings, settings)
+     |> assign(:settings_form, Settings.change_settings(settings) |> to_form(as: :settings))
+     |> refresh_run_setup_settings(settings)
+     |> refresh_research_launch_settings(settings)}
   end
 
   @impl true
@@ -4286,10 +4501,7 @@ defmodule IexCodeWeb.WorkspaceLive do
           {:ok, s} =
             Sessions.create_session(%{
               project_id: project.id,
-              title: "Coding Session 1",
-              swarm_mode: true,
-              model_provider: "openai",
-              model_name: "gemini-3.7-flash-high"
+              title: "Coding Session 1"
             })
 
           s
@@ -4606,7 +4818,7 @@ defmodule IexCodeWeb.WorkspaceLive do
             handle_event("toggle_swarm", %{}, socket)
 
           "open_settings" ->
-            handle_event("toggle_settings_modal", %{}, socket)
+            handle_event("open_settings_page", %{}, socket)
 
           "git_fetch" ->
             handle_event("git_fetch", %{}, socket)
@@ -4680,13 +4892,9 @@ defmodule IexCodeWeb.WorkspaceLive do
   end
 
   defp normalize_model_provider(provider, model_name) do
-    normalized_model = String.downcase(to_string(model_name))
-
-    cond do
-      String.starts_with?(normalized_model, "claude") -> "anthropic"
-      String.starts_with?(normalized_model, ["gpt", "gemini", "o1", "o3", "o4"]) -> "openai"
-      String.downcase(to_string(provider)) == "anthropic" -> "anthropic"
-      true -> "openai"
+    case String.downcase(to_string(provider)) do
+      selected when selected in ["openai", "anthropic"] -> selected
+      _invalid -> provider_for_model(model_name)
     end
   end
 
@@ -5085,8 +5293,8 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> enabled_form_providers()
       |> Enum.filter(&MapSet.member?(enabled, &1))
 
-    level = normalize_research_level(params["level"])
-    sources = bounded_integer(params["max_sources"], 12, 1, 100)
+    level = Map.get(params, "level", socket.assigns.research_launch_level)
+    sources = exact_integer_input(params["max_sources"], 12)
     params = params |> Map.put("level", level) |> Map.put("max_sources", to_string(sources))
 
     socket
@@ -5096,141 +5304,236 @@ defmodule IexCodeWeb.WorkspaceLive do
     |> assign(:research_form, to_form(params, as: :research))
   end
 
-  defp submit_regular_prompt(socket, text) do
-    research_command? = String.starts_with?(text, "/research")
-    research_mode? = socket.assigns.run_setup_mode == "research"
-    deep_research? = research_command? or research_mode?
+  defp route_composer_intent(socket, %Intent{kind: :research_picker}, _params) do
+    {:noreply,
+     socket
+     |> assign(:active_tab, "research")
+     |> assign(:research_attachment_picker_open?, true)
+     |> reset_prompt_form()
+     |> refresh_research_results()
+     |> put_flash(:info, "Choose a ready research result to attach")}
+  end
 
-    dispatched =
-      if deep_research?, do: {:ok, text}, else: prompt_with_research_context(socket, text)
+  defp route_composer_intent(
+         socket,
+         %Intent{kind: :research_attachment, attachment_id: public_id},
+         _params
+       ),
+       do: attach_research_result_from_command(socket, public_id)
 
-    case dispatched do
-      {:error, reason} ->
-        {:noreply, put_flash(socket, :error, reason)}
+  defp route_composer_intent(socket, %Intent{kind: :navigate, objective: tab}, _params)
+       when tab in @workspace_tabs do
+    {:noreply, socket |> assign(:active_tab, tab) |> reset_prompt_form()}
+  end
 
-      {:ok, dispatched_text} ->
-        tab =
-          cond do
-            String.starts_with?(text, "/swarm") -> "swarm"
-            String.starts_with?(text, "/kanban") -> "kanban"
-            true -> socket.assigns.active_tab
-          end
+  defp route_composer_intent(socket, %Intent{kind: :help}, _params) do
+    {:noreply,
+     socket
+     |> reset_prompt_form()
+     |> put_flash(:info, CommandParser.help_text())}
+  end
 
-        if socket.assigns.dispatch_mode == "background" or research_command? or research_mode? do
-          objective =
-            dispatched_text
-            |> String.replace_prefix("/swarm", "")
-            |> String.trim()
-            |> then(
-              &if(&1 == "",
-                do: "Analyze the workspace and propose the next safe change",
-                else: &1
+  defp route_composer_intent(
+         %{assigns: %{run_setup_policy_error: error}} = socket,
+         %Intent{kind: kind},
+         _params
+       )
+       when is_binary(error) and kind in [:run, :swarm, :goal, :research] do
+    {:noreply, put_flash(socket, :error, "Fix Run setup before queueing work: #{error}")}
+  end
+
+  defp route_composer_intent(
+         %{assigns: %{dispatch_mode: "background", run_setup_policy_error: error}} = socket,
+         %Intent{kind: :prompt, raw_command: nil},
+         _params
+       )
+       when is_binary(error) do
+    {:noreply, put_flash(socket, :error, "Fix Run setup before queueing work: #{error}")}
+  end
+
+  defp route_composer_intent(socket, %Intent{} = intent, params) do
+    intent = apply_composer_mode(intent, socket.assigns.run_setup_mode)
+
+    if intent.kind == :prompt and intent.raw_command not in ["/chat", "/ask"] and
+         socket.assigns.dispatch_mode == "background" and
+         socket.assigns.run_setup_mode == "dag" do
+      attrs = composer_run_attrs(socket, intent.objective, params)
+      queue_dag_run(socket, attrs)
+    else
+      routed_intent = maybe_add_research_context(intent, socket)
+
+      case routed_intent do
+        {:error, reason} ->
+          {:noreply, put_flash(socket, :error, reason)}
+
+        {:ok, intent} ->
+          context =
+            socket
+            |> composer_router_context(params)
+            |> maybe_restore_goal_tools(intent, socket)
+
+          case Router.route(intent, context) do
+            {:ok, %{action: {:interactive, prompt, opts}}} ->
+              SessionServer.send_prompt(socket.assigns.session.id, prompt,
+                allowed_tools: Keyword.get(opts, :allowed_tools, prompt_allowed_tools(socket))
               )
-            )
 
-          selected_mode =
-            if research_command?, do: "research", else: socket.assigns.run_setup_mode
+              {:noreply,
+               socket
+               |> assign(:active_tab, interactive_intent_tab(intent, socket.assigns.active_tab))
+               |> clear_research_attachments()
+               |> reset_prompt_form()}
 
-          deep_research? = selected_mode == "research"
-          dag_run? = selected_mode == "dag"
+            {:ok, %{action: {:run, run}, intent: routed}} ->
+              {:noreply, composer_run_queued(socket, run, routed, false)}
 
-          objective =
-            if research_command? do
-              dispatched_text
-              |> strip_research_command()
-              |> String.trim()
-              |> then(
-                &if(&1 == "", do: "Research the requested topic with cited evidence", else: &1)
+            {:ok, %{action: {:draft, run}, intent: routed}} ->
+              {:noreply, composer_run_queued(socket, run, routed, true)}
+
+            {:ok, %{action: {:research_picker, _}}} ->
+              route_composer_intent(socket, %Intent{intent | kind: :research_picker}, params)
+
+            {:ok, %{action: {:research_attachment, public_id}}} ->
+              attach_research_result_from_command(socket, public_id)
+
+            {:ok, %{action: {:navigate, tab}}} ->
+              route_composer_intent(
+                socket,
+                %Intent{intent | kind: :navigate, objective: tab},
+                params
               )
-            else
-              objective
-            end
 
-          metadata = %{
-            "source" => "workspace_composer",
-            "original_prompt" => text,
-            "allowed_tools" => prompt_allowed_tools(socket),
-            "research_result_ids" =>
-              socket.assigns.research_attachments |> MapSet.to_list() |> Enum.sort()
-          }
+            {:ok, %{action: {:help, _commands}}} ->
+              route_composer_intent(socket, %Intent{intent | kind: :help}, params)
 
-          metadata =
-            if deep_research?,
-              do:
-                Map.put(
-                  metadata,
-                  "source",
-                  if(research_command?, do: "chat_deep_research", else: "workspace_composer")
-                ),
-              else: metadata
-
-          attrs = %{
-            project_id: socket.assigns.project.id,
-            session_id: socket.assigns.session.id,
-            objective: objective,
-            kind:
-              cond do
-                deep_research? -> "deep_research"
-                dag_run? -> "analysis"
-                true -> "coding_swarm"
-              end,
-            mode:
-              cond do
-                deep_research? -> "research"
-                dag_run? -> "workflow"
-                true -> "swarm"
-              end,
-            priority: socket.assigns.run_setup_priority,
-            max_attempts: socket.assigns.run_setup_max_attempts,
-            token_budget: socket.assigns.run_setup_token_budget,
-            cost_budget_cents: socket.assigns.run_setup_cost_budget_cents,
-            time_budget_ms: minutes_to_ms(socket.assigns.run_setup_time_budget_minutes),
-            metadata: metadata
-          }
-
-          cond do
-            deep_research? and composer_research_providers(socket) == [] ->
-              {:noreply, put_flash(socket, :error, "Select at least one research provider")}
-
-            deep_research? ->
-              queue_composer_research(socket, attrs)
-
-            dag_run? ->
-              queue_dag_run(socket, attrs)
-
-            true ->
-              case RunDispatcher.enqueue(attrs) do
-                {:ok, run} ->
-                  {:noreply,
-                   socket
-                   |> assign(:active_tab, "swarm")
-                   |> assign(:run_setup_open?, false)
-                   |> clear_research_attachments()
-                   |> assign(:prompt_form, to_form(%{"prompt" => ""}))
-                   |> select_run_projection(run)
-                   |> put_flash(
-                     :info,
-                     "Background run queued. It will continue if you disconnect."
-                   )}
-
-                {:error, reason} ->
-                  {:noreply,
-                   put_flash(socket, :error, "Could not queue run: #{format_run_error(reason)}")}
-              end
+            {:error, reason} ->
+              {:noreply,
+               put_flash(socket, :error, "Could not dispatch work: #{format_run_error(reason)}")}
           end
-        else
-          SessionServer.send_prompt(socket.assigns.session.id, dispatched_text,
-            allowed_tools: prompt_allowed_tools(socket)
-          )
+      end
+    end
+  catch
+    :exit, reason ->
+      {:noreply,
+       put_flash(socket, :error, "The execution dispatcher is unavailable: #{inspect(reason)}")}
+  end
 
-          {:noreply,
-           socket
-           |> assign(:active_tab, tab)
-           |> clear_research_attachments()
-           |> assign(:prompt_form, to_form(%{"prompt" => ""}))}
-        end
+  defp apply_composer_mode(%Intent{kind: :prompt, raw_command: command} = intent, _mode)
+       when command in ["/chat", "/ask"],
+       do: intent
+
+  defp apply_composer_mode(%Intent{kind: :prompt} = intent, "research"),
+    do: %Intent{intent | kind: :research, durability: :durable, mode: :research}
+
+  defp apply_composer_mode(intent, _mode), do: intent
+
+  defp maybe_add_research_context(%Intent{kind: kind} = intent, socket)
+       when kind in [:prompt, :run, :swarm, :goal] do
+    case prompt_with_research_context(socket, intent.objective) do
+      {:ok, objective} -> {:ok, %Intent{intent | objective: objective}}
+      {:error, _reason} = error -> error
     end
   end
+
+  defp maybe_add_research_context(intent, _socket), do: {:ok, intent}
+
+  defp composer_router_context(socket, params) do
+    %{
+      project_id: socket.assigns.project.id,
+      session_id: socket.assigns.session.id,
+      settings: socket.assigns.settings,
+      request_key: normalize_goal_request_id(params["request_id"]),
+      source: "workspace_composer",
+      metadata: %{
+        "research_result_ids" =>
+          socket.assigns.research_attachments |> MapSet.to_list() |> Enum.sort()
+      },
+      overrides: %{
+        dispatch_mode: socket.assigns.dispatch_mode,
+        run_mode: composer_policy_mode(socket.assigns.run_setup_mode),
+        run_priority: socket.assigns.run_setup_priority,
+        run_max_attempts: socket.assigns.run_setup_max_attempts,
+        run_token_budget: socket.assigns.run_setup_token_budget,
+        run_cost_budget_cents: socket.assigns.run_setup_cost_budget_cents,
+        run_time_budget_minutes: socket.assigns.run_setup_time_budget_minutes,
+        agent_max_turns: socket.assigns.run_setup_agent_max_turns,
+        swarm_agent_count: socket.assigns.run_setup_swarm_agent_count,
+        swarm_max_retries: socket.assigns.run_setup_swarm_max_retries,
+        allowed_tools: prompt_allowed_tools(socket)
+      },
+      attachment_ids: socket.assigns.research_attachments |> MapSet.to_list() |> Enum.sort(),
+      research: %{
+        level: socket.assigns.run_setup_research_level,
+        ranked_providers: composer_research_providers(socket),
+        grounded_providers: [],
+        max_sources: socket.assigns.run_setup_research_sources,
+        fetch_parallelism: socket.assigns.settings.research_parallelism || 4,
+        require_conflict_audit: socket.assigns.settings.research_require_conflict_audit != false,
+        token_budget: socket.assigns.run_setup_token_budget,
+        cost_budget_cents: socket.assigns.run_setup_cost_budget_cents,
+        time_budget_minutes: socket.assigns.run_setup_time_budget_minutes
+      }
+    }
+  end
+
+  defp composer_policy_mode(mode) when mode in ["single", "swarm"], do: mode
+  defp composer_policy_mode("code"), do: "swarm"
+  defp composer_policy_mode(_mode), do: "swarm"
+
+  defp maybe_restore_goal_tools(context, %Intent{kind: :goal}, socket),
+    do: put_in(context, [:overrides, :allowed_tools], enabled_tools(socket.assigns.active_tools))
+
+  defp maybe_restore_goal_tools(context, _intent, _socket), do: context
+
+  defp composer_run_attrs(socket, objective, params) do
+    %{
+      project_id: socket.assigns.project.id,
+      session_id: socket.assigns.session.id,
+      objective: objective,
+      kind: "analysis",
+      mode: "workflow",
+      priority: socket.assigns.run_setup_priority,
+      max_attempts: socket.assigns.run_setup_max_attempts,
+      token_budget: socket.assigns.run_setup_token_budget,
+      cost_budget_cents: socket.assigns.run_setup_cost_budget_cents,
+      time_budget_ms: minutes_to_ms(socket.assigns.run_setup_time_budget_minutes),
+      request_key: normalize_goal_request_id(params["request_id"]),
+      metadata: %{
+        "source" => "workspace_composer",
+        "allowed_tools" => prompt_allowed_tools(socket),
+        "execution_policy" =>
+          Settings.execution_policy(socket.assigns.settings, socket.assigns.session)
+      }
+    }
+  end
+
+  defp composer_run_queued(socket, run, intent, draft?) do
+    label =
+      cond do
+        draft? -> "Durable goal saved as a draft"
+        intent.kind == :research -> "Exact deep research queued"
+        intent.kind == :goal -> "Durable goal queued"
+        intent.kind == :run -> "Durable single-agent run queued"
+        intent.kind == :swarm -> "Durable swarm queued"
+        true -> "Durable background run queued"
+      end
+
+    persistence_note =
+      if draft?,
+        do: ". It is persisted and will not start until you choose Start.",
+        else: ". It will continue if you disconnect."
+
+    socket
+    |> assign(:active_tab, "swarm")
+    |> assign(:run_setup_open?, false)
+    |> clear_research_attachments()
+    |> reset_prompt_form()
+    |> select_run_projection(run)
+    |> put_flash(:info, label <> persistence_note)
+  end
+
+  defp interactive_intent_tab(%Intent{kind: :swarm}, _current), do: "swarm"
+  defp interactive_intent_tab(_intent, current), do: current
 
   defp refresh_research_results(socket) do
     assign(
@@ -5262,16 +5565,6 @@ defmodule IexCodeWeb.WorkspaceLive do
       else: []
   end
 
-  defp parse_deep_research_attachment_command(""), do: :empty
-  defp parse_deep_research_attachment_command("/deep_research"), do: :picker
-
-  defp parse_deep_research_attachment_command(text) do
-    case Regex.run(~r/\A\/deep_research\s+([1-9][0-9]*)\z/, text) do
-      [_command, public_id] -> {:attach, String.to_integer(public_id)}
-      nil -> if String.starts_with?(text, "/deep_research"), do: :invalid, else: :ordinary_prompt
-    end
-  end
-
   defp attach_research_result_from_command(socket, public_id) do
     case ResearchResults.context_attachment(public_id, socket.assigns.session.id) do
       {:ok, _attachment} ->
@@ -5285,7 +5578,7 @@ defmodule IexCodeWeb.WorkspaceLive do
              :research_attachments,
              MapSet.put(socket.assigns.research_attachments, public_id)
            )
-           |> assign(:prompt_form, to_form(%{"prompt" => ""}))
+           |> reset_prompt_form()
            |> put_flash(:info, "Attached ready research result ##{public_id}")}
         end
 
@@ -5355,10 +5648,6 @@ defmodule IexCodeWeb.WorkspaceLive do
       "Research result #{research_result_public_id(result)}"
   end
 
-  defp strip_research_command("/deep_research" <> rest), do: rest
-  defp strip_research_command("/research" <> rest), do: rest
-  defp strip_research_command(text), do: text
-
   defp research_level_semantics("low"), do: %{rounds: 1, subagents: 2}
   defp research_level_semantics("high"), do: %{rounds: 3, subagents: 4}
   defp research_level_semantics("ultra"), do: %{rounds: 4, subagents: 10}
@@ -5379,30 +5668,6 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   defp normalize_goal_request_id(_value), do: Ecto.UUID.generate()
 
-  defp durable_goal_attrs(socket, title, description, objective, request_id, auto_start) do
-    %{
-      project_id: socket.assigns.project.id,
-      session_id: socket.assigns.session.id,
-      objective: objective,
-      kind: "coding_swarm",
-      mode: "swarm",
-      priority: socket.assigns.run_setup_priority,
-      max_attempts: socket.assigns.run_setup_max_attempts,
-      token_budget: socket.assigns.run_setup_token_budget,
-      cost_budget_cents: socket.assigns.run_setup_cost_budget_cents,
-      time_budget_ms: minutes_to_ms(socket.assigns.run_setup_time_budget_minutes),
-      metadata: %{
-        "source" => "autonomous_goal",
-        "goal_request_id" => request_id,
-        "goal_title" => title,
-        "goal_description" => description,
-        "goal_auto_start" => auto_start,
-        "allowed_tools" => prompt_allowed_tools(socket)
-      },
-      request_key: request_id
-    }
-  end
-
   defp durable_goal_created(socket, run, message) do
     socket
     |> assign(:show_goal_modal, false)
@@ -5412,7 +5677,7 @@ defmodule IexCodeWeb.WorkspaceLive do
       to_form(%{
         "title" => "",
         "description" => "",
-        "auto_start" => "true",
+        "auto_start" => to_string(socket.assigns.settings.goal_auto_start != false),
         "request_id" => Ecto.UUID.generate()
       })
     )
@@ -5540,6 +5805,15 @@ defmodule IexCodeWeb.WorkspaceLive do
     |> Enum.map_join(", ", fn {field, {message, _}} -> "#{field} #{message}" end)
   end
 
+  defp format_run_error(
+         {:research_max_sources_out_of_range, %{minimum: minimum, maximum: maximum, value: value}}
+       ) do
+    "maximum sources must be a whole number from #{minimum} to #{maximum}; received #{inspect(value)}"
+  end
+
+  defp format_run_error(:invalid_research_level),
+    do: "research effort must be one of low, medium, high, or ultra"
+
   defp format_run_error(reason), do: inspect(reason)
 
   defp task_priority_to_run_priority("critical"), do: "critical"
@@ -5592,11 +5866,6 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   # Chat is intentionally live and conversational. All operational views keep
   # the safer durable background default.
-  defp maybe_set_tab_dispatch_mode(socket, "chat"),
-    do: assign(socket, :dispatch_mode, "interactive")
-
-  defp maybe_set_tab_dispatch_mode(socket, _tab), do: socket
-
   defp sync_run_linked_task(socket, run) do
     task_id = Map.get(run.metadata || %{}, "kanban_task_id")
 
@@ -5764,61 +6033,19 @@ defmodule IexCodeWeb.WorkspaceLive do
     prev_cells ++ current_cells ++ next_cells
   end
 
-  defp sanitize_settings_params(params) when is_map(params) do
-    params
-    |> maybe_parse_int("swarm_agent_count")
-    |> maybe_parse_int("max_tokens")
-    |> maybe_parse_int("research_max_sources")
-    |> maybe_parse_int("research_parallelism")
-    |> maybe_parse_int("research_max_cost_cents")
-    |> maybe_parse_int("research_max_tokens")
-    |> maybe_parse_int("research_time_budget_minutes")
-    |> maybe_parse_float("temperature")
-    |> maybe_parse_bool("auto_save")
-    |> maybe_parse_bool("research_require_conflict_audit")
-  end
-
-  defp merge_search_provider_settings(params, settings) do
-    case Map.get(params, "search_providers") do
-      submitted when is_map(submitted) ->
-        existing = settings.search_providers || %{}
-
-        merged =
-          Map.new(submitted, fn {provider, raw_config} ->
-            previous = Map.get(existing, provider, %{})
-            raw_config = if is_map(raw_config), do: raw_config, else: %{}
-
-            config =
-              previous
-              |> Map.merge(
-                raw_config
-                |> Enum.reject(fn {_key, value} ->
-                  is_binary(value) and String.trim(value) == ""
-                end)
-                |> Map.new()
-              )
-              |> Map.put("enabled", Map.get(raw_config, "enabled") in ["true", "1", "on", true])
-
-            {provider, config}
-          end)
-
-        Map.put(params, "search_providers", Map.merge(existing, merged))
-
-      _ ->
-        params
-    end
-  end
-
   defp run_setup_defaults(settings) do
     %{
-      "mode" => "code",
-      "priority" => "normal",
-      "max_attempts" => "3",
-      "token_budget" => "",
-      "cost_budget_cents" => "",
-      "time_budget_minutes" => "",
+      "mode" => settings.default_run_mode || "swarm",
+      "priority" => settings.default_run_priority || "normal",
+      "max_attempts" => to_string(settings.default_run_max_attempts || 3),
+      "token_budget" => settings.default_run_token_budget || "",
+      "cost_budget_cents" => settings.default_run_cost_budget_cents || "",
+      "time_budget_minutes" => settings.default_run_time_budget_minutes || "",
+      "agent_max_turns" => to_string(settings.agent_max_turns || 8),
+      "swarm_agent_count" => to_string(settings.swarm_agent_count || 4),
+      "swarm_max_retries" => to_string(settings.swarm_max_retries || 3),
       "dag_manifest_json" => @dag_manifest_sample,
-      "research_depth" => settings.research_depth || "standard",
+      "research_level" => settings.research_level || "medium",
       "research_max_sources" => to_string(settings.research_max_sources || 12),
       "providers" =>
         settings
@@ -5826,6 +6053,73 @@ defmodule IexCodeWeb.WorkspaceLive do
         |> Map.new(&{&1, "true"})
     }
   end
+
+  defp current_run_setup_params(socket) do
+    %{
+      "mode" => socket.assigns.run_setup_mode,
+      "priority" => socket.assigns.run_setup_priority,
+      "max_attempts" => socket.assigns.run_setup_max_attempts,
+      "token_budget" => socket.assigns.run_setup_token_budget || "",
+      "cost_budget_cents" => socket.assigns.run_setup_cost_budget_cents || "",
+      "time_budget_minutes" => socket.assigns.run_setup_time_budget_minutes || "",
+      "agent_max_turns" => socket.assigns.run_setup_agent_max_turns,
+      "swarm_agent_count" => socket.assigns.run_setup_swarm_agent_count,
+      "swarm_max_retries" => socket.assigns.run_setup_swarm_max_retries,
+      "dag_manifest_json" => socket.assigns.run_setup_dag_manifest_json,
+      "research_level" => socket.assigns.run_setup_research_level,
+      "research_max_sources" => socket.assigns.run_setup_research_sources,
+      "providers" => Map.new(socket.assigns.run_setup_providers, &{&1, "true"})
+    }
+  end
+
+  defp strict_enum_param(params, key, fallback, allowed, label) do
+    value = Map.get(params, key)
+
+    cond do
+      is_nil(value) -> {fallback, nil}
+      value in allowed -> {value, nil}
+      true -> {fallback, "#{label} must be one of #{Enum.join(allowed, ", ")}"}
+    end
+  end
+
+  defp strict_integer_param(params, key, fallback, minimum, maximum, label) do
+    case strict_integer(Map.get(params, key), minimum, maximum) do
+      {:ok, integer} -> {integer, nil}
+      :absent -> {fallback, nil}
+      :error -> {fallback, "#{label} must be a whole number from #{minimum} to #{maximum}"}
+    end
+  end
+
+  defp strict_optional_integer_param(params, key, fallback, minimum, maximum, label) do
+    case Map.get(params, key) do
+      value when value in [nil, ""] ->
+        {nil, nil}
+
+      value ->
+        case strict_integer(value, minimum, maximum) do
+          {:ok, integer} ->
+            {integer, nil}
+
+          _ ->
+            {fallback, "#{label} must be blank or a whole number from #{minimum} to #{maximum}"}
+        end
+    end
+  end
+
+  defp strict_integer(nil, _minimum, _maximum), do: :absent
+
+  defp strict_integer(value, minimum, maximum) when is_integer(value) do
+    if value >= minimum and value <= maximum, do: {:ok, value}, else: :error
+  end
+
+  defp strict_integer(value, minimum, maximum) when is_binary(value) do
+    case Integer.parse(String.trim(value)) do
+      {integer, ""} when integer >= minimum and integer <= maximum -> {:ok, integer}
+      _invalid -> :error
+    end
+  end
+
+  defp strict_integer(_value, _minimum, _maximum), do: :error
 
   defp enabled_search_providers(settings) do
     providers = settings.search_providers || %{}
@@ -5870,7 +6164,7 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   defp refresh_run_setup_settings(socket, settings) do
     providers = enabled_search_providers(settings)
-    depth = settings.research_depth || "standard"
+    level = settings.research_level || "medium"
     sources = settings.research_max_sources || 12
 
     params = %{
@@ -5880,14 +6174,17 @@ defmodule IexCodeWeb.WorkspaceLive do
       "token_budget" => socket.assigns.run_setup_token_budget,
       "cost_budget_cents" => socket.assigns.run_setup_cost_budget_cents,
       "time_budget_minutes" => socket.assigns.run_setup_time_budget_minutes,
+      "agent_max_turns" => socket.assigns.run_setup_agent_max_turns,
+      "swarm_agent_count" => socket.assigns.run_setup_swarm_agent_count,
+      "swarm_max_retries" => socket.assigns.run_setup_swarm_max_retries,
       "dag_manifest_json" => socket.assigns.run_setup_dag_manifest_json,
-      "research_depth" => depth,
+      "research_level" => level,
       "research_max_sources" => sources,
       "providers" => Map.new(providers, &{&1, "true"})
     }
 
     socket
-    |> assign(:run_setup_research_depth, depth)
+    |> assign(:run_setup_research_level, level)
     |> assign(:run_setup_research_sources, sources)
     |> assign(:run_setup_providers, providers)
     |> assign(:run_setup_form, to_form(params, as: :run_setup))
@@ -5991,7 +6288,7 @@ defmodule IexCodeWeb.WorkspaceLive do
          |> assign(:active_tab, "swarm")
          |> assign(:run_setup_open?, false)
          |> clear_research_attachments()
-         |> assign(:prompt_form, to_form(%{"prompt" => ""}))
+         |> reset_prompt_form()
          |> select_run_projection(run)
          |> put_flash(:info, "Typed DAG queued with an immutable validated manifest")}
 
@@ -6003,63 +6300,13 @@ defmodule IexCodeWeb.WorkspaceLive do
     end
   end
 
-  defp queue_composer_research(socket, attrs) do
-    settings = socket.assigns.settings
-
-    attrs =
-      attrs
-      |> Map.put(
-        :token_budget,
-        attrs.token_budget || settings.research_max_tokens
-      )
-      |> Map.put(
-        :cost_budget_cents,
-        attrs.cost_budget_cents || settings.research_max_cost_cents
-      )
-      |> Map.put(
-        :time_budget_ms,
-        attrs.time_budget_ms || minutes_to_ms(settings.research_time_budget_minutes)
-      )
-
-    research = %{
-      level: legacy_depth_level(socket.assigns.run_setup_research_depth),
-      ranked_providers: composer_research_providers(socket),
-      grounded_providers: [],
-      max_sources: socket.assigns.run_setup_research_sources,
-      fetch_parallelism: settings.research_parallelism || 4,
-      require_conflict_audit: settings.research_require_conflict_audit != false
-    }
-
-    case RunDispatcher.enqueue_research(attrs, research) do
-      {:ok, run} ->
-        {:noreply,
-         socket
-         |> assign(:active_tab, "swarm")
-         |> assign(:run_setup_open?, false)
-         |> clear_research_attachments()
-         |> assign(:prompt_form, to_form(%{"prompt" => ""}))
-         |> select_run_projection(run)
-         |> put_flash(:info, "Exact deep-research DAG queued with an immutable level policy")}
-
-      {:error, reason} ->
-        {:noreply,
-         socket
-         |> assign(:run_setup_open?, true)
-         |> put_flash(:error, "Could not queue deep research: #{format_run_error(reason)}")}
-    end
-  end
-
   defp composer_research_providers(socket) do
     selected = MapSet.new(socket.assigns.run_setup_providers)
 
     socket.assigns.settings
-    |> enabled_search_providers()
+    |> enabled_research_launch_providers()
     |> Enum.filter(&MapSet.member?(selected, &1))
   end
-
-  defp legacy_depth_level("quick"), do: "low"
-  defp legacy_depth_level("deep"), do: "high"
-  defp legacy_depth_level(_standard), do: "medium"
 
   defp bounded_dag_manifest_input(value) when is_binary(value) do
     if byte_size(value) <= @max_dag_manifest_json_bytes do
@@ -6131,76 +6378,40 @@ defmodule IexCodeWeb.WorkspaceLive do
     Enum.uniq(core ++ optional)
   end
 
-  defp normalize_run_mode(mode) when mode in ["code", "research", "dag"], do: mode
-  defp normalize_run_mode(_mode), do: "code"
+  defp default_active_tools(settings) do
+    settings
+    |> Map.get(:default_tools, %{})
+    |> Enum.reduce(MapSet.new(), fn
+      {tool, enabled}, acc when enabled in [true, "true", "1", "on"] ->
+        MapSet.put(acc, to_string(tool))
 
-  defp normalize_run_priority(priority) when priority in ~w(low normal high critical),
-    do: priority
+      _entry, acc ->
+        acc
+    end)
+  end
 
-  defp normalize_run_priority(_priority), do: "normal"
+  defp reset_prompt_form(socket) do
+    assign(
+      socket,
+      :prompt_form,
+      to_form(%{"prompt" => "", "request_id" => Ecto.UUID.generate()})
+    )
+  end
 
-  defp normalize_research_depth(depth) when depth in ~w(quick standard deep), do: depth
-  defp normalize_research_depth(_depth), do: "standard"
-  defp normalize_research_level(level) when level in ~w(low medium high ultra), do: level
-  defp normalize_research_level(_level), do: "medium"
+  defp exact_integer_input(nil, default), do: default
+  defp exact_integer_input(value, _default) when is_integer(value), do: value
 
-  defp optional_integer(value, minimum, maximum) do
-    case value do
-      integer when is_integer(integer) ->
-        integer |> max(minimum) |> min(maximum)
-
-      binary when is_binary(binary) ->
-        case Integer.parse(String.trim(binary)) do
-          {integer, ""} -> integer |> max(minimum) |> min(maximum)
-          _ -> nil
-        end
-
-      _ ->
-        nil
+  defp exact_integer_input(value, _default) when is_binary(value) do
+    case Integer.parse(String.trim(value)) do
+      {integer, ""} -> integer
+      _invalid -> value
     end
   end
 
-  defp bounded_integer(value, default, minimum, maximum),
-    do: optional_integer(value, minimum, maximum) || default
+  defp exact_integer_input(value, _default), do: value
 
   defp minutes_to_ms(nil), do: nil
   defp minutes_to_ms(minutes) when is_integer(minutes), do: minutes * 60_000
-
-  defp maybe_parse_int(map, key) do
-    case Map.get(map, key) do
-      val when is_binary(val) and val != "" ->
-        case Integer.parse(val) do
-          {int, _} -> Map.put(map, key, int)
-          :error -> map
-        end
-
-      _ ->
-        map
-    end
-  end
-
-  defp maybe_parse_float(map, key) do
-    case Map.get(map, key) do
-      val when is_binary(val) and val != "" ->
-        case Float.parse(val) do
-          {flt, _} -> Map.put(map, key, flt)
-          :error -> map
-        end
-
-      _ ->
-        map
-    end
-  end
-
-  defp maybe_parse_bool(map, key) do
-    case Map.get(map, key) do
-      "true" -> Map.put(map, key, true)
-      "false" -> Map.put(map, key, false)
-      "1" -> Map.put(map, key, true)
-      "0" -> Map.put(map, key, false)
-      _ -> map
-    end
-  end
 
   defp all_directory_paths(files) when is_list(files) do
     files

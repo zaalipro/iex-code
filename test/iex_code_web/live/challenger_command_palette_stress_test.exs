@@ -329,7 +329,6 @@ defmodule IexCodeWeb.ChallengerCommandPaletteStressTest do
         "AST Symbol Search",
         "New Kanban Task",
         "Toggle Swarm Mode",
-        "Settings & API Keys",
         "Git Fetch & Status"
       ]
 
@@ -341,6 +340,16 @@ defmodule IexCodeWeb.ChallengerCommandPaletteStressTest do
 
         refute has_element?(view, "#command-palette-modal")
       end
+
+      # Settings is intentionally a full-page navigation action, unlike the
+      # in-place workspace actions above. Assert its redirect independently
+      # instead of trying to reopen the palette on a terminated LiveView.
+      render_click(view, "toggle_command_palette")
+      render_click(view, "command_palette_set_category", %{"category" => "actions"})
+      render_change(view, "command_palette_search", %{"query" => "Settings & API Keys"})
+      render_click(view, "command_palette_select_item", %{"index" => "0"})
+
+      assert_redirect(view, ~p"/sessions/#{session.id}/settings")
     end
 
     test "opens file buffer and transitions to files tab on file item selection", %{

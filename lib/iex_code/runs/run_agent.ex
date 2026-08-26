@@ -4,6 +4,8 @@ defmodule IexCode.Runs.RunAgent do
   use Ecto.Schema
   import Ecto.Changeset
 
+  alias IexCode.Execution.Limits
+
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
 
@@ -124,7 +126,7 @@ defmodule IexCode.Runs.RunAgent do
     |> validate_length(:lease_owner, is: 64)
     |> validate_format(:lease_owner, ~r/^[0-9a-f]{64}$/)
     |> validate_length(:model_provider, max: 160)
-    |> validate_length(:model_name, max: 240)
+    |> validate_length(:model_name, max: Limits.max_model_name_bytes(), count: :bytes)
     |> validate_length(:error_message, max: 20_000)
     |> validate_inclusion(:status, @statuses)
     |> validate_inclusion(:desired_state, @desired_states)

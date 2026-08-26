@@ -850,6 +850,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
   attr :is_dirty, :boolean, default: false
   attr :open_buffers, :list, default: []
   attr :editor_lock, :map, default: nil
+  attr :auto_save, :boolean, default: false
 
   def file_explorer(assigns) do
     has_filter = assigns.filter != "" and not is_nil(assigns.filter)
@@ -1120,6 +1121,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
           <div
             id="code-editor-viewport"
             phx-hook=".CodeEditor"
+            data-auto-save={to_string(@auto_save)}
             class="flex-1 flex overflow-hidden bg-[#0a0d12] relative font-mono text-xs"
           >
             <!-- Line Numbers Gutter -->
@@ -1148,17 +1150,29 @@ defmodule IexCodeWeb.WorkspaceComponents do
               mounted() {
                 this.textarea = this.el.querySelector('textarea');
                 this.gutter = this.el.querySelector('.editor-gutter');
+                this.autoSaveTimer = null;
                 this.updateGutter();
 
                 this.textarea.addEventListener('input', () => {
                   this.updateGutter();
                   this.pushEvent('file_content_changed', { content: this.textarea.value });
+
+                  clearTimeout(this.autoSaveTimer);
+                  if (this.el.dataset.autoSave === 'true' && !this.textarea.readOnly) {
+                    this.autoSaveTimer = setTimeout(() => {
+                      this.pushEvent('save_file', {
+                        content: this.textarea.value,
+                        autosave: true
+                      });
+                    }, 900);
+                  }
                 });
 
                 this.textarea.addEventListener('keydown', (e) => {
                   if ((e.metaKey || e.ctrlKey) && e.key === 's') {
                     e.preventDefault();
                     if (this.textarea.readOnly) return;
+                    clearTimeout(this.autoSaveTimer);
                     this.pushEvent('save_file', { content: this.textarea.value });
                   }
                   if (e.key === 'Tab') {
@@ -1201,6 +1215,9 @@ defmodule IexCodeWeb.WorkspaceComponents do
               },
               updated() {
                 this.updateGutter();
+              },
+              destroyed() {
+                clearTimeout(this.autoSaveTimer);
               },
               updateGutter() {
                 if (!this.gutter || !this.textarea) return;

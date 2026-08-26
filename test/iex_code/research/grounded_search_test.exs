@@ -131,6 +131,17 @@ defmodule IexCode.Research.GroundedSearchTest do
              )
   end
 
+  test "grounded provider credentials reject model identifiers over 240 bytes before transport" do
+    never = fn _opts -> flunk("oversized model must not issue HTTP") end
+
+    assert {:error, {:configuration, :invalid_api_key_or_model}} =
+             GroundedSearch.answer(:openai_responses, "query",
+               api_key: "key",
+               model: String.duplicate("m", 241),
+               request: never
+             )
+  end
+
   test "OpenAI option filters fail closed and failed hosted calls are not grounding proof" do
     never = fn _opts -> flunk("invalid options must fail before transport") end
 

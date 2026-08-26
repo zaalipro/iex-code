@@ -10,7 +10,7 @@ defmodule IexCode.Runs.Executor do
   @callback execute(IexCode.Runs.Run.t(), (non_neg_integer(), String.t() -> any())) ::
               {:ok, term()} | {:error, term()}
 
-  alias IexCode.Engine.SwarmCoordinator
+  alias IexCode.Engine.{AgentLoop, SwarmCoordinator}
   alias IexCode.Projects
   alias IexCode.Research.Runner, as: ResearchRunner
   alias IexCode.Runs.Run
@@ -42,6 +42,8 @@ defmodule IexCode.Runs.Executor do
        when mode in ["swarm", "workflow"],
        do: :ok
 
+  defp supported_run?(%Run{kind: "coding_agent", mode: "single"}), do: :ok
+
   defp supported_run?(%Run{kind: "analysis"}), do: :ok
 
   defp supported_run?(%Run{kind: "deep_research", mode: mode})
@@ -52,9 +54,13 @@ defmodule IexCode.Runs.Executor do
     do: {:error, {:unsupported_run, kind, mode}}
 
   defp execute_typed(%Run{kind: "coding_swarm"} = run, project_root, _progress, opts) do
+    policy = execution_policy(run.metadata)
+
     allowed_tools =
-      Map.get(run.metadata || %{}, "allowed_tools") ||
-        Map.get(run.metadata || %{}, :allowed_tools) || :all
+      policy_value(policy, "allowed_tools") || metadata_value(run.metadata, "allowed_tools") ||
+        :all
+
+    max_retries = bounded_swarm_retries(policy_value(policy, "swarm_max_retries"))
 
     run.session_id
     |> SwarmCoordinator.run(run.objective,
@@ -65,9 +71,15 @@ defmodule IexCode.Runs.Executor do
       run_lease_owner: opts[:run_lease_owner],
       run_attempt: opts[:run_attempt],
       run_lease_generation: opts[:run_lease_generation],
-      run_lease_ms: opts[:run_lease_ms]
+      run_lease_ms: opts[:run_lease_ms],
+      execution_policy: policy,
+      max_retries: max_retries
     )
     |> normalize_swarm_result()
+  end
+
+  defp execute_typed(%Run{kind: "coding_agent"} = run, project_root, progress, opts) do
+    AgentLoop.execute(run, project_root, progress, opts)
   end
 
   defp execute_typed(%Run{kind: "analysis"}, project_root, _progress, _opts) do
@@ -110,6 +122,35 @@ defmodule IexCode.Runs.Executor do
   end
 
   defp research_metadata(_metadata), do: %{}
+
+  defp execution_policy(metadata) when is_map(metadata) do
+    case metadata_value(metadata, "execution_policy") do
+      policy when is_map(policy) ->
+        Map.new(policy, fn {key, value} -> {to_string(key), value} end)
+
+      _missing ->
+        # Rows created before execution-policy snapshots intentionally retain
+        # the legacy live-session route. Passing `%{}` would look snapshotted to
+        # Planner/Coder and fail ModelRoute validation before their model call.
+        nil
+    end
+  end
+
+  defp execution_policy(_metadata), do: nil
+
+  defp metadata_value(map, "execution_policy") when is_map(map),
+    do: Map.get(map, "execution_policy") || Map.get(map, :execution_policy)
+
+  defp metadata_value(map, "allowed_tools") when is_map(map),
+    do: Map.get(map, "allowed_tools") || Map.get(map, :allowed_tools)
+
+  defp metadata_value(_map, _key), do: nil
+
+  defp policy_value(policy, key) when is_map(policy), do: Map.get(policy, key)
+  defp policy_value(_policy, _key), do: nil
+
+  defp bounded_swarm_retries(value) when is_integer(value), do: value |> max(0) |> min(10)
+  defp bounded_swarm_retries(_value), do: 3
 
   defp cancelled?(run_id) do
     case IexCode.Runs.get_run(run_id) do

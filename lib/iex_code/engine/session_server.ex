@@ -4,12 +4,18 @@ defmodule IexCode.Engine.SessionServer do
   Handles incoming prompts, tool executions, autonomous goal lifecycles,
   real-time steering message ingestion, and swarm dispatching.
   """
-  use GenServer, restart: :transient
+  # Every public entry point rehydrates on demand through ensure_started/1.
+  # Keeping children temporary avoids restart storms when the database itself is
+  # unavailable during init; the next caller becomes the bounded retry owner.
+  use GenServer, restart: :temporary
   require Logger
   alias IexCode.{LLM, Projects, Sessions, Tools, WorkspacePath}
   alias IexCode.Engine.{AgentRegistry, AgentSupervisor, OperationManager, SwarmCoordinator}
   alias IexCode.Runs.RunDispatcher
   alias Phoenix.PubSub
+
+  @cancel_session_attempts 5
+  @session_call_attempts 5
 
   # Client API
 
@@ -20,10 +26,7 @@ defmodule IexCode.Engine.SessionServer do
   def ensure_started(session_id) do
     case GenServer.whereis(via_tuple(session_id)) do
       nil ->
-        case DynamicSupervisor.start_child(
-               IexCode.Engine.SessionSupervisor,
-               {__MODULE__, session_id}
-             ) do
+        case start_session_child(session_id) do
           {:ok, pid} -> {:ok, pid}
           {:error, {:already_started, pid}} -> {:ok, pid}
           {:error, reason} -> {:error, reason}
@@ -34,20 +37,34 @@ defmodule IexCode.Engine.SessionServer do
     end
   end
 
+  defp start_session_child(session_id) do
+    DynamicSupervisor.start_child(
+      IexCode.Engine.SessionSupervisor,
+      {__MODULE__, session_id}
+    )
+  catch
+    :exit, reason -> {:error, {:session_supervisor_unavailable, reason}}
+  end
+
   @doc """
   Creates and starts an autonomous goal for the session.
   """
   def create_goal(session_id, goal_prompt_or_params, opts \\ []) do
-    ensure_started(session_id)
-    GenServer.call(via_tuple(session_id), {:create_goal, goal_prompt_or_params, opts}, 30_000)
+    call_session_server(
+      session_id,
+      {:create_goal, goal_prompt_or_params, opts},
+      30_000,
+      retry_after_call_exit?: false
+    )
   end
 
   @doc """
   Sends a user prompt to the active session. If session is running, ingests as real-time steering.
   """
   def send_prompt(session_id, content, opts \\ []) do
-    ensure_started(session_id)
-    GenServer.cast(via_tuple(session_id), {:send_prompt, content, opts})
+    call_session_server(session_id, {:send_prompt, content, opts}, 30_000,
+      retry_after_call_exit?: false
+    )
   end
 
   @doc """
@@ -55,8 +72,9 @@ defmodule IexCode.Engine.SessionServer do
   Broadcasts to session:SESSION_ID:steer and session:SESSION_ID.
   """
   def send_steering(session_id, steer_text) do
-    ensure_started(session_id)
-    GenServer.call(via_tuple(session_id), {:send_steering, steer_text})
+    call_session_server(session_id, {:send_steering, steer_text}, 5_000,
+      retry_after_call_exit?: false
+    )
   end
 
   @doc """
@@ -70,16 +88,14 @@ defmodule IexCode.Engine.SessionServer do
   Pauses the active swarm or single-agent execution without losing context.
   """
   def pause_session(session_id) do
-    ensure_started(session_id)
-    GenServer.call(via_tuple(session_id), :pause_session)
+    call_session_server(session_id, :pause_session, 5_000, retry_after_call_exit?: false)
   end
 
   @doc """
   Resumes execution of a paused session.
   """
   def resume_session(session_id) do
-    ensure_started(session_id)
-    GenServer.call(via_tuple(session_id), :resume_session)
+    call_session_server(session_id, :resume_session, 5_000, retry_after_call_exit?: false)
   end
 
   @doc """
@@ -87,23 +103,143 @@ defmodule IexCode.Engine.SessionServer do
   and executes :rollback or :commit action.
   """
   def cancel_session(session_id, opts \\ []) do
-    ensure_started(session_id)
-    GenServer.call(via_tuple(session_id), {:cancel_session, opts}, 30_000)
+    call_session_server(session_id, {:cancel_session, opts}, 30_000,
+      attempts: @cancel_session_attempts,
+      retry_after_call_exit?: :ambiguous
+    )
   end
 
   def toggle_swarm(session_id) do
-    ensure_started(session_id)
-    GenServer.call(via_tuple(session_id), :toggle_swarm)
+    call_session_server(session_id, :toggle_swarm, 5_000, retry_after_call_exit?: false)
   end
 
   def clear_operations(session_id) do
-    ensure_started(session_id)
-    GenServer.call(via_tuple(session_id), :clear_operations)
+    call_session_server(session_id, :clear_operations)
   end
 
   def get_state(session_id) do
-    ensure_started(session_id)
-    GenServer.call(via_tuple(session_id), :get_state)
+    call_session_server(session_id, :get_state)
+  end
+
+  defp call_session_server(session_id, request, timeout \\ 5_000, opts \\ []) do
+    attempts = Keyword.get(opts, :attempts, @session_call_attempts)
+    retry_after_call_exit? = Keyword.get(opts, :retry_after_call_exit?, true)
+
+    do_call_session_server(
+      session_id,
+      request,
+      timeout,
+      attempts,
+      retry_after_call_exit?
+    )
+  end
+
+  defp do_call_session_server(
+         session_id,
+         request,
+         timeout,
+         attempts,
+         retry_after_call_exit?
+       ) do
+    case ensure_started(session_id) do
+      {:ok, pid} ->
+        call_exact_session_server(
+          session_id,
+          pid,
+          request,
+          timeout,
+          attempts,
+          retry_after_call_exit?
+        )
+
+      {:error, :session_not_found} = error ->
+        error
+
+      {:error, _reason} when attempts > 1 ->
+        session_supervisor_barrier(attempts)
+
+        do_call_session_server(
+          session_id,
+          request,
+          timeout,
+          attempts - 1,
+          retry_after_call_exit?
+        )
+
+      {:error, reason} ->
+        {:error, {:session_unavailable, reason}}
+    end
+  end
+
+  defp call_exact_session_server(
+         session_id,
+         pid,
+         request,
+         timeout,
+         attempts,
+         retry_after_call_exit?
+       ) do
+    try do
+      # Call the exact process returned by DynamicSupervisor. Looking the name
+      # up again creates a TOCTOU window when that child is restarting.
+      GenServer.call(pid, request, timeout)
+    catch
+      :exit, reason ->
+        cond do
+          retry_after_call_exit? == :ambiguous and session_call_exit?(reason) ->
+            {:error, {:session_call_ambiguous, reason}}
+
+          not retryable_session_call_exit?(reason) ->
+            exit(reason)
+
+          retry_after_call_exit? == true and attempts > 1 ->
+            session_supervisor_barrier(attempts)
+
+            do_call_session_server(
+              session_id,
+              request,
+              timeout,
+              attempts - 1,
+              retry_after_call_exit?
+            )
+
+          true ->
+            {:error, {:session_unavailable, reason}}
+        end
+    end
+  end
+
+  defp retryable_session_call_exit?({reason, {GenServer, :call, _call}})
+       when reason in [:noproc, :normal, :shutdown, :killed],
+       do: true
+
+  defp retryable_session_call_exit?({{:shutdown, _detail}, {GenServer, :call, _call}}), do: true
+  defp retryable_session_call_exit?(_reason), do: false
+
+  defp session_call_exit?({_reason, {GenServer, :call, _call}}), do: true
+  defp session_call_exit?(_reason), do: false
+
+  # Serializing through the DynamicSupervisor is the ordering barrier between a
+  # child's DOWN and a retry. A short bounded timer then yields to database or
+  # registry recovery without Process.sleep/1 blocking this caller's mailbox.
+  defp session_supervisor_barrier(attempts) do
+    try do
+      _ = DynamicSupervisor.which_children(IexCode.Engine.SessionSupervisor)
+    catch
+      :exit, _reason -> :ok
+    end
+
+    retry_number = max(@session_call_attempts - attempts + 1, 1)
+    ref = make_ref()
+    timer = Process.send_after(self(), {ref, :retry_session_server}, min(retry_number * 10, 50))
+
+    receive do
+      {^ref, :retry_session_server} -> :ok
+    after
+      100 -> Process.cancel_timer(timer, async: true, info: false)
+    end
+
+    :ok
   end
 
   @doc false
@@ -145,14 +281,13 @@ defmodule IexCode.Engine.SessionServer do
 
   @impl true
   def init(session_id) do
-    session =
-      try do
-        Sessions.get_session(session_id) ||
-          %Sessions.Session{id: session_id, swarm_mode: false, status: "idle"}
-      rescue
-        _ -> %Sessions.Session{id: session_id, swarm_mode: false, status: "idle"}
-      end
+    case fetch_session_for_start(session_id) do
+      {:ok, session} -> init_session(session_id, session)
+      {:error, reason} -> {:stop, reason}
+    end
+  end
 
+  defp init_session(session_id, session) do
     status = normalize_status(session.status)
 
     {swarm_owner, swarm_metadata, swarm_lookup_error} =
@@ -221,6 +356,20 @@ defmodule IexCode.Engine.SessionServer do
     {:ok, state}
   end
 
+  # A stale UI/process must not recreate an in-memory SessionServer after its
+  # durable session has been deleted. Database failures stay distinguishable
+  # from a genuinely missing row so callers can retry transient startup races.
+  defp fetch_session_for_start(session_id) do
+    case Sessions.get_session(session_id) do
+      %Sessions.Session{} = session -> {:ok, session}
+      nil -> {:error, :session_not_found}
+    end
+  rescue
+    error -> {:error, {:session_lookup_failed, Exception.message(error)}}
+  catch
+    kind, reason -> {:error, {:session_lookup_failed, kind, reason}}
+  end
+
   @impl true
   def handle_call(
         {:create_goal, _goal_prompt_or_params, _opts},
@@ -260,8 +409,11 @@ defmodule IexCode.Engine.SessionServer do
         route_steering(state, cleaned)
       end
 
-    if cleaned != "" and match?({:ok, _}, result) do
-      # Create message in DB
+    if cleaned != "" and match?({:ok, _}, result) and not durable_steering_route?(state) do
+      # Interactive steering has no durable run-control receipt, so the session
+      # server owns its message and UI notification. Durable steering is instead
+      # persisted and acknowledged exactly once by the coordinator after it has
+      # ingested the claimed control.
       case Sessions.create_message(%{
              session_id: session_id,
              role: "user",
@@ -303,6 +455,12 @@ defmodule IexCode.Engine.SessionServer do
   end
 
   @impl true
+  def handle_call({:send_prompt, raw_prompt, opts}, _from, state) do
+    {:noreply, new_state} = handle_send_prompt(raw_prompt, opts, state)
+    {:reply, :ok, new_state}
+  end
+
+  @impl true
   def handle_call(
         {:cancel_session, opts},
         _from,
@@ -310,11 +468,15 @@ defmodule IexCode.Engine.SessionServer do
       ) do
     state = refresh_registered_owner(state)
 
-    case state.run_mode do
-      {:durable_swarm, run_id} -> cancel_durable_run(run_id, opts, state)
-      {:swarm_owner_metadata_unavailable, _reason} -> owner_metadata_unavailable_reply(state)
-      {:stale_durable_swarm, _run_id} -> stale_owner_reply(state)
-      _interactive_or_idle -> cancel_interactive_run(opts, state)
+    if state.status == :stopped and is_nil(state.run_mode) do
+      {:reply, {:ok, %{status: :stopped, action: :already_stopped}}, state}
+    else
+      case state.run_mode do
+        {:durable_swarm, run_id} -> cancel_durable_run(run_id, opts, state)
+        {:swarm_owner_metadata_unavailable, _reason} -> owner_metadata_unavailable_reply(state)
+        {:stale_durable_swarm, _run_id} -> stale_owner_reply(state)
+        _interactive_or_idle -> cancel_interactive_run(opts, state)
+      end
     end
   end
 
@@ -371,12 +533,19 @@ defmodule IexCode.Engine.SessionServer do
 
   @impl true
   def handle_cast({:send_prompt, raw_prompt}, state),
-    do: handle_cast({:send_prompt, raw_prompt, []}, state)
+    do: handle_send_prompt(raw_prompt, [], state)
 
   def handle_cast(
         {:send_prompt, raw_prompt, opts},
-        %{session_id: session_id, session: session} = state
-      ) do
+        state
+      ),
+      do: handle_send_prompt(raw_prompt, opts, state)
+
+  defp handle_send_prompt(
+         raw_prompt,
+         opts,
+         %{session_id: session_id, session: session} = state
+       ) do
     prompt = String.trim(raw_prompt)
 
     {registered_owner, owner_metadata} =
@@ -852,6 +1021,8 @@ defmodule IexCode.Engine.SessionServer do
       Sessions.get_session(session_id) || fallback
     rescue
       _ -> fallback
+    catch
+      _, _ -> fallback
     end
   end
 
@@ -1095,27 +1266,37 @@ defmodule IexCode.Engine.SessionServer do
     # 5. Update DB status
     update_db_session_status(session_id, "stopped")
 
-    # 6. Create assistant cancellation message in DB
-    try do
-      case Sessions.create_message(%{
-             session_id: session_id,
-             role: "assistant",
-             agent_name: "Swarm Coordinator",
-             content:
-               "🛑 **Session Stopped**: Execution cancelled by user with action `#{action}`."
-           }) do
-        {:ok, cancel_msg} -> broadcast(session_id, {:message_created, cancel_msg})
-        _ -> :ok
+    # 6. Create the cancellation message only when this server owned cleanup.
+    # A live swarm coordinator persists its own terminal message before exit.
+    unless swarm_handled_cancel? do
+      try do
+        case Sessions.create_message(%{
+               session_id: session_id,
+               role: "assistant",
+               agent_name: "Swarm Coordinator",
+               content:
+                 "🛑 **Session Stopped**: Execution cancelled by user with action `#{action}`."
+             }) do
+          {:ok, cancel_msg} -> broadcast(session_id, {:message_created, cancel_msg})
+          _ -> :ok
+        end
+      rescue
+        error ->
+          Logger.warning(
+            "Could not persist cancellation message for session #{session_id}: #{Exception.message(error)}"
+          )
+      catch
+        kind, reason ->
+          Logger.warning(
+            "Could not persist cancellation message for session #{session_id}: #{inspect({kind, reason})}"
+          )
       end
-    rescue
-      error ->
-        Logger.warning(
-          "Could not persist cancellation message for session #{session_id}: #{Exception.message(error)}"
-        )
     end
 
     broadcast(session_id, {:session_status_changed, "stopped"})
     broadcast(session_id, {:session_cancelled, %{session_id: session_id, action: action}})
+
+    await_cancel_reply_barrier(opts)
 
     new_state = %{
       state
@@ -1127,6 +1308,30 @@ defmodule IexCode.Engine.SessionServer do
     }
 
     {:reply, {:ok, %{status: :stopped, action: action}}, new_state}
+  end
+
+  # Explicit post-effect safe-point for deterministic crash-boundary testing and
+  # controlled embedding. The caller monitors this exact GenServer, so killing
+  # it after the notification proves that cancel effects can precede a lost
+  # reply without the client automatically repeating those effects.
+  defp await_cancel_reply_barrier(opts) do
+    case Keyword.get(opts, :cancel_reply_barrier) do
+      {controller, reference} when is_pid(controller) and is_reference(reference) ->
+        monitor = Process.monitor(controller)
+        send(controller, {:cancel_reply_barrier, self(), reference})
+
+        receive do
+          {:release_cancel_reply_barrier, ^reference} ->
+            Process.demonitor(monitor, [:flush])
+            :ok
+
+          {:DOWN, ^monitor, :process, ^controller, _reason} ->
+            exit(:cancel_reply_barrier_owner_down)
+        end
+
+      _none ->
+        :ok
+    end
   end
 
   defp finish_task_down(state, reason) do
@@ -1313,6 +1518,12 @@ defmodule IexCode.Engine.SessionServer do
     {:ok, cleaned}
   end
 
+  defp durable_steering_route?(%{run_mode: {:durable_swarm, run_id}})
+       when is_binary(run_id),
+       do: true
+
+  defp durable_steering_route?(_state), do: false
+
   defp dispatch_durable_control(state, operation, args) do
     case task_pid(state.current_task) do
       owner when is_pid(owner) -> dispatch_run_control(node(owner), operation, args)
@@ -1484,6 +1695,8 @@ defmodule IexCode.Engine.SessionServer do
     end
   rescue
     _ -> if(sandbox_test_environment?(), do: nil, else: project_id)
+  catch
+    _, _ -> if(sandbox_test_environment?(), do: nil, else: project_id)
   end
 
   defp trusted_project_id_for_root(_session, _project_root), do: nil
@@ -1504,6 +1717,8 @@ defmodule IexCode.Engine.SessionServer do
     end
   rescue
     _ -> :ok
+  catch
+    _, _ -> :ok
   end
 
   defp allow_sandbox(parent, child) do

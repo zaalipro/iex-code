@@ -2,6 +2,8 @@ defmodule IexCode.Sessions.Session do
   use Ecto.Schema
   import Ecto.Changeset
 
+  alias IexCode.Execution.Limits
+
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
 
@@ -39,9 +41,27 @@ defmodule IexCode.Sessions.Session do
 
   defp validate_changeset(changeset) do
     changeset
-    |> validate_required([:project_id, :title])
+    |> validate_required([
+      :project_id,
+      :title,
+      :swarm_mode,
+      :model_provider,
+      :model_name,
+      :temperature,
+      :status
+    ])
+    |> validate_length(:title, min: 1, max: 500)
+    |> validate_length(:model_name,
+      min: 1,
+      max: Limits.max_model_name_bytes(),
+      count: :bytes
+    )
     |> validate_inclusion(:status, @statuses)
     |> validate_inclusion(:model_provider, @model_providers)
+    |> validate_number(:temperature,
+      greater_than_or_equal_to: 0.0,
+      less_than_or_equal_to: 2.0
+    )
     |> foreign_key_constraint(:project_id)
   end
 

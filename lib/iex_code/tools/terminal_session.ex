@@ -14,13 +14,24 @@ defmodule IexCode.Tools.TerminalSession do
   @default_cols 80
   @default_rows 24
   @default_max_buffer_bytes 512 * 1024
+  @max_raw_input_bytes 256 * 1024
+  @max_command_bytes 32 * 1024
+  @max_pending_command_bytes 256 * 1024
+  @max_history_command_bytes 4 * 1024
+  @max_command_history_bytes 128 * 1024
+  @max_command_history_entries 100
+  @max_recent_command_inputs 64
   @history_consistency_timeout_ms 1_000
+  @default_interrupt_signal_delay_ms 100
+  @default_interrupt_timeout_ms 2_000
+  @default_interrupt_force_timeout_ms 1_000
   @pubsub_server IexCode.PubSub
 
   defstruct [
     :session_id,
     :project_root,
     :adapter,
+    :adapter_generation,
     :shell,
     :cols,
     :rows,
@@ -42,9 +53,14 @@ defmodule IexCode.Tools.TerminalSession do
     :max_queued_commands,
     :history_suppressed_command_id,
     :recent_command_inputs,
+    :command_history,
     :workspace_lock_handle,
     :raw_input_lock?,
-    :external_lock_count
+    :external_lock_count,
+    :pending_interrupt,
+    :interrupt_signal_delay_ms,
+    :interrupt_timeout_ms,
+    :interrupt_force_timeout_ms
   ]
 
   # --- Client API ---
@@ -92,12 +108,23 @@ defmodule IexCode.Tools.TerminalSession do
           :ok | {:error, term()}
   def send_input(session_id, data, opts \\ [])
       when is_binary(session_id) and is_binary(data) do
-    try do
-      GenServer.call(via_tuple(session_id), {:send_input, data, opts})
-    catch
-      :exit, _ -> {:error, :not_found}
+    with :ok <- validate_raw_input(data) do
+      try do
+        GenServer.call(via_tuple(session_id), {:send_input, data, opts})
+      catch
+        :exit, _ -> {:error, :not_found}
+      end
     end
   end
+
+  @doc false
+  def validate_raw_input(data) when is_binary(data) do
+    if byte_size(data) <= @max_raw_input_bytes,
+      do: :ok,
+      else: {:error, :terminal_input_too_large}
+  end
+
+  def validate_raw_input(_data), do: {:error, :invalid_terminal_input}
 
   @doc """
   Queues a complete command for serialized execution in the persistent shell.
@@ -109,12 +136,37 @@ defmodule IexCode.Tools.TerminalSession do
   @spec run_command(session_id :: String.t(), command :: binary()) ::
           {:ok, String.t()} | {:error, term()}
   def run_command(session_id, command) when is_binary(session_id) and is_binary(command) do
-    try do
-      GenServer.call(via_tuple(session_id), {:run_command, command})
-    catch
-      :exit, _ -> {:error, :not_found}
+    with :ok <- validate_command(command) do
+      try do
+        GenServer.call(via_tuple(session_id), {:run_command, command})
+      catch
+        :exit, _ -> {:error, :not_found}
+      end
     end
   end
+
+  @doc false
+  def validate_command(command) when is_binary(command) do
+    cond do
+      byte_size(command) == 0 -> {:error, :empty_terminal_command}
+      byte_size(command) > @max_command_bytes -> {:error, :terminal_command_too_large}
+      not String.valid?(command) -> {:error, :invalid_terminal_command_encoding}
+      not String.printable?(command) -> {:error, :invalid_terminal_command_characters}
+      String.trim(command) == "" -> {:error, :empty_terminal_command}
+      true -> :ok
+    end
+  end
+
+  def validate_command(_command), do: {:error, :invalid_terminal_command}
+
+  @doc false
+  def command_summary(command) when is_binary(command) do
+    command
+    |> redact_command_secrets()
+    |> bounded_utf8(@max_history_command_bytes)
+  end
+
+  def command_summary(_command), do: ""
 
   @doc """
   Searches accumulated scrollback history buffer.
@@ -188,7 +240,9 @@ defmodule IexCode.Tools.TerminalSession do
   end
 
   @doc """
-  Clears in-memory scrollback history buffer.
+  Clears scrollback, structured command history, and recent-input fingerprints.
+  A shell restart intentionally preserves bounded structured history; explicit
+  clear is the privacy boundary that removes it.
   """
   @spec clear_history(session_id :: String.t()) :: :ok
   def clear_history(session_id) when is_binary(session_id) do
@@ -292,14 +346,49 @@ defmodule IexCode.Tools.TerminalSession do
     rows = max(1, Keyword.get(opts, :rows, @default_rows))
     shell = Keyword.get(opts, :shell)
     max_buffer_bytes = Keyword.get(opts, :max_buffer_bytes, @default_max_buffer_bytes)
-    max_queued_commands = Keyword.get(opts, :max_queued_commands, 256)
+
+    max_queued_commands =
+      case Keyword.get(opts, :max_queued_commands, 256) do
+        count when is_integer(count) -> count |> max(1) |> min(256)
+        _invalid -> 256
+      end
+
     env = Keyword.get(opts, :env, default_env(project_root))
     mode = Keyword.get(opts, :mode)
+
+    interrupt_signal_delay_ms =
+      bounded_timeout(
+        Keyword.get(opts, :interrupt_signal_delay_ms, @default_interrupt_signal_delay_ms),
+        @default_interrupt_signal_delay_ms,
+        0,
+        10_000
+      )
+
+    interrupt_timeout_ms =
+      bounded_timeout(
+        Keyword.get(opts, :interrupt_timeout_ms, @default_interrupt_timeout_ms),
+        @default_interrupt_timeout_ms,
+        100,
+        30_000
+      )
+
+    interrupt_force_timeout_ms =
+      bounded_timeout(
+        Keyword.get(
+          opts,
+          :interrupt_force_timeout_ms,
+          @default_interrupt_force_timeout_ms
+        ),
+        @default_interrupt_force_timeout_ms,
+        100,
+        10_000
+      )
 
     state = %__MODULE__{
       session_id: session_id,
       project_root: project_root,
       adapter: nil,
+      adapter_generation: 0,
       shell: shell,
       cols: cols,
       rows: rows,
@@ -321,9 +410,14 @@ defmodule IexCode.Tools.TerminalSession do
       max_queued_commands: max_queued_commands,
       history_suppressed_command_id: nil,
       recent_command_inputs: [],
+      command_history: [],
       workspace_lock_handle: nil,
       raw_input_lock?: false,
-      external_lock_count: 0
+      external_lock_count: 0,
+      pending_interrupt: nil,
+      interrupt_signal_delay_ms: interrupt_signal_delay_ms,
+      interrupt_timeout_ms: interrupt_timeout_ms,
+      interrupt_force_timeout_ms: interrupt_force_timeout_ms
     }
 
     {:ok, state, {:continue, :spawn_shell}}
@@ -336,6 +430,7 @@ defmodule IexCode.Tools.TerminalSession do
         running_state = %{
           state
           | adapter: adapter,
+            adapter_generation: state.adapter_generation + 1,
             shell: adapter.shell || state.shell,
             status: :running
         }
@@ -376,6 +471,9 @@ defmodule IexCode.Tools.TerminalSession do
     force? = Keyword.get(opts, :force, false)
 
     cond do
+      validate_raw_input(data) != :ok ->
+        {:reply, validate_raw_input(data), state}
+
       state.active_occupant != :user and not force? ->
         {:reply, {:error, :agent_occupied}, state}
 
@@ -424,13 +522,20 @@ defmodule IexCode.Tools.TerminalSession do
         %{status: :running, adapter: %PTYAdapter{}} = state
       ) do
     queued_count = :queue.len(state.command_queue) + if(state.active_command, do: 1, else: 0)
+    pending_bytes = pending_command_bytes(state)
 
     cond do
+      validate_command(command) != :ok ->
+        {:reply, validate_command(command), state}
+
       state.active_occupant != :user ->
         {:reply, {:error, :agent_occupied}, state}
 
       queued_count >= state.max_queued_commands ->
         {:reply, {:error, :command_queue_full}, state}
+
+      pending_bytes + byte_size(command) > @max_pending_command_bytes ->
+        {:reply, {:error, :command_queue_bytes_exceeded}, state}
 
       true ->
         case ensure_workspace_lock(state) do
@@ -508,11 +613,19 @@ defmodule IexCode.Tools.TerminalSession do
   @impl true
   def handle_call({:send_signal, signal}, _from, state)
       when signal in [:sigint, :interrupt, "SIGINT"] do
-    # A freshly forked PTY child can acknowledge the shim's ready packet just
-    # before exec(2). A tiny asynchronous grace period keeps SIGINT from hitting
-    # the Python child during that handoff instead of the requested shell job.
-    Process.send_after(self(), {:deferred_signal, signal}, 100)
-    {:reply, :ok, state}
+    case state.adapter do
+      %PTYAdapter{port: port} ->
+        case ensure_workspace_lock(state) do
+          {:ok, locked_state, _acquired?} ->
+            {:reply, :ok, schedule_interrupt(locked_state, signal, port)}
+
+          {:error, reason, locked_state} ->
+            {:reply, {:error, reason}, locked_state}
+        end
+
+      _not_running ->
+        {:reply, {:error, :not_running}, state}
+    end
   end
 
   @impl true
@@ -573,7 +686,8 @@ defmodule IexCode.Tools.TerminalSession do
         cleared: true,
         utf8_acc: UTF8Buffer.new(),
         history_suppressed_command_id: state.active_command && state.active_command.id,
-        recent_command_inputs: []
+        recent_command_inputs: [],
+        command_history: []
     }
 
     broadcast_event(state.session_id, {:terminal_cleared, %{session_id: state.session_id}})
@@ -620,8 +734,10 @@ defmodule IexCode.Tools.TerminalSession do
 
   @impl true
   def handle_call({:restart, opts}, _from, state) do
-    state = release_workspace_lock(state)
+    state = cancel_pending_interrupt(state)
     if state.adapter, do: PTYAdapter.close(state.adapter)
+    state = release_workspace_lock(state)
+    next_adapter_generation = state.adapter_generation + 1
 
     updated_shell = Keyword.get(opts, :shell, state.shell)
 
@@ -638,6 +754,7 @@ defmodule IexCode.Tools.TerminalSession do
     reset_state = %{
       state
       | adapter: nil,
+        adapter_generation: next_adapter_generation,
         shell: updated_shell,
         project_root: updated_root,
         cols: updated_cols,
@@ -653,7 +770,8 @@ defmodule IexCode.Tools.TerminalSession do
         command_marker_buffer: "",
         recent_command_inputs: [],
         raw_input_lock?: false,
-        external_lock_count: 0
+        external_lock_count: 0,
+        pending_interrupt: nil
     }
 
     broadcast_status(reset_state)
@@ -710,7 +828,10 @@ defmodule IexCode.Tools.TerminalSession do
       started_at: state.started_at,
       exit_code: state.exit_code,
       active_command_id: state.active_command && state.active_command.id,
-      queued_command_count: :queue.len(state.command_queue)
+      queued_command_count: :queue.len(state.command_queue),
+      raw_input_lock?: state.raw_input_lock?,
+      interrupt_pending?: not is_nil(state.pending_interrupt),
+      command_history: state.command_history
     }
 
     {:reply, {:ok, summary}, state}
@@ -732,6 +853,9 @@ defmodule IexCode.Tools.TerminalSession do
 
       {:ready, os_pid, new_adapter} ->
         {:noreply, %{state | adapter: %{new_adapter | os_pid: os_pid}}}
+
+      {:interrupt_boundary, boundary_id, new_adapter} ->
+        {:noreply, settle_interrupt_boundary(%{state | adapter: new_adapter}, boundary_id)}
 
       {:noop, new_adapter} ->
         {:noreply, %{state | adapter: new_adapter}}
@@ -770,10 +894,63 @@ defmodule IexCode.Tools.TerminalSession do
   end
 
   @impl true
-  def handle_info({:deferred_signal, signal}, state) do
-    if state.adapter, do: PTYAdapter.send_signal(state.adapter, signal)
-    {:noreply, state}
+  def handle_info(
+        {:deferred_signal, request_id, signal, generation, port},
+        %{
+          adapter: %PTYAdapter{port: port},
+          adapter_generation: generation,
+          pending_interrupt: %{
+            request_id: request_id,
+            generation: generation,
+            port: port,
+            delivered?: false
+          }
+        } = state
+      ) do
+    {:noreply, deliver_interrupt(state, signal)}
   end
+
+  def handle_info({:deferred_signal, _request_id, _signal, _generation, _port}, state),
+    do: {:noreply, state}
+
+  @impl true
+  def handle_info(
+        {:interrupt_timeout, request_id, generation, port},
+        %{
+          adapter: %PTYAdapter{port: port},
+          adapter_generation: generation,
+          pending_interrupt: %{
+            request_id: request_id,
+            generation: generation,
+            port: port,
+            delivered?: true
+          }
+        } = state
+      ) do
+    {:noreply, force_interrupt(state)}
+  end
+
+  def handle_info({:interrupt_timeout, _request_id, _generation, _port}, state),
+    do: {:noreply, state}
+
+  @impl true
+  def handle_info(
+        {:interrupt_force_timeout, request_id, generation, port},
+        %{
+          adapter: %PTYAdapter{port: port},
+          adapter_generation: generation,
+          pending_interrupt: %{
+            request_id: request_id,
+            generation: generation,
+            port: port
+          }
+        } = state
+      ) do
+    {:noreply, restart_after_stuck_interrupt(state)}
+  end
+
+  def handle_info({:interrupt_force_timeout, _request_id, _generation, _port}, state),
+    do: {:noreply, state}
 
   @impl true
   def handle_info(_other, state) do
@@ -817,6 +994,195 @@ defmodule IexCode.Tools.TerminalSession do
   end
 
   # --- Internal Helpers ---
+
+  defp bounded_timeout(value, _default, minimum, maximum) when is_integer(value) do
+    value |> max(minimum) |> min(maximum)
+  end
+
+  defp bounded_timeout(_value, default, _minimum, _maximum), do: default
+
+  defp schedule_interrupt(state, signal, port) do
+    case state.pending_interrupt do
+      %{generation: generation, port: ^port, delivered?: true, forced?: false}
+      when generation == state.adapter_generation ->
+        force_interrupt(state)
+
+      %{generation: generation, port: ^port}
+      when generation == state.adapter_generation ->
+        state
+
+      _none_or_stale ->
+        state = cancel_pending_interrupt(state)
+        request_id = make_ref()
+        generation = state.adapter_generation
+
+        signal_timer =
+          Process.send_after(
+            self(),
+            {:deferred_signal, request_id, signal, generation, port},
+            state.interrupt_signal_delay_ms
+          )
+
+        pending = %{
+          request_id: request_id,
+          boundary_id: :binary.decode_unsigned(:crypto.strong_rand_bytes(8)),
+          generation: generation,
+          port: port,
+          signal_timer: signal_timer,
+          timeout_timer: nil,
+          force_timer: nil,
+          delivered?: false,
+          forced?: false
+        }
+
+        %{state | pending_interrupt: pending}
+    end
+  end
+
+  defp deliver_interrupt(state, signal) do
+    pending = state.pending_interrupt
+
+    case PTYAdapter.send_tracked_signal(state.adapter, signal, pending.boundary_id) do
+      :ok ->
+        request_id = pending.request_id
+        generation = pending.generation
+        port = pending.port
+
+        timeout_timer =
+          Process.send_after(
+            self(),
+            {:interrupt_timeout, request_id, generation, port},
+            state.interrupt_timeout_ms
+          )
+
+        state = %{
+          state
+          | pending_interrupt: %{
+              pending
+              | signal_timer: nil,
+                timeout_timer: timeout_timer,
+                delivered?: true
+            }
+        }
+
+        state
+
+      {:error, _reason} ->
+        force_interrupt(%{
+          state
+          | pending_interrupt: %{pending | signal_timer: nil, delivered?: true}
+        })
+    end
+  end
+
+  defp force_interrupt(state) do
+    pending = state.pending_interrupt
+    cancel_timer(pending.timeout_timer)
+    cancel_timer(pending.force_timer)
+    _ = PTYAdapter.send_signal(state.adapter, :sigkill)
+
+    force_timer =
+      Process.send_after(
+        self(),
+        {:interrupt_force_timeout, pending.request_id, pending.generation, pending.port},
+        state.interrupt_force_timeout_ms
+      )
+
+    %{
+      state
+      | pending_interrupt: %{
+          pending
+          | timeout_timer: nil,
+            force_timer: force_timer,
+            forced?: true
+        }
+    }
+  end
+
+  defp restart_after_stuck_interrupt(state) do
+    Logger.warning(
+      "[TerminalSession] Interrupt boundary timed out; restarting shell " <>
+        "(session: #{state.session_id})"
+    )
+
+    old_adapter = state.adapter
+    next_generation = state.adapter_generation + 1
+    if old_adapter, do: PTYAdapter.close(old_adapter)
+
+    state =
+      state
+      |> cancel_pending_interrupt()
+      |> complete_active_on_shell_exit(-1)
+      |> complete_queued_on_shell_exit()
+
+    reset_state = %{
+      state
+      | adapter: nil,
+        adapter_generation: next_generation,
+        status: :restarting,
+        exit_code: nil,
+        exit_reason: :interrupt_timeout,
+        active_command: nil,
+        command_queue: :queue.new(),
+        command_marker_buffer: "",
+        utf8_acc: UTF8Buffer.new(),
+        raw_input_lock?: false,
+        pending_interrupt: nil
+    }
+
+    broadcast_status(reset_state)
+
+    case spawn_adapter(reset_state) do
+      {:ok, adapter} ->
+        running_state = %{
+          reset_state
+          | adapter: adapter,
+            shell: adapter.shell || reset_state.shell,
+            status: :running,
+            started_at: DateTime.utc_now(),
+            exit_reason: nil
+        }
+
+        broadcast_status(running_state)
+        maybe_release_workspace_lock(running_state)
+
+      {:error, reason} ->
+        error_state = %{
+          reset_state
+          | status: :error,
+            exit_reason: reason,
+            raw_input_lock?: false
+        }
+
+        broadcast_status(error_state)
+        release_workspace_lock(error_state)
+    end
+  end
+
+  defp cancel_pending_interrupt(%{pending_interrupt: nil} = state), do: state
+
+  defp cancel_pending_interrupt(state) do
+    pending = state.pending_interrupt
+    cancel_timer(pending.signal_timer)
+    cancel_timer(pending.timeout_timer)
+    cancel_timer(pending.force_timer)
+    %{state | pending_interrupt: nil}
+  end
+
+  defp cancel_timer(nil), do: :ok
+  defp cancel_timer(timer), do: Process.cancel_timer(timer, async: false, info: false)
+
+  defp settle_interrupt_boundary(
+         %{pending_interrupt: %{delivered?: true, boundary_id: boundary_id}} = state,
+         boundary_id
+       ) do
+    state
+    |> cancel_pending_interrupt()
+    |> Map.put(:raw_input_lock?, false)
+    |> maybe_release_workspace_lock()
+  end
+
+  defp settle_interrupt_boundary(state, _boundary_id), do: state
 
   defp spawn_adapter(state) do
     PTYAdapter.open(
@@ -862,6 +1228,8 @@ defmodule IexCode.Tools.TerminalSession do
       flushed_state
       |> complete_active_on_shell_exit(code)
       |> complete_queued_on_shell_exit()
+      |> cancel_pending_interrupt()
+      |> Map.put(:raw_input_lock?, false)
       |> release_workspace_lock()
 
     duration_ms =
@@ -897,7 +1265,8 @@ defmodule IexCode.Tools.TerminalSession do
         command_marker_buffer: "",
         recent_command_inputs: [],
         raw_input_lock?: false,
-        external_lock_count: 0
+        external_lock_count: 0,
+        pending_interrupt: nil
     }
 
     broadcast_event(state.session_id, {
@@ -923,6 +1292,14 @@ defmodule IexCode.Tools.TerminalSession do
     }
   end
 
+  defp pending_command_bytes(state) do
+    active_bytes = if state.active_command, do: byte_size(state.active_command.command), else: 0
+
+    Enum.reduce(:queue.to_list(state.command_queue), active_bytes, fn entry, total ->
+      total + byte_size(entry.command)
+    end)
+  end
+
   defp dispatch_command(state, entry) do
     command =
       if String.ends_with?(entry.command, "\n"), do: entry.command, else: entry.command <> "\n"
@@ -946,15 +1323,17 @@ defmodule IexCode.Tools.TerminalSession do
           |> Map.put(:started_at, System.monotonic_time(:millisecond))
           |> Map.put(:marker_sent?, is_nil(entry.heredoc_delimiter))
 
+        display_command = command_summary(entry.command)
+
         :telemetry.execute(
           [:iex_code, :terminal, :command_dispatched],
           %{system_time: System.system_time()},
-          %{session_id: state.session_id, command_id: entry.id, command: entry.command}
+          %{session_id: state.session_id, command_id: entry.id, command: display_command}
         )
 
         broadcast_event(state.session_id, {
           :terminal_command_started,
-          %{session_id: state.session_id, command_id: entry.id, command: entry.command}
+          %{session_id: state.session_id, command_id: entry.id, command: display_command}
         })
 
         {:ok,
@@ -967,8 +1346,9 @@ defmodule IexCode.Tools.TerminalSession do
                entry.command
                |> String.split(~r/\r\n|\r|\n/, trim: true)
                |> Enum.map(&String.trim/1)
+               |> Enum.map(&command_input_fingerprint/1)
                |> Kernel.++(state.recent_command_inputs)
-               |> Enum.take(256)
+               |> Enum.take(@max_recent_command_inputs)
          }}
 
       {:error, reason} ->
@@ -1057,7 +1437,7 @@ defmodule IexCode.Tools.TerminalSession do
     payload = %{
       session_id: state.session_id,
       command_id: command.id,
-      command: command.command,
+      command: command_summary(command.command),
       exit_code: code,
       status: status,
       duration_ms: duration_ms
@@ -1071,12 +1451,27 @@ defmodule IexCode.Tools.TerminalSession do
 
     broadcast_event(state.session_id, {:terminal_command_completed, payload})
 
-    suppressed_id =
-      if state.history_suppressed_command_id == command.id,
-        do: nil,
-        else: state.history_suppressed_command_id
+    history_suppressed? = state.history_suppressed_command_id == command.id
 
-    %{state | active_command: nil, history_suppressed_command_id: suppressed_id}
+    suppressed_id =
+      if history_suppressed?, do: nil, else: state.history_suppressed_command_id
+
+    history_entry =
+      payload
+      |> Map.take([:command_id, :command, :exit_code, :status, :duration_ms])
+      |> Map.put(:completed_at, DateTime.utc_now())
+
+    command_history =
+      if history_suppressed?,
+        do: state.command_history,
+        else: bounded_command_history([history_entry | state.command_history])
+
+    %{
+      state
+      | active_command: nil,
+        history_suppressed_command_id: suppressed_id,
+        command_history: command_history
+    }
   end
 
   defp dispatch_next_command(%{active_command: nil} = state) do
@@ -1100,7 +1495,7 @@ defmodule IexCode.Tools.TerminalSession do
     payload = %{
       session_id: state.session_id,
       command_id: entry.id,
-      command: entry.command,
+      command: command_summary(entry.command),
       exit_code: -1,
       status: :error,
       reason: reason,
@@ -1130,7 +1525,7 @@ defmodule IexCode.Tools.TerminalSession do
       payload = %{
         session_id: state.session_id,
         command_id: entry.id,
-        command: entry.command,
+        command: command_summary(entry.command),
         exit_code: -1,
         status: :error,
         reason: :shell_exited,
@@ -1227,7 +1622,8 @@ defmodule IexCode.Tools.TerminalSession do
   end
 
   defp maybe_release_workspace_lock(state) do
-    if state.raw_input_lock? or state.external_lock_count > 0 or not is_nil(state.active_command) or
+    if state.raw_input_lock? or state.external_lock_count > 0 or
+         not is_nil(state.pending_interrupt) or not is_nil(state.active_command) or
          not :queue.is_empty(state.command_queue) do
       state
     else
@@ -1364,6 +1760,12 @@ defmodule IexCode.Tools.TerminalSession do
               timeout_ms
             )
 
+          {:interrupt_boundary, boundary_id, new_adapter} ->
+            new_state =
+              settle_interrupt_boundary(%{state | adapter: new_adapter}, boundary_id)
+
+            drain_pending_port_output(new_state, 30)
+
           _ ->
             state
         end
@@ -1400,6 +1802,9 @@ defmodule IexCode.Tools.TerminalSession do
 
                   {:ready, os_pid, new_adapter} ->
                     %{state | adapter: %{new_adapter | os_pid: os_pid}}
+
+                  {:interrupt_boundary, boundary_id, new_adapter} ->
+                    settle_interrupt_boundary(%{state | adapter: new_adapter}, boundary_id)
 
                   {:noop, new_adapter} ->
                     %{state | adapter: new_adapter}
@@ -1563,8 +1968,64 @@ defmodule IexCode.Tools.TerminalSession do
       String.contains?(line, "\e[?2004h") or String.contains?(line, "\e[?2004l")
 
     normalized_line = line |> strip_ansi() |> String.trim()
+    fingerprint = command_input_fingerprint(normalized_line)
 
     bracketed_paste_echo? or
-      Enum.any?(state.recent_command_inputs, &(&1 != "" and &1 == normalized_line))
+      (normalized_line != "" and Enum.any?(state.recent_command_inputs, &(&1 == fingerprint)))
   end
+
+  defp bounded_command_history(entries) do
+    {bounded, _bytes} =
+      Enum.reduce_while(entries, {[], 0}, fn entry, {kept, bytes} ->
+        command = command_summary(Map.get(entry, :command, ""))
+        entry = Map.put(entry, :command, command)
+        entry_bytes = byte_size(command)
+
+        if length(kept) < @max_command_history_entries and
+             bytes + entry_bytes <= @max_command_history_bytes do
+          {:cont, {[entry | kept], bytes + entry_bytes}}
+        else
+          {:halt, {kept, bytes}}
+        end
+      end)
+
+    Enum.reverse(bounded)
+  end
+
+  defp bounded_utf8(value, maximum) when byte_size(value) <= maximum, do: value
+
+  defp bounded_utf8(value, maximum) do
+    suffix = "… [truncated]"
+    prefix = valid_utf8_prefix(value, maximum - byte_size(suffix))
+    prefix <> suffix
+  end
+
+  defp valid_utf8_prefix(_value, maximum) when maximum <= 0, do: ""
+
+  defp valid_utf8_prefix(value, maximum) do
+    prefix = binary_part(value, 0, min(byte_size(value), maximum))
+
+    if String.valid?(prefix),
+      do: prefix,
+      else: valid_utf8_prefix(value, maximum - 1)
+  end
+
+  defp redact_command_secrets(command) do
+    command
+    |> String.replace(
+      ~r/\b((?:[A-Z][A-Z0-9_]*_)?(?:API_KEY|ACCESS_TOKEN|AUTH_TOKEN|TOKEN|PASSWORD|PRIVATE_KEY|SECRET))=(?:"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|[^\s]+)/u,
+      "\\1=[REDACTED]"
+    )
+    |> String.replace(
+      ~r/(?i)(--?(?:api[-_]?key|access[-_]?token|auth[-_]?token|token|password|private[-_]?key|secret)(?:=|\s+))(?:"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|[^\s]+)/u,
+      "\\1[REDACTED]"
+    )
+    |> String.replace(
+      ~r/(?i)((?:authorization|proxy-authorization):\s*(?:bearer|basic)\s+|(?:x-api-key|api-key|x-goog-api-key|ocp-apim-subscription-key):\s*)([^'"\s]+)/u,
+      "\\1[REDACTED]"
+    )
+  end
+
+  defp command_input_fingerprint(input),
+    do: :crypto.hash(:sha256, input)
 end

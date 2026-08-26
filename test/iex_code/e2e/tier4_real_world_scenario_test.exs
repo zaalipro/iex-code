@@ -412,6 +412,11 @@ defmodule IexCode.E2E.Tier4RealWorldScenarioTest do
 
     # 5. Submit user prompt in Chat
     _ = switch_workspace_tab(view, "chat")
+
+    # Chat no longer overrides the configured prompt-dispatch default. This
+    # scenario explicitly exercises the live path, so select it deliberately.
+    _ = render_click(view, "set_dispatch_mode", %{"mode" => "interactive"})
+
     prompt_html = submit_workspace_prompt(view, "Review code in lib/demo.ex")
     assert is_binary(prompt_html)
     assert_receive {:session_status_changed, "idle"}, 20_000

@@ -206,6 +206,13 @@ const Hooks = {
       this.paletteWasOpen = this.paletteIsOpen()
 
       this.handleKeyDown = (e) => {
+        // Cmd+, or Ctrl+, opens the dedicated settings page.
+        if ((e.metaKey || e.ctrlKey) && e.key === ",") {
+          e.preventDefault()
+          this.pushEvent("open_settings_page", {})
+          return
+        }
+
         // Cmd+K or Ctrl+K opens/toggles the palette
         if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {
           e.preventDefault()

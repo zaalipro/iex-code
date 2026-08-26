@@ -6,7 +6,7 @@ defmodule IexCode.RepoConcurrencyStressTest do
     test "survives 30 concurrent tasks updating settings simultaneously" do
       # Pre-seed settings
       {:ok, _} =
-        Settings.update_settings(%{default_model_provider: "openai", swarm_agent_count: 3})
+        Settings.update_settings(%{default_model_provider: "openai", swarm_agent_count: 4})
 
       tasks =
         for i <- 1..30 do
@@ -14,13 +14,13 @@ defmodule IexCode.RepoConcurrencyStressTest do
             result =
               Settings.update_settings(%{
                 openai_api_key: "sk-test-key-#{i}",
-                swarm_agent_count: rem(i, 5) + 1,
+                swarm_agent_count: rem(i, 5) + 4,
                 auto_save: rem(i, 2) == 0
               })
 
             case result do
               {:ok, s} ->
-                assert s.swarm_agent_count in 1..5
+                assert s.swarm_agent_count in 4..8
                 :ok
 
               {:error, changeset} ->
@@ -34,7 +34,7 @@ defmodule IexCode.RepoConcurrencyStressTest do
       assert Enum.all?(results, &(&1 == :ok))
 
       final_settings = Settings.get_settings()
-      assert final_settings.swarm_agent_count in 1..5
+      assert final_settings.swarm_agent_count in 4..8
     end
 
     test "survives 50 concurrent processes creating projects, sessions, tasks, and messages" do

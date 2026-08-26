@@ -13,7 +13,7 @@ defmodule IexCode.Research.DagAdapterTest do
                grounded_providers: [:openai_responses],
                level: "medium",
                max_queries_per_round: 10,
-               max_sources: 80,
+               max_sources: 40,
                provider_snapshot_ref: "settings://search-providers/revision/42"
              )
 
@@ -57,6 +57,14 @@ defmodule IexCode.Research.DagAdapterTest do
 
     assert {:error, :unsupported_research_provider} =
              DagAdapter.build("Research", ranked_providers: ["bing"])
+  end
+
+  test "rejects a source count above the finalizer contract instead of truncating" do
+    assert {:error, {:research_max_sources_out_of_range, %{minimum: 1, maximum: 40, value: 41}}} =
+             DagAdapter.build("Research",
+               ranked_providers: ["duckduckgo"],
+               max_sources: 41
+             )
   end
 
   test "canonical registry accepts the fully registered typed research manifest" do

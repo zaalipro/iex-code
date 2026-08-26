@@ -9,6 +9,7 @@ defmodule IexCode.Tools.TerminalServer do
   alias IexCode.Tools.TerminalSupervisor
 
   @pubsub_server IexCode.PubSub
+  @workspace_lock_retry_timeout_ms 5_000
 
   # --- Session Lifecycle ---
 
@@ -62,15 +63,23 @@ defmodule IexCode.Tools.TerminalServer do
   @spec send_input(session_id :: String.t(), data :: binary(), opts :: keyword()) ::
           :ok | {:error, term()}
   def send_input(session_id, data, opts \\ [])
-      when is_binary(session_id) and is_binary(data) do
-    case whereis(session_id) do
-      nil ->
-        {:error, :not_found}
 
-      _pid ->
-        TerminalSession.send_input(session_id, data, opts)
+  def send_input(session_id, data, opts)
+      when is_binary(session_id) and is_binary(data) do
+    with :ok <- TerminalSession.validate_raw_input(data) do
+      case whereis(session_id) do
+        nil ->
+          {:error, :not_found}
+
+        _pid ->
+          retry_transient_workspace_lock(fn ->
+            TerminalSession.send_input(session_id, data, opts)
+          end)
+      end
     end
   end
+
+  def send_input(_session_id, _data, _opts), do: {:error, :invalid_terminal_input}
 
   @doc """
   Queues a complete command for correlated, serialized execution.
@@ -93,9 +102,16 @@ defmodule IexCode.Tools.TerminalServer do
           {:ok, String.t()} | {:error, term()}
   def run_command_with_id(session_id, command)
       when is_binary(session_id) and is_binary(command) do
-    case whereis(session_id) do
-      nil -> {:error, :not_found}
-      _pid -> TerminalSession.run_command(session_id, command)
+    with :ok <- TerminalSession.validate_command(command) do
+      case whereis(session_id) do
+        nil ->
+          {:error, :not_found}
+
+        _pid ->
+          retry_transient_workspace_lock(fn ->
+            TerminalSession.run_command(session_id, command)
+          end)
+      end
     end
   end
 
@@ -125,7 +141,8 @@ defmodule IexCode.Tools.TerminalServer do
 
     lock_started_at = System.monotonic_time(:millisecond)
 
-    with {:ok, _pid} <- ensure_started(session_id, opts),
+    with :ok <- TerminalSession.validate_command(command),
+         {:ok, _pid} <- ensure_started(session_id, opts),
          {:ok, command_timeout_ms} <-
            begin_workspace_mutation_with_retry(
              session_id,
@@ -164,7 +181,10 @@ defmodule IexCode.Tools.TerminalServer do
     else
       case TerminalSession.begin_workspace_mutation(session_id, identity) do
         :ok ->
-          {:ok, remaining}
+          # `timeout_ms` governs command execution after exclusive ownership is
+          # acquired. Lock contention has the same bounded allowance, but must
+          # not consume the command's runtime budget under database load.
+          {:ok, timeout_ms}
 
         {:error, reason} = error ->
           if retryable_workspace_lock_conflict?(reason) do
@@ -184,34 +204,134 @@ defmodule IexCode.Tools.TerminalServer do
   defp retryable_workspace_lock_conflict?(:terminal_mutation_busy), do: true
   defp retryable_workspace_lock_conflict?({:workspace_lock_waiting, _locks}), do: true
   defp retryable_workspace_lock_conflict?({:conflict, _locks}), do: true
+
+  defp retryable_workspace_lock_conflict?({:workspace_lock_database_error, message})
+       when is_binary(message) do
+    transient_workspace_lock_database_error?(message)
+  end
+
   defp retryable_workspace_lock_conflict?(_reason), do: false
+
+  defp retry_transient_workspace_lock(fun) do
+    deadline = System.monotonic_time(:millisecond) + @workspace_lock_retry_timeout_ms
+    do_retry_transient_workspace_lock(fun, deadline)
+  end
+
+  defp do_retry_transient_workspace_lock(fun, deadline) do
+    case fun.() do
+      {:error, {:workspace_lock_database_error, message}} = error when is_binary(message) ->
+        remaining = deadline - System.monotonic_time(:millisecond)
+
+        if remaining > 0 and transient_workspace_lock_database_error?(message) do
+          receive do
+          after
+            min(40, remaining) -> do_retry_transient_workspace_lock(fun, deadline)
+          end
+        else
+          error
+        end
+
+      result ->
+        result
+    end
+  end
+
+  defp transient_workspace_lock_database_error?(message) do
+    normalized = String.downcase(message)
+
+    String.contains?(normalized, "connection not available") or
+      String.contains?(normalized, "could not checkout the connection") or
+      String.contains?(normalized, "request was dropped from queue") or
+      String.contains?(normalized, "database is busy") or
+      String.contains?(normalized, "database is locked")
+  end
 
   defp run_locked_agent_command(session_id, command, agent_name, occupant, op_id, timeout_ms) do
     token = "CMD_FIN_#{:erlang.unique_integer([:positive])}"
     wrapped_cmd = "#{command}; echo '__AGENT_EXIT:'$?':TOKEN:#{token}__'\n"
+    collector_owner = self()
+    collector_ready_ref = make_ref()
 
     # Execute collector in an isolated task to preserve caller's PubSub subscriptions
     collector_task =
       Task.async(fn ->
         topic = "session:#{session_id}:terminal"
-        Phoenix.PubSub.subscribe(@pubsub_server, topic)
-        start_time = System.monotonic_time(:millisecond)
 
-        try do
-          collect_agent_output(session_id, token, "", start_time, timeout_ms)
-        after
-          Phoenix.PubSub.unsubscribe(@pubsub_server, topic)
+        case Phoenix.PubSub.subscribe(@pubsub_server, topic) do
+          :ok ->
+            send(collector_owner, {:terminal_collector_ready, collector_ready_ref, self()})
+
+            try do
+              receive do
+                {:terminal_collector_start, ^collector_ready_ref} ->
+                  start_time = System.monotonic_time(:millisecond)
+                  collect_agent_output(session_id, token, "", start_time, timeout_ms)
+              after
+                timeout_ms + @workspace_lock_retry_timeout_ms -> {:error, :timeout}
+              end
+            after
+              Phoenix.PubSub.unsubscribe(@pubsub_server, topic)
+            end
+
+          {:error, reason} ->
+            {:error, {:pubsub_subscribe_failed, reason}}
         end
       end)
 
     start_monotonic = System.monotonic_time(:millisecond)
+
+    case await_collector_ready(collector_task, collector_ready_ref, timeout_ms) do
+      :ok ->
+        dispatch_locked_agent_command(
+          collector_task,
+          collector_ready_ref,
+          session_id,
+          command,
+          wrapped_cmd,
+          agent_name,
+          occupant,
+          op_id,
+          timeout_ms,
+          start_monotonic
+        )
+
+      {:error, reason} ->
+        Task.shutdown(collector_task, :brutal_kill)
+        emit_command_completed(session_id, command, agent_name, op_id, start_monotonic, :error)
+        {:error, reason}
+    end
+  end
+
+  defp await_collector_ready(collector_task, ready_ref, timeout_ms) do
+    receive do
+      {:terminal_collector_ready, ^ready_ref, collector_pid}
+      when collector_pid == collector_task.pid ->
+        :ok
+    after
+      timeout_ms -> {:error, :timeout}
+    end
+  end
+
+  defp dispatch_locked_agent_command(
+         collector_task,
+         collector_ready_ref,
+         session_id,
+         command,
+         wrapped_cmd,
+         agent_name,
+         occupant,
+         op_id,
+         timeout_ms,
+         start_monotonic
+       ) do
+    command_summary = TerminalSession.command_summary(command)
 
     :telemetry.execute(
       [:iex_code, :terminal, :command_dispatched],
       %{system_time: System.system_time()},
       %{
         session_id: session_id,
-        command: command,
+        command: command_summary,
         occupant: occupant,
         agent_name: agent_name,
         op_id: op_id
@@ -219,8 +339,15 @@ defmodule IexCode.Tools.TerminalServer do
     )
 
     try do
-      case TerminalSession.send_input(session_id, wrapped_cmd, force: true) do
+      case retry_transient_workspace_lock(fn ->
+             TerminalSession.send_input(session_id, wrapped_cmd, force: true)
+           end) do
         :ok ->
+          # Start the execution clock only after input is accepted. Output that
+          # races this message is already queued in the subscribed collector's
+          # mailbox and is consumed immediately after the start handshake.
+          send(collector_task.pid, {:terminal_collector_start, collector_ready_ref})
+
           case Task.await(collector_task, timeout_ms + 1_000) do
             {:ok, res} ->
               :telemetry.execute(
@@ -232,7 +359,7 @@ defmodule IexCode.Tools.TerminalServer do
                 },
                 %{
                   session_id: session_id,
-                  command: command,
+                  command: command_summary,
                   agent_name: agent_name,
                   op_id: op_id,
                   exit_code: res.exit_code,
@@ -254,7 +381,7 @@ defmodule IexCode.Tools.TerminalServer do
                 },
                 %{
                   session_id: session_id,
-                  command: command,
+                  command: command_summary,
                   agent_name: agent_name,
                   op_id: op_id,
                   exit_code: -1,
@@ -307,7 +434,7 @@ defmodule IexCode.Tools.TerminalServer do
           },
           %{
             session_id: session_id,
-            command: command,
+            command: command_summary,
             agent_name: agent_name,
             op_id: op_id,
             exit_code: -1,
@@ -341,6 +468,8 @@ defmodule IexCode.Tools.TerminalServer do
          start_monotonic,
          status
        ) do
+    command_summary = TerminalSession.command_summary(command)
+
     :telemetry.execute(
       [:iex_code, :terminal, :command_completed],
       %{
@@ -350,7 +479,7 @@ defmodule IexCode.Tools.TerminalServer do
       },
       %{
         session_id: session_id,
-        command: command,
+        command: command_summary,
         agent_name: agent_name,
         op_id: op_id,
         exit_code: -1,
@@ -497,7 +626,8 @@ defmodule IexCode.Tools.TerminalServer do
   end
 
   @doc """
-  Clears the in-memory ring buffer and broadcasts `{:terminal_cleared, ...}` over PubSub.
+  Clears scrollback plus bounded structured command history/recent input identity,
+  and broadcasts `{:terminal_cleared, ...}` over PubSub.
   """
   @spec clear(session_id :: String.t()) :: :ok
   def clear(session_id) when is_binary(session_id) do
