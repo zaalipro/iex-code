@@ -132,5 +132,71 @@ defmodule IexCode.Engine.SwarmCoordinatorTest do
 
       AgentSupervisor.stop_all_agents(session.id)
     end
+
+    @tag :tmp_dir
+    test "verifier rejection triggers planner replanning stage in feedback loop",
+         %{session: session, tmp_dir: tmp_dir} do
+      lib_path = Path.join(tmp_dir, "lib")
+      File.mkdir_p!(lib_path)
+
+      # Unfixable syntax error that fails verification
+      file = Path.join(lib_path, "syntax_err.ex")
+      File.write!(file, "defmodule SyntaxErr do\n  def unclosed do\nend")
+
+      {:ok, final_msg} =
+        SwarmCoordinator.run(
+          session.id,
+          "Replan on verification rejection",
+          project_root: tmp_dir,
+          max_retries: 2
+        )
+
+      assert is_map(final_msg)
+      # Assert stage transitions include initial planning and replanning on verifier rejection
+      assert_receive {:swarm_stage_changed, %{stage: :planning, progress: 15}}, 5000
+      assert_receive {:swarm_stage_changed, %{stage: :planning, progress: 25}}, 5000
+      assert_receive {:swarm_stage_changed, %{stage: :exploring}}, 5000
+      assert_receive {:swarm_stage_changed, %{stage: :coding}}, 5000
+      assert_receive {:swarm_stage_changed, %{stage: :verifying}}, 5000
+      # Verifier failure leads to replanning stage broadcast
+      assert_receive {:swarm_stage_changed, %{stage: :planning, message: msg}}, 5000
+      assert String.contains?(msg, "Replanning") or String.contains?(msg, "Refined")
+
+      AgentSupervisor.stop_all_agents(session.id)
+    end
+
+    @tag :tmp_dir
+    test "durable swarm coordinates scaled fleet (8 workers with 5 explorers)",
+         %{project: project, session: session, tmp_dir: tmp_dir} do
+      {:ok, _queued} =
+        IexCode.Runs.create_run(%{
+          project_id: project.id,
+          session_id: session.id,
+          objective: "scaled fleet coordination",
+          kind: "coding_swarm",
+          mode: "swarm",
+          metadata: %{
+            "execution_policy" => %{
+              "swarm_agent_count" => 8
+            }
+          }
+        })
+
+      owner = "scaled-swarm:#{System.unique_integer([:positive])}"
+      {:ok, run} = IexCode.Runs.claim_next_run(owner, lease_ms: 300_000)
+      on_exit(fn -> IexCode.Engine.FleetSupervisor.stop(run.id) end)
+
+      assert {:ok, agents} =
+               IexCode.Engine.FleetSupervisor.attach(run, project_root: tmp_dir)
+
+      assert length(agents) == 8
+      assert Enum.count(agents, &(&1.role == :explorer)) == 5
+      assert Enum.count(agents, &(&1.role == :planner)) == 1
+      assert Enum.count(agents, &(&1.role == :coder)) == 1
+      assert Enum.count(agents, &(&1.role == :verifier)) == 1
+
+      # Verify all 8 agent processes are alive and monitored
+      assert Enum.all?(agents, &Process.alive?(&1.pid))
+    end
   end
 end

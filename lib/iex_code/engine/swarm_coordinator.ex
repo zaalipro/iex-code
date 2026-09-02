@@ -1356,6 +1356,52 @@ defmodule IexCode.Engine.SwarmCoordinator do
     %State{state | plan: plan_text, stage: :planning}
   end
 
+  defp run_replanning_phase(
+         %State{user_prompt: prompt, root_op_id: root_op_id} = state,
+         diagnostics
+       ) do
+    progress = min(70, 45 + state.iteration * 10)
+
+    broadcast_stage(
+      state,
+      :planning,
+      progress,
+      "Planner: Replanning execution strategy based on verification diagnostics..."
+    )
+
+    plan_res =
+      invoke_role(state, :planner, fn target, targeted_steering ->
+        PlannerAgent.plan(
+          target,
+          prompt,
+          parent_op_id: root_op_id,
+          project_root: state.project_root,
+          run_id: state.run_id,
+          diagnostics: diagnostics,
+          previous_plan: state.plan,
+          steer_directives: state.steer_directives ++ targeted_steering,
+          allowed_tools: state.allowed_tools,
+          execution_policy: state.execution_policy,
+          workspace_lock_delegation: state.workspace_lock_delegation
+        )
+      end)
+
+    plan_text =
+      case plan_res do
+        {:ok, text} -> text
+        {:error, reason} -> abort_durable_agent_phase!(state, :planner, reason)
+      end
+
+    broadcast_stage(
+      state,
+      :planning,
+      min(75, progress + 5),
+      "Planner: Refined execution plan formulated."
+    )
+
+    %State{state | plan: plan_text, stage: :planning}
+  end
+
   defp run_exploration_phase(%State{user_prompt: prompt, root_op_id: root_op_id} = state) do
     broadcast_stage(
       state,
@@ -1596,14 +1642,14 @@ defmodule IexCode.Engine.SwarmCoordinator do
                         iteration: iteration + 1
                     }
                   else
-                    do_coding_and_verification_loop(
-                      %State{
-                        new_state
-                        | verifier_result: new_diagnostics,
-                          error_signatures: MapSet.put(new_state.error_signatures, new_err_sig)
-                      },
-                      iteration + 1
-                    )
+                    state_with_sig = %State{
+                      new_state
+                      | verifier_result: new_diagnostics,
+                        error_signatures: MapSet.put(new_state.error_signatures, new_err_sig)
+                    }
+
+                    replanned_state = run_replanning_phase(state_with_sig, new_diagnostics)
+                    do_coding_and_verification_loop(replanned_state, iteration + 1)
                   end
 
                 {:error, reason} ->
@@ -1624,7 +1670,8 @@ defmodule IexCode.Engine.SwarmCoordinator do
               end
 
             _ ->
-              do_coding_and_verification_loop(new_state, iteration + 1)
+              replanned_state = run_replanning_phase(new_state, diagnostics)
+              do_coding_and_verification_loop(replanned_state, iteration + 1)
           end
         end
 

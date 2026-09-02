@@ -8,6 +8,7 @@ defmodule IexCode.Engine.Agents.PlannerAgent do
   alias IexCode.Engine.{AgentRegistry, OperationManager}
   alias IexCode.Execution.ModelRoute
   alias IexCode.{Sessions, Settings, Tools, LLM}
+  alias IexCode.Tools.AutoFix
 
   @outer_timeout 90_000
   @inner_timeout 60_000
@@ -174,8 +175,34 @@ defmodule IexCode.Engine.Agents.PlannerAgent do
             Keep the response clear, structured, and action-oriented.
             """
 
+            diagnostics = opts[:diagnostics]
+            previous_plan = opts[:previous_plan]
+
             base_content =
-              "Goal: #{prompt}\nProject root: #{project_root}\n\nWorkspace structure:\n#{dir_summary}"
+              if diagnostics do
+                diag_str = AutoFix.format_diagnostics(diagnostics)
+
+                prev_section =
+                  if is_binary(previous_plan) and String.trim(previous_plan) != "",
+                    do: "\n\n### Previous Plan:\n#{previous_plan}",
+                    else: ""
+
+                """
+                Goal: #{prompt}
+                Project root: #{project_root}
+                #{prev_section}
+
+                ### ⚠️ Verification Failure Diagnostics
+                #{diag_str}
+
+                Workspace structure:
+                #{dir_summary}
+
+                Please reformulate and refine the architecture and execution plan specifically addressing these verification failures.
+                """
+              else
+                "Goal: #{prompt}\nProject root: #{project_root}\n\nWorkspace structure:\n#{dir_summary}"
+              end
 
             messages = [
               %{role: "user", content: append_steer_directives(base_content, steer_directives)}

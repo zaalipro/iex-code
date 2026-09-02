@@ -107,6 +107,26 @@ defmodule IexCode.Adversarial.Challenger2SignalAndChurnStressTest do
     end
   end
 
+  defp wait_for_defunct_to_reap(target_max, max_wait_ms) do
+    deadline = System.monotonic_time(:millisecond) + max_wait_ms
+    do_wait_for_defunct(target_max, deadline)
+  end
+
+  defp do_wait_for_defunct(target_max, deadline) do
+    current = count_defunct_processes()
+
+    if current <= target_max do
+      current
+    else
+      if System.monotonic_time(:millisecond) >= deadline do
+        current
+      else
+        Process.sleep(100)
+        do_wait_for_defunct(target_max, deadline)
+      end
+    end
+  end
+
   # ============================================================================
   # 1. Signal Handling (:sigtstp -> :sigcont)
   # ============================================================================
@@ -337,7 +357,7 @@ defmodule IexCode.Adversarial.Challenger2SignalAndChurnStressTest do
 
       # Allow settling time for OS process reaping
       final_shims = wait_for_shims_to_reap(initial_shims, 4_000)
-      final_defunct = count_defunct_processes()
+      final_defunct = wait_for_defunct_to_reap(initial_defunct, 4_000)
 
       assert final_shims <= initial_shims,
              "Lingering pty_shim.py processes detected: initial=#{initial_shims}, final=#{final_shims}"

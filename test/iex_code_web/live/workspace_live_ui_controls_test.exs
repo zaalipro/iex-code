@@ -15,10 +15,12 @@ defmodule IexCodeWeb.WorkspaceLiveUIControlsTest do
       session = create_session_fixture(project)
       {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
 
+      today_month = Calendar.strftime(Date.utc_today(), "%B, %Y")
+
       tabs = [
         {"#sidebar-tab-kanban", "kanban", "Kanban"},
         {"#sidebar-tab-swarm", "swarm", "Milo"},
-        {"#sidebar-tab-calendar", "calendar", "August, 2026"},
+        {"#sidebar-tab-calendar", "calendar", today_month},
         {"#sidebar-tab-changes", "changes", "All Changes"},
         {"#sidebar-tab-files", "files", "Select a workspace file"},
         {"#sidebar-tab-terminal", "terminal", "mix test"}
