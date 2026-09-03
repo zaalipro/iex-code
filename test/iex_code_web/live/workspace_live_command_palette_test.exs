@@ -300,4 +300,174 @@ defmodule IexCodeWeb.WorkspaceLiveCommandPaletteTest do
       assert has_element?(view, "#workspace-header-actions", "Swarm: ON")
     end
   end
+
+  # ============================================================================
+  # 6. Prefix Shortcut Syntax Search
+  # ============================================================================
+  describe "Prefix Shortcut Syntax" do
+    setup %{workspace_path: path} do
+      workspace_write_file(path, "lib/sample_task.ex", "defmodule SampleTask do\nend")
+      :ok
+    end
+
+    test "prefix shortcuts filter instantly to their respective categories", %{
+      conn: conn,
+      workspace_path: path
+    } do
+      project = create_project_fixture(%{root_path: path})
+      session = create_session_fixture(project)
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      render_click(view, "toggle_command_palette")
+
+      # '> ' -> actions
+      render_change(view, "command_palette_search", %{"query" => "> test"})
+      html_actions = render(view)
+      assert html_actions =~ "Run All Tests" or html_actions =~ "Run Failed Tests"
+
+      # '# ' -> files
+      render_change(view, "command_palette_search", %{"query" => "# sample"})
+      html_files = render(view)
+      assert html_files =~ "sample_task.ex"
+
+      # '$ ' -> models
+      render_change(view, "command_palette_search", %{"query" => "$ claude"})
+      html_models = render(view)
+      assert html_models =~ "Claude" or html_models =~ "anthropic"
+
+      # '! ' -> terminal
+      render_change(view, "command_palette_search", %{"query" => "! mix"})
+      html_term = render(view)
+      assert html_term =~ "mix test" or html_term =~ "mix precommit"
+    end
+  end
+
+  # ============================================================================
+  # 7. Global Keyboard Ergonomics & Category Cycling
+  # ============================================================================
+  describe "Global Keyboard Ergonomics" do
+    test "toggles sidebar and bottom terminal via live events", %{
+      conn: conn,
+      workspace_path: path
+    } do
+      project = create_project_fixture(%{root_path: path})
+      session = create_session_fixture(project)
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      # Toggle sidebar
+      initial_sidebar = view |> element("#workspace-sidebar") |> render()
+      render_click(view, "toggle_sidebar")
+      toggled_sidebar = view |> element("#workspace-sidebar") |> render()
+      assert initial_sidebar != toggled_sidebar
+
+      # Toggle bottom terminal panel
+      render_click(view, "toggle_bottom_terminal")
+      assert render(view) =~ "terminal" or has_element?(view, "#bottom-terminal-dock")
+    end
+
+    test "cycles category pills forward and backward", %{
+      conn: conn,
+      workspace_path: path
+    } do
+      project = create_project_fixture(%{root_path: path})
+      session = create_session_fixture(project)
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      render_click(view, "toggle_command_palette")
+
+      # Cycle next
+      render_click(view, "command_palette_cycle_category", %{"direction" => "next"})
+
+      assert has_element?(
+               view,
+               ~s(button[phx-click="command_palette_set_category"][aria-pressed="true"])
+             )
+
+      # Cycle prev
+      render_click(view, "command_palette_cycle_category", %{"direction" => "prev"})
+
+      assert has_element?(
+               view,
+               ~s(button[phx-click="command_palette_set_category"][aria-pressed="true"])
+             )
+    end
+  end
+
+  # ============================================================================
+  # 8. Extended Category Execution
+  # ============================================================================
+  describe "Extended Category Execution" do
+    test "executes terminal command from command palette", %{
+      conn: conn,
+      workspace_path: path
+    } do
+      project = create_project_fixture(%{root_path: path})
+      session = create_session_fixture(project)
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      render_click(view, "toggle_command_palette")
+      render_click(view, "command_palette_set_category", %{"category" => "terminal"})
+      render_change(view, "command_palette_search", %{"query" => "mix format"})
+
+      render_click(view, "command_palette_select_item", %{"index" => "0"})
+      refute has_element?(view, "#command-palette-modal")
+      assert render(view) =~ "terminal"
+    end
+
+    test "executes model selection from command palette", %{
+      conn: conn,
+      workspace_path: path
+    } do
+      project = create_project_fixture(%{root_path: path})
+      session = create_session_fixture(project)
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      render_click(view, "toggle_command_palette")
+      render_click(view, "command_palette_set_category", %{"category" => "models"})
+      render_change(view, "command_palette_search", %{"query" => "Claude 3.5 Haiku"})
+
+      render_click(view, "command_palette_select_item", %{"index" => "0"})
+      refute has_element?(view, "#command-palette-modal")
+    end
+
+    test "executes detach window actions from command palette", %{
+      conn: conn,
+      workspace_path: path
+    } do
+      project = create_project_fixture(%{root_path: path})
+      session = create_session_fixture(project)
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      for detach_title <- [
+            "Detach Terminal Window",
+            "Detach Git & Diff Window",
+            "Detach DAG Visualizer Window"
+          ] do
+        render_click(view, "toggle_command_palette")
+        render_click(view, "command_palette_set_category", %{"category" => "actions"})
+        render_change(view, "command_palette_search", %{"query" => detach_title})
+        render_click(view, "command_palette_select_item", %{"index" => "0"})
+        refute has_element?(view, "#command-palette-modal")
+      end
+    end
+
+    test "executes git branch switch from command palette", %{
+      conn: conn
+    } do
+      {:ok, git_dir} = init_temp_git_repo(%{"README.md" => "# Hello"})
+      System.cmd("git", ["branch", "feature/awesome-test"], cd: git_dir)
+
+      project = create_project_fixture(%{root_path: git_dir})
+      session = create_session_fixture(project)
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      render_click(view, "toggle_command_palette")
+      render_click(view, "command_palette_set_category", %{"category" => "branches"})
+      render_change(view, "command_palette_search", %{"query" => "feature/awesome-test"})
+
+      render_click(view, "command_palette_select_item", %{"index" => "0"})
+      refute has_element?(view, "#command-palette-modal")
+      assert render(view) =~ "Switched to branch feature/awesome-test"
+    end
+  end
 end

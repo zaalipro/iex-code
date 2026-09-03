@@ -370,12 +370,20 @@ defmodule IexCode.Settings do
         {:ok, settings}
 
       {:ok, nil} ->
-        _ = create_default_settings()
+        created = create_default_settings()
 
         case fetch_latest_settings() do
-          {:ok, %AppSettings{} = settings} -> {:ok, settings}
-          {:ok, nil} -> {:error, {:db_error, "settings singleton was not persisted"}}
-          {:error, reason} -> {:error, {:db_error, reason}}
+          {:ok, %AppSettings{} = settings} ->
+            {:ok, settings}
+
+          _ when is_struct(created, AppSettings) and not is_nil(created.id) ->
+            {:ok, created}
+
+          {:ok, nil} ->
+            {:error, {:db_error, "settings singleton was not persisted"}}
+
+          {:error, reason} ->
+            {:error, {:db_error, reason}}
         end
 
       {:error, reason} ->

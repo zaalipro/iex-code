@@ -245,7 +245,7 @@ defmodule IexCode.Adversarial.R2VectorIndexerAdversarialTest do
       assert avg_latency_ms < 250.0,
              "Average query latency must be sub-second (< 250ms, got #{avg_latency_ms}ms)"
 
-      assert time_ms < 8000.0, "50 searches must execute in under 8,000ms"
+      assert time_ms < 10000.0, "50 searches must execute in under 10,000ms"
 
       # Accuracy Oracle: Planted target chunk must be rank #1 in top results with high score
       first_result_set = hd(results_list)

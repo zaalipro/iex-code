@@ -244,6 +244,12 @@ const Hooks = {
           e.preventDefault()
           this.pushEvent("close_command_palette", {})
         } else if (e.key === "Tab") {
+          const input = document.getElementById("command-palette-input")
+          if (input && input.value.trim() === "") {
+            e.preventDefault()
+            this.pushEvent("command_palette_cycle_category", {direction: e.shiftKey ? "prev" : "next"})
+            return
+          }
           this.trapFocus(e, dialog)
         } else if (e.key === "ArrowDown") {
           e.preventDefault()

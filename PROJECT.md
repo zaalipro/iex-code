@@ -59,9 +59,9 @@ This project transforms `iex-code` into a world-class, studio-grade developer co
 |---|------|-------|-------------|--------|
 | 1 | Studio-Grade Glassmorphism & Layout Ergonomics | Tailwind v4 `@theme`, carbon tokens, glass utilities, density toggles, collapsible sidebar (`Cmd+B`), docked bottom terminal (`Cmd+J`), `MenuBar` sync | None | DONE |
 | 2 | Interactive Swarm & Workflow Visualizer Canvas | `SwarmCanvas` component, SVG Bézier edges, flow pulses, visual task states, per-node telemetry pills, unified DAG view | M1 | DONE |
-| 3 | High-Fidelity Side-by-Side & Unified Diff Inspector | Split diff row alignment, intra-line word diffs (`String.myers_difference/2`), syntax coloration, time-travel diffs & rollback in main and detached diff | M1 | PLANNED |
-| 4 | Command Palette 2.0 & Frictionless Navigation | Fuzzy subsequence engine, 8 entity categories, split modal with rich preview cards, action execution, keyboard hints | M1 | PLANNED |
-| 5 | E2E Integration, Visual Regression & Precommit Hardening | LiveView test suites across R1-R4, visual regression safeguards, and clean `mix precommit` | M1, M2, M3, M4 | PLANNED |
+| 3 | High-Fidelity Side-by-Side & Unified Diff Inspector | Split diff row alignment, intra-line word diffs (`String.myers_difference/2`), syntax coloration, time-travel diffs & rollback in main and detached diff | M1 | DONE |
+| 4 | Command Palette 2.0 & Frictionless Navigation | Fuzzy subsequence engine, 8 entity categories, split modal with rich preview cards, action execution, keyboard hints | M1 | DONE |
+| 5 | E2E Integration, Visual Regression & Precommit Hardening | LiveView test suites across R1-R4, visual regression safeguards, and clean `mix precommit` | M1, M2, M3, M4 | DONE |
 
 ## Interface Contracts
 
@@ -109,10 +109,14 @@ This project transforms `iex-code` into a world-class, studio-grade developer co
 - Tests in `test/iex_code_web/`:
   - `test/iex_code_web/live/workspace_live_layout_test.exs` (PASS)
   - `test/iex_code/e2e/ui_studio_cockpit_e2e_test.exs` (PASS - 20/20)
+  - `test/iex_code_web/command_palette_test.exs` (PASS - 33/33)
+  - `test/iex_code_web/empirical_challenge_m4_test.exs` (PASS - 9/9, p95 < 25ms SLA)
   - `test/iex_code_web/components/swarm_canvas_test.exs`
   - `test/iex_code_web/components/diff_inspector_test.exs`
   - `test/iex_code_web/components/command_palette_component_test.exs`
   - `test/iex_code_web/live/workspace_live_command_palette_test.exs`
+  - `test/iex_code_web/live/command_palette_adversarial_m4_test.exs`
+  - `test/iex_code_web/live/challenger_command_palette_stress_test.exs`
 - Gate: `mix precommit` passes with 0 warnings, 0 format errors, 0 test failures.
 
 ## Code Layout

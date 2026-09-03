@@ -434,13 +434,18 @@ defmodule IexCodeWeb.WorkspaceComponents do
   - "Accept Hunk" (`accept_hunk`), "Reject Hunk" (`reject_hunk`), "Revert Hunk" (`revert_hunk`)
   - "Revert File" (`revert_file`), "Accept All Hunks" (`accept_all_hunks`)
   """
+  attr :id, :string, default: "diff-viewer-container"
   attr :diff_text, :string, default: ""
-  attr :diff_mode, :string, default: "inline"
   attr :file_path, :string, default: nil
+  attr :diff_mode, :string, default: "inline"
   attr :hunks, :list, default: nil
   attr :status, :any, default: :modified
   attr :additions, :integer, default: 0
   attr :deletions, :integer, default: 0
+  attr :staged, :boolean, default: false
+  attr :is_checkpoint, :boolean, default: false
+  attr :rollback_tx_id, :string, default: nil
+  attr :class, :string, default: "h-full"
 
   def diff_viewer(assigns), do: interactive_diff_viewer(assigns)
 
@@ -450,6 +455,11 @@ defmodule IexCodeWeb.WorkspaceComponents do
     status = assigns[:status] || :modified
     file_path = assigns[:file_path]
     diff_mode = assigns[:diff_mode] || "inline"
+    id = assigns[:id] || "diff-viewer-container"
+    staged = assigns[:staged] || false
+    is_checkpoint = assigns[:is_checkpoint] || false
+    rollback_tx_id = assigns[:rollback_tx_id]
+    class_attr = assigns[:class] || "h-full"
 
     # Decompose diff_text into structured hunks if not explicitly passed
     resolved_hunks =
@@ -469,6 +479,11 @@ defmodule IexCodeWeb.WorkspaceComponents do
 
     assigns =
       assigns
+      |> assign(:id, id)
+      |> assign(:staged, staged)
+      |> assign(:is_checkpoint, is_checkpoint)
+      |> assign(:rollback_tx_id, rollback_tx_id)
+      |> assign(:class, class_attr)
       |> assign(:diff_text, diff_text)
       |> assign(:status, status)
       |> assign(:file_path, file_path)
@@ -477,8 +492,11 @@ defmodule IexCodeWeb.WorkspaceComponents do
 
     ~H"""
     <div
-      id="diff-viewer-container"
-      class="min-h-0 min-w-0 bg-[#11151c] border border-[#21262d] rounded-2xl flex flex-col h-full overflow-hidden"
+      id={@id}
+      class={[
+        "min-h-0 min-w-0 bg-[#11151c] border border-[#21262d] rounded-2xl flex flex-col overflow-hidden",
+        @class
+      ]}
     >
       <!-- Toolbar Header -->
       <div class="diff-viewer-header p-3 border-b border-[#21262d] bg-[#161b22] flex flex-wrap items-center justify-between gap-2 shrink-0 font-mono text-xs">
@@ -500,9 +518,23 @@ defmodule IexCodeWeb.WorkspaceComponents do
         </div>
 
         <div class="flex items-center gap-2 shrink-0">
-          <!-- File Actions: Revert File & Accept All -->
-          <%= if @file_path do %>
+          <%!-- File Actions: Revert File & Accept All OR Rollback to Checkpoint --%>
+          <%= if @is_checkpoint and @rollback_tx_id do %>
             <button
+              type="button"
+              phx-click="rollback_to_checkpoint"
+              phx-value-tx_id={@rollback_tx_id}
+              class="px-2.5 py-1 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 rounded-lg text-xs font-mono transition-smooth flex items-center gap-1 font-semibold"
+              title="Rollback workspace to this checkpoint"
+            >
+              <.icon name="hero-arrow-uturn-left" class="w-3.5 h-3.5" />
+              <span class="hidden sm:inline">1-Click Rollback</span>
+            </button>
+          <% end %>
+
+          <%= if not @is_checkpoint and @file_path do %>
+            <button
+              type="button"
               phx-click="revert_file"
               phx-value-file={@file_path}
               data-confirm="Revert every uncommitted change in this file?"
@@ -513,6 +545,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
               <span class="hidden sm:inline">Revert File</span>
             </button>
             <button
+              type="button"
               phx-click="accept_all_hunks"
               phx-value-file={@file_path}
               class="px-2.5 py-1 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 rounded-lg text-xs font-mono transition-smooth flex items-center gap-1"
@@ -526,6 +559,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
           <!-- View Mode Toggle -->
           <div class="flex items-center bg-[#0d1117] p-1 rounded-lg border border-[#21262d]">
             <button
+              type="button"
               phx-click="set_diff_mode"
               phx-value-mode="inline"
               class={[
@@ -537,6 +571,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
               Inline
             </button>
             <button
+              type="button"
               phx-click="set_diff_mode"
               phx-value-mode="split"
               class={[
@@ -551,7 +586,8 @@ defmodule IexCodeWeb.WorkspaceComponents do
 
           <!-- Copy Diff Button -->
           <button
-            id="copy-diff-btn"
+            type="button"
+            id={"#{@id}-copy-btn"}
             phx-hook="CodeCopy"
             data-code={@diff_text}
             class="px-2.5 py-1 bg-[#21262d] hover:bg-[#30363d] text-gray-200 rounded-lg text-xs font-mono transition-smooth flex items-center gap-1.5"
@@ -572,9 +608,13 @@ defmodule IexCodeWeb.WorkspaceComponents do
           <%= if @resolved_hunks != [] do %>
             <%= for hunk <- @resolved_hunks do %>
               <.hunk_card
+                parent_id={@id}
                 hunk={hunk}
                 file_path={@file_path}
                 diff_mode={@diff_mode}
+                staged={@staged}
+                is_checkpoint={@is_checkpoint}
+                rollback_tx_id={@rollback_tx_id}
               />
             <% end %>
           <% else %>
@@ -594,15 +634,18 @@ defmodule IexCodeWeb.WorkspaceComponents do
   @doc """
   Renders an individual hunk card with hunk header and Accept / Reject / Revert action buttons.
   """
+  attr :parent_id, :string, default: "diff-viewer-container"
   attr :hunk, :any, required: true
   attr :file_path, :string, default: nil
   attr :diff_mode, :string, default: "inline"
   attr :staged, :boolean, default: false
+  attr :is_checkpoint, :boolean, default: false
+  attr :rollback_tx_id, :string, default: nil
 
   def hunk_card(assigns) do
     ~H"""
     <div
-      id={"hunk-card-#{@hunk.id}"}
+      id={"#{@parent_id}-hunk-card-#{@hunk.id}"}
       class="border border-[#21262d] rounded-xl overflow-hidden bg-[#11151c] shadow-md"
     >
       <!-- Hunk Control Header -->
@@ -618,50 +661,69 @@ defmodule IexCodeWeb.WorkspaceComponents do
         </div>
 
         <div class="flex items-center gap-1.5">
-          <%= if @staged do %>
-            <button
-              phx-click="unstage_hunk"
-              phx-value-file={@file_path}
-              phx-value-hunk_id={@hunk.id}
-              class="px-2 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 rounded text-[11px] font-semibold transition-smooth flex items-center gap-1"
-              title="Unstage this hunk from the index"
-            >
-              <.icon name="hero-minus-circle" class="w-3 h-3" />
-              <span>Unstage Hunk</span>
-            </button>
+          <%= if @is_checkpoint do %>
+            <%= if @rollback_tx_id do %>
+              <button
+                type="button"
+                phx-click="rollback_to_checkpoint"
+                phx-value-tx_id={@rollback_tx_id}
+                class="px-2 py-1 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 rounded text-[11px] font-semibold transition-smooth flex items-center gap-1"
+                title="Rollback to this checkpoint"
+              >
+                <.icon name="hero-arrow-uturn-left" class="w-3 h-3" />
+                <span>Revert Hunk</span>
+              </button>
+            <% end %>
           <% else %>
-            <button
-              phx-click="accept_hunk"
-              phx-value-file={@file_path}
-              phx-value-hunk_id={@hunk.id}
-              class="px-2 py-1 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 rounded text-[11px] font-semibold transition-smooth flex items-center gap-1"
-              title="Stage this hunk"
-            >
-              <.icon name="hero-check" class="w-3 h-3" />
-              <span>Accept Hunk</span>
-            </button>
-            <button
-              phx-click="reject_hunk"
-              phx-value-file={@file_path}
-              phx-value-hunk_id={@hunk.id}
-              data-confirm="Discard this hunk?"
-              class="px-2 py-1 bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 rounded text-[11px] font-semibold transition-smooth flex items-center gap-1"
-              title="Reject / Discard this hunk"
-            >
-              <.icon name="hero-x-mark" class="w-3 h-3" />
-              <span>Reject Hunk</span>
-            </button>
-            <button
-              phx-click="revert_hunk"
-              phx-value-file={@file_path}
-              phx-value-hunk_id={@hunk.id}
-              data-confirm="Revert this hunk?"
-              class="px-2 py-1 bg-gray-700/40 hover:bg-gray-700/60 text-gray-300 border border-gray-600/30 rounded text-[11px] transition-smooth flex items-center gap-1"
-              title="Revert this hunk"
-            >
-              <.icon name="hero-arrow-uturn-left" class="w-3 h-3" />
-              <span>Revert</span>
-            </button>
+            <%= if @staged do %>
+              <button
+                type="button"
+                phx-click="unstage_hunk"
+                phx-value-file={@file_path}
+                phx-value-hunk_id={@hunk.id}
+                class="px-2 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 rounded text-[11px] font-semibold transition-smooth flex items-center gap-1"
+                title="Unstage this hunk from the index"
+              >
+                <.icon name="hero-minus-circle" class="w-3 h-3" />
+                <span>Unstage Hunk</span>
+              </button>
+            <% else %>
+              <button
+                type="button"
+                phx-click="accept_hunk"
+                phx-value-file={@file_path}
+                phx-value-hunk_id={@hunk.id}
+                class="px-2 py-1 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 rounded text-[11px] font-semibold transition-smooth flex items-center gap-1"
+                title="Stage this hunk"
+              >
+                <.icon name="hero-check" class="w-3 h-3" />
+                <span>Accept Hunk</span>
+              </button>
+              <button
+                type="button"
+                phx-click="reject_hunk"
+                phx-value-file={@file_path}
+                phx-value-hunk_id={@hunk.id}
+                data-confirm="Discard this hunk?"
+                class="px-2 py-1 bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 rounded text-[11px] font-semibold transition-smooth flex items-center gap-1"
+                title="Reject / Discard this hunk"
+              >
+                <.icon name="hero-x-mark" class="w-3 h-3" />
+                <span>Reject Hunk</span>
+              </button>
+              <button
+                type="button"
+                phx-click="revert_hunk"
+                phx-value-file={@file_path}
+                phx-value-hunk_id={@hunk.id}
+                data-confirm="Revert this hunk?"
+                class="px-2 py-1 bg-gray-700/40 hover:bg-gray-700/60 text-gray-300 border border-gray-600/30 rounded text-[11px] transition-smooth flex items-center gap-1"
+                title="Revert this hunk"
+              >
+                <.icon name="hero-arrow-uturn-left" class="w-3 h-3" />
+                <span>Revert</span>
+              </button>
+            <% end %>
           <% end %>
         </div>
       </div>
@@ -679,9 +741,12 @@ defmodule IexCodeWeb.WorkspaceComponents do
   end
 
   def hunk_inline_lines(assigns) do
+    prepared_lines = IexCodeWeb.DiffHighlighter.prepare_inline_lines(assigns.lines)
+    assigns = assign(assigns, :prepared_lines, prepared_lines)
+
     ~H"""
     <div class="space-y-0.5 font-mono text-xs">
-      <%= for line <- @lines do %>
+      <%= for %{line: line, segments: segments} <- @prepared_lines do %>
         <% {bg, text_color, sign} =
           case line.type do
             :addition ->
@@ -701,7 +766,12 @@ defmodule IexCodeWeb.WorkspaceComponents do
           <span class="w-8 text-right text-gray-600 select-none pr-2 text-[10px]">{line.old_num || " "}</span>
           <span class="w-8 text-right text-gray-600 select-none pr-3 text-[10px]">{line.new_num || " "}</span>
           <span class="w-4 text-center select-none font-bold text-[11px] text-gray-500">{sign}</span>
-          <span class={["flex-1 whitespace-pre-wrap", text_color]}>{line.content}</span>
+          <div class={["flex-1 overflow-x-auto", text_color]}>
+            <IexCodeWeb.DiffHighlighter.diff_line_content
+              segments={segments}
+              type={line.type}
+            />
+          </div>
         </div>
       <% end %>
     </div>
@@ -709,43 +779,96 @@ defmodule IexCodeWeb.WorkspaceComponents do
   end
 
   def hunk_split_lines(assigns) do
+    pairs = IexCodeWeb.DiffHighlighter.pair_split_lines(assigns.lines)
+    assigns = assign(assigns, :pairs, pairs)
+
     ~H"""
-    <div class="grid grid-cols-2 gap-2 font-mono text-xs">
-      <div class="space-y-0.5 border-r border-[#21262d] pr-2">
-        <div class="text-gray-500 text-[10px] uppercase font-bold px-2 py-1 bg-[#11151c] rounded mb-1">
-          Original
-        </div>
-        <%= for line <- @lines do %>
-          <%= if line.type in [:context, :deletion] do %>
-            <div class={[
-              "px-2 py-0.5 rounded flex items-center",
-              line.type == :deletion && "bg-rose-950/40 text-rose-300 border-l-2 border-rose-500",
-              line.type == :context && "text-gray-300 hover:bg-[#161b22]"
-            ]}>
-              <span class="w-8 text-right text-gray-600 select-none pr-2 text-[10px]">{line.old_num}</span>
-              <span class="flex-1 whitespace-pre-wrap">{line.content}</span>
-            </div>
-          <% end %>
-        <% end %>
+    <div class="space-y-0.5 font-mono text-xs">
+      <!-- Header -->
+      <div class="grid grid-cols-2 gap-2 text-gray-500 text-[10px] uppercase font-bold px-2 py-1 bg-[#11151c] rounded mb-1">
+        <div class="pr-2 border-r border-[#21262d]">Original</div>
+        <div class="pl-2">Modified</div>
       </div>
-      <div class="space-y-0.5 pl-2">
-        <div class="text-gray-500 text-[10px] uppercase font-bold px-2 py-1 bg-[#11151c] rounded mb-1">
-          Modified
+
+      <!-- Aligned Rows -->
+      <%= for {left, right} <- @pairs do %>
+        <% {left_segments, right_segments} =
+          case {left, right} do
+            {%{type: :deletion, content: c1}, %{type: :addition, content: c2}} ->
+              diff = IexCodeWeb.DiffHighlighter.word_diff(c1, c2)
+
+              {IexCodeWeb.DiffHighlighter.line_segments(diff, :deletion),
+               IexCodeWeb.DiffHighlighter.line_segments(diff, :addition)}
+
+            {%{type: :deletion, content: c1}, _} ->
+              {[{:highlight, c1}], []}
+
+            {_, %{type: :addition, content: c2}} ->
+              {[], [{:highlight, c2}]}
+
+            {%{type: :context, content: c}, %{type: :context}} ->
+              {[{:normal, c}], [{:normal, c}]}
+
+            _ ->
+              {[], []}
+          end %>
+        <div class="grid grid-cols-2 gap-2 group hover:bg-[#161b22]/30">
+          <!-- Left (Original / Deletion) Column -->
+          <div class="border-r border-[#21262d] pr-2">
+            <%= if is_nil(left) or left == :empty do %>
+              <div class="px-2 py-0.5 rounded flex items-center min-h-[1.5rem] bg-[#0a0d12]/40 select-none text-transparent border-l-2 border-transparent">
+                <span class="w-8 text-right pr-2 text-[10px] select-none text-transparent">·</span>
+                <span class="flex-1 select-none text-transparent">&nbsp;</span>
+              </div>
+            <% else %>
+              <div class={[
+                "px-2 py-0.5 rounded flex items-center min-h-[1.5rem]",
+                left.type == :deletion && "bg-rose-950/40 text-rose-300 border-l-2 border-rose-500",
+                left.type == :context && "text-gray-300 hover:bg-[#161b22]",
+                left.type == :eof_newline && "text-gray-500 italic text-[10px]"
+              ]}>
+                <span class="w-8 text-right text-gray-600 select-none pr-2 text-[10px]">
+                  {left.old_num || " "}
+                </span>
+                <div class="flex-1 overflow-x-auto">
+                  <IexCodeWeb.DiffHighlighter.diff_line_content
+                    segments={left_segments}
+                    type={left.type}
+                  />
+                </div>
+              </div>
+            <% end %>
+          </div>
+
+          <!-- Right (Modified / Addition) Column -->
+          <div class="pl-2">
+            <%= if is_nil(right) or right == :empty do %>
+              <div class="px-2 py-0.5 rounded flex items-center min-h-[1.5rem] bg-[#0a0d12]/40 select-none text-transparent border-l-2 border-transparent">
+                <span class="w-8 text-right pr-2 text-[10px] select-none text-transparent">·</span>
+                <span class="flex-1 select-none text-transparent">&nbsp;</span>
+              </div>
+            <% else %>
+              <div class={[
+                "px-2 py-0.5 rounded flex items-center min-h-[1.5rem]",
+                right.type == :addition &&
+                  "bg-emerald-950/40 text-emerald-300 border-l-2 border-emerald-500",
+                right.type == :context && "text-gray-300 hover:bg-[#161b22]",
+                right.type == :eof_newline && "text-gray-500 italic text-[10px]"
+              ]}>
+                <span class="w-8 text-right text-gray-600 select-none pr-2 text-[10px]">
+                  {right.new_num || " "}
+                </span>
+                <div class="flex-1 overflow-x-auto">
+                  <IexCodeWeb.DiffHighlighter.diff_line_content
+                    segments={right_segments}
+                    type={right.type}
+                  />
+                </div>
+              </div>
+            <% end %>
+          </div>
         </div>
-        <%= for line <- @lines do %>
-          <%= if line.type in [:context, :addition] do %>
-            <div class={[
-              "px-2 py-0.5 rounded flex items-center",
-              line.type == :addition &&
-                "bg-emerald-950/40 text-emerald-300 border-l-2 border-emerald-500",
-              line.type == :context && "text-gray-300 hover:bg-[#161b22]"
-            ]}>
-              <span class="w-8 text-right text-gray-600 select-none pr-2 text-[10px]">{line.new_num}</span>
-              <span class="flex-1 whitespace-pre-wrap">{line.content}</span>
-            </div>
-          <% end %>
-        <% end %>
-      </div>
+      <% end %>
     </div>
     """
   end
@@ -1888,17 +2011,20 @@ defmodule IexCodeWeb.WorkspaceComponents do
   attr :selected_index, :integer, default: 0
 
   def command_palette(assigns) do
+    selected_item = Enum.at(assigns.results, assigns.selected_index)
+    assigns = assign(assigns, :selected_item, selected_item)
+
     ~H"""
     <div id="command-palette-controller" phx-hook="CommandPalette" class="contents">
       <%= if @show do %>
         <div
           id="command-palette-modal"
-          class="fixed inset-0 z-50 flex items-start justify-center pt-[10vh] px-4 bg-black/60 backdrop-blur-md transition-opacity"
+          class="fixed inset-0 z-50 flex items-start justify-center pt-[8vh] px-4 bg-black/60 backdrop-blur-md transition-opacity"
         >
           <%!-- Backdrop click dismiss --%>
           <div class="fixed inset-0" phx-click="close_command_palette" aria-hidden="true"></div>
 
-          <%!-- Palette Dialog Window --%>
+          <%!-- Palette Dialog Window (Split Pane) --%>
           <div
             id="command-palette-dialog"
             role="dialog"
@@ -1906,17 +2032,17 @@ defmodule IexCodeWeb.WorkspaceComponents do
             aria-labelledby="command-palette-title"
             aria-describedby="command-palette-description"
             tabindex="-1"
-            class="relative w-full max-w-2xl bg-[#11151c] border border-[#30363d] rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[75vh] z-10 animate-scale-in"
+            class="relative w-full max-w-5xl bg-[#11151c] border border-[#30363d] rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[82vh] z-10 animate-scale-in"
             phx-click-away="close_command_palette"
           >
             <h2 id="command-palette-title" class="sr-only">Command palette</h2>
             <p id="command-palette-description" class="sr-only">
-              Search workspace files, sessions, views, and actions.
+              Search workspace files, sessions, swarms, models, branches, terminal commands, views, and actions.
             </p>
 
             <%!-- Search Header Input --%>
-            <div class="flex items-center px-4 py-3 border-b border-[#21262d] bg-[#161b22]/80 gap-3">
-              <.icon name="hero-magnifying-glass" class="w-5 h-5 text-gray-400 shrink-0" />
+            <div class="flex items-center px-4 py-3 border-b border-[#21262d] bg-[#161b22]/90 gap-3">
+              <.icon name="hero-magnifying-glass" class="w-5 h-5 text-cyan-400 shrink-0" />
               <form
                 id="command-palette-form"
                 phx-change="command_palette_search"
@@ -1939,7 +2065,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
                   phx-debounce="80"
                   autocomplete="off"
                   spellcheck="false"
-                  placeholder="Search files, sessions, views, actions... (Cmd+K)"
+                  placeholder="Type a command or prefix: > actions, # files, @ swarms, $ models, / branches, ! terminal... (Cmd+K)"
                   class="w-full bg-transparent border-0 text-gray-100 placeholder-gray-500 font-sans text-sm focus:outline-none focus:ring-0 p-0"
                 />
               </form>
@@ -1948,113 +2074,571 @@ defmodule IexCodeWeb.WorkspaceComponents do
                 type="button"
                 phx-click="close_command_palette"
                 aria-label="Close command palette"
-                class="px-1.5 py-0.5 text-[11px] font-mono font-medium text-gray-400 bg-[#21262d] border border-[#30363d] rounded hover:text-white"
+                class="px-2 py-0.5 text-[11px] font-mono font-medium text-gray-400 bg-[#21262d] border border-[#30363d] rounded-md hover:text-white hover:border-gray-500 transition-smooth"
               >
                 ESC
               </button>
             </div>
 
-            <%!-- Category Filter Pills --%>
-            <div class="flex items-center gap-1.5 px-4 py-2 border-b border-[#21262d] bg-[#0d1117] overflow-x-auto font-mono text-xs">
-              <%= for {cat, label} <- [{"all", "All"}, {"actions", "Actions"}, {"views", "Views"}, {"files", "Files"}, {"sessions", "Sessions"}] do %>
+            <%!-- Category Filter Pills (All 9 categories) --%>
+            <div class="flex items-center gap-1.5 px-4 py-2 border-b border-[#21262d] bg-[#0d1117] overflow-x-auto font-mono text-xs scrollbar-none">
+              <%= for {cat, label} <- [
+                {"all", "All"},
+                {"actions", "Actions"},
+                {"swarms", "Swarms"},
+                {"files", "Files"},
+                {"models", "Models"},
+                {"branches", "Branches"},
+                {"terminal", "Terminal"},
+                {"views", "Views"},
+                {"sessions", "Sessions"}
+              ] do %>
                 <button
                   type="button"
                   phx-click="command_palette_set_category"
                   phx-value-category={cat}
                   aria-pressed={to_string(@category == cat)}
                   class={[
-                    "px-2.5 py-1 rounded-lg transition-smooth font-medium text-[11px] shrink-0",
+                    "px-2.5 py-1 rounded-lg transition-smooth font-medium text-[11px] shrink-0 flex items-center gap-1.5",
                     @category == cat &&
                       "bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 font-semibold shadow-sm",
                     @category != cat &&
                       "text-gray-400 hover:text-gray-200 hover:bg-[#161b22] border border-transparent"
                   ]}
                 >
-                  {label}
+                  <span>{label}</span>
                 </button>
               <% end %>
             </div>
 
-            <%!-- Results List View --%>
-            <div
-              id="command-palette-results"
-              role="listbox"
-              aria-label="Command palette results"
-              class="flex-1 overflow-y-auto p-2 space-y-1 font-sans text-sm"
-            >
-              <%= if @results == [] do %>
-                <div class="py-12 text-center text-gray-500 font-mono text-xs">
-                  <.icon name="hero-magnifying-glass" class="w-8 h-8 text-gray-600 mx-auto mb-2" />
-                  <p>No results found for "{@query}"</p>
-                  <p class="text-[11px] text-gray-600 mt-1">
-                    Try a different search term or category filter
-                  </p>
-                </div>
-              <% else %>
-                <%= for {item, idx} <- Enum.with_index(@results) do %>
-                  <% is_selected = idx == @selected_index %>
-                  <button
-                    type="button"
-                    id={"palette-item-#{idx}"}
-                    role="option"
-                    aria-selected={to_string(is_selected)}
-                    tabindex="-1"
-                    phx-click="command_palette_select_item"
-                    phx-value-index={to_string(idx)}
-                    class={[
-                      "w-full flex items-center justify-between p-2.5 rounded-xl text-left transition-smooth group",
-                      is_selected &&
-                        "bg-cyan-950/40 text-cyan-200 border border-cyan-500/40 font-medium",
-                      !is_selected && "hover:bg-[#161b22] text-gray-300 border border-transparent"
-                    ]}
-                  >
-                    <div class="flex items-center gap-3 truncate">
-                      <div class={[
-                        "w-7 h-7 rounded-lg flex items-center justify-center shrink-0 border",
-                        item.category == :action &&
-                          "bg-purple-500/10 text-purple-400 border-purple-500/30",
-                        item.category == :view && "bg-cyan-500/10 text-cyan-400 border-cyan-500/30",
-                        item.category == :file &&
-                          "bg-amber-500/10 text-amber-400 border-amber-500/30",
-                        item.category == :session &&
-                          "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
-                      ]}>
-                        <.icon name={item.icon || "hero-cube"} class="w-4 h-4" />
+            <%!-- Split-Pane Main Container --%>
+            <div class="flex-1 flex min-h-[420px] max-h-[60vh] overflow-hidden divide-x divide-[#21262d]">
+              <%!-- Left Pane: Results List (w-7/12) --%>
+              <div
+                id="command-palette-results"
+                role="listbox"
+                aria-label="Command palette results"
+                class="w-7/12 flex flex-col min-w-0 overflow-y-auto p-2 space-y-1 font-sans text-sm"
+              >
+                <%= if @results == [] do %>
+                  <div class="py-16 text-center text-gray-500 font-mono text-xs">
+                    <.icon name="hero-magnifying-glass" class="w-10 h-10 text-gray-600 mx-auto mb-3" />
+                    <p class="text-gray-300 font-medium text-sm">No results found for "{@query}"</p>
+                    <p class="text-[11px] text-gray-500 mt-1">
+                      Try searching with prefixes: <span class="text-cyan-400">&gt;</span>
+                      actions, <span class="text-amber-400">#</span>
+                      files, <span class="text-fuchsia-400">@</span>
+                      swarms, <span class="text-sky-400">$</span>
+                      models, <span class="text-emerald-400">/</span>
+                      branches, <span class="text-orange-400">!</span>
+                      terminal
+                    </p>
+                  </div>
+                <% else %>
+                  <%= for {item, idx} <- Enum.with_index(@results) do %>
+                    <% is_selected = idx == @selected_index %>
+                    <button
+                      type="button"
+                      id={"palette-item-#{idx}"}
+                      role="option"
+                      aria-selected={to_string(is_selected)}
+                      tabindex="-1"
+                      phx-click="command_palette_select_item"
+                      phx-value-index={to_string(idx)}
+                      class={[
+                        "w-full flex items-center justify-between p-2.5 rounded-xl text-left transition-smooth group",
+                        is_selected &&
+                          "bg-cyan-950/40 text-cyan-200 border border-cyan-500/40 font-medium shadow-sm",
+                        !is_selected && "hover:bg-[#161b22] text-gray-300 border border-transparent"
+                      ]}
+                    >
+                      <div class="flex items-center gap-3 truncate min-w-0">
+                        <div class={[
+                          "w-7 h-7 rounded-lg flex items-center justify-center shrink-0 border",
+                          item.category == :action &&
+                            "bg-purple-500/10 text-purple-400 border-purple-500/30",
+                          item.category == :view && "bg-cyan-500/10 text-cyan-400 border-cyan-500/30",
+                          item.category == :file &&
+                            "bg-amber-500/10 text-amber-400 border-amber-500/30",
+                          item.category == :session &&
+                            "bg-emerald-500/10 text-emerald-400 border-emerald-500/30",
+                          item.category == :swarm &&
+                            "bg-fuchsia-500/10 text-fuchsia-400 border-fuchsia-500/30",
+                          item.category == :model && "bg-sky-500/10 text-sky-400 border-sky-500/30",
+                          item.category == :branch &&
+                            "bg-emerald-500/10 text-emerald-400 border-emerald-500/30",
+                          item.category == :terminal &&
+                            "bg-orange-500/10 text-orange-400 border-orange-500/30"
+                        ]}>
+                          <.icon name={item.icon || "hero-cube"} class="w-4 h-4" />
+                        </div>
+                        <div class="truncate min-w-0">
+                          <div class="font-medium text-gray-200 group-hover:text-white truncate flex items-center gap-2">
+                            <span class="truncate">{item.title}</span>
+                            <span class={[
+                              "text-[10px] uppercase font-mono px-1.5 py-0.5 rounded border shrink-0",
+                              item.category == :action &&
+                                "bg-purple-950/50 text-purple-300 border-purple-800/40",
+                              item.category == :view &&
+                                "bg-cyan-950/50 text-cyan-300 border-cyan-800/40",
+                              item.category == :file &&
+                                "bg-amber-950/50 text-amber-300 border-amber-800/40",
+                              item.category == :session &&
+                                "bg-emerald-950/50 text-emerald-300 border-emerald-800/40",
+                              item.category == :swarm &&
+                                "bg-fuchsia-950/50 text-fuchsia-300 border-fuchsia-800/40",
+                              item.category == :model &&
+                                "bg-sky-950/50 text-sky-300 border-sky-800/40",
+                              item.category == :branch &&
+                                "bg-emerald-950/50 text-emerald-300 border-emerald-800/40",
+                              item.category == :terminal &&
+                                "bg-orange-950/50 text-orange-300 border-orange-800/40"
+                            ]}>
+                              {to_string(item.category)}
+                            </span>
+                          </div>
+                          <div class="text-[11px] text-gray-500 font-mono truncate">
+                            {item.subtitle}
+                          </div>
+                        </div>
                       </div>
-                      <div class="truncate">
-                        <div class="font-medium text-gray-200 group-hover:text-white truncate flex items-center gap-2">
-                          <span>{item.title}</span>
-                          <span class="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-[#21262d] text-gray-400 border border-[#30363d]">
-                            {to_string(item.category)}
+
+                      <%= if Map.get(item, :shortcut) && item.shortcut != "" do %>
+                        <span class="px-2 py-0.5 text-[10px] font-mono text-gray-400 bg-[#161b22] border border-[#21262d] rounded shrink-0 ml-2">
+                          {item.shortcut}
+                        </span>
+                      <% end %>
+                    </button>
+                  <% end %>
+                <% end %>
+              </div>
+
+              <%!-- Right Pane: Dynamic Rich Preview Card (w-5/12) --%>
+              <div
+                id="command-palette-preview"
+                class="w-5/12 flex flex-col min-w-0 overflow-y-auto p-4 bg-[#0d1117]/90 font-sans"
+              >
+                <%= if @selected_item do %>
+                  <% preview = Map.get(@selected_item, :preview, %{}) %>
+                  <%= case @selected_item.category do %>
+                    <% :file -> %>
+                      <div id="palette-preview-file" class="space-y-4">
+                        <div class="flex items-start gap-3">
+                          <div class="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-400 flex items-center justify-center shrink-0">
+                            <.icon name={@selected_item.icon || "hero-document"} class="w-5 h-5" />
+                          </div>
+                          <div class="min-w-0">
+                            <h3 class="font-semibold text-gray-100 text-sm truncate">
+                              {Map.get(preview, :filename, @selected_item.title)}
+                            </h3>
+                            <p class="text-[11px] font-mono text-gray-400 truncate">
+                              {Map.get(preview, :path, @selected_item.subtitle)}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div class="flex flex-wrap gap-2 font-mono text-xs">
+                          <span class="px-2 py-1 rounded-lg bg-[#161b22] border border-[#21262d] text-amber-300">
+                            {Map.get(preview, :syntax, "Plain Text")}
+                          </span>
+                          <span class="px-2 py-1 rounded-lg bg-[#161b22] border border-[#21262d] text-gray-300">
+                            {format_palette_bytes(Map.get(preview, :size, 0))}
+                          </span>
+                          <span class="px-2 py-1 rounded-lg bg-[#161b22] border border-[#21262d] text-gray-300">
+                            {Map.get(preview, :lines, 0)} lines
                           </span>
                         </div>
-                        <div class="text-[11px] text-gray-500 font-mono truncate">
-                          {item.subtitle}
+
+                        <div class="rounded-xl border border-[#21262d] bg-[#161b22] overflow-hidden">
+                          <div class="px-3 py-1.5 border-b border-[#21262d] text-[10px] font-mono text-gray-400 flex items-center justify-between">
+                            <span>Syntax Preview</span>
+                            <span>{Map.get(preview, :ext, "")}</span>
+                          </div>
+                          <div class="p-3 font-mono text-[11px] text-gray-300 overflow-x-auto max-h-[220px]">
+                            <%= if Map.get(preview, :preview_lines, []) != [] do %>
+                              <pre phx-no-curly-interpolation class="space-y-0.5 leading-relaxed"><%= for {num, line} <- preview.preview_lines do %><div class="flex gap-3"><span class="text-gray-600 select-none text-right w-6 shrink-0"><%= num %></span><span class="text-gray-200"><%= line %></span></div><% end %></pre>
+                            <% else %>
+                              <div class="py-6 text-center text-gray-500 text-xs italic">
+                                File content preview unavailable or empty
+                              </div>
+                            <% end %>
+                          </div>
+                        </div>
+
+                        <div class="text-[11px] text-gray-500 font-mono">
+                          Press
+                          <kbd class="px-1.5 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-gray-300">↵</kbd>
+                          to open buffer in editor
                         </div>
                       </div>
-                    </div>
+                    <% :swarm -> %>
+                      <div id="palette-preview-swarm" class="space-y-4">
+                        <div class="flex items-start gap-3">
+                          <div class="w-10 h-10 rounded-xl bg-fuchsia-500/10 border border-fuchsia-500/30 text-fuchsia-400 flex items-center justify-center shrink-0">
+                            <.icon name="hero-sparkles" class="w-5 h-5" />
+                          </div>
+                          <div class="min-w-0">
+                            <h3 class="font-semibold text-gray-100 text-sm truncate">
+                              {Map.get(preview, :objective, @selected_item.title)}
+                            </h3>
+                            <div class="flex items-center gap-2 mt-1">
+                              <span class="px-2 py-0.5 text-[10px] uppercase font-mono rounded bg-fuchsia-950/60 text-fuchsia-300 border border-fuchsia-800/40">
+                                {Map.get(preview, :mode, "swarm")}
+                              </span>
+                              <span class={[
+                                "px-2 py-0.5 text-[10px] uppercase font-mono rounded border",
+                                Map.get(preview, :status) == "running" &&
+                                  "bg-emerald-950/60 text-emerald-300 border-emerald-800/40",
+                                Map.get(preview, :status) == "completed" &&
+                                  "bg-sky-950/60 text-sky-300 border-sky-800/40",
+                                Map.get(preview, :status) not in ["running", "completed"] &&
+                                  "bg-gray-800/60 text-gray-300 border-gray-700/40"
+                              ]}>
+                                {Map.get(preview, :status, "queued")}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
 
-                    <%= if Map.get(item, :shortcut) && item.shortcut != "" do %>
-                      <span class="px-2 py-0.5 text-[10px] font-mono text-gray-400 bg-[#161b22] border border-[#21262d] rounded shrink-0">
-                        {item.shortcut}
-                      </span>
-                    <% end %>
-                  </button>
+                        <div class="grid grid-cols-2 gap-2 font-mono text-xs">
+                          <div class="p-2.5 rounded-xl bg-[#161b22] border border-[#21262d]">
+                            <div class="text-[10px] text-gray-500 uppercase">Active Agents</div>
+                            <div class="text-sm font-semibold text-fuchsia-300 mt-0.5">
+                              {Map.get(preview, :active_agents, 4)} Workers
+                            </div>
+                          </div>
+                          <div class="p-2.5 rounded-xl bg-[#161b22] border border-[#21262d]">
+                            <div class="text-[10px] text-gray-500 uppercase">Tokens Consumed</div>
+                            <div class="text-sm font-semibold text-gray-200 mt-0.5">
+                              {Map.get(preview, :tokens, 0)}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div class="p-3 rounded-xl bg-[#161b22] border border-[#21262d] space-y-1.5">
+                          <div class="flex justify-between text-xs font-mono">
+                            <span class="text-gray-400">Run Progress</span>
+                            <span class="text-fuchsia-300 font-semibold">{Map.get(
+                              preview,
+                              :progress,
+                              0
+                            )}%</span>
+                          </div>
+                          <div class="w-full h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                            <div
+                              class="h-full bg-gradient-to-r from-fuchsia-500 to-cyan-500 rounded-full transition-all duration-300"
+                              style={"width: #{Map.get(preview, :progress, 0)}%;"}
+                            >
+                            </div>
+                          </div>
+                        </div>
+
+                        <div class="text-[11px] text-gray-500 font-mono">
+                          Press
+                          <kbd class="px-1.5 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-gray-300">↵</kbd>
+                          to jump to Swarm Telemetry canvas
+                        </div>
+                      </div>
+                    <% :model -> %>
+                      <div id="palette-preview-model" class="space-y-4">
+                        <div class="flex items-start gap-3">
+                          <div class="w-10 h-10 rounded-xl bg-sky-500/10 border border-sky-500/30 text-sky-400 flex items-center justify-center shrink-0">
+                            <.icon name="hero-cpu-chip" class="w-5 h-5" />
+                          </div>
+                          <div class="min-w-0">
+                            <h3 class="font-semibold text-gray-100 text-sm truncate">
+                              {Map.get(preview, :name, @selected_item.title)}
+                            </h3>
+                            <p class="text-[11px] font-mono text-gray-400 truncate">
+                              Provider: {Map.get(preview, :provider, "anthropic")}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div class="flex flex-wrap gap-2 font-mono text-xs">
+                          <span class={[
+                            "px-2 py-1 rounded-lg border font-semibold",
+                            Map.get(preview, :local?) &&
+                              "bg-emerald-950/60 text-emerald-300 border-emerald-800/40",
+                            !Map.get(preview, :local?) &&
+                              "bg-sky-950/60 text-sky-300 border-sky-800/40"
+                          ]}>
+                            {if Map.get(preview, :local?), do: "Local Offline", else: "Cloud Endpoint"}
+                          </span>
+                          <span class="px-2 py-1 rounded-lg bg-[#161b22] border border-[#21262d] text-emerald-400 flex items-center gap-1.5">
+                            <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                            Online
+                          </span>
+                        </div>
+
+                        <div class="p-3 rounded-xl bg-[#161b22] border border-[#21262d] space-y-1">
+                          <div class="text-[10px] font-mono text-gray-500 uppercase">
+                            API Gateway / Endpoint
+                          </div>
+                          <div class="text-xs font-mono text-gray-200 truncate">
+                            {Map.get(preview, :endpoint, "api.anthropic.com")}
+                          </div>
+                        </div>
+
+                        <div class="text-[11px] text-gray-500 font-mono">
+                          Press
+                          <kbd class="px-1.5 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-gray-300">↵</kbd>
+                          to set as active session model
+                        </div>
+                      </div>
+                    <% :branch -> %>
+                      <div id="palette-preview-branch" class="space-y-4">
+                        <div class="flex items-start gap-3">
+                          <div class="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 flex items-center justify-center shrink-0">
+                            <.icon name="hero-code-bracket" class="w-5 h-5" />
+                          </div>
+                          <div class="min-w-0">
+                            <h3 class="font-semibold text-gray-100 text-sm truncate">
+                              {Map.get(preview, :name, @selected_item.title)}
+                            </h3>
+                            <p class="text-[11px] font-mono text-gray-400">
+                              Git Working Branch
+                            </p>
+                          </div>
+                        </div>
+
+                        <div class="flex flex-wrap gap-2 font-mono text-xs">
+                          <%= if Map.get(preview, :current?) do %>
+                            <span class="px-2 py-1 rounded-lg bg-emerald-950/60 text-emerald-300 border border-emerald-800/40 font-semibold flex items-center gap-1.5">
+                              <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                              Current HEAD
+                            </span>
+                          <% else %>
+                            <span class="px-2 py-1 rounded-lg bg-[#161b22] border border-[#21262d] text-gray-400">
+                              Available Branch
+                            </span>
+                          <% end %>
+                          <span class="px-2 py-1 rounded-lg bg-[#161b22] border border-[#21262d] text-gray-300">
+                            Upstream: {Map.get(preview, :upstream) || "local only"}
+                          </span>
+                        </div>
+
+                        <div class="p-3 rounded-xl bg-[#161b22] border border-[#21262d] space-y-1">
+                          <div class="text-[10px] font-mono text-gray-500 uppercase">
+                            Head Pointer
+                          </div>
+                          <div class="text-xs font-mono text-cyan-300">
+                            refs/heads/{Map.get(preview, :name, @selected_item.title)}
+                          </div>
+                        </div>
+
+                        <div class="text-[11px] text-gray-500 font-mono">
+                          Press
+                          <kbd class="px-1.5 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-gray-300">↵</kbd>
+                          to checkout and switch to this branch
+                        </div>
+                      </div>
+                    <% :terminal -> %>
+                      <div id="palette-preview-terminal" class="space-y-4">
+                        <div class="flex items-start gap-3">
+                          <div class="w-10 h-10 rounded-xl bg-orange-500/10 border border-orange-500/30 text-orange-400 flex items-center justify-center shrink-0">
+                            <.icon name="hero-command-line" class="w-5 h-5" />
+                          </div>
+                          <div class="min-w-0">
+                            <h3 class="font-semibold text-gray-100 text-sm truncate font-mono">
+                              {Map.get(preview, :command, @selected_item.title)}
+                            </h3>
+                            <p class="text-[11px] text-gray-400">
+                              {Map.get(preview, :description, @selected_item.subtitle)}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div class="p-3 rounded-xl bg-[#161b22] border border-[#21262d] space-y-1 font-mono">
+                          <div class="text-[10px] text-gray-500 uppercase">
+                            Target Directory (CWD)
+                          </div>
+                          <div class="text-xs text-orange-300 truncate">
+                            {Map.get(preview, :directory, ".")}
+                          </div>
+                        </div>
+
+                        <div class="p-3 rounded-xl bg-[#161b22] border border-[#21262d] space-y-1 font-mono">
+                          <div class="text-[10px] text-gray-500 uppercase">Command Execution</div>
+                          <div class="text-xs text-gray-300">
+                            $
+                            <span class="text-white font-semibold">{Map.get(
+                              preview,
+                              :command,
+                              @selected_item.title
+                            )}</span>
+                          </div>
+                        </div>
+
+                        <div class="text-[11px] text-gray-500 font-mono">
+                          Press
+                          <kbd class="px-1.5 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-gray-300">↵</kbd>
+                          to execute command in terminal shell
+                        </div>
+                      </div>
+                    <% :action -> %>
+                      <div id="palette-preview-action" class="space-y-4">
+                        <div class="flex items-start gap-3">
+                          <div class="w-10 h-10 rounded-xl bg-purple-500/10 border border-purple-500/30 text-purple-400 flex items-center justify-center shrink-0">
+                            <.icon name={@selected_item.icon || "hero-bolt"} class="w-5 h-5" />
+                          </div>
+                          <div class="min-w-0">
+                            <h3 class="font-semibold text-gray-100 text-sm truncate">
+                              {@selected_item.title}
+                            </h3>
+                            <p class="text-[11px] text-gray-400">
+                              {Map.get(preview, :description, @selected_item.subtitle)}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div class="flex flex-wrap gap-2 font-mono text-xs">
+                          <%= if Map.get(preview, :shortcut) && preview.shortcut != "" do %>
+                            <span class="px-2 py-1 rounded-lg bg-purple-950/60 text-purple-300 border border-purple-800/40 font-semibold">
+                              Shortcut: {preview.shortcut}
+                            </span>
+                          <% end %>
+                          <%= if Map.get(preview, :target_tab) && preview.target_tab != "" do %>
+                            <span class="px-2 py-1 rounded-lg bg-[#161b22] border border-[#21262d] text-cyan-300">
+                              Target: {preview.target_tab}
+                            </span>
+                          <% end %>
+                        </div>
+
+                        <div class="p-3 rounded-xl bg-[#161b22] border border-[#21262d] space-y-1 font-mono">
+                          <div class="text-[10px] text-gray-500 uppercase">Action Trigger</div>
+                          <div class="text-xs text-purple-300">
+                            handle_event("{Map.get(preview, :event, @selected_item.id)}")
+                          </div>
+                        </div>
+
+                        <div class="text-[11px] text-gray-500 font-mono">
+                          Press
+                          <kbd class="px-1.5 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-gray-300">↵</kbd>
+                          to execute this action
+                        </div>
+                      </div>
+                    <% :view -> %>
+                      <div id="palette-preview-view" class="space-y-4">
+                        <div class="flex items-start gap-3">
+                          <div class="w-10 h-10 rounded-xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 flex items-center justify-center shrink-0">
+                            <.icon name={@selected_item.icon || "hero-squares-2x2"} class="w-5 h-5" />
+                          </div>
+                          <div class="min-w-0">
+                            <h3 class="font-semibold text-gray-100 text-sm truncate">
+                              {@selected_item.title}
+                            </h3>
+                            <p class="text-[11px] text-gray-400">
+                              {Map.get(preview, :description, @selected_item.subtitle)}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div class="p-3 rounded-xl bg-[#161b22] border border-[#21262d] space-y-1 font-mono">
+                          <div class="text-[10px] text-gray-500 uppercase">
+                            Workspace Tab Destination
+                          </div>
+                          <div class="text-xs text-cyan-300">
+                            active_tab: "{Map.get(preview, :target_tab, @selected_item[:tab])}"
+                          </div>
+                        </div>
+
+                        <div class="text-[11px] text-gray-500 font-mono">
+                          Press
+                          <kbd class="px-1.5 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-gray-300">↵</kbd>
+                          to switch directly to this workspace view
+                        </div>
+                      </div>
+                    <% :session -> %>
+                      <div id="palette-preview-session" class="space-y-4">
+                        <div class="flex items-start gap-3">
+                          <div class="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 flex items-center justify-center shrink-0">
+                            <.icon name="hero-document-text" class="w-5 h-5" />
+                          </div>
+                          <div class="min-w-0">
+                            <h3 class="font-semibold text-gray-100 text-sm truncate">
+                              {Map.get(preview, :title, @selected_item.title)}
+                            </h3>
+                            <p class="text-[11px] font-mono text-gray-400">
+                              Session ID: {Map.get(preview, :session_id, @selected_item[:session_id])}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div class="grid grid-cols-2 gap-2 font-mono text-xs">
+                          <div class="p-2.5 rounded-xl bg-[#161b22] border border-[#21262d]">
+                            <div class="text-[10px] text-gray-500 uppercase">Assigned Model</div>
+                            <div class="text-xs font-semibold text-emerald-300 mt-0.5 truncate">
+                              {Map.get(preview, :model, "default")}
+                            </div>
+                          </div>
+                          <div class="p-2.5 rounded-xl bg-[#161b22] border border-[#21262d]">
+                            <div class="text-[10px] text-gray-500 uppercase">Messages</div>
+                            <div class="text-xs font-semibold text-gray-200 mt-0.5">
+                              {Map.get(preview, :message_count, 0)} items
+                            </div>
+                          </div>
+                        </div>
+
+                        <div class="p-3 rounded-xl bg-[#161b22] border border-[#21262d] space-y-1 font-mono">
+                          <div class="text-[10px] text-gray-500 uppercase">Last Activity</div>
+                          <div class="text-xs text-gray-400">
+                            {Map.get(preview, :updated_at, @selected_item.subtitle)}
+                          </div>
+                        </div>
+
+                        <div class="text-[11px] text-gray-500 font-mono">
+                          Press
+                          <kbd class="px-1.5 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-gray-300">↵</kbd>
+                          to load session dialogue
+                        </div>
+                      </div>
+                    <% _ -> %>
+                      <div
+                        id="palette-preview-empty"
+                        class="py-20 text-center text-gray-500 font-mono text-xs"
+                      >
+                        <.icon name="hero-sparkles" class="w-8 h-8 text-gray-600 mx-auto mb-2" />
+                        <p>No preview metadata available for this item</p>
+                      </div>
+                  <% end %>
+                <% else %>
+                  <div
+                    id="palette-preview-empty"
+                    class="py-20 text-center text-gray-500 font-mono text-xs"
+                  >
+                    <.icon name="hero-cursor-arrow-rays" class="w-8 h-8 text-gray-600 mx-auto mb-2" />
+                    <p>Select an item to view preview card</p>
+                  </div>
                 <% end %>
-              <% end %>
+              </div>
             </div>
 
             <%!-- Footer Keyboard Navigation Helper --%>
-            <div class="px-4 py-2 border-t border-[#21262d] bg-[#0d1117] flex items-center justify-between text-[11px] font-mono text-gray-500">
-              <div class="flex items-center gap-3">
-                <span><kbd class="px-1 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-gray-400">↑↓</kbd>
+            <div class="px-4 py-2 border-t border-[#21262d] bg-[#0d1117] flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono text-gray-500">
+              <div class="flex items-center gap-2.5">
+                <span><kbd class="px-1.5 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-gray-300">↑↓</kbd>
                 Navigate</span>
-                <span><kbd class="px-1 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-gray-400">↵</kbd>
+                <span><kbd class="px-1.5 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-gray-300">↵</kbd>
                 Select</span>
-                <span><kbd class="px-1 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-gray-400">esc</kbd>
+                <span><kbd class="px-1.5 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-gray-300">esc</kbd>
                 Close</span>
+                <span><kbd class="px-1.5 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-gray-300">Cmd+K</kbd>
+                Toggle</span>
+                <span><kbd class="px-1.5 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-gray-300">Cmd+B</kbd>
+                Sidebar</span>
+                <span><kbd class="px-1.5 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-gray-300">Cmd+J</kbd>
+                Terminal</span>
               </div>
-              <span>IexCode Command Hub</span>
+              <div class="text-[10px] text-gray-500 flex items-center gap-1.5">
+                <span>Prefixes:</span>
+                <span class="text-cyan-400">&gt; actions</span>
+                <span class="text-amber-400"># files</span>
+                <span class="text-fuchsia-400">@ swarms</span>
+                <span class="text-sky-400">$ models</span>
+                <span class="text-emerald-400">/ branches</span>
+                <span class="text-orange-400">! terminal</span>
+              </div>
             </div>
           </div>
         </div>
@@ -2062,6 +2646,15 @@ defmodule IexCodeWeb.WorkspaceComponents do
     </div>
     """
   end
+
+  defp format_palette_bytes(nil), do: "0 B"
+  defp format_palette_bytes(0), do: "0 B"
+  defp format_palette_bytes(bytes) when bytes < 1024, do: "#{bytes} B"
+
+  defp format_palette_bytes(bytes) when bytes < 1024 * 1024,
+    do: "#{Float.round(bytes / 1024, 1)} KB"
+
+  defp format_palette_bytes(bytes), do: "#{Float.round(bytes / (1024 * 1024), 1)} MB"
 
   # ============================================================================
   # M3: Visual Test Runner & 1-Click AutoFix Studio

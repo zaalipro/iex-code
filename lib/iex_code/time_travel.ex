@@ -282,4 +282,93 @@ defmodule IexCode.TimeTravel do
   end
 
   defp summarize_patches(_), do: ""
+
+  @doc """
+  Converts a single snapshot patch map to a standardized unified diff string.
+  Handles additions (--- /dev/null), deletions (+++ /dev/null), and modifications.
+  """
+  @spec patch_to_unified_diff(map()) :: String.t()
+  def patch_to_unified_diff(patch) when is_map(patch) do
+    path = patch["path"] || patch[:path] || "file"
+    file_existed = Map.get(patch, "file_existed", Map.get(patch, :file_existed, true))
+    orig = patch["original_content"] || patch[:original_content]
+    new_c = patch["new_content"] || patch[:new_content]
+
+    cond do
+      file_existed == false or is_nil(orig) ->
+        # Newly created file
+        new_lines = if is_binary(new_c), do: String.split(new_c, ~r/\r?\n/), else: []
+        new_lines = trim_trailing_empty(new_lines)
+        count = length(new_lines)
+        hunk_lines = Enum.map(new_lines, &("+" <> &1))
+
+        "--- /dev/null\n+++ b/#{path}\n@@ -0,0 +1,#{count} @@\n" <>
+          Enum.join(hunk_lines, "\n") <> "\n"
+
+      is_nil(new_c) ->
+        # Deleted file
+        orig_lines = if is_binary(orig), do: String.split(orig, ~r/\r?\n/), else: []
+        orig_lines = trim_trailing_empty(orig_lines)
+        count = length(orig_lines)
+        hunk_lines = Enum.map(orig_lines, &("-" <> &1))
+
+        "--- a/#{path}\n+++ /dev/null\n@@ -1,#{count} +0,0 @@\n" <>
+          Enum.join(hunk_lines, "\n") <> "\n"
+
+      orig == new_c ->
+        ""
+
+      true ->
+        IexCode.Tools.MultiPatch.Diff.unified_diff(orig, new_c, path)
+    end
+  end
+
+  def patch_to_unified_diff(_), do: ""
+
+  @doc """
+  Converts all patches in a checkpoint into a list of parsed diff maps for interactive rendering.
+  """
+  @spec checkpoint_diffs(MutationSnapshot.t() | map() | nil) :: [map()]
+  def checkpoint_diffs(%{patches: patches}) when is_list(patches) do
+    Enum.map(patches, fn patch ->
+      path = patch["path"] || patch[:path] || "file"
+      existed = Map.get(patch, "file_existed", Map.get(patch, :file_existed, true))
+      diff_text = patch_to_unified_diff(patch)
+
+      hunks =
+        case IexCode.Tools.Git.DiffParser.parse(diff_text) do
+          {:ok, [fd | _]} -> fd.hunks
+          _ -> []
+        end
+
+      status =
+        cond do
+          existed == false or is_nil(patch["original_content"] || patch[:original_content]) ->
+            :added
+
+          is_nil(patch["new_content"] || patch[:new_content]) ->
+            :deleted
+
+          true ->
+            :modified
+        end
+
+      %{
+        path: path,
+        diff_text: diff_text,
+        hunks: hunks,
+        status: status,
+        file_existed: existed
+      }
+    end)
+  end
+
+  def checkpoint_diffs(_), do: []
+
+  defp trim_trailing_empty(lines) do
+    case List.last(lines) do
+      "" when length(lines) > 1 -> Enum.slice(lines, 0..-2//1)
+      _ -> lines
+    end
+  end
 end

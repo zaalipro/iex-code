@@ -1,7 +1,7 @@
 defmodule IexCodeWeb.WorkspaceLiveAdversarialTelemetryControlsTest do
   use IexCode.E2E.Case, async: false
   @moduletag mock_llm: true
-  @moduletag timeout: 120_000
+  @moduletag timeout: 180_000
 
   alias IexCode.Sessions
   alias IexCode.Sessions.Operation

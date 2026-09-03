@@ -371,4 +371,123 @@ defmodule IexCodeWeb.ChallengerCommandPaletteStressTest do
       assert html =~ "sample_service.ex"
     end
   end
+
+  # ============================================================================
+  # 4. Prefix Parsing, Subsequence Fuzzy Scoring & Extended Categories
+  # ============================================================================
+  describe "CommandPalette Prefix Parsing, Subsequence Fuzzy Scoring & Extended Categories" do
+    test "correctly parses query prefixes for all 6 shortcut categories" do
+      assert CommandPalette.parse_query_prefix("> test", "all") == {"test", "actions"}
+      assert CommandPalette.parse_query_prefix(">", "all") == {"", "actions"}
+      assert CommandPalette.parse_query_prefix("@ my_swarm", "all") == {"my_swarm", "swarms"}
+      assert CommandPalette.parse_query_prefix("@", "all") == {"", "swarms"}
+      assert CommandPalette.parse_query_prefix("# calc.ex", "all") == {"calc.ex", "files"}
+      assert CommandPalette.parse_query_prefix("#", "all") == {"", "files"}
+      assert CommandPalette.parse_query_prefix("$ claude", "all") == {"claude", "models"}
+      assert CommandPalette.parse_query_prefix("$", "all") == {"", "models"}
+
+      assert CommandPalette.parse_query_prefix("/ feature-branch", "all") ==
+               {"feature-branch", "branches"}
+
+      assert CommandPalette.parse_query_prefix("/", "all") == {"", "branches"}
+      assert CommandPalette.parse_query_prefix("! mix test", "all") == {"mix test", "terminal"}
+      assert CommandPalette.parse_query_prefix("!", "all") == {"", "terminal"}
+
+      # Standard query without prefix retains category filter
+      assert CommandPalette.parse_query_prefix("plain query", "files") == {"plain query", "files"}
+    end
+
+    test "pure-elixir fuzzy scoring engine scores exact, prefix, and subsequence matches" do
+      # Exact match: score 1000
+      assert {:ok, 1000} = CommandPalette.score("test", "test")
+
+      # Prefix match: 500+
+      assert {:ok, s_prefix} = CommandPalette.score("work", "workspace")
+      assert s_prefix >= 500
+
+      # Word boundary subsequence match (e.g. "wklv" matches "workspace_live")
+      assert {:ok, s_subseq} = CommandPalette.score("wklv", "workspace_live")
+      assert s_subseq > 100
+
+      # Subsequence with no match returns :nomatch
+      assert :nomatch = CommandPalette.score("xyz", "workspace_live")
+
+      # Case insensitivity
+      assert {:ok, 1000} = CommandPalette.score("CALCULATOR", "calculator")
+      assert {:ok, 1000} = CommandPalette.score("calculator", "CALCULATOR")
+    end
+
+    test "indexes and searches swarms, models, branches, and terminal commands via extra map" do
+      extra = %{
+        swarms: [
+          %{id: "run-alpha", objective: "Refactor core engine", status: "running", progress: 75},
+          %{
+            id: "run-beta",
+            objective: "Run visual regression tests",
+            status: "completed",
+            progress: 100
+          }
+        ],
+        models: [
+          %{id: "deepseek-r1", name: "DeepSeek R1", provider: "deepseek", local?: false},
+          %{id: "qwen-2.5", name: "Qwen 2.5 Coder", provider: "ollama", local?: true}
+        ],
+        branches: [
+          %{name: "main", current?: true, upstream: "origin/main"},
+          %{name: "feature/swarm-v2", current?: false, upstream: "origin/feature/swarm-v2"}
+        ],
+        terminal_commands: [
+          %{command: "mix test --failed", desc: "Run failed ExUnit tests only"},
+          %{command: "git log -n 5", desc: "Show recent commits"}
+        ]
+      }
+
+      # Swarms search
+      swarms = CommandPalette.search("refactor", [], [], "swarms", extra)
+      assert length(swarms) == 1
+      assert hd(swarms).category == :swarm
+      assert hd(swarms).preview.status == "running"
+
+      # Models search
+      models = CommandPalette.search("deepseek", [], [], "models", extra)
+      assert length(models) == 1
+      assert hd(models).category == :model
+      assert hd(models).preview.provider == "deepseek"
+
+      # Branches search
+      branches = CommandPalette.search("feature", [], [], "branches", extra)
+      assert length(branches) == 1
+      assert hd(branches).category == :branch
+      assert hd(branches).preview.current? == false
+
+      # Terminal search
+      terminals = CommandPalette.search("failed", [], [], "terminal", extra)
+      assert length(terminals) == 1
+      assert hd(terminals).category == :terminal
+      assert hd(terminals).preview.command == "mix test --failed"
+    end
+
+    test "attaches rich preview maps to all search result items" do
+      extra = %{
+        swarms: [%{id: "run-1", objective: "Swarm goal", status: "running"}],
+        models: [%{id: "m-1", name: "M1", provider: "test"}],
+        branches: [%{name: "main", current?: true}],
+        terminal_commands: [%{command: "mix test", desc: "test"}]
+      }
+
+      results =
+        CommandPalette.search(
+          "",
+          ["lib/foo.ex"],
+          [%{id: "s1", title: "S1"}],
+          "all",
+          extra
+        )
+
+      for item <- results do
+        assert is_map(item.preview), "Item #{item.id} missing preview map"
+        assert item.preview.category == item.category
+      end
+    end
+  end
 end

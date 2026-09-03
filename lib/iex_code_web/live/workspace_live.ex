@@ -370,7 +370,16 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:show_command_palette, false)
       |> assign(:command_palette_query, "")
       |> assign(:command_palette_category, "all")
-      |> assign(:command_palette_results, CommandPalette.search("", files, sessions, "all"))
+      |> assign(
+        :command_palette_results,
+        CommandPalette.search("", files, sessions, "all", %{
+          swarms: durable_runs,
+          models: discovered_local_models ++ CommandPalette.standard_cloud_models(),
+          branches: [],
+          terminal_commands: CommandPalette.default_terminal_commands(),
+          workspace_root: project.root_path
+        })
+      )
       |> assign(:command_palette_selected_index, 0)
       # Visual Test Studio & AutoFix assigns
       |> assign(:test_runner_status, :idle)
@@ -408,6 +417,14 @@ defmodule IexCodeWeb.WorkspaceLive do
 
     # Initialize live git state if git is available
     socket = refresh_git_state(socket)
+
+    # Re-index palette results with live git branches and system metadata
+    socket =
+      assign(
+        socket,
+        :command_palette_results,
+        CommandPalette.search("", files, sessions, "all", command_palette_extra(socket))
+      )
 
     socket =
       if mount_error do
@@ -1783,10 +1800,18 @@ defmodule IexCodeWeb.WorkspaceLive do
     query = if new_show, do: "", else: socket.assigns.command_palette_query
     files = socket.assigns[:project_files] || []
     sessions = socket.assigns[:all_sessions] || []
+    extra = command_palette_extra(socket)
 
     results =
       if new_show,
-        do: CommandPalette.search("", files, sessions, socket.assigns.command_palette_category),
+        do:
+          CommandPalette.search(
+            "",
+            files,
+            sessions,
+            socket.assigns.command_palette_category,
+            extra
+          ),
         else: []
 
     socket =
@@ -1826,9 +1851,16 @@ defmodule IexCodeWeb.WorkspaceLive do
   def handle_event("command_palette_search", %{"query" => query}, socket) do
     files = socket.assigns[:project_files] || []
     sessions = socket.assigns[:all_sessions] || []
+    extra = command_palette_extra(socket)
 
     results =
-      CommandPalette.search(query, files, sessions, socket.assigns.command_palette_category)
+      CommandPalette.search(
+        query,
+        files,
+        sessions,
+        socket.assigns.command_palette_category,
+        extra
+      )
 
     {:noreply,
      socket
@@ -1841,15 +1873,66 @@ defmodule IexCodeWeb.WorkspaceLive do
   def handle_event("command_palette_set_category", %{"category" => category}, socket) do
     files = socket.assigns[:project_files] || []
     sessions = socket.assigns[:all_sessions] || []
+    extra = command_palette_extra(socket)
 
     results =
-      CommandPalette.search(socket.assigns.command_palette_query, files, sessions, category)
+      CommandPalette.search(
+        socket.assigns.command_palette_query,
+        files,
+        sessions,
+        category,
+        extra
+      )
 
     {:noreply,
      socket
      |> assign(:command_palette_category, category)
      |> assign(:command_palette_results, results)
      |> assign(:command_palette_selected_index, 0)}
+  end
+
+  @impl true
+  def handle_event("command_palette_cycle_category", params, socket) do
+    categories = [
+      "all",
+      "actions",
+      "swarms",
+      "files",
+      "models",
+      "branches",
+      "terminal",
+      "views",
+      "sessions"
+    ]
+
+    curr = socket.assigns[:command_palette_category] || "all"
+    curr_idx = Enum.find_index(categories, &(&1 == curr)) || 0
+    dir = Map.get(params, "direction", "next")
+
+    new_idx =
+      case dir do
+        "prev" -> if curr_idx <= 0, do: length(categories) - 1, else: curr_idx - 1
+        _ -> rem(curr_idx + 1, length(categories))
+      end
+
+    new_cat = Enum.at(categories, new_idx)
+    files = socket.assigns[:project_files] || []
+    sessions = socket.assigns[:all_sessions] || []
+    extra = command_palette_extra(socket)
+
+    results =
+      CommandPalette.search(socket.assigns.command_palette_query, files, sessions, new_cat, extra)
+
+    {:noreply,
+     socket
+     |> assign(:command_palette_category, new_cat)
+     |> assign(:command_palette_results, results)
+     |> assign(:command_palette_selected_index, 0)}
+  end
+
+  @impl true
+  def handle_event("toggle_terminal_panel", params, socket) do
+    handle_event("toggle_bottom_terminal", params, socket)
   end
 
   @impl true
@@ -4798,6 +4881,7 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_info({:git_state_changed, _project_id}, socket) do
+    drain_git_messages()
     {:noreply, refresh_git_state(socket)}
   end
 
@@ -4825,6 +4909,14 @@ defmodule IexCodeWeb.WorkspaceLive do
   @impl true
   def handle_info(_msg, socket) do
     {:noreply, socket}
+  end
+
+  defp drain_git_messages do
+    receive do
+      {:git_state_changed, _} -> drain_git_messages()
+    after
+      0 -> :ok
+    end
   end
 
   # ============================================================================
@@ -5159,6 +5251,42 @@ defmodule IexCodeWeb.WorkspaceLive do
   defp editor_save_error(:invalid_path), do: "invalid file path"
   defp editor_save_error(reason), do: inspect(reason)
 
+  defp command_palette_extra(socket) do
+    project = socket.assigns[:project]
+    root = if project, do: project.root_path, else: "."
+
+    swarms = socket.assigns[:run_rows] || socket.assigns[:durable_runs] || []
+    local_models = socket.assigns[:discovered_local_models] || []
+    models = local_models ++ CommandPalette.standard_cloud_models()
+
+    branches =
+      case socket.assigns[:git_branches] do
+        list when is_list(list) and list != [] ->
+          list
+
+        _ ->
+          if is_binary(root) and root != "." do
+            case Git.branches(root) do
+              {:ok, b} -> b
+              _ -> []
+            end
+          else
+            []
+          end
+      end
+
+    terminal_cmds =
+      (socket.assigns[:terminal_history] || []) ++ CommandPalette.default_terminal_commands()
+
+    %{
+      swarms: swarms,
+      models: models,
+      branches: branches,
+      terminal_commands: terminal_cmds,
+      workspace_root: root
+    }
+  end
+
   defp execute_command_palette_item(socket, item) do
     socket = assign(socket, :show_command_palette, false)
 
@@ -5181,6 +5309,41 @@ defmodule IexCodeWeb.WorkspaceLive do
          push_patch(socket,
            to: ~p"/sessions/#{item.session_id}?project_id=#{socket.assigns.project.id}"
          )}
+
+      :swarm ->
+        run_id = Map.get(item, :run_id)
+        run = (run_id && Runs.get_run(run_id)) || Map.get(item, :run)
+        socket = assign(socket, :active_tab, "swarm")
+        socket = if run, do: select_run_projection(socket, run), else: socket
+        {:noreply, socket}
+
+      :model ->
+        provider = Map.get(item, :provider, "anthropic")
+        model_id = Map.get(item, :model_id, item.title)
+        handle_event("change_model", %{"provider" => provider, "model" => model_id}, socket)
+
+      :branch ->
+        branch_name = Map.get(item, :branch, item.title)
+        root = socket.assigns.project.root_path
+
+        case with_ui_mutation_lock(socket, fn -> Git.switch_branch(root, branch_name) end) do
+          {:ok, _} ->
+            socket =
+              socket
+              |> refresh_git_state()
+              |> put_flash(:info, "Switched to branch #{branch_name}")
+
+            {:noreply, socket}
+
+          {:error, reason} ->
+            {:noreply,
+             put_flash(socket, :error, "Failed to switch branch: #{ui_mutation_error(reason)}")}
+        end
+
+      :terminal ->
+        cmd = Map.get(item, :command, item.title)
+        socket = assign(socket, :active_tab, "terminal")
+        handle_event("run_terminal_command", %{"command" => cmd}, socket)
 
       :action ->
         case item.id do
@@ -5217,6 +5380,15 @@ defmodule IexCodeWeb.WorkspaceLive do
 
           "git_fetch" ->
             handle_event("git_fetch", %{}, socket)
+
+          "detach_terminal" ->
+            handle_event("detach_window", %{"tool" => "terminal"}, socket)
+
+          "detach_diff" ->
+            handle_event("detach_window", %{"tool" => "diff"}, socket)
+
+          "detach_dag" ->
+            handle_event("detach_window", %{"tool" => "dag"}, socket)
 
           _ ->
             {:noreply, socket}
@@ -6922,10 +7094,12 @@ defmodule IexCodeWeb.WorkspaceLive do
         operations != [] ->
           layers = [
             Enum.map(operations, fn op ->
+              task_key = Map.get(op, :op_type) || Map.get(op, :task_type) || "task"
+
               %{
                 id: to_string(op.id),
-                key: op.task_type || "task",
-                title: op.title || op.task_type || "Operation",
+                key: task_key,
+                title: op.title || task_key || "Operation",
                 status: to_string(op.status),
                 depends_on: []
               }

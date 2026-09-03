@@ -19,17 +19,18 @@ defmodule IexCode.Repo do
   @doc """
   Executes a function with exponential backoff retry on SQLite busy/locked errors.
   """
-  def retry_on_busy(fun, attempts \\ 10, delay_ms \\ 25) do
+  def retry_on_busy(fun, attempts \\ 30, delay_ms \\ 50) do
     fun.()
   rescue
     e in [Exqlite.Error, DBConnection.ConnectionError] ->
       msg = Exception.message(e)
 
       if attempts > 1 and
-           (String.contains?(String.downcase(msg), "busy") or
+           (is_struct(e, DBConnection.ConnectionError) or
+              String.contains?(String.downcase(msg), "busy") or
               String.contains?(String.downcase(msg), "locked")) do
         Process.sleep(delay_ms)
-        retry_on_busy(fun, attempts - 1, delay_ms * 2)
+        retry_on_busy(fun, attempts - 1, min(delay_ms * 2, 250))
       else
         reraise e, __STACKTRACE__
       end

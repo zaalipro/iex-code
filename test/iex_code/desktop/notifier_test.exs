@@ -23,9 +23,8 @@ defmodule IexCode.Desktop.NotifierTest do
     end
 
     test "desktop_window_alive?/0 returns false when window_id is a dead PID" do
-      dead_pid = spawn(fn -> :ok end)
-      ref = Process.monitor(dead_pid)
-      assert_receive {:DOWN, ^ref, :process, ^dead_pid, :normal}
+      {dead_pid, ref} = spawn_monitor(fn -> :ok end)
+      assert_receive {:DOWN, ^ref, :process, ^dead_pid, :normal}, 1_000
       Application.put_env(:iex_code, :desktop_window_id, dead_pid)
       refute Notifier.desktop_window_alive?()
     end

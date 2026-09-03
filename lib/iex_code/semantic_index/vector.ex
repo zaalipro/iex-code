@@ -66,6 +66,14 @@ defmodule IexCode.SemanticIndex.Vector do
   """
   def l2_norm(data), do: norm(data)
 
+  defp sum_squares(
+         <<f1::float-32-little, f2::float-32-little, f3::float-32-little, f4::float-32-little,
+           rest::binary>>,
+         acc
+       ) do
+    sum_squares(rest, acc + f1 * f1 + f2 * f2 + f3 * f3 + f4 * f4)
+  end
+
   defp sum_squares(<<f::float-32-little, rest::binary>>, acc) do
     sum_squares(rest, acc + f * f)
   end
@@ -106,6 +114,16 @@ defmodule IexCode.SemanticIndex.Vector do
 
   def dot_product(list_a, list_b) when is_list(list_a) and is_list(list_b) do
     dot_product(pack(list_a), pack(list_b))
+  end
+
+  defp do_dot(
+         <<a1::float-32-little, a2::float-32-little, a3::float-32-little, a4::float-32-little,
+           rest_a::binary>>,
+         <<b1::float-32-little, b2::float-32-little, b3::float-32-little, b4::float-32-little,
+           rest_b::binary>>,
+         acc
+       ) do
+    do_dot(rest_a, rest_b, acc + a1 * b1 + a2 * b2 + a3 * b3 + a4 * b4)
   end
 
   defp do_dot(<<a::float-32-little, rest_a::binary>>, <<b::float-32-little, rest_b::binary>>, acc) do
