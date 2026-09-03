@@ -261,6 +261,18 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:swarm_iteration, 1)
       |> assign(:max_retries, 3)
       |> assign(:active_tools, default_active_tools(settings))
+      # Semantic vector search assigns
+      |> assign(:ast_search_mode, "ast")
+      |> assign(:semantic_query, "")
+      |> assign(:semantic_results, [])
+      |> assign(:semantic_searching?, false)
+      |> assign(:semantic_threshold, 0.3)
+      |> assign(:semantic_stats, %{ets_chunks: 0, db_chunks: 0})
+      # Time-Travel Checkpoints
+      |> assign(:checkpoints, [])
+      |> assign(:selected_checkpoint, nil)
+      # Multi-Model Adversarial Consensus
+      |> assign_initial_consensus()
       # Dropdown & Modal state
       |> assign(:open_dropdown, nil)
       |> assign(:show_settings_modal, false)
@@ -411,6 +423,26 @@ defmodule IexCodeWeb.WorkspaceLive do
         {_action, _tab} ->
           socket
       end
+
+    active_tab = params["tab"] || socket.assigns.active_tab
+    changes_subtab = params["subtab"] || socket.assigns[:changes_subtab] || "changes"
+
+    checkpoints =
+      if socket.assigns[:session] do
+        IexCode.TimeTravel.list_checkpoints(socket.assigns.session.id)
+      else
+        []
+      end
+
+    socket =
+      socket
+      |> assign(:active_tab, active_tab)
+      |> assign(:changes_subtab, changes_subtab)
+      |> assign(:checkpoints, checkpoints)
+      |> assign(
+        :selected_checkpoint,
+        socket.assigns[:selected_checkpoint] || List.first(checkpoints)
+      )
 
     if params["id"] && params["id"] != socket.assigns.session.id do
       old_id = socket.assigns.session.id
@@ -580,7 +612,96 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("switch_changes_subtab", %{"tab" => tab}, socket) do
-    {:noreply, assign(socket, :changes_subtab, tab)}
+    checkpoints = IexCode.TimeTravel.list_checkpoints(socket.assigns.session.id)
+
+    {:noreply,
+     socket
+     |> assign(:changes_subtab, tab)
+     |> assign(:checkpoints, checkpoints)
+     |> assign(
+       :selected_checkpoint,
+       socket.assigns[:selected_checkpoint] || List.first(checkpoints)
+     )}
+  end
+
+  @impl true
+  def handle_event("select_checkpoint", %{"tx_id" => tx_id}, socket) do
+    checkpoint =
+      Enum.find(socket.assigns.checkpoints, fn cp ->
+        cp.transaction_id == tx_id or cp.id == tx_id or to_string(cp.transaction_id) == tx_id or
+          to_string(cp.id) == tx_id
+      end) || IexCode.TimeTravel.get_checkpoint(tx_id)
+
+    {:noreply, assign(socket, :selected_checkpoint, checkpoint)}
+  end
+
+  @impl true
+  def handle_event("rollback_to_checkpoint", %{"tx_id" => tx_id}, socket) do
+    session_id = socket.assigns.session.id
+
+    case IexCode.TimeTravel.rollback_to(tx_id, session_id: session_id) do
+      {:ok, summary} ->
+        checkpoints = IexCode.TimeTravel.list_checkpoints(session_id)
+        broadcast_git_changed(socket)
+
+        {:noreply,
+         socket
+         |> assign(:checkpoints, checkpoints)
+         |> assign(:selected_checkpoint, List.first(checkpoints))
+         |> put_flash(
+           :info,
+           "Rolled back #{summary.reverted_checkpoints} checkpoint(s) successfully."
+         )}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Rollback failed: #{inspect(reason)}")}
+    end
+  end
+
+  @impl true
+  def handle_event("rollback_latest_checkpoint", _params, socket) do
+    session_id = socket.assigns.session.id
+
+    case IexCode.TimeTravel.rollback_latest(session_id) do
+      {:ok, summary} ->
+        checkpoints = IexCode.TimeTravel.list_checkpoints(session_id)
+        broadcast_git_changed(socket)
+
+        {:noreply,
+         socket
+         |> assign(:checkpoints, checkpoints)
+         |> assign(:selected_checkpoint, List.first(checkpoints))
+         |> put_flash(
+           :info,
+           "Rolled back #{summary.reverted_checkpoints} checkpoint successfully."
+         )}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Rollback failed: #{inspect(reason)}")}
+    end
+  end
+
+  @impl true
+  def handle_event("approve_consensus", _params, socket) do
+    socket =
+      socket
+      |> assign(:consensus_status, :approved)
+      |> put_flash(:info, "Approved consensus patch successfully. Swarm voting complete.")
+
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event("reject_consensus", params, socket) do
+    reason = params["reason"] || "Security concerns"
+
+    socket =
+      socket
+      |> assign(:consensus_status, :rejected)
+      |> assign(:consensus_rejection_reason, reason)
+      |> put_flash(:error, "Rejected consensus: #{reason}. Sent for revision.")
+
+    {:noreply, socket}
   end
 
   @impl true
@@ -1610,6 +1731,23 @@ defmodule IexCodeWeb.WorkspaceLive do
   end
 
   @impl true
+  def handle_event("detach_window", %{"tool" => tool}, socket) do
+    session_id = socket.assigns.session.id
+
+    case IexCode.Desktop.WindowManager.open_window(tool, session_id) do
+      {:ok, :native, _window_id} ->
+        {:noreply,
+         put_flash(socket, :info, "Detached #{String.capitalize(to_string(tool))} window opened.")}
+
+      {:ok, :web, path} ->
+        {:noreply, push_event(socket, "open_new_window", %{url: path})}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Could not detach window: #{inspect(reason)}")}
+    end
+  end
+
+  @impl true
   def handle_event("command_palette_search", %{"query" => query}, socket) do
     files = socket.assigns[:project_files] || []
     sessions = socket.assigns[:all_sessions] || []
@@ -1955,6 +2093,66 @@ defmodule IexCodeWeb.WorkspaceLive do
     {:noreply, socket}
   end
 
+  @impl true
+  def handle_event("set_ast_mode", %{"mode" => mode}, socket) do
+    stats =
+      if socket.assigns[:project] do
+        IexCode.SemanticIndex.Indexer.stats(socket.assigns.project.id)
+      else
+        %{ets_chunks: 0, db_chunks: 0}
+      end
+
+    {:noreply, socket |> assign(:ast_search_mode, mode) |> assign(:semantic_stats, stats)}
+  end
+
+  @impl true
+  def handle_event("search_semantic", %{"query" => query}, socket) do
+    query = String.trim(query || "")
+    project_id = socket.assigns.project.id
+
+    if query == "" do
+      {:noreply, assign(socket, :semantic_results, []) |> assign(:semantic_query, "")}
+    else
+      threshold = socket.assigns[:semantic_threshold] || 0.3
+
+      case IexCode.SemanticIndex.Indexer.search(project_id, query,
+             threshold: threshold,
+             limit: 15
+           ) do
+        {:ok, results} ->
+          {:noreply,
+           socket
+           |> assign(:semantic_results, results)
+           |> assign(:semantic_query, query)
+           |> assign(:semantic_searching?, false)}
+
+        {:error, reason} ->
+          {:noreply,
+           socket
+           |> assign(:semantic_searching?, false)
+           |> put_flash(:error, "Semantic search error: #{inspect(reason)}")}
+      end
+    end
+  end
+
+  @impl true
+  def handle_event("reindex_semantic", _params, socket) do
+    project = socket.assigns.project
+
+    case IexCode.SemanticIndex.Indexer.index_project(project.id, project.root_path) do
+      {:ok, stats} ->
+        new_stats = IexCode.SemanticIndex.Indexer.stats(project.id)
+
+        {:noreply,
+         socket
+         |> assign(:semantic_stats, new_stats)
+         |> put_flash(:info, "Indexed #{stats.indexed} files (#{stats.chunks} chunks).")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Indexing failed: #{inspect(reason)}")}
+    end
+  end
+
   # ============================================================================
   # Event Handlers: Git Branch & Multi-File Staging Hub
   # ============================================================================
@@ -2051,6 +2249,7 @@ defmodule IexCodeWeb.WorkspaceLive do
 
     case with_ui_mutation_lock(socket, fn -> Git.stage(file, root) end) do
       :ok ->
+        broadcast_git_changed(socket)
         {:noreply, refresh_git_state(socket)}
 
       {:error, reason} ->
@@ -2064,6 +2263,7 @@ defmodule IexCodeWeb.WorkspaceLive do
 
     case with_ui_mutation_lock(socket, fn -> Git.unstage(file, root) end) do
       :ok ->
+        broadcast_git_changed(socket)
         {:noreply, refresh_git_state(socket)}
 
       {:error, reason} ->
@@ -2077,6 +2277,7 @@ defmodule IexCodeWeb.WorkspaceLive do
 
     case with_ui_mutation_lock(socket, fn -> Git.stage(:all, root) end) do
       :ok ->
+        broadcast_git_changed(socket)
         {:noreply, refresh_git_state(socket)}
 
       {:error, reason} ->
@@ -2090,6 +2291,7 @@ defmodule IexCodeWeb.WorkspaceLive do
 
     case with_ui_mutation_lock(socket, fn -> Git.unstage(:all, root) end) do
       :ok ->
+        broadcast_git_changed(socket)
         {:noreply, refresh_git_state(socket)}
 
       {:error, reason} ->
@@ -2103,6 +2305,7 @@ defmodule IexCodeWeb.WorkspaceLive do
 
     case with_ui_mutation_lock(socket, fn -> HunkOps.unstage_hunk(root, file, hunk_id) end) do
       {:ok, _diff} ->
+        broadcast_git_changed(socket)
         {:noreply, refresh_git_state(socket)}
 
       {:error, reason} ->
@@ -2140,6 +2343,8 @@ defmodule IexCodeWeb.WorkspaceLive do
     else
       case with_ui_mutation_lock(socket, fn -> Git.commit(root, msg) end) do
         {:ok, _result} ->
+          broadcast_git_changed(socket)
+
           socket =
             socket
             |> assign(:commit_message, "")
@@ -4495,6 +4700,10 @@ defmodule IexCodeWeb.WorkspaceLive do
     handle_event("toggle_workspace_menu", %{}, socket)
   end
 
+  def handle_info({:desktop_action, {:detach_window, tool}}, socket) do
+    handle_event("detach_window", %{"tool" => to_string(tool)}, socket)
+  end
+
   def handle_info({:desktop_action, _action}, socket) do
     {:noreply, socket}
   end
@@ -4506,6 +4715,32 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   def handle_info({:desktop_switch_tab, _tab}, socket) do
     {:noreply, socket}
+  end
+
+  @impl true
+  def handle_info({:git_state_changed, _project_id}, socket) do
+    {:noreply, refresh_git_state(socket)}
+  end
+
+  @impl true
+  def handle_info({:checkpoint_created, checkpoint}, socket) do
+    checkpoints =
+      [checkpoint | socket.assigns[:checkpoints] || []]
+      |> Enum.uniq_by(&(&1.transaction_id || &1.id))
+
+    {:noreply, assign(socket, :checkpoints, checkpoints)}
+  end
+
+  @impl true
+  def handle_info({:checkpoint_rolled_back, _tx_id, _details}, socket) do
+    checkpoints =
+      if socket.assigns[:session] do
+        IexCode.TimeTravel.list_checkpoints(socket.assigns.session.id)
+      else
+        []
+      end
+
+    {:noreply, socket |> assign(:checkpoints, checkpoints) |> refresh_git_state()}
   end
 
   @impl true
@@ -5154,6 +5389,20 @@ defmodule IexCodeWeb.WorkspaceLive do
 
       _ ->
         assign(socket, :git_error, "Git is not available for this project")
+    end
+  end
+
+  defp broadcast_git_changed(socket) do
+    case socket.assigns[:project] do
+      %{id: project_id} when is_binary(project_id) ->
+        Phoenix.PubSub.broadcast(
+          IexCode.PubSub,
+          "project:#{project_id}:git",
+          {:git_state_changed, project_id}
+        )
+
+      _ ->
+        :ok
     end
   end
 
@@ -6514,4 +6763,64 @@ defmodule IexCodeWeb.WorkspaceLive do
   end
 
   defp all_directory_paths(_), do: MapSet.new()
+
+  defp assign_initial_consensus(socket) do
+    assessments = sample_consensus_assessments()
+    matrix = IexCode.Consensus.Matrix.compute(assessments)
+
+    socket
+    |> assign(:consensus_assessments, assessments)
+    |> assign(:consensus_matrix, matrix)
+    |> assign(:consensus_status, :idle)
+    |> assign(:consensus_rejection_reason, nil)
+  end
+
+  defp sample_consensus_assessments do
+    [
+      %IexCode.Consensus.Assessment{
+        reviewer_id: "cloud_claude",
+        provider: "anthropic",
+        model: "claude-3-7-sonnet",
+        vote: :approve,
+        confidence: 0.95,
+        scores: %{
+          correctness: 0.92,
+          security: 0.90,
+          architectural_fit: 0.88,
+          maintainability: 0.85,
+          testability: 0.90
+        },
+        verdict_reason:
+          "Clean implementation following OTP conventions with thorough test coverage",
+        critique_points: [
+          %{
+            severity: :minor,
+            category: "style",
+            file_path: "lib/core.ex",
+            line_number: 42,
+            description: "Consider documenting type specification for public API"
+          }
+        ],
+        suggested_modifications: ["Add @spec declarations"]
+      },
+      %IexCode.Consensus.Assessment{
+        reviewer_id: "local_llama",
+        provider: "ollama",
+        model: "llama3.2:latest",
+        vote: :approve,
+        confidence: 0.88,
+        scores: %{
+          correctness: 0.88,
+          security: 0.85,
+          architectural_fit: 0.82,
+          maintainability: 0.80,
+          testability: 0.85
+        },
+        verdict_reason:
+          "Verified locally on Apple Silicon Metal runtime; memory usage within budget",
+        critique_points: [],
+        suggested_modifications: []
+      }
+    ]
+  end
 end

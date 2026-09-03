@@ -115,6 +115,24 @@ defmodule IexCode.Tools do
         }
       },
       %{
+        name: "semantic_code_search",
+        description:
+          "Perform natural language semantic vector search across the project codebase to retrieve relevant functions, modules, and code patterns.",
+        parameters: %{
+          type: "object",
+          properties: %{
+            query: %{type: "string", description: "Natural language query or concept"},
+            limit: %{type: "integer", description: "Maximum results to return (default 10)"},
+            threshold: %{
+              type: "number",
+              description: "Minimum cosine similarity score 0.0-1.0 (default 0.4)"
+            },
+            path: %{type: "string", description: "Optional file path prefix filter"}
+          },
+          required: ["query"]
+        }
+      },
+      %{
         name: "run_tests",
         description:
           "Run mix test suite or specific test file with structured failure diagnostics.",
@@ -401,17 +419,44 @@ defmodule IexCode.Tools do
     end
   end
 
-  defp do_execute("write_file", %{"path" => path, "content" => content}, root_path, on_progress) do
+  defp do_execute(
+         "write_file",
+         %{"path" => path, "content" => content} = args,
+         root_path,
+         on_progress
+       ) do
     on_progress.(20, "Creating parent directories for #{path}...")
 
     case resolve_path(root_path, path) do
       {:ok, full_path} ->
+        session_id = Map.get(args, "session_id")
+        file_existed = File.exists?(full_path)
+        original_content = if file_existed, do: File.read!(full_path), else: nil
+
         File.mkdir_p!(Path.dirname(full_path))
 
         on_progress.(70, "Writing #{byte_size(content)} bytes to file...")
 
         case atomic_write(full_path, content) do
           :ok ->
+            if session_id do
+              patch = %{
+                "path" => path,
+                "file_existed" => file_existed,
+                "original_content" => original_content,
+                "new_content" => content
+              }
+
+              _ =
+                IexCode.TimeTravel.create_checkpoint(%{
+                  session_id: session_id,
+                  project_root: root_path,
+                  label: "write_file #{path}",
+                  diff_summary: if(file_existed, do: "Updated #{path}", else: "Created #{path}"),
+                  patches: [patch]
+                })
+            end
+
             on_progress.(100, "File written successfully: #{path}")
             {:ok, "Successfully wrote #{byte_size(content)} bytes to #{path}"}
 
@@ -426,7 +471,8 @@ defmodule IexCode.Tools do
 
   defp do_execute(
          "patch_file",
-         %{"path" => path, "target_content" => target, "replacement_content" => replacement},
+         %{"path" => path, "target_content" => target, "replacement_content" => replacement} =
+           args,
          root_path,
          on_progress
        ) do
@@ -443,6 +489,26 @@ defmodule IexCode.Tools do
 
               case atomic_write(full_path, new_content) do
                 :ok ->
+                  session_id = Map.get(args, "session_id")
+
+                  if session_id do
+                    patch = %{
+                      "path" => path,
+                      "file_existed" => true,
+                      "original_content" => content,
+                      "new_content" => new_content
+                    }
+
+                    _ =
+                      IexCode.TimeTravel.create_checkpoint(%{
+                        session_id: session_id,
+                        project_root: root_path,
+                        label: "patch_file #{path}",
+                        diff_summary: "Modified #{path}",
+                        patches: [patch]
+                      })
+                  end
+
                   on_progress.(100, "Patched #{path} successfully")
                   {:ok, "Successfully patched #{path}"}
 
@@ -493,6 +559,59 @@ defmodule IexCode.Tools do
 
       {:error, reason} ->
         {:error, "AST search failed: #{inspect(reason)}"}
+    end
+  end
+
+  defp do_execute("semantic_code_search", %{"query" => query} = args, root_path, on_progress) do
+    on_progress.(20, "Executing semantic vector search...")
+    limit = Map.get(args, "limit", 10)
+    threshold = Map.get(args, "threshold", 0.4)
+    path = Map.get(args, "path")
+
+    project =
+      case IexCode.Projects.list_projects() do
+        projects when is_list(projects) ->
+          Enum.find(projects, &(&1.root_path == root_path)) || List.first(projects)
+
+        _ ->
+          nil
+      end
+
+    project_id = if project, do: project.id, else: "default"
+
+    if IexCode.SemanticIndex.Indexer.stats(project_id).ets_chunks == 0 do
+      on_progress.(40, "Indexing codebase chunks...")
+      _ = IexCode.SemanticIndex.Indexer.index_project(project_id, root_path)
+    end
+
+    on_progress.(70, "Computing vector similarity...")
+
+    search_opts = [
+      limit: limit,
+      threshold: threshold
+    ]
+
+    search_opts = if path, do: Keyword.put(search_opts, :path, path), else: search_opts
+
+    case IexCode.SemanticIndex.Indexer.search(project_id, query, search_opts) do
+      {:ok, []} ->
+        on_progress.(100, "Search completed (0 matches)")
+        {:ok, "No matching code snippets found for query: \"#{query}\""}
+
+      {:ok, matches} ->
+        on_progress.(100, "Found #{length(matches)} matches")
+
+        formatted =
+          Enum.map_join(matches, "\n\n---\n\n", fn m ->
+            header = "[Match: #{m.match_percent}%] #{m.file_path}:#{m.start_line}-#{m.end_line}"
+            sym = if m.symbol_name, do: " (#{m.symbol_type} #{m.symbol_name})", else: ""
+            "#{header}#{sym}\n#{m.content}"
+          end)
+
+        {:ok, "Found #{length(matches)} semantic matches:\n\n#{formatted}"}
+
+      {:error, reason} ->
+        {:error, "Semantic search failed: #{inspect(reason)}"}
     end
   end
 

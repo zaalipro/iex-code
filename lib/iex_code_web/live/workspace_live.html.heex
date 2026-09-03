@@ -232,6 +232,21 @@
           </button>
 
           <button
+            id="sidebar-tab-consensus"
+            phx-click="switch_tab"
+            phx-value-sidebar_tab="consensus"
+            aria-current={if @active_tab == "consensus", do: "page", else: false}
+            class={[
+              "w-full flex items-center gap-2.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-smooth text-left",
+              @active_tab == "consensus" && "bg-[#21262d] text-white shadow-sm font-semibold",
+              @active_tab != "consensus" && "text-gray-400 hover:text-gray-200 hover:bg-[#161b22]"
+            ]}
+          >
+            <.icon name="hero-scale" class="w-3.5 h-3.5 text-amber-400" />
+            <span>Swarm Consensus</span>
+          </button>
+
+          <button
             id="sidebar-tab-chat"
             phx-click="switch_tab"
             phx-value-sidebar_tab="chat"
@@ -515,6 +530,22 @@
             >
               <.icon name="hero-beaker" class="w-3.5 h-3.5 text-emerald-400" />
               <span class="workspace-tab-label">Tests</span>
+            </button>
+
+            <button
+              id="tab-btn-consensus"
+              phx-click="switch_tab"
+              phx-value-tab="consensus"
+              aria-pressed={@active_tab == "consensus"}
+              class={[
+                "px-3 py-1 rounded-lg text-xs font-mono font-medium flex items-center gap-1.5 transition-smooth",
+                @active_tab == "consensus" &&
+                  "bg-amber-900/40 text-amber-300 border border-amber-700/50 shadow-sm",
+                @active_tab != "consensus" && "text-gray-400 hover:text-gray-200"
+              ]}
+            >
+              <.icon name="hero-scale" class="w-3.5 h-3.5 text-amber-400" />
+              <span class="workspace-tab-label">Consensus</span>
             </button>
 
             <button
@@ -1858,303 +1889,534 @@
                   <.icon name="hero-arrow-path" class="w-3.5 h-3.5 text-emerald-400" />
                   <span class="hidden sm:inline">Pull</span>
                 </button>
+                <!-- Subtab Switcher: Staging vs Time-Travel -->
+                <div class="flex items-center bg-[#0d1117] p-0.5 rounded-lg border border-[#21262d]">
+                  <button
+                    type="button"
+                    phx-click="switch_changes_subtab"
+                    phx-value-tab="changes"
+                    class={[
+                      "px-2.5 py-1 rounded text-xs transition-smooth",
+                      @changes_subtab != "checkpoints" && "bg-[#21262d] text-white font-bold",
+                      @changes_subtab == "checkpoints" && "text-gray-400 hover:text-gray-200"
+                    ]}
+                  >
+                    Staging & Diff
+                  </button>
+                  <button
+                    type="button"
+                    phx-click="switch_changes_subtab"
+                    phx-value-tab="checkpoints"
+                    class={[
+                      "px-2.5 py-1 rounded text-xs transition-smooth flex items-center gap-1",
+                      @changes_subtab == "checkpoints" &&
+                        "bg-purple-900/40 text-purple-300 border border-purple-700/50 font-bold",
+                      @changes_subtab != "checkpoints" && "text-gray-400 hover:text-gray-200"
+                    ]}
+                  >
+                    <.icon name="hero-clock" class="w-3.5 h-3.5 text-purple-400" />
+                    <span>Time-Travel ({length(@checkpoints || [])})</span>
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  phx-click="detach_window"
+                  phx-value-tool="diff"
+                  class="flex items-center gap-1.5 px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] border border-[#21262d] hover:border-[#30363d] text-blue-300 hover:text-white rounded-lg transition-smooth"
+                  title="Detach Git Diff into standalone window"
+                >
+                  <.icon name="hero-arrow-top-right-on-square" class="w-3.5 h-3.5 text-blue-400" />
+                  <span class="hidden sm:inline">Detach</span>
+                </button>
               </div>
             </div>
 
-            <!-- Main Changes Body: 3-Tier Staging Hub + Interactive Diff Viewer -->
-            <div
-              id="changes-layout"
-              class="flex-1 flex min-h-0 flex-col overflow-hidden md:flex-row"
-            >
-              <!-- Left Column: 3-Tier Staging Hub & Commit Composer -->
+            <%= if @changes_subtab == "checkpoints" do %>
+              <!-- Time-Travel Scrubber & 1-Click Rollback View -->
               <div
-                id="changes-staging-panel"
-                class="h-[min(46%,24rem)] w-full border-b border-[#21262d] bg-[#11151c] flex shrink-0 flex-col overflow-hidden font-mono text-xs md:h-full md:w-84 md:border-r md:border-b-0"
+                id="checkpoint-scrubber-timeline"
+                class="flex-1 flex flex-col min-h-0 bg-[#0d1117] overflow-hidden font-mono text-xs"
               >
-                <!-- Staging Header -->
-                <div class="p-3 border-b border-[#21262d] flex items-center justify-between text-gray-400 font-semibold">
-                  <div class="flex items-center gap-1.5">
-                    <.icon name="hero-code-bracket" class="w-3.5 h-3.5 text-cyan-400" />
-                    <span>All Changes</span>
+                <!-- Scrubber Header -->
+                <div class="p-4 border-b border-[#21262d] bg-[#11151c] flex items-center justify-between gap-4 shrink-0">
+                  <div>
+                    <h2 class="text-sm font-bold text-gray-100 flex items-center gap-2">
+                      <span>Atomic Time-Travel Checkpoints & 1-Click Rollback</span>
+                      <span class="px-2 py-0.5 rounded text-[10px] bg-purple-900/50 text-purple-300 border border-purple-700/50 font-semibold">
+                        {length(@checkpoints)} Checkpoints
+                      </span>
+                    </h2>
+                    <p class="text-[11px] text-gray-400 mt-0.5">
+                      Durable pre-mutation snapshots with reverse-chronological sequential rollback and zero orphan files
+                    </p>
                   </div>
-                  <span class="text-[11px] text-gray-500">{length(@parsed_diffs)} files</span>
+
+                  <div class="flex items-center gap-2">
+                    <button
+                      type="button"
+                      phx-click="rollback_latest_checkpoint"
+                      disabled={@checkpoints == []}
+                      class="px-3 py-1.5 rounded-lg bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/30 text-rose-300 disabled:opacity-40 disabled:pointer-events-none font-semibold flex items-center gap-1.5 transition-smooth"
+                      title="Rollback latest mutation immediately"
+                    >
+                      <.icon name="hero-arrow-uturn-left" class="w-3.5 h-3.5 text-rose-400" />
+                      <span>1-Click Rollback Latest</span>
+                    </button>
+                  </div>
                 </div>
 
-                <!-- Staging Lists -->
-                <div class="flex-1 overflow-y-auto p-3 space-y-4">
-                  <!-- Tier 1: Staged Changes -->
-                  <div class="space-y-1.5">
-                    <div class="flex items-center justify-between text-gray-300 font-semibold pb-1 border-b border-[#21262d]">
-                      <div class="flex items-center gap-1.5">
-                        <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
-                        <span>Staged Changes</span>
-                        <span class="text-[10px] text-gray-500 font-normal">({length(
-                          @staged_diffs
-                        )})</span>
-                      </div>
-                      <%= if @staged_diffs != [] do %>
-                        <button
-                          type="button"
-                          phx-click="unstage_all"
-                          class="text-[10px] text-gray-400 hover:text-rose-400 transition-smooth"
-                        >
-                          Unstage All
-                        </button>
-                      <% end %>
+                <!-- Timeline Nodes & Details Split -->
+                <div class="flex-1 flex min-h-0 overflow-hidden">
+                  <!-- Timeline Node Column -->
+                  <div class="w-96 border-r border-[#21262d] bg-[#11151c] flex flex-col shrink-0 overflow-hidden">
+                    <div class="p-3 border-b border-[#21262d] text-zinc-400 font-semibold flex items-center justify-between">
+                      <span>CHECKPOINT TIMELINE</span>
+                      <span class="text-[10px] text-zinc-500">Monotonic Order</span>
                     </div>
 
-                    <div class="space-y-0.5">
-                      <%= for file_diff <- @staged_diffs do %>
-                        <% path = file_diff.path || file_diff.new_path
-
-                        is_selected =
-                          @selected_diff_file == path and @active_diff_scope == :staged %>
-                        <div class={[
-                          "flex items-center justify-between py-1 px-2 rounded-lg group transition-smooth",
-                          is_selected &&
-                            "bg-[#21262d] text-white font-medium border border-[#30363d]",
-                          !is_selected && "hover:bg-[#161b22] text-gray-300"
-                        ]}>
-                          <button
-                            type="button"
-                            phx-click="select_diff_file"
-                            phx-value-file={path}
-                            phx-value-scope="staged"
-                            class="flex-1 flex items-center gap-2 truncate text-left"
+                    <div class="flex-1 overflow-y-auto p-3 space-y-2">
+                      <%= if @checkpoints == [] do %>
+                        <div class="p-8 text-center text-zinc-500">
+                          <.icon name="hero-clock" class="w-8 h-8 mx-auto mb-2 text-zinc-600" />
+                          <p>No mutation checkpoints recorded yet.</p>
+                          <p class="text-[10px] mt-1">
+                            Checkpoints are captured automatically before write_file, patch_file, and multi_patch.
+                          </p>
+                        </div>
+                      <% else %>
+                        <%= for checkpoint <- @checkpoints do %>
+                          <% tx_id = checkpoint.transaction_id || checkpoint.id %>
+                          <% is_selected =
+                            @selected_checkpoint &&
+                              (@selected_checkpoint.transaction_id == tx_id or
+                                 @selected_checkpoint.id == tx_id) %>
+                          <div
+                            id={"checkpoint-node-#{tx_id}"}
+                            phx-click="select_checkpoint"
+                            phx-value-tx_id={tx_id}
+                            class={[
+                              "p-3 rounded-xl border cursor-pointer transition-smooth relative group",
+                              is_selected && "bg-[#161b22] border-purple-500/50 shadow-md",
+                              !is_selected &&
+                                "bg-[#0d1117] border-[#21262d] hover:bg-[#161b22] hover:border-[#30363d]"
+                            ]}
                           >
-                            <.icon
-                              name="hero-document-text"
-                              class="w-3.5 h-3.5 text-emerald-400 shrink-0"
-                            />
-                            <span class="truncate">{path}</span>
-                          </button>
-                          <div class="flex items-center gap-1 shrink-0">
-                            <button
-                              type="button"
-                              phx-click="unstage_file"
-                              phx-value-file={path}
-                              class="p-1 text-gray-500 hover:text-rose-400 hover:bg-[#21262d] rounded transition-smooth"
-                              title="Unstage file"
-                            >
-                              <.icon name="hero-minus" class="w-3 h-3" />
-                            </button>
+                            <div class="flex items-center justify-between mb-1">
+                              <div class="flex items-center gap-2">
+                                <span class="w-5 h-5 rounded-full bg-purple-900/50 text-purple-300 font-bold flex items-center justify-center text-[10px] border border-purple-700/50">
+                                  #{checkpoint.seq}
+                                </span>
+                                <span class="font-bold text-gray-200 truncate max-w-44">
+                                  {checkpoint.label}
+                                </span>
+                              </div>
+                              <span class={[
+                                "px-1.5 py-0.5 rounded text-[10px] font-semibold",
+                                checkpoint.status == "active" &&
+                                  "bg-emerald-950 text-emerald-300 border border-emerald-800",
+                                checkpoint.status != "active" && "bg-zinc-800 text-zinc-400"
+                              ]}>
+                                {checkpoint.status}
+                              </span>
+                            </div>
+                            <div class="text-[11px] text-zinc-400 mt-1 truncate">
+                              {checkpoint.diff_summary}
+                            </div>
+                            <div class="text-[10px] text-zinc-500 mt-1 font-mono">
+                              Tx: {String.slice(to_string(tx_id), 0, 16)}...
+                            </div>
                           </div>
-                        </div>
-                      <% end %>
-                      <%= if @staged_diffs == [] do %>
-                        <div class="text-[11px] text-gray-500 italic py-1 px-2">
-                          No staged changes
-                        </div>
+                        <% end %>
                       <% end %>
                     </div>
                   </div>
 
-                  <!-- Tier 2: Unstaged Changes -->
-                  <div class="space-y-1.5">
-                    <div class="flex items-center justify-between text-gray-300 font-semibold pb-1 border-b border-[#21262d]">
-                      <div class="flex items-center gap-1.5">
-                        <span class="w-2 h-2 rounded-full bg-amber-400"></span>
-                        <span>Unstaged Changes</span>
-                        <span class="text-[10px] text-gray-500 font-normal">({length(
-                          @unstaged_diffs
-                        )})</span>
-                      </div>
-                      <%= if @unstaged_diffs != [] do %>
+                  <!-- Details & Diff Inspector Viewport -->
+                  <div class="flex-1 min-w-0 bg-[#0a0d12] flex flex-col overflow-hidden">
+                    <%= if @selected_checkpoint do %>
+                      <% tx_id = @selected_checkpoint.transaction_id || @selected_checkpoint.id %>
+                      <div
+                        id="selected-checkpoint-details"
+                        class="p-4 border-b border-[#21262d] bg-[#161b22] flex items-center justify-between gap-4"
+                      >
+                        <div>
+                          <div class="flex items-center gap-2">
+                            <span class="text-sm font-bold text-white">Checkpoint #{@selected_checkpoint.seq}</span>
+                            <span class="text-xs text-zinc-400">({@selected_checkpoint.label})</span>
+                            <span class={[
+                              "px-2 py-0.5 rounded text-[10px] font-semibold",
+                              @selected_checkpoint.status == "active" &&
+                                "bg-emerald-950 text-emerald-300 border border-emerald-800",
+                              @selected_checkpoint.status != "active" &&
+                                "bg-zinc-800 text-zinc-400"
+                            ]}>
+                              {@selected_checkpoint.status}
+                            </span>
+                          </div>
+                          <p class="text-[11px] text-zinc-400 mt-0.5 font-mono">
+                            Transaction ID: {tx_id} · {length(@selected_checkpoint.patches)} file(s) modified
+                          </p>
+                        </div>
+
                         <button
                           type="button"
-                          phx-click="stage_all"
-                          class="text-[10px] text-gray-400 hover:text-emerald-400 transition-smooth"
+                          phx-click="rollback_to_checkpoint"
+                          phx-value-tx_id={tx_id}
+                          class="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs transition-smooth flex items-center gap-1.5 shadow-sm"
                         >
-                          Stage All
+                          <.icon name="hero-arrow-uturn-left" class="w-3.5 h-3.5" />
+                          <span>1-Click Rollback to this Checkpoint</span>
                         </button>
-                      <% end %>
-                    </div>
+                      </div>
 
-                    <div class="space-y-0.5">
-                      <%= for file_diff <- @unstaged_diffs do %>
-                        <% path = file_diff.path || file_diff.new_path
+                      <div
+                        id="checkpoint-diff-inspector"
+                        class="flex-1 overflow-auto p-4 space-y-4"
+                      >
+                        <%= for patch <- @selected_checkpoint.patches do %>
+                          <% p_path = patch["path"] || patch[:path] %>
+                          <% p_existed =
+                            Map.get(patch, "file_existed", Map.get(patch, :file_existed, true)) %>
+                          <% p_orig = patch["original_content"] || patch[:original_content] %>
+                          <% p_new = patch["new_content"] || patch[:new_content] %>
+                          <div class="bg-[#11151c] border border-[#21262d] rounded-xl overflow-hidden">
+                            <div class="p-2.5 bg-[#161b22] border-b border-[#21262d] flex items-center justify-between text-xs font-mono">
+                              <span class="text-blue-400 font-bold">{p_path}</span>
+                              <span class={[
+                                "px-1.5 py-0.5 rounded text-[10px]",
+                                !p_existed && "bg-emerald-900/40 text-emerald-300",
+                                p_existed && "bg-amber-900/40 text-amber-300"
+                              ]}>
+                                {if p_existed, do: "Modified", else: "Created"}
+                              </span>
+                            </div>
 
-                        is_selected =
-                          @selected_diff_file == path and @active_diff_scope == :unstaged %>
-                        <div class={[
-                          "flex items-center justify-between py-1 px-2 rounded-lg group transition-smooth",
-                          is_selected &&
-                            "bg-[#21262d] text-white font-medium border border-[#30363d]",
-                          !is_selected && "hover:bg-[#161b22] text-gray-300"
-                        ]}>
-                          <button
-                            type="button"
-                            phx-click="select_diff_file"
-                            phx-value-file={path}
-                            phx-value-scope="unstaged"
-                            class="flex-1 flex items-center gap-2 truncate text-left"
-                          >
-                            <.icon
-                              name="hero-document-text"
-                              class="w-3.5 h-3.5 text-amber-400 shrink-0"
-                            />
-                            <span class="truncate">{path}</span>
-                          </button>
-                          <div class="flex items-center gap-1 shrink-0">
-                            <button
-                              type="button"
-                              phx-click="stage_file"
-                              phx-value-file={path}
-                              class="p-1 text-gray-500 hover:text-emerald-400 hover:bg-[#21262d] rounded transition-smooth"
-                              title="Stage file"
-                            >
-                              <.icon name="hero-plus" class="w-3 h-3" />
-                            </button>
-                            <button
-                              type="button"
-                              phx-click="revert_file"
-                              phx-value-file={path}
-                              data-confirm={"Revert every uncommitted change in #{path}?"}
-                              aria-label={"Revert changes to #{path}"}
-                              class="p-1 text-gray-500 hover:text-rose-400 hover:bg-[#21262d] rounded transition-smooth"
-                              title="Revert file changes"
-                            >
-                              <.icon name="hero-arrow-uturn-left" class="w-3 h-3" />
-                            </button>
+                            <div class="p-3 grid grid-cols-1 md:grid-cols-2 gap-3 text-[11px] font-mono">
+                              <div>
+                                <div class="text-zinc-500 mb-1 font-semibold">
+                                  ORIGINAL CONTENT (Restored on Rollback):
+                                </div>
+                                <pre class="bg-[#0a0d12] p-2 rounded text-zinc-400 max-h-48 overflow-auto whitespace-pre-wrap"><code>{p_orig || "(File did not exist)"}</code></pre>
+                              </div>
+                              <div>
+                                <div class="text-zinc-500 mb-1 font-semibold">
+                                  NEW CONTENT (Applied by Mutation):
+                                </div>
+                                <pre class="bg-[#0a0d12] p-2 rounded text-emerald-300 max-h-48 overflow-auto whitespace-pre-wrap"><code>{p_new}</code></pre>
+                              </div>
+                            </div>
                           </div>
-                        </div>
-                      <% end %>
-                      <%= if @unstaged_diffs == [] do %>
-                        <div class="text-[11px] text-gray-500 italic py-1 px-2">
-                          No unstaged changes
-                        </div>
-                      <% end %>
+                        <% end %>
+                      </div>
+                    <% else %>
+                      <div class="flex-1 flex flex-col items-center justify-center text-center p-8 text-zinc-500">
+                        <.icon name="hero-magnifying-glass" class="w-8 h-8 text-zinc-600 mb-2" />
+                        <p>
+                          Select a checkpoint from the timeline to inspect diffs and rollback.
+                        </p>
+                      </div>
+                    <% end %>
+                  </div>
+                </div>
+              </div>
+            <% else %>
+              <!-- Main Changes Body: 3-Tier Staging Hub + Interactive Diff Viewer -->
+              <div
+                id="changes-layout"
+                class="flex-1 flex min-h-0 flex-col overflow-hidden md:flex-row"
+              >
+                <!-- Left Column: 3-Tier Staging Hub & Commit Composer -->
+                <div
+                  id="changes-staging-panel"
+                  class="h-[min(46%,24rem)] w-full border-b border-[#21262d] bg-[#11151c] flex shrink-0 flex-col overflow-hidden font-mono text-xs md:h-full md:w-84 md:border-r md:border-b-0"
+                >
+                  <!-- Staging Header -->
+                  <div class="p-3 border-b border-[#21262d] flex items-center justify-between text-gray-400 font-semibold">
+                    <div class="flex items-center gap-1.5">
+                      <.icon name="hero-code-bracket" class="w-3.5 h-3.5 text-cyan-400" />
+                      <span>All Changes</span>
                     </div>
+                    <span class="text-[11px] text-gray-500">{length(@parsed_diffs)} files</span>
                   </div>
 
-                  <!-- Tier 3: Untracked Files -->
-                  <% untracked = (@git_status && @git_status.untracked) || [] %>
-                  <%= if untracked != [] do %>
+                  <!-- Staging Lists -->
+                  <div class="flex-1 overflow-y-auto p-3 space-y-4">
+                    <!-- Tier 1: Staged Changes -->
                     <div class="space-y-1.5">
                       <div class="flex items-center justify-between text-gray-300 font-semibold pb-1 border-b border-[#21262d]">
                         <div class="flex items-center gap-1.5">
-                          <span class="w-2 h-2 rounded-full bg-gray-400"></span>
-                          <span>Untracked Files</span>
-                          <span class="text-[10px] text-gray-500 font-normal">({length(untracked)})</span>
+                          <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+                          <span>Staged Changes</span>
+                          <span class="text-[10px] text-gray-500 font-normal">({length(
+                            @staged_diffs
+                          )})</span>
                         </div>
+                        <%= if @staged_diffs != [] do %>
+                          <button
+                            type="button"
+                            phx-click="unstage_all"
+                            class="text-[10px] text-gray-400 hover:text-rose-400 transition-smooth"
+                          >
+                            Unstage All
+                          </button>
+                        <% end %>
                       </div>
 
                       <div class="space-y-0.5">
-                        <%= for file <- untracked do %>
-                          <div class="flex items-center justify-between py-1 px-2 rounded-lg hover:bg-[#161b22] text-gray-400 group transition-smooth">
-                            <div class="flex items-center gap-2 truncate">
-                              <.icon
-                                name="hero-question-mark-circle"
-                                class="w-3.5 h-3.5 text-gray-500 shrink-0"
-                              />
-                              <span class="truncate">{file}</span>
-                            </div>
+                        <%= for file_diff <- @staged_diffs do %>
+                          <% path = file_diff.path || file_diff.new_path
+
+                          is_selected =
+                            @selected_diff_file == path and @active_diff_scope == :staged %>
+                          <div class={[
+                            "flex items-center justify-between py-1 px-2 rounded-lg group transition-smooth",
+                            is_selected &&
+                              "bg-[#21262d] text-white font-medium border border-[#30363d]",
+                            !is_selected && "hover:bg-[#161b22] text-gray-300"
+                          ]}>
                             <button
                               type="button"
-                              phx-click="stage_file"
-                              phx-value-file={file}
-                              class="p-1 text-gray-500 hover:text-emerald-400 hover:bg-[#21262d] rounded transition-smooth"
-                              title="Stage untracked file"
+                              phx-click="select_diff_file"
+                              phx-value-file={path}
+                              phx-value-scope="staged"
+                              class="flex-1 flex items-center gap-2 truncate text-left"
                             >
-                              <.icon name="hero-plus" class="w-3 h-3" />
+                              <.icon
+                                name="hero-document-text"
+                                class="w-3.5 h-3.5 text-emerald-400 shrink-0"
+                              />
+                              <span class="truncate">{path}</span>
                             </button>
+                            <div class="flex items-center gap-1 shrink-0">
+                              <button
+                                type="button"
+                                phx-click="unstage_file"
+                                phx-value-file={path}
+                                class="p-1 text-gray-500 hover:text-rose-400 hover:bg-[#21262d] rounded transition-smooth"
+                                title="Unstage file"
+                              >
+                                <.icon name="hero-minus" class="w-3 h-3" />
+                              </button>
+                            </div>
+                          </div>
+                        <% end %>
+                        <%= if @staged_diffs == [] do %>
+                          <div class="text-[11px] text-gray-500 italic py-1 px-2">
+                            No staged changes
                           </div>
                         <% end %>
                       </div>
                     </div>
-                  <% end %>
 
-                  <% canvas_files =
-                    cond do
-                      @parsed_diffs != [] ->
-                        Enum.map(
-                          @parsed_diffs,
-                          &(Map.get(&1, :path) || Map.get(&1, :file_path) || to_string(&1))
-                        )
-
-                      @project_files != [] ->
-                        Enum.take(@project_files, 4)
-
-                      true ->
-                        []
-                    end %>
-                  <div class="mt-4 pt-3 border-t border-[#21262d]">
-                    <div class="text-xs font-semibold text-gray-400 mb-2">
-                      Canvas · {length(canvas_files)}
-                    </div>
-                    <div class="space-y-1 text-[11px]">
-                      <%= for file <- canvas_files do %>
-                        <div
-                          class="p-2 bg-[#161b22] rounded text-gray-300 truncate font-mono"
-                          title={file}
-                        >
-                          {file}
+                    <!-- Tier 2: Unstaged Changes -->
+                    <div class="space-y-1.5">
+                      <div class="flex items-center justify-between text-gray-300 font-semibold pb-1 border-b border-[#21262d]">
+                        <div class="flex items-center gap-1.5">
+                          <span class="w-2 h-2 rounded-full bg-amber-400"></span>
+                          <span>Unstaged Changes</span>
+                          <span class="text-[10px] text-gray-500 font-normal">({length(
+                            @unstaged_diffs
+                          )})</span>
                         </div>
-                      <% end %>
+                        <%= if @unstaged_diffs != [] do %>
+                          <button
+                            type="button"
+                            phx-click="stage_all"
+                            class="text-[10px] text-gray-400 hover:text-emerald-400 transition-smooth"
+                          >
+                            Stage All
+                          </button>
+                        <% end %>
+                      </div>
+
+                      <div class="space-y-0.5">
+                        <%= for file_diff <- @unstaged_diffs do %>
+                          <% path = file_diff.path || file_diff.new_path
+
+                          is_selected =
+                            @selected_diff_file == path and @active_diff_scope == :unstaged %>
+                          <div class={[
+                            "flex items-center justify-between py-1 px-2 rounded-lg group transition-smooth",
+                            is_selected &&
+                              "bg-[#21262d] text-white font-medium border border-[#30363d]",
+                            !is_selected && "hover:bg-[#161b22] text-gray-300"
+                          ]}>
+                            <button
+                              type="button"
+                              phx-click="select_diff_file"
+                              phx-value-file={path}
+                              phx-value-scope="unstaged"
+                              class="flex-1 flex items-center gap-2 truncate text-left"
+                            >
+                              <.icon
+                                name="hero-document-text"
+                                class="w-3.5 h-3.5 text-amber-400 shrink-0"
+                              />
+                              <span class="truncate">{path}</span>
+                            </button>
+                            <div class="flex items-center gap-1 shrink-0">
+                              <button
+                                type="button"
+                                phx-click="stage_file"
+                                phx-value-file={path}
+                                class="p-1 text-gray-500 hover:text-emerald-400 hover:bg-[#21262d] rounded transition-smooth"
+                                title="Stage file"
+                              >
+                                <.icon name="hero-plus" class="w-3 h-3" />
+                              </button>
+                              <button
+                                type="button"
+                                phx-click="revert_file"
+                                phx-value-file={path}
+                                data-confirm={"Revert every uncommitted change in #{path}?"}
+                                aria-label={"Revert changes to #{path}"}
+                                class="p-1 text-gray-500 hover:text-rose-400 hover:bg-[#21262d] rounded transition-smooth"
+                                title="Revert file changes"
+                              >
+                                <.icon name="hero-arrow-uturn-left" class="w-3 h-3" />
+                              </button>
+                            </div>
+                          </div>
+                        <% end %>
+                        <%= if @unstaged_diffs == [] do %>
+                          <div class="text-[11px] text-gray-500 italic py-1 px-2">
+                            No unstaged changes
+                          </div>
+                        <% end %>
+                      </div>
+                    </div>
+
+                    <!-- Tier 3: Untracked Files -->
+                    <% untracked = (@git_status && @git_status.untracked) || [] %>
+                    <%= if untracked != [] do %>
+                      <div class="space-y-1.5">
+                        <div class="flex items-center justify-between text-gray-300 font-semibold pb-1 border-b border-[#21262d]">
+                          <div class="flex items-center gap-1.5">
+                            <span class="w-2 h-2 rounded-full bg-gray-400"></span>
+                            <span>Untracked Files</span>
+                            <span class="text-[10px] text-gray-500 font-normal">({length(
+                              untracked
+                            )})</span>
+                          </div>
+                        </div>
+
+                        <div class="space-y-0.5">
+                          <%= for file <- untracked do %>
+                            <div class="flex items-center justify-between py-1 px-2 rounded-lg hover:bg-[#161b22] text-gray-400 group transition-smooth">
+                              <div class="flex items-center gap-2 truncate">
+                                <.icon
+                                  name="hero-question-mark-circle"
+                                  class="w-3.5 h-3.5 text-gray-500 shrink-0"
+                                />
+                                <span class="truncate">{file}</span>
+                              </div>
+                              <button
+                                type="button"
+                                phx-click="stage_file"
+                                phx-value-file={file}
+                                class="p-1 text-gray-500 hover:text-emerald-400 hover:bg-[#21262d] rounded transition-smooth"
+                                title="Stage untracked file"
+                              >
+                                <.icon name="hero-plus" class="w-3 h-3" />
+                              </button>
+                            </div>
+                          <% end %>
+                        </div>
+                      </div>
+                    <% end %>
+
+                    <% canvas_files =
+                      cond do
+                        @parsed_diffs != [] ->
+                          Enum.map(
+                            @parsed_diffs,
+                            &(Map.get(&1, :path) || Map.get(&1, :file_path) || to_string(&1))
+                          )
+
+                        @project_files != [] ->
+                          Enum.take(@project_files, 4)
+
+                        true ->
+                          []
+                      end %>
+                    <div class="mt-4 pt-3 border-t border-[#21262d]">
+                      <div class="text-xs font-semibold text-gray-400 mb-2">
+                        Canvas · {length(canvas_files)}
+                      </div>
+                      <div class="space-y-1 text-[11px]">
+                        <%= for file <- canvas_files do %>
+                          <div
+                            class="p-2 bg-[#161b22] rounded text-gray-300 truncate font-mono"
+                            title={file}
+                          >
+                            {file}
+                          </div>
+                        <% end %>
+                      </div>
                     </div>
                   </div>
-                </div>
 
-                <!-- Commit Composer Card -->
-                <div class="p-3 border-t border-[#21262d] bg-[#0d1117] space-y-2 shrink-0">
-                  <div class="flex items-center justify-between">
-                    <span class="text-xs font-semibold text-gray-300">Commit Changes</span>
-                    <button
-                      type="button"
-                      phx-click="generate_commit_msg"
-                      class="flex items-center gap-1 text-[11px] text-purple-400 hover:text-purple-300 transition-smooth font-medium"
-                      title="AI Generate commit message from staged changes"
+                  <!-- Commit Composer Card -->
+                  <div class="p-3 border-t border-[#21262d] bg-[#0d1117] space-y-2 shrink-0">
+                    <div class="flex items-center justify-between">
+                      <span class="text-xs font-semibold text-gray-300">Commit Changes</span>
+                      <button
+                        type="button"
+                        phx-click="generate_commit_msg"
+                        class="flex items-center gap-1 text-[11px] text-purple-400 hover:text-purple-300 transition-smooth font-medium"
+                        title="AI Generate commit message from staged changes"
+                      >
+                        <.icon name="hero-sparkles" class="w-3 h-3" />
+                        <span>✨ AI Generate</span>
+                      </button>
+                    </div>
+
+                    <form
+                      id="commit-composer-form"
+                      phx-change="update_commit_message"
+                      phx-submit="git_commit"
+                      class="space-y-2"
                     >
-                      <.icon name="hero-sparkles" class="w-3 h-3" />
-                      <span>✨ AI Generate</span>
-                    </button>
+                      <textarea
+                        name="message"
+                        rows="3"
+                        placeholder="Commit message (e.g. feat(editor): add jump to symbol)..."
+                        class="w-full bg-[#161b22] border border-[#21262d] rounded-lg p-2 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 font-mono resize-none"
+                      >{@commit_message}</textarea>
+
+                      <button
+                        type="submit"
+                        disabled={String.trim(@commit_message || "") == "" or @staged_diffs == []}
+                        class={[
+                          "w-full py-1.5 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-smooth",
+                          (String.trim(@commit_message || "") != "" and @staged_diffs != []) &&
+                            "bg-emerald-600 hover:bg-emerald-500 text-white shadow-sm cursor-pointer",
+                          (String.trim(@commit_message || "") == "" or @staged_diffs == []) &&
+                            "bg-[#21262d] text-gray-500 cursor-not-allowed"
+                        ]}
+                      >
+                        <.icon name="hero-check" class="w-3.5 h-3.5" />
+                        <span>Commit to {@current_branch} ({length(@staged_diffs)} staged)</span>
+                      </button>
+                    </form>
                   </div>
+                </div>
 
-                  <form
-                    id="commit-composer-form"
-                    phx-change="update_commit_message"
-                    phx-submit="git_commit"
-                    class="space-y-2"
-                  >
-                    <textarea
-                      name="message"
-                      rows="3"
-                      placeholder="Commit message (e.g. feat(editor): add jump to symbol)..."
-                      class="w-full bg-[#161b22] border border-[#21262d] rounded-lg p-2 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 font-mono resize-none"
-                    >{@commit_message}</textarea>
-
-                    <button
-                      type="submit"
-                      disabled={String.trim(@commit_message || "") == "" or @staged_diffs == []}
-                      class={[
-                        "w-full py-1.5 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-smooth",
-                        (String.trim(@commit_message || "") != "" and @staged_diffs != []) &&
-                          "bg-emerald-600 hover:bg-emerald-500 text-white shadow-sm cursor-pointer",
-                        (String.trim(@commit_message || "") == "" or @staged_diffs == []) &&
-                          "bg-[#21262d] text-gray-500 cursor-not-allowed"
-                      ]}
-                    >
-                      <.icon name="hero-check" class="w-3.5 h-3.5" />
-                      <span>Commit to {@current_branch} ({length(@staged_diffs)} staged)</span>
-                    </button>
-                  </form>
+                <!-- Right Interactive Diff Viewer -->
+                <div
+                  id="changes-diff-panel"
+                  class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[#0a0d12] p-2 sm:p-3"
+                >
+                  <.interactive_diff_viewer
+                    diff_text={@diff_text}
+                    diff_mode={@diff_mode}
+                    file_path={@diff_file_path}
+                    hunks={@diff_hunks}
+                    staged={@active_diff_scope == :staged}
+                  />
                 </div>
               </div>
-
-              <!-- Right Interactive Diff Viewer -->
-              <div
-                id="changes-diff-panel"
-                class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[#0a0d12] p-2 sm:p-3"
-              >
-                <.interactive_diff_viewer
-                  diff_text={@diff_text}
-                  diff_mode={@diff_mode}
-                  file_path={@diff_file_path}
-                  hunks={@diff_hunks}
-                  staged={@active_diff_scope == :staged}
-                />
-              </div>
-            </div>
+            <% end %>
           </div>
         <% end %>
 
@@ -2174,16 +2436,542 @@
           />
         <% end %>
 
-        <!-- TAB: AST QUERY EXPLORER & SYMBOL NAVIGATOR -->
+        <!-- TAB: MULTI-MODEL ADVERSARIAL CONSENSUS & SWARM VOTING -->
+        <%= if @active_tab == "consensus" do %>
+          <div
+            id="workspace-consensus-container"
+            class="flex-1 flex flex-col h-full bg-[#0a0d12] overflow-hidden text-gray-200 font-mono text-xs"
+          >
+            <!-- Header Toolbar -->
+            <div
+              id="consensus-panel"
+              class="px-4 py-3 bg-[#11151c] border-b border-[#21262d] flex flex-wrap items-center justify-between gap-3 shrink-0"
+            >
+              <div class="flex items-center gap-3">
+                <.icon name="hero-scale" class="w-5 h-5 text-amber-400" />
+                <div>
+                  <h1 class="text-sm font-bold text-white flex items-center gap-2">
+                    <span>Multi-Model Adversarial Consensus</span>
+                    <span class="px-2 py-0.5 rounded text-[10px] bg-amber-900/40 text-amber-300 border border-amber-700/50 font-semibold">
+                      Swarm Voting Active
+                    </span>
+                  </h1>
+                  <p class="text-[11px] text-gray-400">
+                    Cross-validating patch proposals between Cloud LLMs and local Apple Silicon models
+                  </p>
+                </div>
+              </div>
+
+              <!-- Manual Arbitration Controls -->
+              <div class="flex items-center gap-2">
+                <%= if @consensus_status == :approved do %>
+                  <div class="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-950/60 border border-emerald-800/80 rounded-lg text-emerald-300 font-semibold text-xs">
+                    <.icon name="hero-check-circle" class="w-4 h-4 text-emerald-400" />
+                    <span>Consensus Approved — Success</span>
+                  </div>
+                <% end %>
+
+                <%= if @consensus_status == :rejected do %>
+                  <div class="flex items-center gap-1.5 px-3 py-1.5 bg-rose-950/60 border border-rose-800/80 rounded-lg text-rose-300 font-semibold text-xs">
+                    <.icon name="hero-x-circle" class="w-4 h-4 text-rose-400" />
+                    <span>Consensus Rejected — Revision Requested</span>
+                  </div>
+                <% end %>
+
+                <%= if @consensus_status == :idle do %>
+                  <button
+                    type="button"
+                    id="consensus-btn-approve"
+                    phx-click="approve_consensus"
+                    class="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold flex items-center gap-1.5 shadow-sm transition-smooth"
+                  >
+                    <.icon name="hero-check" class="w-3.5 h-3.5" />
+                    <span>Approve Proposal</span>
+                  </button>
+                  <button
+                    type="button"
+                    id="consensus-btn-reject"
+                    phx-click="reject_consensus"
+                    phx-value-reason="Security concerns"
+                    class="px-3 py-1.5 rounded-lg bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/30 text-rose-300 font-semibold flex items-center gap-1.5 transition-smooth"
+                  >
+                    <.icon name="hero-x-mark" class="w-3.5 h-3.5 text-rose-400" />
+                    <span>Reject Proposal</span>
+                  </button>
+                <% end %>
+              </div>
+            </div>
+
+            <!-- Main Consensus Content -->
+            <div class="flex-1 flex min-h-0 overflow-y-auto p-4 gap-4 flex-col lg:flex-row">
+              <!-- Left Column: Reviewers & Agreement Matrix Heatmap -->
+              <div class="flex-1 flex flex-col gap-4 min-w-0">
+                <!-- Reviewer Headers with Provider Chips -->
+                <div class="p-4 bg-[#11151c] border border-[#21262d] rounded-xl space-y-3">
+                  <div class="flex items-center justify-between text-xs font-bold text-gray-300 border-b border-[#21262d] pb-2">
+                    <span class="flex items-center gap-2">
+                      <.icon name="hero-user-group" class="w-4 h-4 text-cyan-400" />
+                      <span>Reviewers Panel ({length(@consensus_assessments || [])})</span>
+                    </span>
+                    <span class="text-[11px] text-gray-400">Swarm Consensus</span>
+                  </div>
+
+                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <%= for reviewer <- (@consensus_assessments || []) do %>
+                      <div class="p-3 bg-[#161b22] border border-[#30363d] rounded-lg flex flex-col gap-2">
+                        <div class="flex items-center justify-between">
+                          <span class="font-bold text-white text-xs">{reviewer.reviewer_id}</span>
+                          <!-- Provider Source Chip -->
+                          <%= if reviewer.provider in ["anthropic", "openai", "cloud"] do %>
+                            <span class="px-2 py-0.5 rounded text-[10px] bg-blue-900/40 text-blue-300 border border-blue-700/50 font-semibold flex items-center gap-1">
+                              <.icon name="hero-cloud" class="w-3 h-3 text-blue-400" />
+                              <span>Cloud ({reviewer.model})</span>
+                            </span>
+                          <% else %>
+                            <span class="px-2 py-0.5 rounded text-[10px] bg-emerald-900/40 text-emerald-300 border border-emerald-700/50 font-semibold flex items-center gap-1">
+                              <.icon name="hero-cpu-chip" class="w-3 h-3 text-emerald-400" />
+                              <span>Local Apple Silicon ({reviewer.model})</span>
+                            </span>
+                          <% end %>
+                        </div>
+
+                        <div class="flex items-center justify-between text-[11px] text-gray-400">
+                          <span>
+                            Vote:
+                            <strong class={[
+                              "font-bold uppercase",
+                              reviewer.vote == :approve && "text-emerald-400",
+                              reviewer.vote == :reject && "text-rose-400",
+                              reviewer.vote != :approve && reviewer.vote != :reject &&
+                                "text-amber-400"
+                            ]}>
+                              {reviewer.vote}
+                            </strong>
+                          </span>
+                          <span>Confidence:
+                          <strong class="text-white">{trunc((reviewer.confidence || 1.0) * 100)}%</strong></span>
+                        </div>
+
+                        <p class="text-[11px] text-gray-400 italic">
+                          "{reviewer.verdict_reason}"
+                        </p>
+                      </div>
+                    <% end %>
+                  </div>
+                </div>
+
+                <!-- Visual Agreement Matrix Heatmap -->
+                <div
+                  id="consensus-agreement-matrix"
+                  class="p-4 bg-[#11151c] border border-[#21262d] rounded-xl space-y-3"
+                >
+                  <div class="flex items-center justify-between text-xs font-bold text-gray-300 border-b border-[#21262d] pb-2">
+                    <span class="flex items-center gap-2">
+                      <.icon name="hero-table-cells" class="w-4 h-4 text-purple-400" />
+                      <span>Pairwise Agreement Matrix (A_j,k)</span>
+                    </span>
+                    <span class="text-[11px] text-purple-400">Bounded [0.0, 1.0]</span>
+                  </div>
+
+                  <div class="overflow-x-auto">
+                    <table class="w-full text-center border-collapse">
+                      <thead>
+                        <tr>
+                          <th class="p-2 text-left text-gray-500 text-[11px]">Agreement</th>
+                          <%= for rev <- (@consensus_assessments || []) do %>
+                            <th class="p-2 text-gray-400 text-[11px] font-bold">
+                              {rev.reviewer_id}
+                            </th>
+                          <% end %>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <%= for {row_rev, i} <- Enum.with_index(@consensus_assessments || []) do %>
+                          <tr class="border-t border-[#21262d]/50">
+                            <td class="p-2 text-left font-bold text-gray-300 text-[11px]">
+                              {row_rev.reviewer_id}
+                            </td>
+                            <%= for {col_rev, j} <- Enum.with_index(@consensus_assessments || []) do %>
+                              <% agreement =
+                                IexCode.Consensus.Matrix.pairwise_agreement(row_rev, col_rev) %>
+                              <td class="p-2 font-mono">
+                                <span class={[
+                                  "px-2.5 py-1 rounded-md text-xs font-bold inline-block min-w-14",
+                                  agreement >= 0.8 &&
+                                    "bg-emerald-950 text-emerald-300 border border-emerald-800",
+                                  agreement >= 0.5 && agreement < 0.8 &&
+                                    "bg-amber-950 text-amber-300 border border-amber-800",
+                                  agreement < 0.5 &&
+                                    "bg-rose-950 text-rose-300 border border-rose-800"
+                                ]}>
+                                  {Float.round(agreement * 100, 1)}%
+                                </span>
+                              </td>
+                            <% end %>
+                          </tr>
+                        <% end %>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <!-- Reviewer Critique Cards -->
+                <div class="p-4 bg-[#11151c] border border-[#21262d] rounded-xl space-y-3">
+                  <div class="flex items-center justify-between text-xs font-bold text-gray-300 border-b border-[#21262d] pb-2">
+                    <span class="flex items-center gap-2">
+                      <.icon
+                        name="hero-chat-bubble-bottom-center-text"
+                        class="w-4 h-4 text-amber-400"
+                      />
+                      <span>Reviewer Critiques & Feedback</span>
+                    </span>
+                  </div>
+
+                  <div class="space-y-2">
+                    <% all_critiques =
+                      Enum.flat_map(@consensus_assessments || [], fn a ->
+                        Enum.map(a.critique_points || [], &Map.put(&1, :reviewer, a.reviewer_id))
+                      end) %>
+                    <%= if all_critiques == [] do %>
+                      <p class="text-gray-500 italic p-2">
+                        No blocker or critical critiques raised by reviewers.
+                      </p>
+                    <% else %>
+                      <%= for c <- all_critiques do %>
+                        <div class="p-2.5 bg-[#161b22] border border-[#30363d] rounded-lg flex items-start justify-between gap-2">
+                          <div>
+                            <div class="flex items-center gap-2">
+                              <span class={[
+                                "px-1.5 py-0.5 rounded text-[10px] font-bold uppercase",
+                                c.severity in [:blocker, "blocker"] &&
+                                  "bg-rose-950 text-rose-300 border border-rose-800",
+                                c.severity != :blocker &&
+                                  "bg-amber-950 text-amber-300 border border-amber-800"
+                              ]}>
+                                {c.severity}
+                              </span>
+                              <span class="text-xs text-blue-400 font-bold">{c.file_path ||
+                                "General"}</span>
+                            </div>
+                            <p class="text-[11px] text-gray-300 mt-1">{c.description}</p>
+                          </div>
+                          <span class="text-[10px] text-gray-500 shrink-0">by {c[:reviewer]}</span>
+                        </div>
+                      <% end %>
+                    <% end %>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Right Column: Dimensional Score Progress Bars & Concordance Metrics -->
+              <div class="w-full lg:w-80 flex flex-col gap-4 shrink-0">
+                <!-- Concordance & Weighted Score Card -->
+                <div class="p-4 bg-[#11151c] border border-[#21262d] rounded-xl space-y-3">
+                  <div class="text-xs font-bold text-gray-300 border-b border-[#21262d] pb-2 flex items-center justify-between">
+                    <span>SWARM CONCORDANCE</span>
+                    <span class="text-emerald-400 font-bold">
+                      {Float.round(
+                        ((@consensus_matrix && @consensus_matrix.swarm_concordance) || 0.95) *
+                          100,
+                        1
+                      )}%
+                    </span>
+                  </div>
+
+                  <div class="space-y-2">
+                    <div class="flex items-center justify-between text-[11px] text-gray-400">
+                      <span>Concordance (\bar{A})</span>
+                      <strong class="text-white">{Float.round(
+                        (@consensus_matrix && @consensus_matrix.swarm_concordance) || 0.95,
+                        2
+                      )}</strong>
+                    </div>
+                    <div class="w-full bg-[#0d1117] rounded-full h-2 overflow-hidden">
+                      <div
+                        class="bg-emerald-500 h-2 rounded-full transition-smooth"
+                        style={"width: #{trunc(((@consensus_matrix && @consensus_matrix.swarm_concordance) || 0.95) * 100)}%"}
+                      >
+                      </div>
+                    </div>
+
+                    <div class="flex items-center justify-between text-[11px] text-gray-400 pt-2">
+                      <span>Weighted Confidence (C)</span>
+                      <strong class="text-white">{Float.round(
+                        (@consensus_matrix && @consensus_matrix.weighted_score) || 0.90,
+                        2
+                      )}</strong>
+                    </div>
+                    <div class="w-full bg-[#0d1117] rounded-full h-2 overflow-hidden">
+                      <div
+                        class="bg-cyan-500 h-2 rounded-full transition-smooth"
+                        style={"width: #{trunc(max(0, ((@consensus_matrix && @consensus_matrix.weighted_score) || 0.90)) * 100)}%"}
+                      >
+                      </div>
+                    </div>
+
+                    <div class="flex items-center justify-between text-[11px] text-gray-400 pt-2 border-t border-[#21262d]">
+                      <span>Decision</span>
+                      <span class="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-emerald-950 text-emerald-300 border border-emerald-800">
+                        {(@consensus_matrix && @consensus_matrix.decision) || :approved}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Dimensional Score Progress Bars -->
+                <div class="p-4 bg-[#11151c] border border-[#21262d] rounded-xl space-y-4">
+                  <div class="text-xs font-bold text-gray-300 border-b border-[#21262d] pb-2">
+                    DIMENSIONAL SCORES
+                  </div>
+
+                  <% scores =
+                    (@consensus_matrix && @consensus_matrix.dimensional_averages) ||
+                      %{
+                        correctness: 0.90,
+                        security: 0.88,
+                        architectural_fit: 0.85,
+                        maintainability: 0.82,
+                        testability: 0.88
+                      } %>
+
+                  <!-- Correctness -->
+                  <div id="consensus-score-correctness" class="space-y-1">
+                    <div class="flex items-center justify-between text-[11px]">
+                      <span class="text-gray-300 font-semibold">Correctness</span>
+                      <span class="text-emerald-400 font-mono">{trunc(
+                        (scores[:correctness] || 0.90) * 100
+                      )}%</span>
+                    </div>
+                    <div class="w-full bg-[#0d1117] rounded-full h-2 overflow-hidden">
+                      <div
+                        class="bg-emerald-500 h-2 rounded-full"
+                        style={"width: #{trunc((scores[:correctness] || 0.90) * 100)}%"}
+                      >
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Security -->
+                  <div class="space-y-1">
+                    <div class="flex items-center justify-between text-[11px]">
+                      <span class="text-gray-300 font-semibold">Security</span>
+                      <span class="text-cyan-400 font-mono">{trunc(
+                        (scores[:security] || 0.88) * 100
+                      )}%</span>
+                    </div>
+                    <div class="w-full bg-[#0d1117] rounded-full h-2 overflow-hidden">
+                      <div
+                        class="bg-cyan-500 h-2 rounded-full"
+                        style={"width: #{trunc((scores[:security] || 0.88) * 100)}%"}
+                      >
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Architectural Fit / Architecture -->
+                  <div class="space-y-1">
+                    <div class="flex items-center justify-between text-[11px]">
+                      <span class="text-gray-300 font-semibold">Architecture</span>
+                      <span class="text-purple-400 font-mono">{trunc(
+                        (scores[:architectural_fit] || 0.85) * 100
+                      )}%</span>
+                    </div>
+                    <div class="w-full bg-[#0d1117] rounded-full h-2 overflow-hidden">
+                      <div
+                        class="bg-purple-500 h-2 rounded-full"
+                        style={"width: #{trunc((scores[:architectural_fit] || 0.85) * 100)}%"}
+                      >
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Maintainability -->
+                  <div class="space-y-1">
+                    <div class="flex items-center justify-between text-[11px]">
+                      <span class="text-gray-300 font-semibold">Maintainability</span>
+                      <span class="text-indigo-400 font-mono">{trunc(
+                        (scores[:maintainability] || 0.82) * 100
+                      )}%</span>
+                    </div>
+                    <div class="w-full bg-[#0d1117] rounded-full h-2 overflow-hidden">
+                      <div
+                        class="bg-indigo-500 h-2 rounded-full"
+                        style={"width: #{trunc((scores[:maintainability] || 0.82) * 100)}%"}
+                      >
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Testability -->
+                  <div class="space-y-1">
+                    <div class="flex items-center justify-between text-[11px]">
+                      <span class="text-gray-300 font-semibold">Testability</span>
+                      <span class="text-blue-400 font-mono">{trunc(
+                        (scores[:testability] || 0.88) * 100
+                      )}%</span>
+                    </div>
+                    <div class="w-full bg-[#0d1117] rounded-full h-2 overflow-hidden">
+                      <div
+                        class="bg-blue-500 h-2 rounded-full"
+                        style={"width: #{trunc((scores[:testability] || 0.88) * 100)}%"}
+                      >
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        <% end %>
+
+        <!-- TAB: AST QUERY EXPLORER & SYMBOL NAVIGATOR / SEMANTIC SEARCH -->
         <%= if @active_tab == "ast" do %>
-          <.ast_explorer
-            ast_query={@ast_query}
-            ast_type_filter={@ast_type_filter}
-            ast_visibility={@ast_visibility}
-            ast_results={@ast_results}
-            ast_searching?={@ast_searching?}
-            ast_total_count={@ast_total_count}
-          />
+          <div class="flex-1 flex flex-col h-full overflow-hidden">
+            <!-- Mode Switcher Bar -->
+            <div class="px-4 py-2 bg-[#161b22] border-b border-[#30363d] flex items-center justify-between shrink-0 font-mono text-xs">
+              <div class="flex items-center gap-2">
+                <button
+                  type="button"
+                  phx-click="set_ast_mode"
+                  phx-value-mode="ast"
+                  class={[
+                    "px-3 py-1 rounded-lg transition-smooth flex items-center gap-1.5",
+                    @ast_search_mode == "ast" &&
+                      "bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 font-bold",
+                    @ast_search_mode != "ast" && "text-zinc-400 hover:text-zinc-200"
+                  ]}
+                >
+                  <.icon name="hero-cube-transparent" class="w-3.5 h-3.5" />
+                  <span>AST Symbols</span>
+                </button>
+                <button
+                  type="button"
+                  phx-click="set_ast_mode"
+                  phx-value-mode="semantic"
+                  class={[
+                    "px-3 py-1 rounded-lg transition-smooth flex items-center gap-1.5",
+                    @ast_search_mode == "semantic" &&
+                      "bg-purple-500/20 text-purple-300 border border-purple-500/30 font-bold",
+                    @ast_search_mode != "semantic" && "text-zinc-400 hover:text-zinc-200"
+                  ]}
+                >
+                  <.icon name="hero-sparkles" class="w-3.5 h-3.5" />
+                  <span>Semantic Vector Search</span>
+                </button>
+              </div>
+
+              <%= if @ast_search_mode == "semantic" do %>
+                <div class="flex items-center gap-2">
+                  <span class="text-[11px] text-zinc-500">
+                    {@semantic_stats.ets_chunks} chunks cached
+                  </span>
+                  <button
+                    type="button"
+                    phx-click="reindex_semantic"
+                    class="px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-[#30363d] text-[11px] flex items-center gap-1 transition-smooth"
+                    title="Re-index workspace chunks into SQLite and ETS"
+                  >
+                    <.icon name="hero-arrow-path" class="w-3 h-3" />
+                    <span>Re-index Codebase</span>
+                  </button>
+                </div>
+              <% end %>
+            </div>
+
+            <%= if @ast_search_mode == "ast" do %>
+              <.ast_explorer
+                ast_query={@ast_query}
+                ast_type_filter={@ast_type_filter}
+                ast_visibility={@ast_visibility}
+                ast_results={@ast_results}
+                ast_searching?={@ast_searching?}
+                ast_total_count={@ast_total_count}
+              />
+            <% else %>
+              <!-- Semantic Search View -->
+              <div
+                id="semantic-search-panel"
+                class="flex-1 flex flex-col h-full bg-[#0d1117] overflow-hidden font-mono text-xs"
+              >
+                <div class="p-4 border-b border-[#21262d] bg-[#11151c] flex flex-col gap-3">
+                  <div class="flex items-center justify-between">
+                    <div>
+                      <h2 class="text-sm font-bold text-gray-100 flex items-center gap-2">
+                        <span>Offline Local Semantic Vector Search</span>
+                        <span class="px-2 py-0.5 rounded text-[10px] bg-emerald-900/40 text-emerald-300 border border-emerald-700/50">Zero-Cloud</span>
+                      </h2>
+                      <p class="text-[11px] text-gray-400 mt-0.5">
+                        Pure BEAM IEEE-754 vector similarity matching with sub-second retrieval
+                      </p>
+                    </div>
+                  </div>
+
+                  <form
+                    id="semantic-search-form"
+                    phx-change="search_semantic"
+                    phx-submit="search_semantic"
+                    class="relative"
+                  >
+                    <.icon
+                      name="hero-magnifying-glass"
+                      class="w-4 h-4 text-gray-400 absolute left-3 top-2.5"
+                    />
+                    <input
+                      type="text"
+                      name="query"
+                      value={@semantic_query}
+                      phx-debounce="200"
+                      placeholder="Ask in natural language (e.g. 'function that calculates consensus', 'rollback checkpoints')..."
+                      class="w-full bg-[#161b22] border border-[#21262d] rounded-xl pl-9 pr-4 py-2 text-gray-100 placeholder-gray-500 font-mono text-xs focus:outline-none focus:border-purple-500/50 focus:ring-1 focus:ring-purple-500/50"
+                    />
+                  </form>
+                </div>
+
+                <!-- Semantic Results List -->
+                <div class="flex-1 overflow-y-auto p-4 space-y-3">
+                  <%= if @semantic_query == "" do %>
+                    <div class="h-64 flex flex-col items-center justify-center text-center text-zinc-500">
+                      <.icon name="hero-sparkles" class="w-8 h-8 text-zinc-600 mb-2" />
+                      <p>Type a natural language query above to search code semantically.</p>
+                    </div>
+                  <% else %>
+                    <%= if @semantic_results == [] do %>
+                      <div class="h-64 flex flex-col items-center justify-center text-center text-zinc-500">
+                        <p>
+                          No matches found above similarity threshold for "{@semantic_query}".
+                        </p>
+                      </div>
+                    <% else %>
+                      <%= for result <- @semantic_results do %>
+                        <div
+                          phx-click="jump_to_symbol"
+                          phx-value-path={result.file_path}
+                          phx-value-line={result.start_line}
+                          class="p-3 bg-[#161b22] hover:bg-[#21262d] border border-[#30363d] rounded-xl cursor-pointer transition-smooth group"
+                        >
+                          <div class="flex items-center justify-between mb-2">
+                            <div class="flex items-center gap-2 truncate">
+                              <span class="text-blue-400 font-bold">{result.file_path}</span>
+                              <span class="text-zinc-500 text-[11px]">:{result.start_line}-{result.end_line}</span>
+                              <%= if result.symbol_name do %>
+                                <span class="px-1.5 py-0.5 rounded text-[10px] bg-purple-900/50 text-purple-300 font-semibold">
+                                  {result.symbol_type} {result.symbol_name}
+                                </span>
+                              <% end %>
+                            </div>
+                            <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-950 border border-emerald-800 text-emerald-300">
+                              {result.match_percent}% match
+                            </span>
+                          </div>
+                          <pre class="bg-[#0a0d12] p-2.5 rounded-lg text-[11px] text-zinc-300 overflow-x-auto max-h-36 font-mono whitespace-pre-wrap"><code>{result.content}</code></pre>
+                        </div>
+                      <% end %>
+                    <% end %>
+                  <% end %>
+                </div>
+              </div>
+            <% end %>
+          </div>
         <% end %>
 
         <!-- DEDICATED DEEP RESEARCH WORKSPACE -->
@@ -2204,14 +2992,26 @@
                     requested execution contract visible before any work begins.
                   </p>
                 </div>
-                <.link
-                  id="research-open-settings"
-                  navigate={~p"/sessions/#{@session.id}/settings#providers"}
-                  class="inline-flex min-h-11 items-center justify-center gap-2 border border-[#303844] bg-[#11161d] px-4 font-mono text-[10px] font-semibold uppercase tracking-wider text-gray-300 transition-colors hover:border-violet-400/40 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60"
-                >
-                  <.icon name="hero-adjustments-horizontal" class="h-4 w-4 text-violet-300" />
-                  Provider settings
-                </.link>
+                <div class="flex items-center gap-2">
+                  <button
+                    type="button"
+                    phx-click="detach_window"
+                    phx-value-tool="dag"
+                    class="inline-flex min-h-11 items-center justify-center gap-2 border border-[#303844] bg-[#11161d] px-4 font-mono text-[10px] font-semibold uppercase tracking-wider text-cyan-300 transition-colors hover:border-cyan-400/40 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/60"
+                    title="Detach DAG execution map into standalone window"
+                  >
+                    <.icon name="hero-arrow-top-right-on-square" class="h-4 w-4 text-cyan-400" />
+                    Detach DAG Map
+                  </button>
+                  <.link
+                    id="research-open-settings"
+                    navigate={~p"/sessions/#{@session.id}/settings#providers"}
+                    class="inline-flex min-h-11 items-center justify-center gap-2 border border-[#303844] bg-[#11161d] px-4 font-mono text-[10px] font-semibold uppercase tracking-wider text-gray-300 transition-colors hover:border-violet-400/40 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60"
+                  >
+                    <.icon name="hero-adjustments-horizontal" class="h-4 w-4 text-violet-300" />
+                    Provider settings
+                  </.link>
+                </div>
               </header>
 
               <div class="grid gap-5 xl:grid-cols-[minmax(0,1.15fr)_minmax(22rem,0.85fr)]">
@@ -2841,6 +3641,19 @@
           "flex-1 flex flex-col h-full bg-[#0a0d12] overflow-hidden",
           @active_tab != "terminal" && "hidden"
         ]}>
+          <div class="px-3 py-1.5 bg-[#161b22] border-b border-[#30363d] flex items-center justify-between shrink-0 font-mono text-xs">
+            <span class="text-zinc-400">Terminal PTY</span>
+            <button
+              type="button"
+              phx-click="detach_window"
+              phx-value-tool="terminal"
+              class="flex items-center gap-1.5 px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-emerald-300 hover:text-white border border-[#30363d] transition-smooth text-[11px]"
+              title="Detach Terminal into standalone window"
+            >
+              <.icon name="hero-arrow-top-right-on-square" class="w-3.5 h-3.5 text-emerald-400" />
+              <span>Detach Terminal Window</span>
+            </button>
+          </div>
           <.terminal_session
             session={@session}
             running={@terminal_running?}

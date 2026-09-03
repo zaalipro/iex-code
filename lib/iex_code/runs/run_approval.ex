@@ -7,7 +7,7 @@ defmodule IexCode.Runs.RunApproval do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
 
-  @statuses ~w(pending approved denied expired cancelled)
+  @statuses ~w(pending approved rejected denied expired cancelled)
 
   schema "run_approvals" do
     field :target_attempt, :integer, default: 0

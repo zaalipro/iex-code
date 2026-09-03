@@ -113,3 +113,46 @@ Implement an auto-detection probe in Settings and provider registry that discove
 - [ ] Automated tests cover notification triggers, memory sampling, dock badge logic, and local provider discovery.
 - [ ] `mix precommit` passes cleanly with 0 failures, 0 warnings, and clean formatting.
 
+## 2026-09-03T06:44:55Z
+
+Use a very large team of agents.
+
+Elevate `iex-code` into an advanced autonomous engineering suite featuring multi-window native desktop detachment, offline local semantic codebase indexing & vector search, atomic time-travel checkpointing & rollback scrubber, and multi-model adversarial consensus voting.
+
+Working directory: /Users/zaali/dev/iex-code
+Integrity mode: development
+
+## Requirements
+
+### R1. Multi-Window Native Desktop Detachment
+Enable detaching focused workspace tools (dedicated Terminal multiplexer, Diff/Git Inspector, and DAG Research visualizer) into independent native macOS `Desktop.Window` instances synchronized in real time via Phoenix PubSub.
+
+### R2. Offline Local Semantic Codebase Indexing & Vector Search
+Provide zero-cloud semantic code search and symbol indexing powered by local embeddings (via local Ollama/llama.cpp inference) stored in SQLite for instantaneous contextual code retrieval during agent planning and file navigation.
+
+### R3. Atomic Workspace Time-Travel Checkpoints & 1-Click Rollback
+Implement pre-mutation snapshot checkpoints and an interactive visual LiveView time-travel scrubber enabling instant non-destructive rollbacks of multi-file modifications made by autonomous swarms.
+
+### R4. Multi-Model Adversarial Consensus & Swarm Voting
+Enable cross-model peer review (e.g. cloud models + local Apple Silicon models) on critical code diffs and architecture plans, presenting visual agreement matrices and automated consensus arbitration before code application.
+
+## Verification Resources
+
+- Automated test suites verifying multi-window PubSub sync, vector index/query accuracy, rollback file integrity, and multi-model consensus matrix calculations.
+- LiveView integration tests ensuring reactive UI updates across all new views and controls.
+
+## Acceptance Criteria
+
+### Desktop Windowing & Search
+- [ ] Detached windows (Terminal, Diff Inspector, DAG visualizer) mount as independent macOS windows and stay synchronized with the main workspace via PubSub.
+- [ ] Codebase files are embedded and indexed locally in SQLite, returning ranked semantic code results with sub-second retrieval latency.
+
+### Checkpoints & Consensus Voting
+- [ ] Every autonomous swarm mutation creates an atomic snapshot checkpoint that can be fully rolled back via the LiveView time-travel scrubber without leaving orphaned edits.
+- [ ] Multi-model consensus voting collects structured assessments from multiple providers, displays an agreement matrix in the UI, and enforces consensus thresholds before patch application.
+
+### Codebase Health & Integrity
+- [ ] Comprehensive test suites verify multi-window event synchronization, vector retrieval accuracy, rollback integrity, and consensus arbitration.
+- [ ] `mix precommit` passes cleanly with 0 failures, 0 warnings, and clean formatting.
+
+

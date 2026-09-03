@@ -1,89 +1,112 @@
-# Project: Next-Level Native Desktop Capabilities for `iex-code`
+# Project: Advanced Autonomous Engineering Suite for `iex-code`
 
 ## Architecture
-This project extends `iex-code` with four next-level native desktop capabilities:
-1. **Desktop Notifications & Sound Cues (`IexCode.Desktop.Notifier` & `IexCode.Desktop.Sound`)**:
-   Native macOS notification center integration via `Desktop.Window.show_notification` and auditory cues via `/usr/bin/afplay` for swarm lifecycle milestones (completion, verification rejection, step failure, pending human approval) with headless/test guards.
-2. **Real-time Memory & VM Telemetry (`IexCode.Observability.MemoryPoller`)**:
-   Background GenServer polling OS RSS (`ps -o rss=`), BEAM allocators (`:erlang.memory()`), active processes, and micro-GC statistics (`:erlang.statistics(:garbage_collection)`), broadcasting over `"telemetry:memory"` to an interactive LiveView footer status pill.
-3. **Dynamic macOS Dock Badging & Window Title (`IexCode.Desktop.Dock`)**:
-   Tracks running swarm workers and waiting human approvals (e.g. `3 running, 1 waiting`), dynamically updating window title (`Desktop.Window.set_title`), LiveView page title, and macOS Dock badge.
-4. **Zero-Config Local LLM Auto-Discovery (`IexCode.LLM.Discovery`)**:
-   Non-blocking probes for local inference servers (Ollama :11434, LM Studio :1234, llama.cpp :8080), querying models and making them selectable in `WorkspaceLive` and `SettingsLive` with zero API key configuration.
-5. **E2E Testing & Precommit Compliance**:
-   Comprehensive test coverage across all four capabilities with 0 compiler warnings, 0 test failures, and clean `mix precommit`.
+This project elevates `iex-code` into an advanced autonomous engineering suite featuring:
+1. **Multi-Window Native Desktop Detachment (`IexCode.Desktop.WindowManager` & `WindowSupervisor`)**:
+   Enables detaching focused workspace tools (dedicated Terminal multiplexer, Diff/Git Inspector, and DAG Research visualizer) into independent native macOS `Desktop.Window` instances (`IexCodeTerminalWindow`, `IexCodeDiffWindow`, `IexCodeDagWindow` with `on_close: :hide`) synchronized in real time with the main workspace via Phoenix PubSub.
+2. **Offline Local Semantic Codebase Indexing & Vector Search (`IexCode.SemanticIndex.*`)**:
+   Zero-cloud semantic code search and symbol indexing powered by local embeddings (via local Ollama / llama.cpp inference) stored in SQLite with packed float32 dot-product math for instantaneous (<10ms) contextual code retrieval during agent planning and file navigation.
+3. **Atomic Workspace Time-Travel Checkpoints & 1-Click Rollback (`IexCode.TimeTravel.*`)**:
+   Pre-mutation snapshot checkpoints capturing multi-file modifications across all swarm tools (`write_file`, `patch_file`, `multi_patch`) and an interactive visual LiveView time-travel scrubber enabling instant non-destructive rollbacks without orphaned edits.
+4. **Multi-Model Adversarial Consensus & Swarm Voting (`IexCode.Consensus.*`)**:
+   Cross-model peer review (cloud models + local Apple Silicon models) on critical code diffs and architecture plans, presenting visual agreement matrices and automated consensus arbitration before code application.
+5. **Comprehensive Verification & Precommit Compliance**:
+   Opaque-box E2E test suites across all four capabilities, LiveView reactive integration tests, 0 compiler warnings, 0 test failures, and 100% clean `mix precommit`.
 
 ## Feature Inventory
 | # | Feature | Description | Milestone | Source |
 |---|---------|-------------|-----------|--------|
-| 1 | Native macOS Desktop Notifications | Dispatch native notification banner on swarm events using `Desktop.Window.show_notification` with headless fallback | M1 | ORIGINAL_REQUEST §R1 |
-| 2 | Auditory Sound Cues | Play macOS system sounds (`Hero.aiff`, `Sosumi.aiff`, `Basso.aiff`, `Ping.aiff`) via `/usr/bin/afplay` on lifecycle events | M1 | ORIGINAL_REQUEST §R1 |
-| 3 | Swarm Lifecycle Event Integration | Hook into task completion, verification rejection, step failure, and pending approval | M1 | ORIGINAL_REQUEST §R1 |
-| 4 | OS RSS Memory Poller | Sample resident set size on macOS via `ps -o rss=` in lightweight GenServer | M2 | ORIGINAL_REQUEST §R2 |
-| 5 | BEAM Memory & Micro-GC Telemetry | Sample `:erlang.memory()`, `:erlang.system_info(:process_count)`, and micro-GC delta throughput | M2 | ORIGINAL_REQUEST §R2 |
-| 6 | LiveView Footer Status Pill | Interactive status pill at bottom of LiveView workspace with luxury tooltip popover and GC trigger | M2 | ORIGINAL_REQUEST §R2 |
-| 7 | Dynamic Window Title Updates | Update window title to reflect active worker and approval counts (`3 running, 1 waiting`) | M3 | ORIGINAL_REQUEST §R3 |
-| 8 | Dynamic macOS Dock Icon Badging | Set Dock badge state and broadcast activity counts across swarm workers | M3 | ORIGINAL_REQUEST §R3 |
-| 9 | Local LLM Server Probes | Concurrent non-blocking probes for Ollama (:11434), LM Studio (:1234), llama.cpp (:8080) | M4 | ORIGINAL_REQUEST §R4 |
-| 10 | Zero-Config Provider Routing | Allow local endpoints without requiring manual API keys (fallback token / bypass check) | M4 | ORIGINAL_REQUEST §R4 |
-| 11 | Local Model Picker in LiveView | Surface discovered local models in `WorkspaceLive` and `SettingsLive` with 1-click selection | M4 | ORIGINAL_REQUEST §R4 |
-| 12 | Automated Tests & Precommit | Comprehensive unit and LiveView integration tests, clean `mix precommit` | M5 | Acceptance Criteria |
+| 1 | WindowManager & Dynamic WindowSupervisor | Supervisor managing native secondary `Desktop.Window` instances with `on_close: :hide` | M1 | ORIGINAL_REQUEST §R1 |
+| 2 | Dedicated Detached Routes & LiveViews | Standalone `/sessions/:id/detached/{terminal,diff,dag}` LiveViews with edge-to-edge layouts | M1 | ORIGINAL_REQUEST §R1 |
+| 3 | Bi-directional PubSub Window Synchronization | Real-time state synchronization for PTY streaming, Git mutations, and DAG execution across all windows | M1 | ORIGINAL_REQUEST §R1 |
+| 4 | Main Workspace Detach UI & Menu Triggers | Detach buttons on headers, `MenuBar` shortcuts (`Cmd+Shift+3/4/5`), and Command Palette actions | M1 | ORIGINAL_REQUEST §R1 |
+| 5 | SQLite Code Embeddings Schema | SQLite migration `create_code_embeddings` storing packed float32 vectors, hashes, and symbol metadata | M2 | ORIGINAL_REQUEST §R2 |
+| 6 | Local Embedding Inference Client | Offline embedding client via `:req` connecting to local Ollama / llama.cpp `/v1/embeddings` | M2 | ORIGINAL_REQUEST §R2 |
+| 7 | AST Symbol & Text Chunker | Extracts Elixir AST symbols and windowed code chunks with boundary metadata | M2 | ORIGINAL_REQUEST §R2 |
+| 8 | Vector Math & Fast SQLite/ETS Search | Binary dot-product calculation on unit-normalized vectors with sub-second retrieval | M2 | ORIGINAL_REQUEST §R2 |
+| 9 | Semantic Search Tool & LiveView UI | `semantic_code_search` tool in `IexCode.Tools` and interactive search panel in `WorkspaceLive` | M2 | ORIGINAL_REQUEST §R2 |
+| 10 | Universal Pre-Mutation Snapshotting | Capture atomic pre-mutation snapshots in `write_file`, `patch_file`, and `multi_patch` | M3 | ORIGINAL_REQUEST §R3 |
+| 11 | Sequential Time-Travel Rollback Engine | Reverse-chronological multi-step rollback restoring modified files and deleting created files | M3 | ORIGINAL_REQUEST §R3 |
+| 12 | LiveView Visual Time-Travel Scrubber | Interactive slider, checkpoint inspection cards, unified diff previews, and 1-Click Rollback button | M3 | ORIGINAL_REQUEST §R3 |
+| 13 | Pre-Mutation Patch Preview Interception | Intercept `CoderAgent` tool calls using `MultiPatch.preview_patches/3` for peer review | M4 | ORIGINAL_REQUEST §R4 |
+| 14 | Multi-Model Structured Assessment Schema | JSON assessment format with 5-dimensional scores, votes, confidence, and critique points | M4 | ORIGINAL_REQUEST §R4 |
+| 15 | Pairwise Agreement Matrix & Consensus Math | Matrix $A_{j,k}$, swarm concordance $\bar{A}$, weighted consensus $C$, and threshold arbitration | M4 | ORIGINAL_REQUEST §R4 |
+| 16 | Visual Agreement Matrix LiveView UI | Heat-map agreement matrix, dimensional score progress bars, and manual arbitration controls | M4 | ORIGINAL_REQUEST §R4 |
+| 17 | Comprehensive Test Suites & Precommit | Automated test suites for R1-R4, LiveView integration tests, and clean `mix precommit` | M5 | Acceptance Criteria |
 
 ## Milestones
 | # | Name | Scope | Dependencies | Status |
 |---|------|-------|-------------|--------|
-| 1 | Native Notifications & Sound Cues | `IexCode.Desktop.Notifier`, `IexCode.Desktop.Sound`, swarm lifecycle hooks | None | DONE |
-| 2 | Memory & Telemetry Poller with Footer Pill | `IexCode.Observability.MemoryPoller`, `"telemetry:memory"`, LiveView footer | None | DONE |
-| 3 | Dynamic Dock Badging & Window Title | `IexCode.Desktop.Dock`, worker & approval state tracking, title sync | M1 | DONE |
-| 4 | Zero-Config Local LLM Auto-Discovery | `IexCode.LLM.Discovery`, provider routing, LiveView model picker | None | DONE |
-| 5 | E2E Integration & Precommit | Full test suites, edge case verification, `mix precommit` | M1, M2, M3, M4 | DONE |
+| 1 | Multi-Window Native Desktop Detachment | `IexCode.Desktop.WindowManager`, `WindowSupervisor`, dedicated routes, `TerminalLive`, `DiffLive`, `DagLive`, PubSub sync | None | DONE |
+| 2 | Offline Local Semantic Indexing & Vector Search | SQLite migration, `EmbeddingClient`, `Chunker`, `Vector`, `Indexer`, search tool, LiveView search panel | None | DONE |
+| 3 | Atomic Time-Travel Checkpoints & Rollback Scrubber | Pre-mutation snapshotting on all mutation tools, `TimeTravel` engine, LiveView scrubber UI in `changes` tab | None | DONE |
+| 4 | Multi-Model Adversarial Consensus & Swarm Voting | `Consensus.Assessment`, `Evaluator`, `Matrix`, `Arbitrator`, patch preview interception, LiveView agreement matrix | None | DONE |
+| 5 | E2E Integration, Hardening & mix precommit | Full test suites, edge case verification, LiveView tests, clean `mix precommit` | M1, M2, M3, M4 | DONE |
 
 ## Interface Contracts
 
-### M1: Desktop Notifier & Sound
-- `IexCode.Desktop.Notifier.notify(message, opts)`:
-  - `opts`: `[title: String.t(), type: :info | :warning | :error, sound: atom() | nil]`
-  - Checks if `Desktop.Window` is alive (atom or PID); if not, logs and returns `{:ok, :fallback}`.
-- `IexCode.Desktop.Sound.play(event_type)`:
-  - `event_type`: `:swarm_completed | :verification_rejected | :step_failed | :approval_requested`
-  - Spawns background task to run `/usr/bin/afplay -t 5 /System/Library/Sounds/<sound>.aiff`.
-  - No-ops if `Mix.env() == :test` or `Application.get_env(:iex_code, :desktop_sound_enabled) == false`.
+### M1: Desktop WindowManager & PubSub Sync
+- `IexCode.Desktop.WindowManager`:
+  - `open_window(tool, session_id)`:
+    - `tool`: `:terminal | :diff | :dag`
+    - In desktop environment: starts or shows window `IexCodeTerminalWindow`, `IexCodeDiffWindow`, or `IexCodeDagWindow` with `on_close: :hide`.
+    - In web/test environment: returns `{:ok, :web_url, url}`.
+  - `close_window(tool)`: hides the window.
+- PubSub Channels:
+  - `"session:#{session_id}:terminal"`: PTY data chunks, clear events, agent occupancy locks.
+  - `"project:#{project_id}:git"`: Git state mutation broadcasts to refresh diffs.
+  - `"runs:session:#{session_id}"`: DAG run and step state transitions.
 
-### M2: Observability Memory Poller
-- `IexCode.Observability.MemoryPoller`:
-  - Broadcasts `{:memory_telemetry, %IexCode.Observability.MemorySnapshot{}}` to topic `"telemetry:memory"`.
-  - `MemorySnapshot`: `%{rss_bytes: integer(), beam_total_bytes: integer(), beam_processes_bytes: integer(), beam_system_bytes: integer(), process_count: integer(), gc_runs: integer(), gc_words_reclaimed: integer(), delta_gc_runs: integer(), delta_reclaimed_bytes: integer()}`.
-  - `MemoryPoller.current_metrics()`: returns `%MemorySnapshot{}` synchronously for initial LiveView mount.
+### M2: Semantic Indexing & Vector Search
+- `IexCode.SemanticIndex.EmbeddingClient.embed(text_or_texts, opts \\ [])`:
+  - Returns `{:ok, [list(float())]}` or `{:error, reason}`. Unit-normalizes vectors.
+- `IexCode.SemanticIndex.Vector.dot_product(binary_vec1, binary_vec2)`:
+  - Fast bitstring dot-product calculation on packed float32 binaries.
+- `IexCode.SemanticIndex.Indexer.search(project_root, query, opts \\ [])`:
+  - Options: `:limit` (default 10), `:symbol_type` (optional filter).
+  - Returns ranked list of `%{file_path: string, start_line: integer, end_line: integer, symbol_name: string, symbol_type: string, score: float, snippet: string}`.
 
-### M3: Desktop Dock & Window Title
-- `IexCode.Desktop.Dock.set_activity(running_count, waiting_count)`:
-  - Formats title: `"IexCode - #{running_count} running, #{waiting_count} waiting"`
-  - Calls `Desktop.Window.set_title(IexCodeWindow, title)` if window alive.
-  - Broadcasts `{:dock_activity_updated, %{running: running_count, waiting: waiting_count}}`.
+### M3: Atomic Checkpoints & Time-Travel Rollback
+- `IexCode.TimeTravel`:
+  - `create_checkpoint(session_id, project_root, patches, opts \\ [])`:
+    - Saves pre-mutation snapshot atomically before disk write.
+  - `list_checkpoints(session_id_or_project_root)`:
+    - Returns ordered list of checkpoints with sequence numbers, timestamps, labels, diff stats.
+  - `rollback_to(checkpoint_id, opts \\ [])`:
+    - Sequentially rolls back all snapshots after `checkpoint_id` in reverse chronological order.
+  - `rollback_latest(session_id_or_project_root)`:
+    - Rolls back the single latest snapshot.
 
-### M4: Local LLM Auto-Discovery
-- `IexCode.LLM.Discovery.scan()`:
-  - Returns `%{ollama: %{online?: boolean(), models: list()}, lm_studio: %{online?: boolean(), models: list()}, llama_cpp: %{online?: boolean(), models: list()}}`.
-- `IexCode.LLM.Discovery.Server`:
-  - Periodic background polling every 30s; broadcast to `"llm:discovery"`.
-  - `IexCode.LLM.Discovery.Server.get_discovered_models()` returns list of model descriptors.
-- `IexCode.Execution.ModelRoute` & `IexCode.LLM`:
-  - When provider is local or `is_local_endpoint?(base_url)`, bypass `:no_api_key` error by using token `"local"`.
+### M4: Multi-Model Adversarial Consensus
+- `IexCode.Consensus.Assessment`:
+  - Fields: `reviewer_id`, `provider`, `model`, `vote` (`:approve | :reject | :request_changes`), `confidence` (0.0..1.0), `scores` (`%{correctness: int, security: int, architecture: int, maintainability: int, testability: int}`), `critique` (list of strings).
+- `IexCode.Consensus.Matrix.compute(assessments)`:
+  - Returns `%{pairwise_matrix: map(), swarm_concordance: float(), weighted_score: float(), decision: :approved | :rejected | :contested}`.
+- `IexCode.Consensus.Arbitrator.evaluate_diff(diff_or_patches, opts \\ [])`:
+  - Queries panel of models, computes consensus matrix, and returns decision with `RunApproval` integration if gated.
 
 ## Code Layout
-- `lib/iex_code/desktop/notifier.ex`: Desktop notification dispatcher.
-- `lib/iex_code/desktop/sound.ex`: Audio cues player.
-- `lib/iex_code/desktop/dock.ex`: Activity tracking, dock badge & window title manager.
-- `lib/iex_code/desktop/swarm_hooks.ex`: Swarm lifecycle event subscriber.
-- `lib/iex_code/observability/memory_poller.ex`: Memory & BEAM telemetry poller.
-- `lib/iex_code/observability/memory_snapshot.ex`: Telemetry data structure.
-- `lib/iex_code_web/live/components/memory_telemetry_pill.ex` (or embedded component in `workspace_live.html.heex`): Footer status pill.
-- `lib/iex_code/llm/discovery.ex`: Local LLM probe engine.
-- `lib/iex_code/llm/discovery/server.ex`: Discovery GenServer.
-- `test/iex_code/desktop/notifier_test.exs`
-- `test/iex_code/desktop/sound_test.exs`
-- `test/iex_code/desktop/dock_test.exs`
-- `test/iex_code/observability/memory_poller_test.exs`
-- `test/iex_code/llm/discovery_test.exs`
-- `test/iex_code_web/live/workspace_live_telemetry_test.exs`
-- `test/iex_code_web/live/workspace_live_model_picker_test.exs`
+- `lib/iex_code/desktop/window_manager.ex`: Window lifecycle manager.
+- `lib/iex_code/desktop/window_supervisor.ex`: Dynamic supervisor for detached windows.
+- `lib/iex_code_web/live/detached/terminal_live.ex`: Standalone terminal multiplexer LiveView.
+- `lib/iex_code_web/live/detached/diff_live.ex`: Standalone Git / diff inspector LiveView.
+- `lib/iex_code_web/live/detached/dag_live.ex`: Standalone DAG execution visualizer LiveView.
+- `lib/iex_code/semantic_index/embedding_client.ex`: Local inference client.
+- `lib/iex_code/semantic_index/chunker.ex`: AST symbol and code chunker.
+- `lib/iex_code/semantic_index/vector.ex`: Packed float32 vector math.
+- `lib/iex_code/semantic_index/indexer.ex`: SQLite storage and search GenServer.
+- `lib/iex_code/semantic_index/code_embedding.ex`: Ecto schema for SQLite vector table.
+- `priv/repo/migrations/*_create_code_embeddings.exs`: SQLite migration.
+- `lib/iex_code/time_travel.ex`: Atomic checkpointing and multi-step rollback engine.
+- `lib/iex_code/time_travel/checkpoint.ex`: Checkpoint data structure and queries.
+- `lib/iex_code/consensus/assessment.ex`: Structured vote schema.
+- `lib/iex_code/consensus/matrix.ex`: Agreement matrix and consensus math.
+- `lib/iex_code/consensus/evaluator.ex`: Multi-model panel evaluator.
+- `lib/iex_code/consensus/arbitrator.ex`: Threshold gating and RunApproval bridge.
+- `lib/iex_code_web/components/consensus_components.ex`: Agreement matrix UI components.
+- `test/iex_code/desktop/window_manager_test.exs`
+- `test/iex_code_web/live/detached/`
+- `test/iex_code/semantic_index/`
+- `test/iex_code/time_travel/`
+- `test/iex_code/consensus/`
+- `test/iex_code/e2e/autonomous_suite_test.exs`

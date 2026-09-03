@@ -115,6 +115,36 @@ defmodule IexCodeWeb.CommandPalette do
       shortcut: "",
       event: "refresh_git_status",
       params: %{}
+    },
+    %{
+      id: "detach_terminal",
+      category: :action,
+      title: "Detach Terminal Window",
+      subtitle: "Open standalone Terminal Multiplexer in native window",
+      icon: "hero-arrow-top-right-on-square",
+      shortcut: "Cmd+Shift+T",
+      event: "detach_window",
+      params: %{"tool" => "terminal"}
+    },
+    %{
+      id: "detach_diff",
+      category: :action,
+      title: "Detach Git & Diff Window",
+      subtitle: "Open standalone Git Staging Hub in native window",
+      icon: "hero-arrow-top-right-on-square",
+      shortcut: "Cmd+Shift+D",
+      event: "detach_window",
+      params: %{"tool" => "diff"}
+    },
+    %{
+      id: "detach_dag",
+      category: :action,
+      title: "Detach DAG Visualizer Window",
+      subtitle: "Open standalone DAG Map & Deep Research in native window",
+      icon: "hero-arrow-top-right-on-square",
+      shortcut: "Cmd+Shift+M",
+      event: "detach_window",
+      params: %{"tool" => "dag"}
     }
   ]
 

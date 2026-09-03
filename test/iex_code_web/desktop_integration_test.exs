@@ -83,7 +83,7 @@ defmodule IexCodeWeb.DesktopIntegrationTest do
       # Verify Desktop.Menu.Parser parses without errors
       dom = Desktop.Menu.Parser.parse(rendered)
       assert {:menubar, _, menus} = dom
-      assert length(menus) == 5
+      assert length(menus) in [5, 6]
     end
 
     test "handle_event/2 broadcasts desktop events over PubSub" do

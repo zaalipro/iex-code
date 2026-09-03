@@ -844,8 +844,19 @@ defmodule IexCode.E2E.E2EPtyTerminalTest do
       # Late subscriber connects
       subscribe_terminal(session_id)
 
-      # History sync returns missed output
-      history = TerminalServer.get_history(session_id)
+      # History sync returns missed output (wait briefly for shell execution if under load)
+      history =
+        Enum.reduce_while(1..50, "", fn _, _acc ->
+          h = TerminalServer.get_history(session_id)
+
+          if String.contains?(h, token) do
+            {:halt, h}
+          else
+            Process.sleep(50)
+            {:cont, h}
+          end
+        end)
+
       assert String.contains?(history, token)
     end
   end

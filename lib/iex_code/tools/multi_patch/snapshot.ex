@@ -60,13 +60,49 @@ defmodule IexCode.Tools.MultiPatch.Snapshot do
       patches: patches
     }
 
+    next_seq =
+      if session_id do
+        max_seq =
+          Repo.one(
+            from(s in MutationSnapshot,
+              where: s.session_id == ^session_id,
+              select: max(s.seq)
+            )
+          ) || 0
+
+        max_seq + 1
+      else
+        1
+      end
+
+    label =
+      Keyword.get(opts, :label) ||
+        case length(patches) do
+          1 ->
+            p = hd(patches)
+            path = p[:path] || p["path"] || "file"
+
+            if Map.get(p, :file_existed?, Map.get(p, "file_existed", true)),
+              do: "patch_file #{path}",
+              else: "write_file #{path}"
+
+          count ->
+            "multi_patch #{count} files"
+        end
+
+    diff_summary = Keyword.get(opts, :diff_summary) || "#{length(patches)} files modified"
+
     durable_attrs = %{
       transaction_id: tx_id,
       session_id: session_id,
       run_id: run_id,
       project_root: project_root,
       patches: Enum.map(patches, &serialize_patch/1),
-      created_at: DateTime.truncate(timestamp, :second)
+      created_at: DateTime.truncate(timestamp, :second),
+      seq: next_seq,
+      status: "active",
+      label: label,
+      diff_summary: diff_summary
     }
 
     case Repo.retry_on_busy(fn ->
@@ -74,14 +110,36 @@ defmodule IexCode.Tools.MultiPatch.Snapshot do
            |> MutationSnapshot.changeset(durable_attrs)
            |> Repo.insert(
              on_conflict:
-               {:replace, [:session_id, :run_id, :project_root, :patches, :created_at]},
+               {:replace,
+                [
+                  :session_id,
+                  :run_id,
+                  :project_root,
+                  :patches,
+                  :created_at,
+                  :seq,
+                  :status,
+                  :label,
+                  :diff_summary
+                ]},
              conflict_target: :transaction_id
            )
          end) do
-      {:ok, _snapshot} ->
+      {:ok, snapshot} ->
         # SQLite is authoritative. Populate the hot cache only after the
         # rollback manifest is durably committed.
         :ets.insert(@table_name, {tx_id, entry})
+
+        if session_id do
+          snapshot_with_id = %{snapshot | id: snapshot.transaction_id}
+
+          Phoenix.PubSub.broadcast(
+            IexCode.PubSub,
+            "session:#{session_id}",
+            {:checkpoint_created, snapshot_with_id}
+          )
+        end
+
         :ok
 
       {:error, reason} ->
@@ -261,12 +319,26 @@ defmodule IexCode.Tools.MultiPatch.Snapshot do
   end
 
   defp serialize_patch(patch) do
+    path = patch[:path] || patch["path"]
+    full_path = patch[:full_path] || patch["full_path"]
+
+    file_existed =
+      cond do
+        Map.has_key?(patch, :file_existed?) -> Map.get(patch, :file_existed?)
+        Map.has_key?(patch, "file_existed") -> Map.get(patch, "file_existed")
+        Map.has_key?(patch, :file_existed) -> Map.get(patch, :file_existed)
+        true -> true
+      end
+
+    orig = patch[:original_content] || patch["original_content"]
+    new_c = patch[:new_content] || patch["new_content"]
+
     %{
-      "path" => patch.path,
-      "full_path" => patch.full_path,
-      "file_existed" => patch.file_existed?,
-      "original_content" => patch.original_content,
-      "new_content" => patch.new_content
+      "path" => path,
+      "full_path" => full_path,
+      "file_existed" => file_existed,
+      "original_content" => orig,
+      "new_content" => new_c
     }
   end
 

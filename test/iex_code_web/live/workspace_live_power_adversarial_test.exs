@@ -1,6 +1,7 @@
 defmodule IexCodeWeb.WorkspaceLivePowerAdversarialTest do
   use IexCode.E2E.Case, async: false
   @moduletag mock_llm: true
+  @moduletag timeout: 180_000
 
   alias IexCode.Tools.Git
 

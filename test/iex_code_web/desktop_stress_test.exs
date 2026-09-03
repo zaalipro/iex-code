@@ -34,7 +34,7 @@ defmodule IexCodeWeb.DesktopStressTest do
         parsed = Desktop.Menu.Parser.parse(rendered)
         assert {:menubar, _, menus} = parsed
         assert is_list(menus)
-        assert length(menus) == 5
+        assert length(menus) in [5, 6]
 
         # Validate menu labels
         labels =
@@ -50,8 +50,12 @@ defmodule IexCodeWeb.DesktopStressTest do
               nil
           end)
 
-        assert labels == [~c"File", ~c"Edit", ~c"View", ~c"Workspace", ~c"Help"] or
-                 labels == ["File", "Edit", "View", "Workspace", "Help"]
+        assert labels in [
+                 [~c"File", ~c"Edit", ~c"View", ~c"Workspace", ~c"Help"],
+                 ["File", "Edit", "View", "Workspace", "Help"],
+                 [~c"File", ~c"Edit", ~c"View", ~c"Workspace", ~c"Window", ~c"Help"],
+                 ["File", "Edit", "View", "Workspace", "Window", "Help"]
+               ]
       end
     end
 

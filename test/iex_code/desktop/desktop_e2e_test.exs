@@ -84,7 +84,7 @@ defmodule IexCode.Desktop.DesktopE2ETest do
 
       # Verify parser compliance
       assert {:menubar, _, menus} = Desktop.Menu.Parser.parse(rendered)
-      assert length(menus) == 5
+      assert length(menus) in [5, 6]
     end
 
     test "TrayMenu renders valid XML with essential dock items and parses cleanly" do

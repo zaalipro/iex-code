@@ -42,6 +42,10 @@ defmodule IexCodeWeb.MenuBar do
         <hr />
         <item onclick="toggle_sidebar">Toggle Sidebar&#x09;Cmd+B</item>
         <item onclick="focus_command_palette">Command Palette&#x09;Cmd+K</item>
+        <hr />
+        <item onclick="detach_terminal">Detach Terminal&#x09;Cmd+Shift+T</item>
+        <item onclick="detach_diff">Detach Git / Diff&#x09;Cmd+Shift+D</item>
+        <item onclick="detach_dag">Detach DAG Map&#x09;Cmd+Shift+M</item>
       </menu>
       <menu label="Workspace">
         <item onclick="tab_kanban">Kanban Board&#x09;Cmd+1</item>
@@ -86,6 +90,19 @@ defmodule IexCodeWeb.MenuBar do
 
       <<"tab_", tab::binary>> ->
         PubSub.broadcast(@pubsub, "desktop:events", {:desktop_switch_tab, tab})
+
+      "detach_terminal" ->
+        PubSub.broadcast(
+          @pubsub,
+          "desktop:events",
+          {:desktop_action, {:detach_window, :terminal}}
+        )
+
+      "detach_diff" ->
+        PubSub.broadcast(@pubsub, "desktop:events", {:desktop_action, {:detach_window, :diff}})
+
+      "detach_dag" ->
+        PubSub.broadcast(@pubsub, "desktop:events", {:desktop_action, {:detach_window, :dag}})
 
       "help_docs" ->
         Desktop.OS.open_url("https://github.com/zaalipro/iex-code")

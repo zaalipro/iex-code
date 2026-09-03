@@ -272,8 +272,11 @@ defmodule IexCode.Desktop.SwarmHooks do
       is_map(payload) and is_binary(Map.get(payload, "title")) ->
         "Swarm goal completed: #{Map.get(payload, "title")}"
 
-      is_map(payload) and Map.has_key?(payload, :id) ->
+      is_map(payload) and is_binary(Map.get(payload, :id)) ->
         "Swarm run #{Map.get(payload, :id)} completed successfully."
+
+      is_map(payload) and Map.has_key?(payload, :id) ->
+        "Swarm run #{inspect(Map.get(payload, :id))} completed successfully."
 
       true ->
         "Swarm goal execution finished successfully."

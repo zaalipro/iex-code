@@ -28,6 +28,12 @@ defmodule IexCodeWeb.Router do
     get "/research/:id/report", ResearchReportController, :show
     get "/research/:id/report/download", ResearchReportController, :download_html
     get "/research/:id/result/download", ResearchReportController, :download_markdown
+
+    scope "/sessions/:id/detached", Detached, as: :detached do
+      live "/terminal", TerminalLive, :show
+      live "/diff", DiffLive, :show
+      live "/dag", DagLive, :show
+    end
   end
 
   # Other scopes may use custom stacks.
