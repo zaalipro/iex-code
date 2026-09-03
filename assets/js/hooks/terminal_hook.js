@@ -94,9 +94,20 @@ export const TerminalHook = {
     // 4. Open Terminal in Host Element
     this.term.open(this.el)
 
-    // 5. Custom Key Event Interceptor (macOS Cmd+C copy / Windows Ctrl+Shift+C copy)
+    // 5. Custom Key Event Interceptor (macOS Cmd+C copy / Windows Ctrl+Shift+C copy, shortcut passthroughs)
     this.term.attachCustomKeyEventHandler((event) => {
       if (event.type === "keydown") {
+        // Let global shortcuts pass through to window listener
+        if (
+          (event.metaKey || event.ctrlKey) &&
+          (event.key === "b" || event.key === "B" ||
+           event.key === "j" || event.key === "J" ||
+           event.key === "k" || event.key === "K" ||
+           event.key === ",")
+        ) {
+          return false
+        }
+
         const isMac = typeof navigator !== "undefined" && navigator.platform && navigator.platform.toUpperCase().indexOf("MAC") >= 0
         const isCopy = isMac
           ? (event.metaKey && (event.key === "c" || event.key === "C"))

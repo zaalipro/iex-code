@@ -8,6 +8,7 @@ defmodule IexCodeWeb.DagComponents do
   """
 
   use IexCodeWeb, :html
+  alias IexCodeWeb.Components.SwarmCanvas
 
   attr :projection, :map, required: true
 
@@ -18,6 +19,7 @@ defmodule IexCodeWeb.DagComponents do
     engine = projection_value(projection, :engine, "dag_v1")
     available? = projection_value(projection, :available?, false)
     error_code = projection_value(projection, :error_code, nil)
+    graph = SwarmCanvas.build_graph_from_projection(projection)
 
     assigns =
       assigns
@@ -27,6 +29,8 @@ defmodule IexCodeWeb.DagComponents do
       |> assign(:available?, available?)
       |> assign(:error_code, safe_error_code(error_code))
       |> assign(:node_count, layers |> normalize_layers() |> List.flatten() |> length())
+      |> assign(:canvas_nodes, graph.nodes)
+      |> assign(:canvas_edges, graph.edges)
 
     ~H"""
     <section
@@ -139,6 +143,28 @@ defmodule IexCodeWeb.DagComponents do
       </div>
 
       <div :if={@node_count > 0} id="dag-execution-map">
+        <div id="dag-projection-canvas-wrapper" class="p-4 border-b border-[#252c35] bg-[#07090d]">
+          <div class="mb-2.5 flex items-center justify-between">
+            <div class="flex items-center gap-2 font-mono text-[10px] uppercase tracking-wider text-cyan-300">
+              <span class="h-2 w-2 rounded-full bg-cyan-400 animate-pulse"></span>
+              Interactive Topology Canvas
+            </div>
+            <span class="text-[10px] font-mono text-gray-500">
+              Cubic Bézier Edges · Flow Pulses · 5 Normalized States
+            </span>
+          </div>
+          <div class="h-[360px] w-full relative">
+            <SwarmCanvas.swarm_canvas
+              id="dag-projection-swarm-canvas"
+              nodes={@canvas_nodes}
+              edges={@canvas_edges}
+              zoom_level={1.0}
+              pan_offset={%{x: 0, y: 0}}
+              show_controls={@available?}
+            />
+          </div>
+        </div>
+
         <div class="hidden overflow-x-auto p-5 lg:block">
           <div class="flex min-w-max items-start gap-3">
             <section

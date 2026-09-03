@@ -12,6 +12,7 @@ defmodule IexCodeWeb.WorkspaceLive do
   alias IexCode.Tools.{TerminalServer, TerminalSession}
   alias IexCode.Observability.MemoryPoller
   alias IexCodeWeb.CommandPalette
+  alias IexCodeWeb.Components.SwarmCanvas
   alias Phoenix.PubSub
   import IexCodeWeb.WorkspaceComponents
   import IexCodeWeb.RunComponents
@@ -155,6 +156,11 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:run_controls, run_controls)
       |> assign(:run_manifest, run_manifest(selected_run))
       |> assign(:dag_projection, strict_dag_projection(selected_run, run_steps))
+      |> assign(:canvas_zoom, 1.0)
+      |> assign(:canvas_pan, %{x: 0.0, y: 0.0})
+      |> assign(:canvas_selected_node, nil)
+      |> assign(:swarm_canvas_view_mode, "canvas")
+      |> refresh_swarm_canvas()
       |> assign(:run_artifacts, run_artifacts)
       |> assign(:run_agent_count, length(run_agents))
       |> assign(:run_fleet_summary, run_fleet_summary(run_agents))
@@ -247,6 +253,11 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:terminal_port, nil)
       |> assign(:terminal_history, terminal_history)
       |> assign(:terminal_form, to_form(%{"command" => ""}))
+      # Layout Ergonomics assigns
+      |> assign(:sidebar_collapsed, false)
+      |> assign(:bottom_terminal_open, false)
+      |> assign(:bottom_terminal_height, 280)
+      |> assign(:layout_density, "comfortable")
       # Goal & Steering assigns
       |> assign(:show_goal_modal, false)
       |> assign(:show_cancel_modal, false)
@@ -625,6 +636,51 @@ defmodule IexCodeWeb.WorkspaceLive do
   end
 
   @impl true
+  def handle_event("canvas_pan", %{"x" => x, "y" => y}, socket) do
+    pan_offset = %{x: to_float(x), y: to_float(y)}
+    {:noreply, assign(socket, :canvas_pan, pan_offset)}
+  end
+
+  @impl true
+  def handle_event("canvas_zoom", %{"direction" => "in"}, socket) do
+    new_zoom = min(socket.assigns.canvas_zoom + 0.15, 3.0) |> Float.round(2)
+    {:noreply, assign(socket, :canvas_zoom, new_zoom)}
+  end
+
+  @impl true
+  def handle_event("canvas_zoom", %{"direction" => "out"}, socket) do
+    new_zoom = max(socket.assigns.canvas_zoom - 0.15, 0.2) |> Float.round(2)
+    {:noreply, assign(socket, :canvas_zoom, new_zoom)}
+  end
+
+  @impl true
+  def handle_event("canvas_zoom", %{"level" => level}, socket) do
+    new_zoom = level |> to_float() |> max(0.2) |> min(3.0) |> Float.round(2)
+    {:noreply, assign(socket, :canvas_zoom, new_zoom)}
+  end
+
+  @impl true
+  def handle_event("canvas_reset", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:canvas_zoom, 1.0)
+     |> assign(:canvas_pan, %{x: 0.0, y: 0.0})}
+  end
+
+  @impl true
+  def handle_event("canvas_fit", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:canvas_zoom, 0.9)
+     |> assign(:canvas_pan, %{x: 20.0, y: 20.0})}
+  end
+
+  @impl true
+  def handle_event("select_canvas_node", %{"id" => node_id}, socket) do
+    {:noreply, assign(socket, :canvas_selected_node, node_id)}
+  end
+
+  @impl true
   def handle_event("select_checkpoint", %{"tx_id" => tx_id}, socket) do
     checkpoint =
       Enum.find(socket.assigns.checkpoints, fn cp ->
@@ -855,6 +911,25 @@ defmodule IexCodeWeb.WorkspaceLive do
   @impl true
   def handle_event("toggle_workspace_menu", _params, socket) do
     {:noreply, assign(socket, :show_workspace_menu, !socket.assigns.show_workspace_menu)}
+  end
+
+  @impl true
+  def handle_event("toggle_sidebar", _params, socket) do
+    current = Map.get(socket.assigns, :sidebar_collapsed, false)
+    {:noreply, assign(socket, :sidebar_collapsed, !current)}
+  end
+
+  @impl true
+  def handle_event("toggle_bottom_terminal", _params, socket) do
+    current = Map.get(socket.assigns, :bottom_terminal_open, false)
+    {:noreply, assign(socket, :bottom_terminal_open, !current)}
+  end
+
+  @impl true
+  def handle_event("toggle_layout_density", _params, socket) do
+    current = Map.get(socket.assigns, :layout_density, "comfortable")
+    new_density = if current == "comfortable", do: "compact", else: "comfortable"
+    {:noreply, assign(socket, :layout_density, new_density)}
   end
 
   @impl true
@@ -4697,7 +4772,11 @@ defmodule IexCodeWeb.WorkspaceLive do
   end
 
   def handle_info({:desktop_action, :toggle_sidebar}, socket) do
-    handle_event("toggle_workspace_menu", %{}, socket)
+    handle_event("toggle_sidebar", %{}, socket)
+  end
+
+  def handle_info({:desktop_action, :toggle_terminal}, socket) do
+    handle_event("toggle_bottom_terminal", %{}, socket)
   end
 
   def handle_info({:desktop_action, {:detach_window, tool}}, socket) do
@@ -5508,6 +5587,7 @@ defmodule IexCodeWeb.WorkspaceLive do
     |> assign(:run_count, length(runs))
     |> assign(:run_counts, run_counts(runs, pending_approval_count))
     |> assign(:run_dispatcher_stats, safe_dispatcher_stats())
+    |> refresh_swarm_canvas()
   end
 
   defp select_run_projection(socket, run) do
@@ -5543,6 +5623,7 @@ defmodule IexCodeWeb.WorkspaceLive do
     |> assign(:run_count, length(session_runs))
     |> assign(:run_counts, run_counts(session_runs, pending_approval_count))
     |> assign(:run_dispatcher_stats, safe_dispatcher_stats())
+    |> refresh_swarm_canvas()
   end
 
   defp refresh_selected_run(socket) do
@@ -6823,4 +6904,54 @@ defmodule IexCodeWeb.WorkspaceLive do
       }
     ]
   end
+
+  defp refresh_swarm_canvas(socket) do
+    dag_projection = socket.assigns[:dag_projection]
+    run_steps = socket.assigns[:run_steps] || []
+    operations = socket.assigns[:operations] || []
+
+    graph =
+      cond do
+        dag_projection && is_list(dag_projection[:layers]) && dag_projection[:layers] != [] ->
+          SwarmCanvas.build_graph_from_projection(dag_projection)
+
+        run_steps != [] ->
+          projection = %{layers: [run_steps]}
+          SwarmCanvas.build_graph_from_projection(projection)
+
+        operations != [] ->
+          layers = [
+            Enum.map(operations, fn op ->
+              %{
+                id: to_string(op.id),
+                key: op.task_type || "task",
+                title: op.title || op.task_type || "Operation",
+                status: to_string(op.status),
+                depends_on: []
+              }
+            end)
+          ]
+
+          SwarmCanvas.build_graph_from_projection(%{layers: layers})
+
+        true ->
+          %{nodes: [], edges: []}
+      end
+
+    socket
+    |> assign(:swarm_canvas_nodes, graph.nodes)
+    |> assign(:swarm_canvas_edges, graph.edges)
+  end
+
+  defp to_float(val) when is_float(val), do: val
+  defp to_float(val) when is_integer(val), do: val * 1.0
+
+  defp to_float(val) when is_binary(val) do
+    case Float.parse(val) do
+      {f, _} -> f
+      :error -> 0.0
+    end
+  end
+
+  defp to_float(_), do: 0.0
 end

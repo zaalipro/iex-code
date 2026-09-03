@@ -13,6 +13,7 @@ defmodule IexCodeWeb.Detached.DagLive do
   alias IexCode.Runs.DagScheduler
   alias IexCode.Sessions
   alias IexCodeWeb.DagComponents
+  alias IexCodeWeb.Components.SwarmCanvas
 
   @impl true
   def mount(%{"id" => session_id}, _session, socket) do
@@ -35,6 +36,7 @@ defmodule IexCodeWeb.Detached.DagLive do
 
     steps = if run, do: Runs.list_steps(run.id), else: []
     projection = build_projection(run, steps)
+    graph = SwarmCanvas.build_graph_from_projection(projection)
 
     {:ok,
      socket
@@ -46,13 +48,77 @@ defmodule IexCodeWeb.Detached.DagLive do
      |> assign(:steps, steps)
      |> assign(:selected_step, List.first(steps))
      |> assign(:projection, projection)
-     |> assign(:research_results, [])}
+     |> assign(:research_results, [])
+     |> assign(:canvas_nodes, graph.nodes)
+     |> assign(:canvas_edges, graph.edges)
+     |> assign(:canvas_zoom, 1.0)
+     |> assign(:canvas_pan, %{x: 0.0, y: 0.0})
+     |> assign(:canvas_selected_node, nil)
+     |> assign(:canvas_view_mode, "canvas")}
   end
 
   @impl true
   def handle_event("select_step", %{"id" => step_id}, socket) do
     step = Enum.find(socket.assigns.steps, &(&1.id == step_id or to_string(&1.id) == step_id))
     {:noreply, assign(socket, :selected_step, step)}
+  end
+
+  @impl true
+  def handle_event("select_canvas_node", %{"id" => node_id}, socket) do
+    step =
+      Enum.find(socket.assigns.steps, fn s ->
+        to_string(s.id) == node_id or Map.get(s, :key) == node_id or Map.get(s, "key") == node_id
+      end)
+
+    {:noreply,
+     socket
+     |> assign(:selected_step, step)
+     |> assign(:canvas_selected_node, node_id)}
+  end
+
+  @impl true
+  def handle_event("canvas_pan", %{"x" => x, "y" => y}, socket) do
+    pan_offset = %{x: to_float(x), y: to_float(y)}
+    {:noreply, assign(socket, :canvas_pan, pan_offset)}
+  end
+
+  @impl true
+  def handle_event("canvas_zoom", %{"direction" => "in"}, socket) do
+    new_zoom = min(socket.assigns.canvas_zoom + 0.15, 3.0) |> Float.round(2)
+    {:noreply, assign(socket, :canvas_zoom, new_zoom)}
+  end
+
+  @impl true
+  def handle_event("canvas_zoom", %{"direction" => "out"}, socket) do
+    new_zoom = max(socket.assigns.canvas_zoom - 0.15, 0.2) |> Float.round(2)
+    {:noreply, assign(socket, :canvas_zoom, new_zoom)}
+  end
+
+  @impl true
+  def handle_event("canvas_zoom", %{"level" => level}, socket) do
+    new_zoom = level |> to_float() |> max(0.2) |> min(3.0) |> Float.round(2)
+    {:noreply, assign(socket, :canvas_zoom, new_zoom)}
+  end
+
+  @impl true
+  def handle_event("canvas_reset", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:canvas_zoom, 1.0)
+     |> assign(:canvas_pan, %{x: 0.0, y: 0.0})}
+  end
+
+  @impl true
+  def handle_event("canvas_fit", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:canvas_zoom, 0.9)
+     |> assign(:canvas_pan, %{x: 20.0, y: 20.0})}
+  end
+
+  @impl true
+  def handle_event("toggle_dag_view", %{"mode" => mode}, socket) do
+    {:noreply, assign(socket, :canvas_view_mode, mode)}
   end
 
   # PubSub Handlers
@@ -68,12 +134,15 @@ defmodule IexCodeWeb.Detached.DagLive do
         end
 
       projection = build_projection(updated_run, steps)
+      graph = SwarmCanvas.build_graph_from_projection(projection)
 
       {:noreply,
        socket
        |> assign(:run, updated_run)
        |> assign(:steps, steps)
-       |> assign(:projection, projection)}
+       |> assign(:projection, projection)
+       |> assign(:canvas_nodes, graph.nodes)
+       |> assign(:canvas_edges, graph.edges)}
     else
       {:noreply, socket}
     end
@@ -90,11 +159,14 @@ defmodule IexCodeWeb.Detached.DagLive do
         end
 
       projection = build_projection(socket.assigns.run, steps)
+      graph = SwarmCanvas.build_graph_from_projection(projection)
 
       {:noreply,
        socket
        |> assign(:steps, steps)
-       |> assign(:projection, projection)}
+       |> assign(:projection, projection)
+       |> assign(:canvas_nodes, graph.nodes)
+       |> assign(:canvas_edges, graph.edges)}
     else
       {:noreply, socket}
     end
@@ -116,6 +188,18 @@ defmodule IexCodeWeb.Detached.DagLive do
   def handle_info(_msg, socket), do: {:noreply, socket}
 
   # Helpers
+
+  defp to_float(val) when is_float(val), do: val
+  defp to_float(val) when is_integer(val), do: val * 1.0
+
+  defp to_float(val) when is_binary(val) do
+    case Float.parse(val) do
+      {f, _} -> f
+      :error -> 0.0
+    end
+  end
+
+  defp to_float(_), do: 0.0
 
   defp build_projection(nil, _steps) do
     %{
@@ -144,7 +228,7 @@ defmodule IexCodeWeb.Detached.DagLive do
         %{
           engine: "dag_v1",
           available?: false,
-          revision: run[:event_sequence] || 0,
+          revision: if(run, do: Map.get(run, :event_sequence, 0), else: 0),
           summary: %{},
           layers: [],
           error_code: if(is_binary(reason), do: reason, else: inspect(reason))
@@ -178,6 +262,37 @@ defmodule IexCodeWeb.Detached.DagLive do
           </div>
 
           <div class="flex items-center gap-3 text-xs font-mono">
+            <div class="flex items-center rounded-lg bg-[#0d1117] p-0.5 border border-[#30363d]">
+              <button
+                type="button"
+                id="dag-view-toggle-canvas"
+                phx-click="toggle_dag_view"
+                phx-value-mode="canvas"
+                class={[
+                  "px-2.5 py-1 rounded text-xs font-medium transition-colors flex items-center gap-1.5",
+                  @canvas_view_mode == "canvas" &&
+                    "bg-cyan-950/80 text-cyan-300 border border-cyan-800/60 shadow-sm",
+                  @canvas_view_mode != "canvas" && "text-zinc-400 hover:text-white"
+                ]}
+              >
+                <.icon name="hero-share" class="w-3.5 h-3.5" /> Canvas View
+              </button>
+              <button
+                type="button"
+                id="dag-view-toggle-stages"
+                phx-click="toggle_dag_view"
+                phx-value-mode="stages"
+                class={[
+                  "px-2.5 py-1 rounded text-xs font-medium transition-colors flex items-center gap-1.5",
+                  @canvas_view_mode == "stages" &&
+                    "bg-cyan-950/80 text-cyan-300 border border-cyan-800/60 shadow-sm",
+                  @canvas_view_mode != "stages" && "text-zinc-400 hover:text-white"
+                ]}
+              >
+                <.icon name="hero-view-columns" class="w-3.5 h-3.5" /> Stage Columns
+              </button>
+            </div>
+
             <div class="flex items-center gap-2 bg-[#0d1117] px-2.5 py-1 rounded border border-[#30363d]">
               <span class="text-zinc-500">Engine:</span>
               <span class="text-cyan-300 font-semibold">{@projection[:engine] || "dag_v1"}</span>
@@ -193,17 +308,39 @@ defmodule IexCodeWeb.Detached.DagLive do
 
         <!-- Main Content: Left DAG Projection, Right Step Details -->
         <div class="flex flex-1 min-h-0 overflow-hidden">
-          <main id="dag-execution-projection" class="flex-1 overflow-auto p-4 bg-[#0a0d12]">
-            <%= if @projection[:layers] == [] do %>
-              <div class="h-full flex flex-col items-center justify-center text-center p-8 border border-dashed border-zinc-800 rounded-xl">
-                <.icon name="hero-rectangle-group" class="w-12 h-12 text-zinc-600 mb-3" />
-                <h3 class="text-sm font-semibold text-zinc-300">No Active DAG Execution</h3>
-                <p class="text-xs text-zinc-500 max-w-sm mt-1">
-                  Launch a DAG run or Deep Research session from the primary workspace to see real-time topological layers.
-                </p>
+          <main id="detached-dag-projection-container" class="flex-1 overflow-auto p-4 bg-[#0a0d12]">
+            <%= if @canvas_view_mode == "canvas" do %>
+              <div id="dag-execution-projection" class="h-full w-full relative min-h-[500px]">
+                <SwarmCanvas.swarm_canvas
+                  id="detached-dag-canvas"
+                  nodes={@canvas_nodes}
+                  edges={@canvas_edges}
+                  active_run={@run}
+                  selected_node_id={@canvas_selected_node}
+                  zoom_level={@canvas_zoom}
+                  pan_offset={@canvas_pan}
+                  on_select="select_canvas_node"
+                  on_pan="canvas_pan"
+                  on_zoom="canvas_zoom"
+                  on_reset="canvas_reset"
+                  on_fit="canvas_fit"
+                />
               </div>
             <% else %>
-              <DagComponents.dag_projection projection={@projection} />
+              <%= if @projection[:layers] == [] do %>
+                <div
+                  id="dag-execution-projection"
+                  class="h-full flex flex-col items-center justify-center text-center p-8 border border-dashed border-zinc-800 rounded-xl"
+                >
+                  <.icon name="hero-rectangle-group" class="w-12 h-12 text-zinc-600 mb-3" />
+                  <h3 class="text-sm font-semibold text-zinc-300">No Active DAG Execution</h3>
+                  <p class="text-xs text-zinc-500 max-w-sm mt-1">
+                    Launch a DAG run or Deep Research session from the primary workspace to see real-time topological layers.
+                  </p>
+                </div>
+              <% else %>
+                <DagComponents.dag_projection projection={@projection} />
+              <% end %>
             <% end %>
           </main>
 
@@ -229,22 +366,22 @@ defmodule IexCodeWeb.Detached.DagLive do
                   ]}
                 >
                   <div class="flex items-center justify-between mb-1">
-                    <span class="font-bold truncate">{step[:title] || step[:kind] || "Step #{step.id}"}</span>
+                    <span class="font-bold truncate">{step.title || step.kind || "Step #{step.id}"}</span>
                     <span class={[
                       "text-[10px] px-1.5 py-0.2 rounded font-semibold",
-                      step[:status] in ["completed", :completed] &&
+                      step.status in ["completed", :completed] &&
                         "bg-emerald-950/70 text-emerald-300",
-                      step[:status] in ["running", :running] &&
+                      step.status in ["running", :running] &&
                         "bg-cyan-950/70 text-cyan-300 animate-pulse",
-                      step[:status] in ["failed", :failed] && "bg-rose-950/70 text-rose-300",
-                      step[:status] in ["blocked", :blocked] && "bg-amber-950/70 text-amber-300",
-                      step[:status] in ["ready", :ready] && "bg-blue-950/70 text-blue-300"
+                      step.status in ["failed", :failed] && "bg-rose-950/70 text-rose-300",
+                      step.status in ["blocked", :blocked] && "bg-amber-950/70 text-amber-300",
+                      step.status in ["ready", :ready] && "bg-blue-950/70 text-blue-300"
                     ]}>
-                      {step[:status] || "pending"}
+                      {step.status || "pending"}
                     </span>
                   </div>
                   <div class="text-[10px] text-zinc-500 truncate">
-                    Dependencies: {length(step[:dependencies] || [])}
+                    Dependencies: {length(step.depends_on || [])}
                   </div>
                 </div>
               <% end %>
@@ -254,14 +391,21 @@ defmodule IexCodeWeb.Detached.DagLive do
             <%= if @selected_step do %>
               <div class="p-3 border-t border-[#30363d] bg-[#161b22]/50 space-y-2 max-h-48 overflow-y-auto">
                 <div class="text-[11px] font-semibold text-cyan-300">
-                  {@selected_step[:title] || "Step Details"}
+                  {@selected_step.title || "Step Details"}
                 </div>
                 <div class="text-[10px] text-zinc-400 space-y-1">
                   <div><span class="text-zinc-500">ID:</span> {@selected_step.id}</div>
-                  <div><span class="text-zinc-500">Status:</span> {@selected_step[:status]}</div>
+                  <div><span class="text-zinc-500">Status:</span> {@selected_step.status}</div>
                   <div>
-                    <span class="text-zinc-500">Kind:</span> {@selected_step[:kind] || "standard"}
+                    <span class="text-zinc-500">Kind:</span> {@selected_step.kind || "standard"}
                   </div>
+                  <%= if Map.get(@selected_step, :result) || Map.get(@selected_step, :output) do %>
+                    <div>
+                      <span class="text-zinc-500">Output:</span> {inspect(
+                        Map.get(@selected_step, :result) || Map.get(@selected_step, :output)
+                      )}
+                    </div>
+                  <% end %>
                 </div>
               </div>
             <% end %>

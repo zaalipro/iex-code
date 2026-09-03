@@ -41,6 +41,7 @@ defmodule IexCodeWeb.MenuBar do
         <item onclick="reload_window">Reload Window&#x09;Cmd+R</item>
         <hr />
         <item onclick="toggle_sidebar">Toggle Sidebar&#x09;Cmd+B</item>
+        <item onclick="toggle_terminal">Toggle Terminal Panel&#x09;Cmd+J</item>
         <item onclick="focus_command_palette">Command Palette&#x09;Cmd+K</item>
         <hr />
         <item onclick="detach_terminal">Detach Terminal&#x09;Cmd+Shift+T</item>
@@ -84,6 +85,9 @@ defmodule IexCodeWeb.MenuBar do
 
       "toggle_sidebar" ->
         PubSub.broadcast(@pubsub, "desktop:events", {:desktop_action, :toggle_sidebar})
+
+      "toggle_terminal" ->
+        PubSub.broadcast(@pubsub, "desktop:events", {:desktop_action, :toggle_terminal})
 
       "focus_command_palette" ->
         PubSub.broadcast(@pubsub, "desktop:events", {:desktop_action, :command_palette})

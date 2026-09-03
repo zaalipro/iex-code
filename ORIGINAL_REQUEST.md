@@ -155,4 +155,46 @@ Enable cross-model peer review (e.g. cloud models + local Apple Silicon models) 
 - [ ] Comprehensive test suites verify multi-window event synchronization, vector retrieval accuracy, rollback integrity, and consensus arbitration.
 - [ ] `mix precommit` passes cleanly with 0 failures, 0 warnings, and clean formatting.
 
+## 2026-09-03T08:50:26Z
+
+Use a very large team of agents.
+
+Overhaul the `iex-code` user interface and interaction design into a world-class, studio-grade developer cockpit featuring modern minimalist glassmorphism, fluid collapsible panels, interactive visual swarm DAG canvas, high-fidelity split diff inspector, and Command Palette 2.0.
+
+Working directory: /Users/zaali/dev/iex-code
+Integrity mode: development
+
+## Requirements
+
+### R1. Studio-Grade Glassmorphism & Layout Ergonomics
+Implement a modern minimalist design system featuring deep carbon slate surfaces, subtle glassmorphic backdrop filters, refined typography, layout density toggles (compact/comfortable), and fluid collapsible tool panels with keyboard shortcuts (`Cmd+B` sidebar, `Cmd+J` bottom terminal).
+
+### R2. Interactive Swarm & Workflow Visualizer Canvas
+Build a visual interactive SVG/HTML canvas component rendering real-time multi-agent swarm hierarchies, task states (idle, planning, running, verified, failed), live message flow pulses, and per-node token/memory metrics.
+
+### R3. High-Fidelity Side-by-Side & Unified Diff Inspector
+Upgrade the changes inspector with side-by-side split and unified view toggles, intra-line word-level change highlighting, syntax coloration, and integrated time-travel checkpoint navigation with 1-click hunk rollback.
+
+### R4. Command Palette 2.0 & Frictionless Keyboard Navigation
+Elevate `Cmd+K` into a rich fuzzy launcher searching files, active swarms, sessions, model endpoints, git branches, and terminal commands with instant preview cards, keyboard navigation hints, and action execution.
+
+## Verification Resources
+
+- Automated LiveView test suites verifying component rendering, collapsible panel state, diff mode switching, swarm canvas node updates, and Command Palette fuzzy filtering.
+- Programmatic UI layout and assertion tests ensuring no broken styling or missing assign crashes.
+
+## Acceptance Criteria
+
+### Visual Polish & Layout
+- [ ] Interface renders with consistent deep carbon glassmorphism, refined typography, and responsive collapsible panels.
+- [ ] Layout density controls toggle between compact and comfortable modes without layout breaking.
+
+### Interactive Visualizer & Diffs
+- [ ] Swarm visualizer dynamically updates as agents spawn, progress, and complete, showing live node states and connection lines.
+- [ ] Diff inspector supports both split (side-by-side) and unified modes with clear intra-line word diffs and hunk rollback controls.
+
+### Command Palette & Quality
+- [ ] Command Palette 2.0 provides instant fuzzy filtering across files, actions, and models with smooth keyboard navigation.
+- [ ] Automated LiveView component tests verify rendering, interaction events, and modal workflows.
+- [ ] `mix precommit` passes cleanly with 0 failures, 0 warnings, and clean formatting.
 

@@ -213,6 +213,20 @@ const Hooks = {
           return
         }
 
+        // Cmd+B or Ctrl+B toggles the sidebar
+        if ((e.metaKey || e.ctrlKey) && (e.key === "b" || e.key === "B")) {
+          e.preventDefault()
+          this.pushEvent("toggle_sidebar", {})
+          return
+        }
+
+        // Cmd+J or Ctrl+J toggles the bottom terminal panel
+        if ((e.metaKey || e.ctrlKey) && (e.key === "j" || e.key === "J")) {
+          e.preventDefault()
+          this.pushEvent("toggle_bottom_terminal", {})
+          return
+        }
+
         // Cmd+K or Ctrl+K opens/toggles the palette
         if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {
           e.preventDefault()

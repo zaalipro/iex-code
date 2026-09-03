@@ -3,13 +3,20 @@
   <div
     id="workspace-shell"
     phx-hook=".ResponsiveShell"
+    data-density={@layout_density}
     class="workspace-shell flex h-dvh min-h-0 w-full bg-[#0a0d12] text-[#f0f6fc] font-sans antialiased overflow-hidden"
   >
     <!-- Sidebar: Sessions & Projects Navigation -->
     <aside
       id="workspace-sidebar"
       aria-label="Workspace navigation"
-      class="workspace-sidebar w-64 bg-[#11151c] border-r border-[#21262d] flex flex-col justify-between shrink-0"
+      data-collapsed={to_string(@sidebar_collapsed)}
+      class={[
+        "workspace-sidebar bg-[#11151c]/95 backdrop-blur-xl border-r border-[#21262d] flex flex-col justify-between shrink-0 transition-all duration-200 ease-out",
+        @sidebar_collapsed &&
+          "w-0 min-w-0 opacity-0 pointer-events-none overflow-hidden border-none lg:w-0",
+        !@sidebar_collapsed && "w-64 min-w-[16rem]"
+      ]}
     >
       <button
         id="workspace-sidebar-close"
@@ -415,7 +422,7 @@
       <!-- Top Navigation Bar & Tab Switchers -->
       <header
         id="workspace-header"
-        class="h-14 border-b border-[#21262d] bg-[#11151c] flex items-center justify-between gap-2 px-3 md:px-4 xl:px-5 shrink-0"
+        class="glass-header h-14 border-b border-[#21262d] flex items-center justify-between gap-2 px-3 md:px-4 xl:px-5 shrink-0"
       >
         <div class="workspace-header-primary flex min-w-0 items-center gap-2">
           <button
@@ -428,6 +435,19 @@
             class="workspace-sidebar-open lg:hidden"
           >
             <.icon name="hero-bars-3" class="w-5 h-5" />
+          </button>
+          <button
+            id="sidebar-desktop-toggle-btn"
+            phx-click="toggle_sidebar"
+            aria-label={
+              if @sidebar_collapsed,
+                do: "Expand sidebar (Cmd+B)",
+                else: "Collapse sidebar (Cmd+B)"
+            }
+            class="hidden lg:flex items-center justify-center w-8 h-8 rounded-lg hover:bg-white/5 text-gray-400 hover:text-white transition-smooth"
+            title="Toggle Sidebar (Cmd+B)"
+          >
+            <.icon name="hero-bars-3-bottom-left" class="w-4 h-4" />
           </button>
           <div class="min-w-0 xl:hidden">
             <div class="truncate text-[10px] font-mono uppercase tracking-wider text-gray-500">
@@ -679,6 +699,39 @@
               <div class="flex items-center justify-between text-[11px] font-mono text-gray-400 pt-1 border-t border-white/10">
                 <span class="text-gray-300">Slot: {@selected_time_slot}</span>
                 <span class="text-blue-400">Click to change</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Layout Density Toggle -->
+          <div class="tooltip-trigger">
+            <button
+              id="header-density-toggle"
+              phx-click="toggle_layout_density"
+              aria-label={"Switch to #{if @layout_density == "comfortable", do: "compact", else: "comfortable"} mode"}
+              class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-[#161b22] hover:bg-[#1c2128] border border-[#21262d] text-gray-300 hover:text-white text-xs font-mono transition-smooth cursor-pointer"
+              title={"Layout density: #{@layout_density}. Click to toggle"}
+            >
+              <.icon
+                name={
+                  if @layout_density == "comfortable",
+                    do: "hero-arrows-pointing-in",
+                    else: "hero-arrows-pointing-out"
+                }
+                class="w-3.5 h-3.5 text-gray-400"
+              />
+              <span class="hidden md:inline capitalize">{@layout_density}</span>
+            </button>
+            <div class="luxury-tooltip luxury-tooltip-bottom">
+              <div class="text-xs font-semibold text-white tracking-tight mb-1">
+                Layout Density
+              </div>
+              <p class="text-[11px] text-gray-400 mb-1.5 font-sans">
+                Toggle between comfortable and compact display densities.
+              </p>
+              <div class="flex items-center justify-between text-[11px] font-mono text-gray-400 pt-1 border-t border-white/10">
+                <span class="text-gray-300">Current: {@layout_density}</span>
+                <span class="text-blue-400">Click to switch</span>
               </div>
             </div>
           </div>
@@ -1269,6 +1322,53 @@
               agent_receipts={@run_agent_receipts}
               dag_projection={@dag_projection}
             />
+
+            <!-- Interactive Swarm & Workflow Visualizer Canvas (Milestone 2 - Requirement R2) -->
+            <section
+              id="workspace-swarm-canvas-section"
+              aria-labelledby="swarm-canvas-heading"
+              class="w-full rounded-3xl border border-[#21262d] bg-[#0b0f14] overflow-hidden shadow-2xl"
+            >
+              <div class="flex items-center justify-between px-5 py-3.5 border-b border-[#21262d] bg-[#11151c]">
+                <div class="flex items-center gap-3">
+                  <span class="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-pulse shadow-[0_0_8px_rgba(34,211,238,0.8)]"></span>
+                  <div>
+                    <h3
+                      id="swarm-canvas-heading"
+                      class="text-xs font-mono font-bold uppercase tracking-wider text-white flex items-center gap-2"
+                    >
+                      SWARM & WORKFLOW VISUALIZER CANVAS
+                    </h3>
+                    <p class="text-[10px] font-mono text-zinc-500">
+                      Real-time multi-agent hierarchy · Cubic Bézier connector edges · Message flow pulses · Per-node telemetry
+                    </p>
+                  </div>
+                </div>
+
+                <div class="flex items-center gap-2">
+                  <span class="text-[10px] font-mono px-2.5 py-1 rounded-full bg-cyan-950/60 border border-cyan-800/40 text-cyan-300">
+                    5 Normalized States
+                  </span>
+                </div>
+              </div>
+
+              <div class="h-[440px] w-full relative">
+                <SwarmCanvas.swarm_canvas
+                  id="workspace-swarm-canvas"
+                  nodes={@swarm_canvas_nodes}
+                  edges={@swarm_canvas_edges}
+                  active_run={@selected_run}
+                  selected_node_id={@canvas_selected_node}
+                  zoom_level={@canvas_zoom}
+                  pan_offset={@canvas_pan}
+                  on_select="select_canvas_node"
+                  on_pan="canvas_pan"
+                  on_zoom="canvas_zoom"
+                  on_reset="canvas_reset"
+                  on_fit="canvas_fit"
+                />
+              </div>
+            </section>
 
             <!-- Swarm Coach Hero Card -->
             <div class="bg-[#11151c] border border-[#21262d] rounded-3xl p-6 shadow-2xl relative overflow-hidden">
@@ -3654,19 +3754,21 @@
               <span>Detach Terminal Window</span>
             </button>
           </div>
-          <.terminal_session
-            session={@session}
-            running={@terminal_running?}
-            status={@terminal_status}
-            shell={@terminal_shell}
-            cols={@terminal_cols}
-            rows={@terminal_rows}
-            occupant={@terminal_occupant}
-            active_cmd={@terminal_active_cmd}
-            output={@terminal_output}
-            form={@terminal_form}
-            workspace_locks={@workspace_locks}
-          />
+          <%= if not @bottom_terminal_open do %>
+            <.terminal_session
+              session={@session}
+              running={@terminal_running?}
+              status={@terminal_status}
+              shell={@terminal_shell}
+              cols={@terminal_cols}
+              rows={@terminal_rows}
+              occupant={@terminal_occupant}
+              active_cmd={@terminal_active_cmd}
+              output={@terminal_output}
+              form={@terminal_form}
+              workspace_locks={@workspace_locks}
+            />
+          <% end %>
         </div>
 
         <!-- RIGHT TASK DETAIL DRAWER / INSPECTOR -->
@@ -4581,10 +4683,73 @@
         </div>
       </footer>
 
+      <!-- Collapsible Bottom Terminal Dock -->
+      <%= if @bottom_terminal_open do %>
+        <div
+          id="bottom-terminal-dock"
+          class="glass-surface-elevated h-64 sm:h-72 border-t border-white/10 flex flex-col shrink-0 overflow-hidden shadow-2xl z-30 transition-smooth animate-in slide-in-from-bottom-2 duration-150"
+        >
+          <!-- Terminal Dock Header -->
+          <div class="h-9 px-3 bg-[#11151c]/80 border-b border-white/5 flex items-center justify-between shrink-0 font-mono text-xs select-none">
+            <div class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+              <span class="font-semibold text-gray-200">Terminal PTY</span>
+              <span class="text-[10px] text-gray-500">({@terminal_shell || "zsh"})</span>
+            </div>
+            <div class="flex items-center gap-1.5">
+              <button
+                id="bottom-dock-quick-test"
+                type="button"
+                phx-click="run_terminal_quick_action"
+                phx-value-cmd="mix test"
+                class="px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 text-emerald-300 text-[10px] transition-smooth cursor-pointer"
+              >
+                mix test
+              </button>
+              <button
+                id="bottom-dock-quick-precommit"
+                type="button"
+                phx-click="run_terminal_quick_action"
+                phx-value-cmd="mix precommit"
+                class="px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 text-cyan-300 text-[10px] transition-smooth cursor-pointer"
+              >
+                mix precommit
+              </button>
+              <button
+                id="bottom-dock-close-btn"
+                type="button"
+                phx-click="toggle_bottom_terminal"
+                aria-label="Close terminal panel (Cmd+J)"
+                class="p-1 rounded hover:bg-white/10 text-gray-400 hover:text-white transition-smooth ml-2 cursor-pointer"
+                title="Close Terminal Panel (Cmd+J)"
+              >
+                <.icon name="hero-x-mark" class="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+          <!-- Terminal Viewport -->
+          <div class="flex-1 min-h-0">
+            <.terminal_session
+              session={@session}
+              running={@terminal_running?}
+              status={@terminal_status}
+              shell={@terminal_shell}
+              cols={@terminal_cols}
+              rows={@terminal_rows}
+              occupant={@terminal_occupant}
+              active_cmd={@terminal_active_cmd}
+              output={@terminal_output}
+              form={@terminal_form}
+              workspace_locks={@workspace_locks}
+            />
+          </div>
+        </div>
+      <% end %>
+
       <!-- Persistent Workspace Footer Status Bar -->
       <footer
         id="workspace-status-footer"
-        class="h-7 shrink-0 border-t border-[#21262d] bg-[#0b0e14] px-3 flex items-center justify-between z-20 text-[11px] font-mono text-gray-400 select-none"
+        class="glass-footer h-7 shrink-0 border-t border-[#21262d] px-3 flex items-center justify-between z-20 text-[11px] font-mono text-gray-400 select-none"
       >
         <div class="flex items-center gap-3">
           <.memory_telemetry_pill snapshot={@memory_snapshot} />

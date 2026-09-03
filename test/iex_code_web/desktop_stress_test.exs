@@ -341,6 +341,8 @@ defmodule IexCodeWeb.DesktopStressTest do
           show_workspace_menu: false,
           show_command_palette: false,
           show_settings_modal: false,
+          sidebar_collapsed: false,
+          bottom_terminal_open: false,
           command_palette_query: "",
           command_palette_category: :all,
           command_palette_selected_index: 0,
@@ -352,19 +354,25 @@ defmodule IexCodeWeb.DesktopStressTest do
       assert {:noreply, socket1} =
                WorkspaceLive.handle_info({:desktop_action, :toggle_sidebar}, initial_socket)
 
-      assert socket1.assigns.show_workspace_menu == true
+      assert socket1.assigns.sidebar_collapsed == true
 
-      # 2. Toggle command palette
+      # 2. Toggle terminal
       assert {:noreply, socket2} =
+               WorkspaceLive.handle_info({:desktop_action, :toggle_terminal}, initial_socket)
+
+      assert socket2.assigns.bottom_terminal_open == true
+
+      # 3. Toggle command palette
+      assert {:noreply, socket3} =
                WorkspaceLive.handle_info({:desktop_action, :command_palette}, initial_socket)
 
-      assert socket2.assigns.show_command_palette == true
+      assert socket3.assigns.show_command_palette == true
 
-      # 3. Toggle settings modal
-      assert {:noreply, socket3} =
+      # 4. Toggle settings modal
+      assert {:noreply, socket4} =
                WorkspaceLive.handle_info({:desktop_action, :open_settings}, initial_socket)
 
-      assert socket3.assigns.show_settings_modal == true
+      assert socket4.assigns.show_settings_modal == true
 
       # 4. Unknown action permutations
       unknown_actions = [
@@ -395,6 +403,19 @@ defmodule IexCodeWeb.DesktopStressTest do
       for msg <- malformed do
         assert {:noreply, ^initial_socket} = WorkspaceLive.handle_info(msg, initial_socket)
       end
+
+      # 6. Bare socket defensive tolerance (no KeyError on missing assigns)
+      bare_socket = %Phoenix.LiveView.Socket{assigns: %{__changed__: %{}}}
+
+      assert {:noreply, bare_res1} =
+               WorkspaceLive.handle_info({:desktop_action, :toggle_sidebar}, bare_socket)
+
+      assert bare_res1.assigns.sidebar_collapsed == true
+
+      assert {:noreply, bare_res2} =
+               WorkspaceLive.handle_info({:desktop_action, :toggle_terminal}, bare_socket)
+
+      assert bare_res2.assigns.bottom_terminal_open == true
     end
   end
 
