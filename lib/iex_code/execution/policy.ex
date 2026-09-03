@@ -15,7 +15,7 @@ defmodule IexCode.Execution.Policy do
   @dispatch_modes ~w(background interactive)
   @run_modes ~w(single swarm dag research)
   @priorities ~w(low normal high critical)
-  @model_providers ~w(openai anthropic)
+  @model_providers ~w(openai anthropic ollama lm_studio llama_cpp)
   @optional_tools %{
     "ast_search" => ["ast_search"],
     "web_search" => ["web_search", "fetch_url"]

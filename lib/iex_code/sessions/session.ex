@@ -23,7 +23,7 @@ defmodule IexCode.Sessions.Session do
   end
 
   @statuses ~w(idle running paused stopped failed completed)
-  @model_providers ~w(openai anthropic)
+  @model_providers ~w(openai anthropic ollama lm_studio llama_cpp)
   @mutable_fields [:title, :swarm_mode, :model_provider, :model_name, :temperature, :status]
 
   def changeset(%__MODULE__{id: nil} = session, attrs) do

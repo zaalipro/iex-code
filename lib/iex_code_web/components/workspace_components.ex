@@ -2625,4 +2625,229 @@ defmodule IexCodeWeb.WorkspaceComponents do
     </div>
     """
   end
+
+  # ============================================================================
+  # Memory & Micro-GC Telemetry Footer Pill
+  # ============================================================================
+
+  @doc """
+  Renders the real-time physical memory, BEAM VM allocators, process count,
+  and micro-GC telemetry status pill with an interactive luxury popover card.
+  """
+  attr :snapshot, :any, default: nil, doc: "IexCode.Observability.MemorySnapshot struct"
+
+  def memory_telemetry_pill(assigns) do
+    alias IexCode.Observability.MemorySnapshot
+
+    snapshot =
+      case assigns.snapshot do
+        %MemorySnapshot{} = s -> s
+        map when is_map(map) -> MemorySnapshot.new(map)
+        _ -> MemorySnapshot.new()
+      end
+
+    assigns = assign(assigns, :snapshot, snapshot)
+
+    ~H"""
+    <div
+      id="memory-telemetry-pill"
+      class="tooltip-trigger relative inline-flex items-center gap-2 px-2.5 py-1 rounded-md bg-[#11151c]/90 hover:bg-[#161b22] border border-[#21262d] hover:border-[#30363d] text-[11px] font-mono transition-smooth cursor-pointer select-none group"
+    >
+      <!-- Health Status Indicator Dot -->
+      <span class={[
+        "w-1.5 h-1.5 rounded-full shrink-0 transition-colors",
+        memory_status_dot_class(@snapshot)
+      ]} />
+
+      <!-- OS Physical RSS Metric -->
+      <span id="memory-rss-stat" class="text-gray-300 group-hover:text-white flex items-center gap-1">
+        <span class="text-gray-500 font-semibold">RSS</span>
+        <span class="font-medium text-emerald-400">
+          {MemorySnapshot.format_bytes(@snapshot.rss_bytes)}
+        </span>
+      </span>
+
+      <span class="text-gray-600 font-thin">·</span>
+
+      <!-- BEAM Total Allocator Metric -->
+      <span id="memory-beam-stat" class="text-gray-300 group-hover:text-white flex items-center gap-1">
+        <span class="text-gray-500 font-semibold">BEAM</span>
+        <span class="font-medium text-cyan-400">
+          {MemorySnapshot.format_bytes(@snapshot.beam_total_bytes)}
+        </span>
+      </span>
+
+      <span class="text-gray-600 font-thin">·</span>
+
+      <!-- Process Count Metric -->
+      <span
+        id="memory-procs-stat"
+        class="text-gray-400 group-hover:text-gray-200 flex items-center gap-1"
+      >
+        <span class="font-medium text-purple-300">{@snapshot.process_count}</span>
+        <span class="text-gray-500">procs</span>
+      </span>
+
+      <!-- Micro-GC Delta Indicator (shown when reclamation occurred) -->
+      <%= if @snapshot.delta_gc_runs > 0 do %>
+        <span
+          id="memory-gc-delta-stat"
+          class="text-[10px] px-1 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20"
+        >
+          +{@snapshot.delta_gc_runs} GC
+        </span>
+      <% end %>
+
+      <!-- Luxury Floating Popover / Tooltip -->
+      <div
+        id="memory-popover-card"
+        class="luxury-tooltip min-w-[340px] max-w-[400px] p-4 bg-[#0d1117]/98 border border-[#30363d] rounded-2xl shadow-2xl backdrop-blur-xl"
+      >
+        <!-- Card Header -->
+        <div class="flex items-center justify-between pb-2.5 mb-2.5 border-b border-white/10">
+          <div class="flex items-center gap-2">
+            <.icon name="hero-cpu-chip" class="w-4 h-4 text-cyan-400" />
+            <span class="text-xs font-semibold text-white tracking-tight">BEAM & OS Memory Telemetry</span>
+          </div>
+          <span class="text-[10px] font-mono text-gray-400 bg-[#161b22] px-2 py-0.5 rounded border border-[#21262d]">
+            OTP {:erlang.system_info(:otp_release)}
+          </span>
+        </div>
+
+        <!-- Memory Breakdown Grid -->
+        <div class="space-y-1.5 font-mono text-[11px] mb-3">
+          <div class="text-[10px] uppercase tracking-wider text-gray-500 font-semibold mb-1">
+            Memory Allocator Breakdown
+          </div>
+
+          <div class="flex items-center justify-between text-gray-300 py-0.5">
+            <span class="text-gray-400 flex items-center gap-1.5">
+              <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span> OS Physical RSS
+            </span>
+            <span class="font-semibold text-white">{MemorySnapshot.format_bytes(@snapshot.rss_bytes)}</span>
+          </div>
+
+          <div class="flex items-center justify-between text-gray-300 py-0.5">
+            <span class="text-gray-400 flex items-center gap-1.5">
+              <span class="w-1.5 h-1.5 rounded-full bg-cyan-400"></span> BEAM Total Allocator
+            </span>
+            <span class="font-semibold text-white">{MemorySnapshot.format_bytes(
+              @snapshot.beam_total_bytes
+            )}</span>
+          </div>
+
+          <div class="flex items-center justify-between text-gray-300 py-0.5 pl-3 border-l border-white/5">
+            <span class="text-gray-400">Processes (Heap & Stack)</span>
+            <span id="memory-breakdown-processes" class="text-gray-200">
+              {MemorySnapshot.format_bytes(@snapshot.beam_processes_bytes)}
+            </span>
+          </div>
+
+          <div class="flex items-center justify-between text-gray-300 py-0.5 pl-3 border-l border-white/5">
+            <span class="text-gray-400">System (Overhead & Runtime)</span>
+            <span id="memory-breakdown-system" class="text-gray-200">
+              {MemorySnapshot.format_bytes(@snapshot.beam_system_bytes)}
+            </span>
+          </div>
+
+          <div class="flex items-center justify-between text-gray-300 py-0.5 pl-3 border-l border-white/5">
+            <span class="text-gray-400">Atom Table</span>
+            <span id="memory-breakdown-atom" class="text-gray-200">
+              {MemorySnapshot.format_bytes(@snapshot.beam_atom_bytes)}
+            </span>
+          </div>
+
+          <div class="flex items-center justify-between text-gray-300 py-0.5 pl-3 border-l border-white/5">
+            <span class="text-gray-400">Binary (Off-Heap)</span>
+            <span id="memory-breakdown-binary" class="text-gray-200">
+              {MemorySnapshot.format_bytes(@snapshot.beam_binary_bytes)}
+            </span>
+          </div>
+
+          <div class="flex items-center justify-between text-gray-300 py-0.5 pl-3 border-l border-white/5">
+            <span class="text-gray-400">ETS Tables</span>
+            <span id="memory-breakdown-ets" class="text-gray-200">
+              {MemorySnapshot.format_bytes(@snapshot.beam_ets_bytes)}
+            </span>
+          </div>
+        </div>
+
+        <!-- Micro-GC Telemetry Panel -->
+        <div class="p-2.5 rounded-xl bg-[#161b22]/80 border border-white/5 space-y-1.5 font-mono text-[11px] mb-3">
+          <div class="flex items-center justify-between text-[10px] uppercase tracking-wider text-gray-400 font-semibold">
+            <span class="flex items-center gap-1.5">
+              <.icon name="hero-arrow-path" class="w-3.5 h-3.5 text-amber-400" /> Micro-GC Telemetry
+            </span>
+            <%= if @snapshot.delta_gc_runs > 0 do %>
+              <span class="text-amber-400 font-normal">Active reclamation</span>
+            <% else %>
+              <span class="text-gray-500 font-normal">Idle</span>
+            <% end %>
+          </div>
+
+          <div class="flex items-center justify-between text-gray-300 pt-1 border-t border-white/5">
+            <span class="text-gray-400">Total GC Runs</span>
+            <span id="memory-gc-runs" class="text-gray-200 font-medium">
+              {@snapshot.gc_runs}
+              <%= if @snapshot.delta_gc_runs > 0 do %>
+                <span class="text-amber-400 text-[10px] ml-1">(+{@snapshot.delta_gc_runs} tick)</span>
+              <% end %>
+            </span>
+          </div>
+
+          <div class="flex items-center justify-between text-gray-300">
+            <span class="text-gray-400">Words Reclaimed</span>
+            <span id="memory-gc-words" class="text-gray-200 font-medium">
+              {@snapshot.gc_words_reclaimed}
+            </span>
+          </div>
+
+          <div class="flex items-center justify-between text-gray-300">
+            <span class="text-gray-400">Bytes Reclaimed</span>
+            <span id="memory-gc-reclaimed" class="text-emerald-400 font-medium">
+              {MemorySnapshot.format_bytes(@snapshot.gc_words_reclaimed * 8)}
+              <%= if @snapshot.delta_reclaimed_bytes > 0 do %>
+                <span class="text-emerald-400 text-[10px] ml-1">(+{MemorySnapshot.format_bytes(
+                  @snapshot.delta_reclaimed_bytes
+                )})</span>
+              <% end %>
+            </span>
+          </div>
+        </div>
+
+        <!-- Force GC Action Button -->
+        <div class="pt-2 border-t border-white/10 flex items-center justify-between">
+          <span class="text-[10px] font-mono text-gray-400">
+            Active Procs: <strong class="text-white">{@snapshot.process_count}</strong>
+          </span>
+          <button
+            id="force-gc-btn"
+            type="button"
+            phx-click="force_gc"
+            class="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-gradient-to-r from-orange-500/20 to-amber-500/20 hover:from-orange-500/30 hover:to-amber-500/30 border border-orange-500/30 text-orange-300 hover:text-orange-200 text-xs font-mono font-medium transition-smooth cursor-pointer"
+          >
+            <.icon name="hero-sparkles" class="w-3.5 h-3.5 text-orange-400" />
+            <span>Force GC</span>
+          </button>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  defp memory_status_dot_class(%IexCode.Observability.MemorySnapshot{rss_bytes: rss})
+       when is_integer(rss) do
+    cond do
+      rss > 800 * 1024 * 1024 ->
+        "bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.8)]"
+
+      rss > 300 * 1024 * 1024 ->
+        "bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.8)]"
+
+      true ->
+        "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]"
+    end
+  end
+
+  defp memory_status_dot_class(_), do: "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]"
 end

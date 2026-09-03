@@ -65,7 +65,7 @@ defmodule IexCode.Execution.ModelRoute do
     base_url = base_url(settings, provider)
 
     cond do
-      provider not in ["openai", "anthropic"] ->
+      provider not in ["openai", "anthropic", "ollama", "lm_studio", "llama_cpp"] ->
         {:error, :invalid_model_route}
 
       not Limits.valid_model_name?(model) ->
@@ -106,8 +106,41 @@ defmodule IexCode.Execution.ModelRoute do
   defp base_url(settings, "anthropic"),
     do: normalize_url(value(settings, "anthropic_base_url") || @anthropic_default)
 
-  defp credential(settings, "openai"), do: value(settings, "openai_api_key")
+  defp base_url(settings, "ollama"),
+    do:
+      normalize_url(
+        value(settings, "ollama_base_url") || IexCode.LLM.Discovery.default_base_url("ollama")
+      )
+
+  defp base_url(settings, "lm_studio"),
+    do:
+      normalize_url(
+        value(settings, "lm_studio_base_url") ||
+          IexCode.LLM.Discovery.default_base_url("lm_studio")
+      )
+
+  defp base_url(settings, "llama_cpp"),
+    do:
+      normalize_url(
+        value(settings, "llama_cpp_base_url") ||
+          IexCode.LLM.Discovery.default_base_url("llama_cpp")
+      )
+
+  defp credential(settings, "openai") do
+    key = value(settings, "openai_api_key")
+    base = base_url(settings, "openai")
+
+    if (is_nil(key) or key == "") and IexCode.LLM.Discovery.is_local_endpoint?(base),
+      do: "local",
+      else: key
+  end
+
   defp credential(settings, "anthropic"), do: value(settings, "anthropic_api_key")
+
+  defp credential(settings, local) when local in ["ollama", "lm_studio", "llama_cpp"] do
+    key = value(settings, "#{local}_api_key")
+    if is_nil(key) or key == "", do: "local", else: key
+  end
 
   defp normalize_url(url) when is_binary(url), do: String.trim_trailing(String.trim(url), "/")
   defp normalize_url(_url), do: nil
@@ -141,7 +174,13 @@ defmodule IexCode.Execution.ModelRoute do
   defp known_atom("model_route_sha256"), do: :model_route_sha256
   defp known_atom("openai_base_url"), do: :openai_base_url
   defp known_atom("anthropic_base_url"), do: :anthropic_base_url
+  defp known_atom("ollama_base_url"), do: :ollama_base_url
+  defp known_atom("lm_studio_base_url"), do: :lm_studio_base_url
+  defp known_atom("llama_cpp_base_url"), do: :llama_cpp_base_url
   defp known_atom("openai_api_key"), do: :openai_api_key
   defp known_atom("anthropic_api_key"), do: :anthropic_api_key
+  defp known_atom("ollama_api_key"), do: :ollama_api_key
+  defp known_atom("lm_studio_api_key"), do: :lm_studio_api_key
+  defp known_atom("llama_cpp_api_key"), do: :llama_cpp_api_key
   defp known_atom(_key), do: :__unknown_model_route_key__
 end

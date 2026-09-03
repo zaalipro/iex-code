@@ -1128,7 +1128,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
     temperature = if is_number(temperature), do: temperature * 1.0, else: temperature
 
     cond do
-      provider not in ["openai", "anthropic"] ->
+      provider not in ["openai", "anthropic", "ollama", "lm_studio", "llama_cpp"] ->
         raise ArgumentError, "invalid snapshotted model provider"
 
       not Limits.valid_model_name?(model) ->

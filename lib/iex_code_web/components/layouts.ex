@@ -36,4 +36,9 @@ defmodule IexCodeWeb.Layouts do
     </div>
     """
   end
+
+  @doc """
+  Renders the real-time memory and micro-GC telemetry status pill.
+  """
+  defdelegate memory_telemetry_pill(assigns), to: IexCodeWeb.WorkspaceComponents
 end

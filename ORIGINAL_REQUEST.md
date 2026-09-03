@@ -39,3 +39,77 @@ Audit every view, tab, modal, and drawer in `WorkspaceLive` and `WorkspaceCompon
 ### Quality & Precommit
 - [ ] `mix test` passes 100% across all suites with 0 failures.
 - [ ] `mix precommit` passes with 0 compiler warnings, 0 unused deps, and 0 format errors.
+## 2026-09-02T17:22:27Z
+
+Build, package, and launch `iex-code` as a native macOS desktop application on this laptop using `elixir-desktop`, supporting both interactive development window execution and a production `.app` release pipeline.
+
+Working directory: /Users/zaali/dev/iex-code
+Integrity mode: development
+
+## Requirements
+
+### R1. Native Desktop Window & Development Launch
+Configure `Desktop.Window` in `iex-code` with native window sizing, title, menu bar integration, and convenient launch tasks/scripts (e.g. `mix desktop` or `iex -S mix`) to launch a native macOS window displaying the LiveView workspace on this laptop.
+
+### R2. Standalone macOS `.app` Release Packaging Pipeline
+Configure OTP release assembly and desktop packaging in `mix.exs` (using `Desktop.Deployment.generate_installer/1` or release packaging steps) to compile assets and generate a standalone macOS `IexCode.app` bundle and installer.
+
+### R3. Process Lifecycle & Clean Teardown
+Implement native window close and quit handling ensuring that quitting the desktop app cleanly terminates the BEAM runtime, flushes SQLite WAL data, and releases database locks with zero orphan background processes.
+
+## Verification Resources
+
+- Automated window and process lifecycle verification testing startup, LiveView rendering, and clean shutdown.
+- Local verification command launching the desktop window and inspecting the built release bundle.
+
+## Acceptance Criteria
+
+### Desktop Runtime & Windowing
+- [ ] Native desktop window opens successfully and renders the `iex-code` Phoenix LiveView workspace.
+- [ ] Development launch command starts the native window without requiring external browsers.
+- [ ] Closing the window or triggering quit terminates the BEAM node cleanly with zero zombie processes.
+
+### Release Packaging
+- [ ] Production release packaging produces a valid macOS `.app` bundle structure without compilation errors.
+- [ ] `mix precommit` passes cleanly with 0 failures and 0 warnings.
+
+## 2026-09-03T03:35:00Z
+
+Implement four next-level native desktop capabilities for `iex-code`: native macOS notifications on swarm lifecycle events, real-time physical memory and process telemetry in the LiveView footer, dynamic macOS Dock icon agent activity badging, and zero-config local LLM auto-discovery (Ollama, MLX, llama.cpp) for offline Apple Silicon swarms.
+
+Working directory: /Users/zaali/dev/iex-code
+Integrity mode: development
+
+## Requirements
+
+### R1. Native macOS System Notifications & Sound Cues
+Dispatch native desktop notifications and sound cues upon swarm task completion, verification rejection, step failure, or pending human approval events using `Desktop.Window.show_notification` with graceful headless fallbacks.
+
+### R2. Real-Time Physical Memory & Telemetry Chip in LiveView
+Add a lightweight background memory poller that samples OS RSS and Erlang VM allocated heap (`:erlang.memory()`), broadcasting updates to LiveView to render an interactive status pill showing live footprint and micro-GC stats.
+
+### R3. Dynamic macOS Dock Icon Badging & State
+Dynamically update the macOS application Dock badge count and window title to reflect active swarm workers and waiting approval counts (e.g., `3 running`, `1 waiting`).
+
+### R4. Zero-Config Local LLM Auto-Discovery
+Implement an auto-detection probe in Settings and provider registry that discovers locally running inference servers (Ollama on `:11434`, LM Studio on `:1234`, or llama.cpp on `:8080`), querying available models and making them selectable with zero API key configuration.
+
+## Verification Resources
+
+- Automated test suites verifying notification triggers, memory poller broadcasts, dock badge calculations, and local LLM discovery endpoints.
+- Integration tests in LiveView confirming telemetry rendering and provider picker updates.
+
+## Acceptance Criteria
+
+### Desktop System Integration
+- [ ] Swarm completion, failure, and approval events trigger native macOS desktop notifications.
+- [ ] Active swarm worker counts dynamically update the application Dock badge and window title.
+
+### Observability & Local LLM
+- [ ] LiveView footer renders a live memory pill showing OS RSS, BEAM allocated memory, and active process count with micro-GC details.
+- [ ] Local LLM endpoints are auto-detected and surfaced in the provider model picker without requiring manual API keys.
+
+### Codebase Health & Quality
+- [ ] Automated tests cover notification triggers, memory sampling, dock badge logic, and local provider discovery.
+- [ ] `mix precommit` passes cleanly with 0 failures, 0 warnings, and clean formatting.
+

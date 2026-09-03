@@ -11,7 +11,8 @@ defmodule IexCode.MixProject do
       aliases: aliases(),
       deps: deps(),
       compilers: [:phoenix_live_view] ++ Mix.compilers(),
-      listeners: [Phoenix.CodeReloader]
+      listeners: [Phoenix.CodeReloader],
+      releases: releases()
     ]
   end
 
@@ -21,13 +22,16 @@ defmodule IexCode.MixProject do
   def application do
     [
       mod: {IexCode.Application, []},
-      extra_applications: [:logger, :runtime_tools, :desktop]
+      extra_applications: [:logger]
     ]
   end
 
   def cli do
     [
-      preferred_envs: [precommit: :test]
+      preferred_envs: [
+        precommit: :test,
+        "desktop.package": :prod
+      ]
     ]
   end
 
@@ -63,7 +67,7 @@ defmodule IexCode.MixProject do
       {:jason, "~> 1.2"},
       {:req, "~> 0.5.8"},
       {:floki, ">= 0.36.0"},
-      {:desktop, github: "elixir-desktop/desktop"},
+      {:desktop, github: "elixir-desktop/desktop", runtime: false},
       {:dns_cluster, "~> 0.2.0"},
       {:bandit, "~> 1.5"}
     ]
@@ -92,7 +96,19 @@ defmodule IexCode.MixProject do
         "esbuild iex_code --minify",
         "phx.digest"
       ],
+      desktop: ["desktop"],
+      "desktop.package": ["desktop.package"],
       precommit: ["compile --warnings-as-errors", "deps.unlock --unused", "format", "test"]
+    ]
+  end
+
+  defp releases do
+    [
+      iex_code: [
+        include_executables_for: [:unix],
+        include_erts: true,
+        applications: [runtime_tools: :load, wx: :load, desktop: :load]
+      ]
     ]
   end
 end

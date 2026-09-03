@@ -15,9 +15,11 @@ defmodule IexCode.Application do
         IexCode.DatabasePermissions,
         {DNSCluster, query: Application.get_env(:iex_code, :dns_cluster_query) || :ignore},
         {Phoenix.PubSub, name: IexCode.PubSub},
+        IexCode.Observability.MemoryPoller,
         {Registry, keys: :unique, name: IexCode.SessionRegistry},
         {Registry, keys: :unique, name: IexCode.Engine.AgentRegistry},
         {Task.Supervisor, name: IexCode.TaskSupervisor},
+        IexCode.LLM.Discovery.Server,
         IexCode.WorkspaceLocks,
         IexCode.Engine.SessionSupervisor,
         IexCode.Engine.AgentSupervisor,
@@ -27,7 +29,10 @@ defmodule IexCode.Application do
         run_dispatcher_child(),
         kanban_scheduler_child(),
         IexCodeWeb.Endpoint,
-        desktop_child()
+        desktop_child(),
+        IexCode.Desktop.Dock,
+        IexCode.Desktop.ActivityTracker,
+        IexCode.Desktop.SwarmHooks
       ]
       |> Enum.reject(&is_nil/1)
 
@@ -35,7 +40,7 @@ defmodule IexCode.Application do
     Supervisor.start_link(children, opts)
   end
 
-  defp desktop_child do
+  def desktop_child do
     if Application.get_env(:iex_code, :start_desktop_window, false) do
       {Desktop.Window,
        [
@@ -43,6 +48,10 @@ defmodule IexCode.Application do
          id: IexCodeWindow,
          title: "IexCode - Desktop AI Coding Harness",
          size: {1440, 920},
+         min_size: {1024, 700},
+         menubar: IexCodeWeb.MenuBar,
+         icon_menu: IexCodeWeb.TrayMenu,
+         on_close: :quit,
          url: &IexCodeWeb.Endpoint.url/0
        ]}
     else

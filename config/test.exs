@@ -6,6 +6,10 @@ import Config
 config :iex_code, :start_run_dispatcher, false
 config :iex_code, :start_kanban_scheduler, false
 config :iex_code, :control_plane_telemetry, enabled: false
+config :iex_code, :desktop_notifications_enabled, true
+config :iex_code, :desktop_sound_enabled, false
+config :iex_code, :memory_telemetry, enabled: false
+config :iex_code, :discovery, enabled: false
 
 # Configure your database
 #

@@ -7,11 +7,21 @@ defmodule IexCode.LLM.OpenAI do
   alias IexCode.LLM.StreamClient
 
   def chat(messages, system_prompt, opts, on_chunk \\ fn _c -> :ok end) do
-    api_key = Keyword.get(opts, :api_key, "")
+    raw_api_key = Keyword.get(opts, :api_key, "")
     base_url = Keyword.get(opts, :base_url, "https://api.openai.com/v1")
+    provider = Keyword.get(opts, :provider, "openai")
     model = Keyword.get(opts, :model, "gpt-4o")
     tools = Keyword.get(opts, :tools, [])
     stream? = Keyword.get(opts, :stream, true)
+
+    api_key =
+      if raw_api_key in [nil, ""] and
+           (IexCode.LLM.Discovery.is_local_endpoint?(base_url) or
+              IexCode.LLM.Discovery.is_local_provider?(provider)) do
+        "local"
+      else
+        raw_api_key
+      end
 
     headers = [
       {"authorization", "Bearer #{api_key}"},

@@ -10,6 +10,7 @@ defmodule IexCodeWeb.WorkspaceLive do
   alias IexCode.Tools.Git
   alias IexCode.Tools.Git.{DiffParser, HunkOps}
   alias IexCode.Tools.{TerminalServer, TerminalSession}
+  alias IexCode.Observability.MemoryPoller
   alias IexCodeWeb.CommandPalette
   alias Phoenix.PubSub
   import IexCodeWeb.WorkspaceComponents
@@ -72,6 +73,10 @@ defmodule IexCodeWeb.WorkspaceLive do
     if connected?(socket) do
       PubSub.subscribe(IexCode.PubSub, "session:#{session.id}")
       PubSub.subscribe(IexCode.PubSub, "session:#{session.id}:terminal")
+      PubSub.subscribe(IexCode.PubSub, "desktop:events")
+      PubSub.subscribe(IexCode.PubSub, "desktop:activity")
+      PubSub.subscribe(IexCode.PubSub, "telemetry:memory")
+      PubSub.subscribe(IexCode.PubSub, "llm:discovery")
       Runs.subscribe_session(session.id)
       Runs.subscribe_workspace_locks(project.id)
       Kanban.subscribe(project.id)
@@ -121,9 +126,20 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> Enum.map(&Map.get(&1, :command))
       |> Enum.filter(&(is_binary(&1) and String.trim(&1) != ""))
 
+    discovered_local_models =
+      if Code.ensure_loaded?(IexCode.LLM.Discovery.Server) and
+           Process.whereis(IexCode.LLM.Discovery.Server) do
+        IexCode.LLM.Discovery.Server.get_discovered_models()
+      else
+        []
+      end
+
     socket =
       socket
+      |> assign(:discovered_local_models, discovered_local_models)
+      |> assign(:open_dropdown, nil)
       |> assign(:page_title, "#{session.title} · #{project.name}")
+      |> assign(:memory_snapshot, MemoryPoller.current_metrics())
       |> assign(:project, project)
       |> assign(:projects, projects)
       |> assign(:all_projects, projects)
@@ -505,6 +521,12 @@ defmodule IexCodeWeb.WorkspaceLive do
   # ============================================================================
 
   @impl true
+  def handle_event("force_gc", _params, socket) do
+    snapshot = MemoryPoller.force_gc()
+    {:noreply, assign(socket, :memory_snapshot, snapshot)}
+  end
+
+  @impl true
   def handle_event("switch_tab", %{"tab" => tab}, socket) when tab in @workspace_tabs do
     socket = assign(socket, :active_tab, tab)
 
@@ -697,6 +719,16 @@ defmodule IexCodeWeb.WorkspaceLive do
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Failed to set model: #{inspect(reason)}")}
     end
+  end
+
+  @impl true
+  def handle_event("rescan_local_models", _params, socket) do
+    if Code.ensure_loaded?(IexCode.LLM.Discovery.Server) and
+         Process.whereis(IexCode.LLM.Discovery.Server) do
+      IexCode.LLM.Discovery.Server.rescan()
+    end
+
+    {:noreply, socket}
   end
 
   @impl true
@@ -3818,6 +3850,25 @@ defmodule IexCodeWeb.WorkspaceLive do
   # ============================================================================
 
   @impl true
+  def handle_info({:dock_activity_updated, %{title: title}}, socket) when is_binary(title) do
+    {:noreply, assign(socket, :page_title, title)}
+  end
+
+  def handle_info({:dock_activity_updated, %{"title" => title}}, socket) when is_binary(title) do
+    {:noreply, assign(socket, :page_title, title)}
+  end
+
+  @impl true
+  def handle_info({:memory_telemetry, snapshot}, socket) do
+    {:noreply, assign(socket, :memory_snapshot, snapshot)}
+  end
+
+  @impl true
+  def handle_info({:local_models_discovered, models}, socket) do
+    {:noreply, assign(socket, :discovered_local_models, models)}
+  end
+
+  @impl true
   def handle_info({:message_created, message}, socket) do
     all_messages = socket.assigns.all_messages ++ [message]
 
@@ -4428,6 +4479,36 @@ defmodule IexCodeWeb.WorkspaceLive do
   end
 
   @impl true
+  def handle_info({:desktop_action, :new_session}, socket) do
+    handle_event("new_session", %{}, socket)
+  end
+
+  def handle_info({:desktop_action, :open_settings}, socket) do
+    handle_event("toggle_settings_modal", %{}, socket)
+  end
+
+  def handle_info({:desktop_action, :command_palette}, socket) do
+    handle_event("toggle_command_palette", %{}, socket)
+  end
+
+  def handle_info({:desktop_action, :toggle_sidebar}, socket) do
+    handle_event("toggle_workspace_menu", %{}, socket)
+  end
+
+  def handle_info({:desktop_action, _action}, socket) do
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_info({:desktop_switch_tab, tab}, socket) when tab in @workspace_tabs do
+    handle_event("switch_tab", %{"tab" => tab}, socket)
+  end
+
+  def handle_info({:desktop_switch_tab, _tab}, socket) do
+    {:noreply, socket}
+  end
+
+  @impl true
   def handle_info(_msg, socket) do
     {:noreply, socket}
   end
@@ -4893,8 +4974,11 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   defp normalize_model_provider(provider, model_name) do
     case String.downcase(to_string(provider)) do
-      selected when selected in ["openai", "anthropic"] -> selected
-      _invalid -> provider_for_model(model_name)
+      selected when selected in ["openai", "anthropic", "ollama", "lm_studio", "llama_cpp"] ->
+        selected
+
+      _invalid ->
+        provider_for_model(model_name)
     end
   end
 

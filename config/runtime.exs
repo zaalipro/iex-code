@@ -24,12 +24,22 @@ config :iex_code, IexCodeWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 
 if config_env() == :prod do
+  app_support_dir = Path.expand("~/Library/Application Support/IexCode")
+
   database_path =
-    System.get_env("DATABASE_PATH") ||
-      raise """
-      environment variable DATABASE_PATH is missing.
-      For example: /etc/iex_code/iex_code.db
-      """
+    case System.get_env("DATABASE_PATH") do
+      nil ->
+        File.mkdir_p!(app_support_dir)
+        Path.join(app_support_dir, "iex_code.db")
+
+      "" ->
+        File.mkdir_p!(app_support_dir)
+        Path.join(app_support_dir, "iex_code.db")
+
+      path ->
+        File.mkdir_p!(Path.dirname(path))
+        path
+    end
 
   config :iex_code, IexCode.Repo,
     database: database_path,
@@ -38,18 +48,56 @@ if config_env() == :prod do
     journal_mode: :wal
 
   # The secret key base is used to sign/encrypt cookies and other secrets.
-  # A default value is used in config/dev.exs and config/test.exs but you
-  # want to use a different value for prod and you most likely don't want
-  # to check this value into version control, so we use an environment
-  # variable instead.
+  # If SECRET_KEY_BASE env is missing, check ~/Library/Application Support/IexCode/secret_key_base;
+  # if file exists read it, otherwise generate a secure 64-byte random string, write it to file, and use it.
   secret_key_base =
-    System.get_env("SECRET_KEY_BASE") ||
-      raise """
-      environment variable SECRET_KEY_BASE is missing.
-      You can generate one by calling: mix phx.gen.secret
-      """
+    case System.get_env("SECRET_KEY_BASE") do
+      nil ->
+        File.mkdir_p!(app_support_dir)
+        secret_file = Path.join(app_support_dir, "secret_key_base")
+        legacy_secret_file = Path.join(app_support_dir, ".secret_key_base")
 
-  host = System.get_env("PHX_HOST") || "example.com"
+        cond do
+          File.exists?(secret_file) ->
+            File.read!(secret_file) |> String.trim()
+
+          File.exists?(legacy_secret_file) ->
+            File.read!(legacy_secret_file) |> String.trim()
+
+          true ->
+            key = :crypto.strong_rand_bytes(64) |> Base.encode64(padding: false)
+            File.write!(secret_file, key)
+            File.chmod(secret_file, 0o600)
+            key
+        end
+
+      "" ->
+        File.mkdir_p!(app_support_dir)
+        secret_file = Path.join(app_support_dir, "secret_key_base")
+        legacy_secret_file = Path.join(app_support_dir, ".secret_key_base")
+
+        cond do
+          File.exists?(secret_file) ->
+            File.read!(secret_file) |> String.trim()
+
+          File.exists?(legacy_secret_file) ->
+            File.read!(legacy_secret_file) |> String.trim()
+
+          true ->
+            key = :crypto.strong_rand_bytes(64) |> Base.encode64(padding: false)
+            File.write!(secret_file, key)
+            File.chmod(secret_file, 0o600)
+            key
+        end
+
+      key ->
+        key
+    end
+
+  host = System.get_env("PHX_HOST") || "localhost"
+  port = String.to_integer(System.get_env("PORT") || "4000")
+  scheme = if host in ["localhost", "127.0.0.1"], do: "http", else: "https"
+  url_port = if scheme == "https", do: 443, else: port
 
   # Bind to loopback by default. Set IEX_CODE_BIND (e.g. "0.0.0.0" or
   # "::") to explicitly override.
@@ -74,16 +122,28 @@ if config_env() == :prod do
         end
     end
 
+  start_desktop_window = System.get_env("DESKTOP_WINDOW") != "false"
+  config :iex_code, start_desktop_window: start_desktop_window
+
+  if start_desktop_window do
+    Application.ensure_all_started(:desktop)
+  end
+
+  if System.get_env("PHX_SERVER") || start_desktop_window do
+    config :iex_code, IexCodeWeb.Endpoint, server: true
+  end
+
   config :iex_code, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
 
   config :iex_code, IexCodeWeb.Endpoint,
-    url: [host: host, port: 443, scheme: "https"],
+    url: [host: host, port: url_port, scheme: scheme],
     http: [
       # Bind on loopback by default; override with the IEX_CODE_BIND
       # environment variable (see above).
       # See the documentation on https://bandit.hexdocs.pm/Bandit.html#t:options/0
       # for details about using IPv6 vs IPv4 and loopback vs public addresses.
-      ip: bind_ip
+      ip: bind_ip,
+      port: port
     ],
     secret_key_base: secret_key_base
 

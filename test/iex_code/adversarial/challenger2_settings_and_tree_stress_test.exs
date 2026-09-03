@@ -111,14 +111,14 @@ defmodule IexCode.Adversarial.Challenger2SettingsAndTreeStressTest do
     test "validates model providers and rejects unsupported providers" do
       settings = Settings.get_settings()
 
-      for valid_provider <- ["openai", "anthropic"] do
+      for valid_provider <- ["openai", "anthropic", "ollama", "lm_studio", "llama_cpp"] do
         assert {:ok, updated} =
                  Settings.update_settings(%{default_model_provider: valid_provider})
 
         assert updated.default_model_provider == valid_provider
       end
 
-      for invalid_provider <- ["ollama", "gemini_raw", "local_custom", "invalid_123"] do
+      for invalid_provider <- ["gemini_raw", "local_custom", "invalid_123"] do
         cs = Settings.change_settings(settings, %{default_model_provider: invalid_provider})
         refute cs.valid?, "Expected default_model_provider '#{invalid_provider}' to be rejected"
         assert %{default_model_provider: _} = errors_on(cs)

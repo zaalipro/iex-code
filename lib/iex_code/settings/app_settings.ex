@@ -64,7 +64,7 @@ defmodule IexCode.Settings.AppSettings do
     timestamps(type: :utc_datetime)
   end
 
-  @model_providers ~w(openai anthropic)
+  @model_providers ~w(openai anthropic ollama lm_studio llama_cpp)
   @search_provider_ids ~w(tavily brave exa perplexity firecrawl linkup serper serpapi google bing searxng duckduckgo)
   @required_fields [
     :anthropic_base_url,

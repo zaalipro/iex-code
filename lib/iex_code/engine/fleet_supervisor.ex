@@ -187,7 +187,7 @@ defmodule IexCode.Engine.FleetSupervisor do
     temperature = if is_number(temperature), do: temperature * 1.0, else: temperature
 
     cond do
-      provider not in ["openai", "anthropic"] ->
+      provider not in ["openai", "anthropic", "ollama", "lm_studio", "llama_cpp"] ->
         {:error, :invalid_snapshotted_model_provider}
 
       not Limits.valid_model_name?(model) ->

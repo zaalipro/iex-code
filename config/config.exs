@@ -10,7 +10,11 @@ import Config
 config :iex_code,
   ecto_repos: [IexCode.Repo],
   start_desktop_window: false,
-  generators: [timestamp_type: :utc_datetime]
+  desktop_notifications_enabled: true,
+  desktop_sound_enabled: true,
+  generators: [timestamp_type: :utc_datetime],
+  memory_telemetry: [enabled: true, interval_ms: 2000],
+  discovery: [enabled: true, interval_ms: 30_000]
 
 config :iex_code, :kanban_scheduler,
   poll_interval: 30_000,

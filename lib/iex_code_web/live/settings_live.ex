@@ -30,9 +30,18 @@ defmodule IexCodeWeb.SettingsLive do
     context_session = load_context_session(params["id"])
     invalid_session_context? = is_binary(params["id"]) and is_nil(context_session)
 
-    if connected?(socket) and function_exported?(Settings, :subscribe, 0) do
-      apply(Settings, :subscribe, [])
+    if connected?(socket) do
+      if function_exported?(Settings, :subscribe, 0), do: apply(Settings, :subscribe, [])
+      Phoenix.PubSub.subscribe(IexCode.PubSub, "llm:discovery")
     end
+
+    local_servers_status =
+      if Code.ensure_loaded?(IexCode.LLM.Discovery.Server) and
+           Process.whereis(IexCode.LLM.Discovery.Server) do
+        IexCode.LLM.Discovery.Server.get_status()
+      else
+        []
+      end
 
     {usage_status, usage_rows, usage_totals, usage_message} = load_usage(context_session)
 
@@ -51,6 +60,8 @@ defmodule IexCodeWeb.SettingsLive do
      |> assign(:search_provider_descriptors, ordered_descriptors(settings))
      |> assign(:provider_filter, "")
      |> assign(:expanded_providers, MapSet.new())
+     |> assign(:local_servers_status, local_servers_status)
+     |> assign(:scanning_local_models?, false)
      |> assign(:usage_status, usage_status)
      |> assign(:usage_rows, usage_rows)
      |> assign(:usage_totals, usage_totals)
@@ -194,6 +205,63 @@ defmodule IexCodeWeb.SettingsLive do
   end
 
   def handle_event("move_provider", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("rescan_local_models", _params, socket) do
+    if Code.ensure_loaded?(IexCode.LLM.Discovery.Server) and
+         Process.whereis(IexCode.LLM.Discovery.Server) do
+      IexCode.LLM.Discovery.Server.rescan()
+    end
+
+    status =
+      if Code.ensure_loaded?(IexCode.LLM.Discovery.Server) and
+           Process.whereis(IexCode.LLM.Discovery.Server) do
+        IexCode.LLM.Discovery.Server.get_status()
+      else
+        socket.assigns.local_servers_status
+      end
+
+    {:noreply,
+     socket
+     |> assign(:local_servers_status, status)
+     |> assign(:scanning_local_models?, false)
+     |> put_flash(:info, "Scanned local inference servers")}
+  end
+
+  @impl true
+  def handle_event("use_local_model", %{"provider" => provider, "model" => model}, socket) do
+    params = %{
+      "default_model_provider" => provider,
+      "default_model" => model
+    }
+
+    case update_from_form(socket.assigns.settings, params) do
+      {:ok, updated} ->
+        {:noreply,
+         socket
+         |> assign_saved(updated, "Default model set to #{model} (#{provider})")
+         |> put_flash(:info, "Default model set to #{model} (#{provider})")}
+
+      {:error, _} ->
+        {:noreply, put_flash(socket, :error, "Failed to set default model")}
+    end
+  end
+
+  @impl true
+  def handle_info({:local_models_discovered, _models}, socket) do
+    status =
+      if Code.ensure_loaded?(IexCode.LLM.Discovery.Server) and
+           Process.whereis(IexCode.LLM.Discovery.Server) do
+        IexCode.LLM.Discovery.Server.get_status()
+      else
+        socket.assigns.local_servers_status
+      end
+
+    {:noreply,
+     socket
+     |> assign(:local_servers_status, status)
+     |> assign(:scanning_local_models?, false)}
+  end
 
   @impl true
   def handle_info({:settings_updated, updated}, socket) do

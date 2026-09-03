@@ -348,11 +348,19 @@ defmodule IexCode.Adversarial.TerminalWhiteboxAdversarialTest do
           )
         end)
 
-      # Give agent command brief moment to acquire lock
-      Process.sleep(100)
+      # Wait dynamically for agent command to acquire lock (up to 2s)
+      state =
+        Enum.reduce_while(1..40, nil, fn _, _acc ->
+          case TerminalServer.get_state(session_id) do
+            {:ok, %{occupant: {:agent, "TestAgent", "op_lock_test"}} = s} ->
+              {:halt, s}
 
-      # Verify occupant is locked
-      {:ok, state} = TerminalServer.get_state(session_id)
+            {:ok, s} ->
+              Process.sleep(50)
+              {:cont, s}
+          end
+        end)
+
       assert match?({:agent, "TestAgent", "op_lock_test"}, state.occupant)
 
       # Attempt 10 concurrent user input operations - all must be rejected

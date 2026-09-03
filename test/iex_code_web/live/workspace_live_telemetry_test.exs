@@ -433,4 +433,84 @@ defmodule IexCodeWeb.WorkspaceLiveTelemetryTest do
       assert html_after =~ "Session stopped" or is_binary(html_after)
     end
   end
+
+  # ============================================================================
+  # 5. Memory Telemetry Pill & Micro-GC Footer (M2)
+  # ============================================================================
+
+  describe "Memory Telemetry Pill & Micro-GC Footer (M2)" do
+    test "renders workspace-status-footer and memory-telemetry-pill on mount", %{
+      conn: conn,
+      workspace_path: path
+    } do
+      project = create_project_fixture(%{root_path: path})
+      session = create_session_fixture(project)
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      assert has_element?(view, "#workspace-status-footer")
+      assert has_element?(view, "#memory-telemetry-pill")
+      assert has_element?(view, "#memory-rss-stat")
+      assert has_element?(view, "#memory-beam-stat")
+      assert has_element?(view, "#memory-procs-stat")
+    end
+
+    test "updates memory metrics in real time via PubSub broadcast", %{
+      conn: conn,
+      workspace_path: path
+    } do
+      project = create_project_fixture(%{root_path: path})
+      session = create_session_fixture(project)
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      alias IexCode.Observability.MemorySnapshot
+
+      snapshot = %MemorySnapshot{
+        rss_bytes: 71_512_883,
+        beam_total_bytes: 37_853_593,
+        beam_processes_bytes: 15_000_000,
+        beam_system_bytes: 22_000_000,
+        beam_atom_bytes: 400_000,
+        beam_binary_bytes: 50_000,
+        beam_ets_bytes: 600_000,
+        process_count: 88,
+        gc_runs: 1200,
+        gc_words_reclaimed: 900_000,
+        delta_gc_runs: 5,
+        delta_reclaimed_bytes: 40_000,
+        timestamp: DateTime.utc_now()
+      }
+
+      send(view.pid, {:memory_telemetry, snapshot})
+
+      assert element(view, "#memory-rss-stat") |> render() =~ "68.2 MB"
+      assert element(view, "#memory-beam-stat") |> render() =~ "36.1 MB"
+      assert element(view, "#memory-procs-stat") |> render() =~ "88"
+      assert has_element?(view, "#memory-gc-delta-stat")
+      assert element(view, "#memory-gc-delta-stat") |> render() =~ "+5 GC"
+    end
+
+    test "renders micro-GC popover card details and handles force_gc event", %{
+      conn: conn,
+      workspace_path: path
+    } do
+      project = create_project_fixture(%{root_path: path})
+      session = create_session_fixture(project)
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      # Popover card elements exist in DOM
+      assert has_element?(view, "#memory-popover-card")
+      assert has_element?(view, "#memory-breakdown-processes")
+      assert has_element?(view, "#memory-breakdown-system")
+      assert has_element?(view, "#memory-gc-runs")
+      assert has_element?(view, "#force-gc-btn")
+
+      # Trigger force_gc click
+      render_click(view, "force_gc")
+      assert Process.alive?(view.pid)
+
+      # Assert stats are still rendered and valid
+      assert has_element?(view, "#memory-rss-stat")
+      assert has_element?(view, "#memory-beam-stat")
+    end
+  end
 end

@@ -794,7 +794,7 @@ defmodule IexCode.Engine.AgentLoop do
     temperature = if is_number(temperature), do: temperature * 1.0, else: session.temperature
 
     cond do
-      provider not in ["openai", "anthropic"] ->
+      provider not in ["openai", "anthropic", "ollama", "lm_studio", "llama_cpp"] ->
         {:error, :invalid_execution_model_provider}
 
       not Limits.valid_model_name?(model) ->

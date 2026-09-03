@@ -89,16 +89,25 @@ defmodule IexCode.LLM do
       |> Keyword.put(:max_tokens, max_tokens)
       |> Enum.reject(fn {_k, v} -> is_nil(v) end)
 
+    openai_base = settings.openai_base_url || "https://cli.llmotions.com/v1"
+
+    openai_key =
+      if blank?(settings.openai_api_key) and
+           IexCode.LLM.Discovery.is_local_endpoint?(openai_base),
+         do: "local",
+         else: settings.openai_api_key
+
     openai_fn = fn ->
       OpenAI.chat(
         messages,
         system_prompt,
         [
-          api_key: settings.openai_api_key,
-          base_url: settings.openai_base_url || "https://cli.llmotions.com/v1",
+          api_key: openai_key,
+          base_url: openai_base,
           model: raw_model,
           temperature: temperature,
-          tools: tools
+          tools: tools,
+          provider: "openai"
         ] ++ passthrough_opts,
         on_chunk
       )
@@ -119,10 +128,37 @@ defmodule IexCode.LLM do
       )
     end
 
+    local_base =
+      case primary_provider do
+        "ollama" -> IexCode.LLM.Discovery.default_base_url("ollama")
+        "lm_studio" -> IexCode.LLM.Discovery.default_base_url("lm_studio")
+        "llama_cpp" -> IexCode.LLM.Discovery.default_base_url("llama_cpp")
+        _ -> "http://localhost:11434/v1"
+      end
+
+    local_fn = fn ->
+      OpenAI.chat(
+        messages,
+        system_prompt,
+        [
+          api_key: "local",
+          base_url: local_base,
+          model: raw_model,
+          temperature: temperature,
+          tools: tools,
+          provider: primary_provider
+        ] ++ passthrough_opts,
+        on_chunk
+      )
+    end
+
     providers =
       [
-        {"openai", openai_fn, settings.openai_api_key},
-        {"anthropic", anthropic_fn, settings.anthropic_api_key}
+        {"openai", openai_fn, openai_key},
+        {"anthropic", anthropic_fn, settings.anthropic_api_key},
+        {"ollama", local_fn, "local"},
+        {"lm_studio", local_fn, "local"},
+        {"llama_cpp", local_fn, "local"}
       ]
       |> Enum.filter(fn {name, _fn, key} ->
         present?(key) and provider_compatible?(name, primary_provider)
@@ -166,9 +202,18 @@ defmodule IexCode.LLM do
     temperature = route_value(route, :temperature) || 0.2
     max_tokens = Keyword.get(opts, :max_tokens) || route_value(route, :max_tokens)
 
-    with true <- provider in ["openai", "anthropic"] or {:error, :invalid_resolved_route},
+    effective_api_key =
+      if blank?(api_key) and
+           (IexCode.LLM.Discovery.is_local_endpoint?(base_url) or
+              IexCode.LLM.Discovery.is_local_provider?(provider)),
+         do: "local",
+         else: api_key
+
+    with true <-
+           provider in ["openai", "anthropic", "ollama", "lm_studio", "llama_cpp"] or
+             {:error, :invalid_resolved_route},
          true <- Limits.valid_model_name?(model) or {:error, :invalid_resolved_route},
-         true <- present?(api_key) or {:error, :no_api_key},
+         true <- present?(effective_api_key) or {:error, :no_api_key},
          true <- present?(base_url) or {:error, :invalid_resolved_route},
          true <- (is_integer(max_tokens) and max_tokens > 0) or {:error, :invalid_resolved_route} do
       tools = IexCode.Tools.tool_definitions(Keyword.get(opts, :allowed_tools, :all))
@@ -186,11 +231,12 @@ defmodule IexCode.LLM do
           messages,
           system_prompt,
           [
-            api_key: api_key,
+            api_key: effective_api_key,
             base_url: base_url,
             model: model,
             temperature: temperature,
-            tools: tools
+            tools: tools,
+            provider: provider
           ] ++ passthrough_opts,
           on_chunk
         )
@@ -229,15 +275,21 @@ defmodule IexCode.LLM do
 
   defp provider_for_model(_model), do: nil
 
-  defp normalize_provider(provider) when provider in ["openai", "anthropic"], do: provider
+  defp normalize_provider(provider)
+       when provider in ["openai", "anthropic", "ollama", "lm_studio", "llama_cpp"],
+       do: provider
 
-  defp normalize_provider(provider) when provider in [:openai, :anthropic],
-    do: Atom.to_string(provider)
+  defp normalize_provider(provider)
+       when provider in [:openai, :anthropic, :ollama, :lm_studio, :llama_cpp],
+       do: Atom.to_string(provider)
 
   defp normalize_provider(_provider), do: nil
 
   defp provider_module("openai"), do: OpenAI
   defp provider_module("anthropic"), do: Anthropic
+  defp provider_module("ollama"), do: OpenAI
+  defp provider_module("lm_studio"), do: OpenAI
+  defp provider_module("llama_cpp"), do: OpenAI
 
   defp route_value(route, key) do
     Map.get(route, key, Map.get(route, Atom.to_string(key)))
