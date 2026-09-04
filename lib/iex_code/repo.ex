@@ -38,13 +38,40 @@ defmodule IexCode.Repo do
 
   @doc """
   Flushes SQLite write-ahead log (WAL) frames to the database file and truncates the WAL.
-  Executes `PRAGMA wal_checkpoint(TRUNCATE);`.
+  Executes `PRAGMA wal_checkpoint(TRUNCATE);` with automatic fallback to `PRAGMA wal_checkpoint(PASSIVE);`
+  if concurrent readers or table locks prevent immediate truncation.
   """
   @spec checkpoint_wal() :: {:ok, term()} | {:error, term()}
   def checkpoint_wal do
+    case truncate_wal() do
+      {:ok, res} ->
+        {:ok, res}
+
+      {:error, _reason} ->
+        # Fall back to PASSIVE checkpoint so frames are flushed even if truncation is locked
+        passive_wal()
+    end
+  end
+
+  defp truncate_wal do
     retry_on_busy(
       fn ->
         result = Ecto.Adapters.SQL.query!(__MODULE__, "PRAGMA wal_checkpoint(TRUNCATE);", [])
+        {:ok, result}
+      end,
+      3,
+      10
+    )
+  rescue
+    e -> {:error, e}
+  catch
+    :exit, e -> {:error, e}
+  end
+
+  defp passive_wal do
+    retry_on_busy(
+      fn ->
+        result = Ecto.Adapters.SQL.query!(__MODULE__, "PRAGMA wal_checkpoint(PASSIVE);", [])
         {:ok, result}
       end,
       3,
