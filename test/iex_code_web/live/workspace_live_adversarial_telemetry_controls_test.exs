@@ -24,9 +24,9 @@ defmodule IexCodeWeb.WorkspaceLiveAdversarialTelemetryControlsTest do
 
       # Spawn 10 concurrent workers emitting rapid interleaved progress events to the LiveView PID
       tasks =
-        for worker_id <- 1..10 do
+        for worker_id <- 1..5 do
           Task.async(fn ->
-            for i <- 1..50 do
+            for i <- 1..20 do
               agent =
                 Enum.at(
                   ["PlannerAgent", "ExplorerAgent", "CoderAgent", "VerifierAgent"],

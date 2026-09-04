@@ -7,6 +7,25 @@ defmodule IexCodeWeb.CommandPalette do
 
   @actions [
     %{
+      id: "create_workflow",
+      category: :action,
+      title: "Create Workflow",
+      subtitle: "Interactive assistant & visual DAG builder",
+      icon: "hero-plus-circle",
+      shortcut: "Cmd+Shift+W",
+      event: "open_create_workflow_modal",
+      params: %{},
+      preview: %{
+        category: :action,
+        shortcut: "Cmd+Shift+W",
+        description:
+          "Construct and validate a multi-step directed workflow graph with model-aware reasoning effort and safety policies",
+        target_tab: "workflows",
+        event: "open_create_workflow_modal",
+        params: %{}
+      }
+    },
+    %{
       id: "run_all_tests",
       category: :action,
       title: "Run All Tests",
@@ -371,6 +390,22 @@ defmodule IexCodeWeb.CommandPalette do
   ]
 
   @views [
+    %{
+      id: "view_workflows",
+      category: :view,
+      title: "Workflows Library",
+      subtitle: "Browse project workflows, run history & 1-click launch",
+      icon: "hero-rectangle-stack",
+      tab: "workflows",
+      shortcut: "",
+      preview: %{
+        category: :view,
+        shortcut: "",
+        description:
+          "Inspect project workflows, review past runs, launch 1-click workflows, and track execution cockpits",
+        target_tab: "workflows"
+      }
+    },
     %{
       id: "view_kanban",
       category: :view,
@@ -881,46 +916,52 @@ defmodule IexCodeWeb.CommandPalette do
   Returns `{:ok, score}` or `:nomatch`.
   """
   def score(query, target) when is_binary(query) and is_binary(target) do
-    # Immediate O(1) guard against huge query attacks before any allocations
-    # In UTF-8, 1 character is at most 4 bytes, so byte_size > 800 is always > 200 characters
-    if byte_size(query) > 800 do
-      :nomatch
-    else
-      q = String.downcase(String.trim(query))
-      q_len = String.length(q)
+    trimmed_query = String.trim(query)
+    q_byte_len = byte_size(trimmed_query)
 
-      cond do
-        q == "" ->
-          {:ok, 0}
+    cond do
+      q_byte_len == 0 ->
+        {:ok, 0}
 
-        q_len > 200 ->
-          :nomatch
+      q_byte_len > 800 ->
+        :nomatch
 
-        byte_size(q) > byte_size(target) ->
-          :nomatch
+      q_byte_len > 200 and String.length(trimmed_query) > 200 ->
+        :nomatch
 
-        true ->
-          t = String.downcase(String.trim(target))
-          t_len = String.length(t)
+      q_byte_len > byte_size(target) ->
+        :nomatch
 
-          cond do
-            q_len > t_len ->
-              :nomatch
+      true ->
+        q = String.downcase(trimmed_query)
+        q_len = String.length(q)
 
-            t == q ->
-              {:ok, 1000}
+        cond do
+          q_len > 200 ->
+            :nomatch
 
-            String.starts_with?(t, q) ->
-              {:ok, 500 + q_len * 10}
+          true ->
+            t = String.downcase(String.trim(target))
+            t_len = String.length(t)
 
-            String.contains?(t, q) ->
-              boundary_bonus = if boundary_at_substring?(t, q), do: 50, else: 0
-              {:ok, 300 + q_len * 10 + boundary_bonus}
+            cond do
+              q_len > t_len ->
+                :nomatch
 
-            true ->
-              subsequence_score(q, t)
-          end
-      end
+              t == q ->
+                {:ok, 1000}
+
+              String.starts_with?(t, q) ->
+                {:ok, 500 + q_len * 10}
+
+              String.contains?(t, q) ->
+                boundary_bonus = if boundary_at_substring?(t, q), do: 50, else: 0
+                {:ok, 300 + q_len * 10 + boundary_bonus}
+
+              true ->
+                subsequence_score(q, t)
+            end
+        end
     end
   end
 
@@ -974,7 +1015,7 @@ defmodule IexCodeWeb.CommandPalette do
     q_len = byte_size(q)
     t_len = byte_size(t)
 
-    if q_len > t_len or not is_subsequence?(q, t) do
+    if q_len > t_len do
       :nomatch
     else
       q_chars = String.graphemes(q)
@@ -1123,7 +1164,7 @@ defmodule IexCodeWeb.CommandPalette do
             {p, 300 + q_len * 10 + boundary_bonus}
 
           :nomatch ->
-            if q_chars_count <= p_len and is_subsequence?(q, p) do
+            if q_chars_count <= p_len do
               case match_subsequence(q_chars, p, 0, nil, nil, 100, p_len, q_chars_count) do
                 {:ok, s} when s > 0 -> {p, s}
                 _ -> nil
@@ -1157,26 +1198,40 @@ defmodule IexCodeWeb.CommandPalette do
                 {p, 300 + q_len * 10 + boundary_bonus}
 
               :nomatch ->
-                if is_subsequence?(q, p) do
-                  if q_len <= bn_len and is_subsequence?(q, bn) do
+                cond do
+                  q_len <= bn_len ->
                     case match_subsequence(q_chars, bn, 0, nil, nil, 100, bn_len, q_chars_count) do
                       {:ok, bs} when bs > 0 ->
                         {p, bs}
 
                       _ ->
-                        case match_subsequence(q_chars, p, 0, nil, nil, 100, p_len, q_chars_count) do
-                          {:ok, s} when s > 0 -> {p, s}
-                          _ -> nil
+                        if q_chars_count <= p_len do
+                          case match_subsequence(
+                                 q_chars,
+                                 p,
+                                 0,
+                                 nil,
+                                 nil,
+                                 100,
+                                 p_len,
+                                 q_chars_count
+                               ) do
+                            {:ok, s} when s > 0 -> {p, s}
+                            _ -> nil
+                          end
+                        else
+                          nil
                         end
                     end
-                  else
+
+                  q_chars_count <= p_len ->
                     case match_subsequence(q_chars, p, 0, nil, nil, 100, p_len, q_chars_count) do
                       {:ok, s} when s > 0 -> {p, s}
                       _ -> nil
                     end
-                  end
-                else
-                  nil
+
+                  true ->
+                    nil
                 end
             end
         end

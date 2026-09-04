@@ -1,7 +1,18 @@
 defmodule IexCodeWeb.WorkspaceLive do
   use IexCodeWeb, :live_view
   require Logger
-  alias IexCode.{Projects, Runs, Sessions, Settings, Kanban, WorkspaceLocks, WorkspacePath}
+
+  alias IexCode.{
+    Projects,
+    Runs,
+    Sessions,
+    Settings,
+    Kanban,
+    Workflows,
+    WorkspaceLocks,
+    WorkspacePath
+  }
+
   alias IexCode.Engine.SessionServer
   alias IexCode.Execution.{CommandError, CommandParser, Intent, Router}
   alias IexCode.Runs.{DagProjection, DagScheduler, RunDispatcher}
@@ -19,6 +30,7 @@ defmodule IexCodeWeb.WorkspaceLive do
   import IexCodeWeb.Components.QuickSettingsDrawer
   import IexCodeWeb.ToolApprovalModal
   import IexCodeWeb.ThinkingTrace
+  import IexCodeWeb.WorkflowComponents
 
   # Terminal output is capped to the last N lines (ring buffer)
   @terminal_output_max_lines 500
@@ -62,7 +74,7 @@ defmodule IexCodeWeb.WorkspaceLive do
                          pretty: true
                        )
                        |> IO.iodata_to_binary()
-  @workspace_tabs ~w(kanban swarm research calendar changes tests ast chat files terminal)
+  @workspace_tabs ~w(kanban workflows swarm research calendar changes tests ast chat files terminal)
 
   @impl true
   def mount(params, _session, socket) do
@@ -84,7 +96,11 @@ defmodule IexCodeWeb.WorkspaceLive do
       Runs.subscribe_session(session.id)
       Runs.subscribe_workspace_locks(project.id)
       Kanban.subscribe(project.id)
+      PubSub.subscribe(IexCode.PubSub, "workflows:#{project.id}")
+      PubSub.subscribe(IexCode.PubSub, "workflow_runs:project:#{project.id}")
       ResearchResults.subscribe_session(session.id)
+      PubSub.subscribe(IexCode.PubSub, "swarm:#{session.id}")
+      PubSub.subscribe(IexCode.PubSub, "swarm:telemetry")
       Settings.subscribe()
       SessionServer.ensure_started(session.id)
       _ = TerminalServer.ensure_started(session.id, workspace_path: project.root_path)
@@ -109,6 +125,8 @@ defmodule IexCodeWeb.WorkspaceLive do
     files = list_project_files(project.root_path)
     sessions = Sessions.list_sessions_for_project(project.id)
     tasks = Kanban.list_tasks(project.id)
+    workflows = Workflows.list_workflows(project.id)
+    workflow_runs = Workflows.list_runs(project.id, limit: 15)
 
     selected_task = List.first(tasks)
 
@@ -140,6 +158,10 @@ defmodule IexCodeWeb.WorkspaceLive do
 
     socket =
       socket
+      |> assign(:workflows, workflows)
+      |> assign(:workflow_runs, workflow_runs)
+      |> assign(:show_create_workflow_modal, false)
+      |> assign(:create_workflow_prompt, "")
       |> assign(:discovered_local_models, discovered_local_models)
       |> assign(:open_dropdown, nil)
       |> assign(:page_title, "#{session.title} · #{project.name}")
@@ -496,8 +518,10 @@ defmodule IexCodeWeb.WorkspaceLive do
                 PubSub.unsubscribe(IexCode.PubSub, "session:#{old_id}:terminal")
                 PubSub.unsubscribe(IexCode.PubSub, "runs:session:#{old_id}")
                 PubSub.unsubscribe(IexCode.PubSub, "research:session:#{old_id}")
+                PubSub.unsubscribe(IexCode.PubSub, "swarm:#{old_id}")
                 PubSub.subscribe(IexCode.PubSub, "session:#{new_session.id}")
                 PubSub.subscribe(IexCode.PubSub, "session:#{new_session.id}:terminal")
+                PubSub.subscribe(IexCode.PubSub, "swarm:#{new_session.id}")
                 Runs.subscribe_session(new_session.id)
                 ResearchResults.subscribe_session(new_session.id)
 
@@ -642,6 +666,55 @@ defmodule IexCodeWeb.WorkspaceLive do
   end
 
   def handle_event("switch_tab", %{"sidebar_tab" => _invalid}, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("open_create_workflow_modal", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:active_tab, "workflows")
+     |> assign(:show_create_workflow_modal, true)}
+  end
+
+  @impl true
+  def handle_event("close_create_workflow_modal", _params, socket) do
+    {:noreply, assign(socket, :show_create_workflow_modal, false)}
+  end
+
+  @impl true
+  def handle_event("submit_create_workflow_modal", %{"prompt" => prompt}, socket) do
+    prompt = String.trim(prompt)
+
+    target =
+      if prompt != "" do
+        ~p"/sessions/#{socket.assigns.session.id}/workflows/new?prompt=#{prompt}"
+      else
+        ~p"/sessions/#{socket.assigns.session.id}/workflows/new"
+      end
+
+    {:noreply,
+     socket
+     |> assign(:show_create_workflow_modal, false)
+     |> push_navigate(to: target)}
+  end
+
+  @impl true
+  def handle_event("launch_workflow_from_workspace", %{"id" => id}, socket) do
+    workflow = Workflows.get_workflow!(id)
+    opts = [session_id: socket.assigns.session.id]
+
+    case Workflows.launch_workflow(workflow, %{}, opts) do
+      {:ok, run} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Launched workflow: #{workflow.name}")
+         |> push_navigate(
+           to: ~p"/sessions/#{socket.assigns.session.id}/workflows/#{workflow.id}/runs/#{run.id}"
+         )}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Cannot launch workflow: #{inspect(reason)}")}
+    end
+  end
 
   @impl true
   def handle_event("switch_changes_subtab", %{"tab" => tab}, socket) do
@@ -4329,6 +4402,18 @@ defmodule IexCodeWeb.WorkspaceLive do
   end
 
   @impl true
+  def handle_info({:swarm_peer_message, msg}, socket) do
+    existing = socket.assigns[:peer_messages] || []
+    updated = [msg | existing]
+    {:noreply, assign(socket, :peer_messages, updated)}
+  end
+
+  @impl true
+  def handle_info({:swarm_telemetry, telemetry}, socket) do
+    {:noreply, assign(socket, :swarm_telemetry, telemetry)}
+  end
+
+  @impl true
   def handle_info({:message_created, message}, socket) do
     all_messages = socket.assigns.all_messages ++ [message]
 
@@ -4996,6 +5081,47 @@ defmodule IexCodeWeb.WorkspaceLive do
   end
 
   @impl true
+  def handle_info({:workflow_created, workflow}, socket) do
+    workflows = [
+      workflow | Enum.reject(socket.assigns[:workflows] || [], &(&1.id == workflow.id))
+    ]
+
+    {:noreply, assign(socket, :workflows, workflows)}
+  end
+
+  @impl true
+  def handle_info({:workflow_updated, workflow}, socket) do
+    workflows =
+      Enum.map(socket.assigns[:workflows] || [], fn w ->
+        if w.id == workflow.id, do: workflow, else: w
+      end)
+
+    {:noreply, assign(socket, :workflows, workflows)}
+  end
+
+  @impl true
+  def handle_info({:workflow_deleted, id}, socket) do
+    workflows = Enum.reject(socket.assigns[:workflows] || [], &(&1.id == id))
+    {:noreply, assign(socket, :workflows, workflows)}
+  end
+
+  @impl true
+  def handle_info({:workflow_run_launched, run}, socket) do
+    runs = [run | Enum.reject(socket.assigns[:workflow_runs] || [], &(&1.id == run.id))]
+    {:noreply, assign(socket, :workflow_runs, runs)}
+  end
+
+  @impl true
+  def handle_info({:workflow_run_updated, run}, socket) do
+    runs =
+      Enum.map(socket.assigns[:workflow_runs] || [], fn r ->
+        if r.id == run.id, do: run, else: r
+      end)
+
+    {:noreply, assign(socket, :workflow_runs, runs)}
+  end
+
+  @impl true
   def handle_info({:git_state_changed, _project_id}, socket) do
     drain_git_messages()
     {:noreply, refresh_git_state(socket)}
@@ -5463,6 +5589,12 @@ defmodule IexCodeWeb.WorkspaceLive do
 
       :action ->
         case item.id do
+          "create_workflow" ->
+            {:noreply,
+             socket
+             |> assign(:active_tab, "workflows")
+             |> assign(:show_create_workflow_modal, true)}
+
           "run_all_tests" ->
             handle_event("run_tests", %{"mode" => "all"}, socket)
 
@@ -6040,6 +6172,15 @@ defmodule IexCodeWeb.WorkspaceLive do
          _params
        ),
        do: attach_research_result_from_command(socket, public_id)
+
+  defp route_composer_intent(socket, %Intent{kind: :create_workflow, objective: prompt}, _params) do
+    {:noreply,
+     socket
+     |> assign(:active_tab, "workflows")
+     |> assign(:show_create_workflow_modal, true)
+     |> assign(:create_workflow_prompt, prompt || "")
+     |> reset_prompt_form()}
+  end
 
   defp route_composer_intent(socket, %Intent{kind: :navigate, objective: tab}, _params)
        when tab in @workspace_tabs do
@@ -7154,12 +7295,78 @@ defmodule IexCodeWeb.WorkspaceLive do
   defp assign_initial_consensus(socket) do
     assessments = sample_consensus_assessments()
     matrix = IexCode.Consensus.Matrix.compute(assessments)
+    roster = sample_dynamic_roster()
+    peer_messages = sample_peer_messages()
 
     socket
     |> assign(:consensus_assessments, assessments)
     |> assign(:consensus_matrix, matrix)
     |> assign(:consensus_status, :idle)
     |> assign(:consensus_rejection_reason, nil)
+    |> assign(:dynamic_roster, roster)
+    |> assign(:swarm_roster, roster)
+    |> assign(:peer_messages, peer_messages)
+  end
+
+  defp sample_dynamic_roster do
+    [
+      %{
+        role: :explorer,
+        display_name: "Explorer Lead",
+        model_provider: "anthropic",
+        model_id: "claude-3-7-sonnet"
+      },
+      %{
+        role: :architect,
+        display_name: "Architect Lead",
+        model_provider: "anthropic",
+        model_id: "claude-3-7-sonnet"
+      },
+      %{
+        role: :coder,
+        display_name: "Coder Agent",
+        model_provider: "anthropic",
+        model_id: "claude-3-7-sonnet"
+      },
+      %{
+        role: :auditor,
+        display_name: "Auditor Agent",
+        model_provider: "openai",
+        model_id: "gpt-4o"
+      }
+    ]
+  end
+
+  defp sample_peer_messages do
+    [
+      %{
+        id: "peer-sample-1",
+        from_agent: "explorer-1",
+        to_agent: "architect-lead",
+        role: :explorer,
+        type: :context_handoff,
+        payload: %{"status" => "Codebase AST symbols indexed", "target_files" => ["lib/core.ex"]},
+        timestamp: DateTime.utc_now()
+      },
+      %{
+        id: "peer-sample-2",
+        from_agent: "architect-lead",
+        to_agent: "coder-1",
+        role: :architect,
+        type: :architecture_spec,
+        payload: %{"contract" => "Interface specification validated"},
+        timestamp: DateTime.utc_now()
+      },
+      %{
+        id: "peer-sample-3",
+        from_agent: "coder-1",
+        to_agent: "swarm:all",
+        role: :coder,
+        type: :proposal_submission,
+        payload: %{"patches_count" => 1},
+        timestamp: DateTime.utc_now()
+      }
+    ]
   end
 
   defp sample_consensus_assessments do

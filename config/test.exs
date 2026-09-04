@@ -10,6 +10,8 @@ config :iex_code, :desktop_notifications_enabled, true
 config :iex_code, :desktop_sound_enabled, false
 config :iex_code, :memory_telemetry, enabled: false
 config :iex_code, :discovery, enabled: false
+config :iex_code, :workflows_live_async, false
+config :iex_code, :env, :test
 
 # Configure your database
 #

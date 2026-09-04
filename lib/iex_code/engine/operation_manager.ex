@@ -424,21 +424,36 @@ defmodule IexCode.Engine.OperationManager do
   def tree_stats(operations) when is_list(operations) do
     all_ids = MapSet.new(Enum.map(operations, & &1.id))
 
-    roots_count =
-      Enum.count(operations, fn op ->
-        is_nil(op.parent_op_id) or op.parent_op_id == "" or
-          not MapSet.member?(all_ids, op.parent_op_id)
+    {roots_count, running, completed, failed, total_duration} =
+      Enum.reduce(operations, {0, 0, 0, 0, 0}, fn op, {roots, run, comp, fail, dur} ->
+        is_root =
+          is_nil(op.parent_op_id) or op.parent_op_id == "" or
+            not MapSet.member?(all_ids, op.parent_op_id)
+
+        new_roots = if is_root, do: roots + 1, else: roots
+
+        {new_run, new_comp, new_fail} =
+          case op.status do
+            "running" -> {run + 1, comp, fail}
+            "completed" -> {run, comp + 1, fail}
+            "failed" -> {run, comp, fail + 1}
+            _ -> {run, comp, fail}
+          end
+
+        new_dur = dur + (op.duration_ms || 0)
+
+        {new_roots, new_run, new_comp, new_fail, new_dur}
       end)
 
-    roots_count = if roots_count == 0 and operations != [], do: 1, else: roots_count
+    final_roots = if roots_count == 0 and operations != [], do: 1, else: roots_count
 
     %{
       total: length(operations),
-      roots: roots_count,
-      running: Enum.count(operations, &(&1.status == "running")),
-      completed: Enum.count(operations, &(&1.status == "completed")),
-      failed: Enum.count(operations, &(&1.status == "failed")),
-      total_duration_ms: Enum.sum(Enum.map(operations, &(&1.duration_ms || 0)))
+      roots: final_roots,
+      running: running,
+      completed: completed,
+      failed: failed,
+      total_duration_ms: total_duration
     }
   end
 

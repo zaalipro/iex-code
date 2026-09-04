@@ -584,6 +584,7 @@ defmodule IexCode.E2E.E2EPtyTerminalTest do
       # Send raw ANSI 256 truecolor escape code
       ansi_payload = "\e[38;2;255;100;0mTRUECOLOR_TEST\e[0m\n"
       assert :ok = TerminalServer.send_input(session_id, ansi_payload)
+      assert {:ok, _} = receive_terminal_output(session_id, "TRUECOLOR_TEST", 5_000)
 
       # Send non-breaking / invalid byte sequence
       invalid_bytes = <<0xFF, 0xFE, 0x80, "echo UTF8_RECOVER\n">>

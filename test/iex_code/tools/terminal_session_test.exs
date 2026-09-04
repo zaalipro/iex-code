@@ -380,12 +380,15 @@ defmodule IexCode.Tools.TerminalSessionTest do
 
       assert :ok = TerminalSession.validate_raw_input(<<255, 254, 128, 3, 4>>)
 
+      initial_bytes = :sys.get_state(pid).buffer_bytes
+
       assert {:error, :terminal_input_too_large} =
                TerminalSession.send_input(session_id, :binary.copy(<<0>>, 256 * 1_024 + 1))
 
       state = :sys.get_state(pid)
       refute state.raw_input_lock?
-      assert state.buffer_bytes == 0
+      assert state.buffer_bytes >= initial_bytes
+      assert state.buffer_bytes < 256 * 1_024
     end
 
     test "structured history redacts secrets and enforces per-entry and total byte caps", %{

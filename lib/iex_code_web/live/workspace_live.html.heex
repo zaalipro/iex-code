@@ -150,6 +150,21 @@
           </button>
 
           <button
+            id="sidebar-tab-workflows"
+            phx-click="switch_tab"
+            phx-value-sidebar_tab="workflows"
+            aria-current={if @active_tab == "workflows", do: "page", else: false}
+            class={[
+              "w-full flex items-center gap-2.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-smooth text-left",
+              @active_tab == "workflows" && "bg-[#21262d] text-white shadow-sm font-semibold",
+              @active_tab != "workflows" && "text-gray-400 hover:text-gray-200 hover:bg-[#161b22]"
+            ]}
+          >
+            <.icon name="hero-rectangle-stack" class="w-3.5 h-3.5 text-cyan-400" />
+            <span>Workflows</span>
+          </button>
+
+          <button
             id="sidebar-tab-swarm"
             phx-click="switch_tab"
             phx-value-sidebar_tab="swarm"
@@ -484,6 +499,21 @@
             >
               <.icon name="hero-view-columns" class="w-3.5 h-3.5" />
               <span class="workspace-tab-label">Kanban</span>
+            </button>
+
+            <button
+              id="tab-btn-workflows"
+              phx-click="switch_tab"
+              phx-value-tab="workflows"
+              aria-pressed={@active_tab == "workflows"}
+              class={[
+                "px-3 py-1 rounded-lg text-xs font-mono font-medium flex items-center gap-1.5 transition-smooth",
+                @active_tab == "workflows" && "bg-[#21262d] text-white shadow-sm",
+                @active_tab != "workflows" && "text-gray-400 hover:text-gray-200"
+              ]}
+            >
+              <.icon name="hero-rectangle-stack" class="w-3.5 h-3.5 text-cyan-400" />
+              <span class="workspace-tab-label">Workflows</span>
             </button>
 
             <button
@@ -1306,6 +1336,79 @@
           </script>
         <% end %>
 
+        <!-- TAB: WORKFLOWS -->
+        <%= if @active_tab == "workflows" do %>
+          <div
+            id="workflows-tab-pane"
+            class="flex-1 flex flex-col h-full min-w-0 overflow-y-auto p-4 md:p-6 space-y-6"
+          >
+            <div class="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-[#21262d]">
+              <div>
+                <h2 class="text-xl font-bold text-white tracking-tight flex items-center gap-2">
+                  <.icon name="hero-rectangle-stack" class="w-5 h-5 text-cyan-400" />
+                  Workflows Library & Launcher
+                  <span class="px-2 py-0.5 rounded-full bg-[#1c2128] text-xs font-mono text-cyan-400 border border-cyan-500/30">
+                    {length(@workflows || [])}
+                  </span>
+                </h2>
+                <p class="text-xs text-zinc-400 mt-1">
+                  Launch autonomous multi-step pipelines or track active executions.
+                </p>
+              </div>
+
+              <div class="flex items-center gap-2">
+                <.link
+                  navigate={~p"/sessions/#{@session.id}/workflows/new"}
+                  class="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 text-white font-mono text-xs font-bold hover:brightness-110 shadow-md shadow-cyan-500/20 transition-all"
+                >
+                  <.icon name="hero-plus" class="w-3.5 h-3.5" />
+                  <span>Create Workflow</span>
+                </.link>
+
+                <.link
+                  navigate={~p"/sessions/#{@session.id}/workflows"}
+                  class="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-white/5 border border-white/10 text-xs font-mono text-zinc-300 hover:text-white hover:bg-white/10 transition-colors"
+                >
+                  <.icon name="hero-arrow-top-right-on-square" class="w-3.5 h-3.5" />
+                  <span>Open Full Studio</span>
+                </.link>
+              </div>
+            </div>
+
+            <!-- Workflow Cards Grid in Workspace -->
+            <%= if length(@workflows || []) > 0 do %>
+              <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <%= for workflow <- @workflows do %>
+                  <% active_run =
+                    Enum.find(@workflow_runs || [], fn r ->
+                      r.workflow_id == workflow.id and r.status == "running"
+                    end) %>
+                  <.workflow_card
+                    workflow={workflow}
+                    active_run={active_run}
+                    on_launch="launch_workflow_from_workspace"
+                  />
+                <% end %>
+              </div>
+            <% else %>
+              <div class="rounded-2xl border border-dashed border-zinc-800 p-10 text-center space-y-3">
+                <.icon name="hero-rectangle-stack" class="w-10 h-10 mx-auto text-zinc-600" />
+                <h3 class="text-sm font-bold text-white">No workflows configured</h3>
+                <p class="text-xs text-zinc-500 max-w-sm mx-auto">
+                  Build and automate your first multi-step agent workflow.
+                </p>
+                <.link
+                  navigate={~p"/sessions/#{@session.id}/workflows/new"}
+                  class="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 font-mono text-xs font-bold"
+                >
+                  <.icon name="hero-plus" class="w-3.5 h-3.5" />
+                  <span>Create Workflow</span>
+                </.link>
+              </div>
+            <% end %>
+          </div>
+        <% end %>
+
         <!-- TAB 2: COACH & SWARM VIEW -->
         <%= if @active_tab == "swarm" do %>
           <div class="flex-1 flex flex-col h-full overflow-y-auto p-5 space-y-5">
@@ -1377,6 +1480,80 @@
                 />
               </div>
             </section>
+
+            <!-- Dynamic Swarm Roster & Real-Time Telemetry Bar (Milestone 4) -->
+            <section
+              id="workspace-swarm-roster-section"
+              class="w-full rounded-2xl border border-[#21262d] bg-[#0b0f14] p-4 space-y-3"
+            >
+              <div class="flex flex-wrap items-center justify-between gap-3 border-b border-[#21262d] pb-3">
+                <div class="flex items-center gap-2.5">
+                  <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                  <span class="text-xs font-mono font-bold uppercase tracking-wider text-white">
+                    Dynamic Swarm Roster
+                  </span>
+                  <span class="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-950/60 border border-emerald-800/40 text-emerald-300 font-bold">
+                    Tier Active
+                  </span>
+                </div>
+
+                <div class="flex items-center gap-3">
+                  <.merge_gating_badge decision={
+                    (@consensus_matrix && @consensus_matrix.decision) || :approved
+                  } />
+                  <div class="flex items-center gap-2">
+                    <button
+                      type="button"
+                      id="swarm-btn-approve-merge"
+                      phx-click="approve_consensus"
+                      class="px-3 py-1.5 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 text-emerald-300 font-mono text-xs font-semibold flex items-center gap-1.5 transition-smooth"
+                    >
+                      <.icon name="hero-check" class="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Approve & Merge</span>
+                    </button>
+                    <button
+                      type="button"
+                      id="swarm-btn-reject-merge"
+                      phx-click="reject_consensus"
+                      phx-value-reason="Arbitration requested by operator"
+                      class="px-3 py-1.5 rounded-lg bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/30 text-rose-300 font-mono text-xs font-semibold flex items-center gap-1.5 transition-smooth"
+                    >
+                      <.icon name="hero-x-mark" class="w-3.5 h-3.5 text-rose-400" />
+                      <span>Reject & Revise</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <.swarm_roster_pills roster={@swarm_roster || @dynamic_roster || []} />
+            </section>
+
+            <!-- Real-Time Swarm Consensus & Live Peer Timeline Grid (Milestone 4) -->
+            <div
+              id="workspace-swarm-consensus-grid"
+              class="grid grid-cols-1 lg:grid-cols-12 gap-5"
+            >
+              <!-- Left Column: Consensus Heatmap & Dimensional Scores (7 cols) -->
+              <div class="lg:col-span-7 space-y-5">
+                <.consensus_heatmap
+                  id="workspace-swarm-consensus-heatmap"
+                  matrix={@consensus_matrix}
+                  assessments={@consensus_assessments}
+                />
+                <.dimensional_score_bars
+                  id="workspace-swarm-dimensional-scores"
+                  scores={(@consensus_matrix && @consensus_matrix.dimensional_averages) || %{}}
+                />
+              </div>
+
+              <!-- Right Column: Live Peer Message Stream Drawer (5 cols) -->
+              <div class="lg:col-span-5">
+                <.peer_message_timeline
+                  id="workspace-swarm-peer-timeline"
+                  messages={@peer_messages || []}
+                />
+              </div>
+            </div>
 
             <!-- Swarm Coach Hero Card -->
             <div class="bg-[#11151c] border border-[#21262d] rounded-3xl p-6 shadow-2xl relative overflow-hidden">
@@ -3501,6 +3678,15 @@
                           <.icon name="hero-document-arrow-down" class="h-3 w-3" /> MD
                         </.link>
                       </div>
+                      <.link
+                        id={"deep-research-result-workflow-#{research_result_public_id(result)}"}
+                        navigate={
+                          ~p"/create-workflow?research_query=#{URI.encode(research_result_label(result))}"
+                        }
+                        class="mt-1.5 flex min-h-8 w-full items-center justify-center gap-1.5 border border-cyan-400/30 bg-cyan-500/[0.08] px-2 font-mono text-[9px] uppercase tracking-wider text-cyan-200 hover:border-cyan-300/60 hover:bg-cyan-500/[0.15] transition"
+                      >
+                        <.icon name="hero-bolt" class="h-3 w-3 text-cyan-400" /> Create Workflow
+                      </.link>
                     </article>
                   </section>
                 </aside>
@@ -5162,6 +5348,91 @@
             />
           <% end %>
         </div>
+      </div>
+    </div>
+  <% end %>
+
+  <!-- Create Workflow Modal -->
+  <%= if @show_create_workflow_modal do %>
+    <div
+      id="create-workflow-modal-backdrop"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md p-4"
+    >
+      <div
+        id="create-workflow-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="create-workflow-modal-title"
+        class="bg-[#11151c] border border-[#21262d] rounded-3xl w-full max-w-lg p-6 shadow-2xl font-sans text-xs space-y-5 animate-in fade-in zoom-in-95"
+      >
+        <div class="flex items-center justify-between pb-3 border-b border-[#21262d]">
+          <div class="flex items-center gap-2.5">
+            <div class="w-8 h-8 rounded-xl bg-gradient-to-tr from-cyan-500 to-blue-600 flex items-center justify-center text-white font-bold text-xs shadow-md">
+              <.icon name="hero-sparkles" class="w-4 h-4 text-white" />
+            </div>
+            <div>
+              <h3
+                id="create-workflow-modal-title"
+                class="text-sm font-bold text-white tracking-tight"
+              >
+                Create New Workflow
+              </h3>
+              <p class="text-[11px] font-mono text-gray-400">
+                Synthesize autonomous pipeline from natural language
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            id="btn-close-create-workflow-modal"
+            phx-click="close_create_workflow_modal"
+            aria-label="Close create workflow modal"
+            class="text-gray-400 hover:text-white p-1 rounded-lg hover:bg-white/10"
+          >
+            <.icon name="hero-x-mark" class="w-5 h-5" />
+          </button>
+        </div>
+
+        <form
+          id="create-workflow-modal-form"
+          phx-submit="submit_create_workflow_modal"
+          class="space-y-4"
+        >
+          <div>
+            <label
+              for="create-workflow-prompt-input"
+              class="block font-mono text-xs text-zinc-300 mb-1.5 font-medium"
+            >
+              Objective or Specification:
+            </label>
+            <textarea
+              id="create-workflow-prompt-input"
+              name="prompt"
+              rows="4"
+              placeholder="e.g. Build authentication with JWT, add live tests, run security audits, and commit changes..."
+              class="w-full p-3 rounded-xl bg-[#0a0d12] border border-[#21262d] text-xs font-mono text-white placeholder-zinc-500 focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400 outline-none"
+            ><%= @create_workflow_prompt %></textarea>
+          </div>
+
+          <div class="flex items-center justify-end gap-3 pt-3 border-t border-[#21262d]">
+            <button
+              type="button"
+              id="btn-cancel-create-workflow-modal"
+              phx-click="close_create_workflow_modal"
+              class="px-4 py-2 rounded-xl text-xs font-mono text-zinc-400 hover:text-white"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              id="btn-submit-create-workflow-modal"
+              class="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 text-white font-mono text-xs font-bold hover:brightness-110 shadow-lg shadow-cyan-500/20"
+            >
+              <.icon name="hero-sparkles" class="w-4 h-4" />
+              <span>Launch Builder</span>
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   <% end %>

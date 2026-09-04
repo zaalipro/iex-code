@@ -27,6 +27,19 @@ defmodule IexCodeWeb.Router do
     live "/sessions/:id/settings", SettingsLive, :session
     live "/sessions/:id/settings/:tab", SettingsLive, :session_tab
 
+    # Workflows routes (Milestone 2)
+    live "/workflows", WorkflowsLive, :index
+    live "/workflows/new", WorkflowsLive, :new
+    live "/create-workflow", WorkflowsLive, :new
+    live "/workflows/:id", WorkflowsLive, :show
+    live "/workflows/:id/runs/:run_id", WorkflowsLive, :run
+
+    # Session-scoped Workflows routes
+    live "/sessions/:id/workflows", WorkflowsLive, :session_index
+    live "/sessions/:id/workflows/new", WorkflowsLive, :session_new
+    live "/sessions/:id/workflows/:workflow_id", WorkflowsLive, :session_show
+    live "/sessions/:id/workflows/:workflow_id/runs/:run_id", WorkflowsLive, :session_run
+
     get "/research/:id/report", ResearchReportController, :show
     get "/research/:id/report/download", ResearchReportController, :download_html
     get "/research/:id/result/download", ResearchReportController, :download_markdown

@@ -199,7 +199,7 @@ defmodule IexCodeWeb.WorkspaceLiveEditorLockTest do
     case :sys.get_state(view.pid).socket.assigns.test_runner_async_task do
       %Task{pid: pid} ->
         ref = Process.monitor(pid)
-        assert_receive {:DOWN, ^ref, :process, ^pid, :normal}
+        assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 5_000
 
       nil ->
         :ok

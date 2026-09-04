@@ -12,6 +12,8 @@ defmodule IexCode.Projects.Project do
     field :last_opened_at, :utc_datetime
 
     has_many :sessions, IexCode.Sessions.Session
+    has_many :workflows, IexCode.Workflows.Workflow
+    has_many :workflow_runs, IexCode.Workflows.WorkflowRun
 
     timestamps(type: :utc_datetime)
   end

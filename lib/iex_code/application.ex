@@ -18,6 +18,8 @@ defmodule IexCode.Application do
         IexCode.Observability.MemoryPoller,
         {Registry, keys: :unique, name: IexCode.SessionRegistry},
         {Registry, keys: :unique, name: IexCode.Engine.AgentRegistry},
+        {Registry, keys: :unique, name: IexCode.Workflows.EngineRegistry},
+        {DynamicSupervisor, strategy: :one_for_one, name: IexCode.Workflows.EngineSupervisor},
         {Task.Supervisor, name: IexCode.TaskSupervisor},
         IexCode.LLM.Discovery.Server,
         IexCode.WorkspaceLocks,
@@ -34,7 +36,8 @@ defmodule IexCode.Application do
         desktop_child(),
         IexCode.Desktop.Dock,
         IexCode.Desktop.ActivityTracker,
-        IexCode.Desktop.SwarmHooks
+        IexCode.Desktop.SwarmHooks,
+        IexCode.Swarm.PeerStream
       ]
       |> Enum.reject(&is_nil/1)
 

@@ -60,3 +60,71 @@ Integrate the adaptive reasoning engine into `IexCode.LLM.Client`, `IexCode.LLM.
 - [ ] Settings can be opened directly from WorkspaceLive via Command Palette and keyboard shortcuts.
 - [ ] Automated test suites pass 100% with zero failures.
 - [ ] `mix precommit` passes cleanly with 0 failures, 0 warnings, and clean formatting.
+
+## 2026-09-04T09:39:40Z
+
+Use a very large team of agents.
+
+Take the `iex-code` desktop application to the next level by building a Grok-like Workflows engine (`/create-workflow`, `/workflows`, visual running workflow tracker), upgrading Deep Research with citation graphs and conflict audits, and enhancing multi-agent Swarm coordination with live telemetry and interactive steering.
+
+Working directory: /Users/zaali/dev/iex-code
+Integrity mode: development
+
+## Requirements
+
+### R1. Grok-Like Workflows Engine & Schema (`/create-workflow`, `/workflows`)
+Implement a first-class Workflows subsystem persisted per project in SQLite (`workflows` and `workflow_runs` schemas):
+- **Workflow Definitions**: Support multi-step directed graphs with parameter variables (e.g., `{{feature_name}}`, `{{target_files}}`, `{{research_topic}}`). Steps can chain Deep Research, Swarm Code Generation, Automated Test Verification, Security & Safety Audits, and Git Commits.
+- **Model-Aware Step Configuration**: Each step configures its model provider, model ID, reasoning effort (`none`, `low`, `medium`, `high`, `thinking_budget`), enabled tools, and safety policy (`full_auto`, `prompt_dangerous`).
+- **Slash Commands & Palette Routing**:
+  - `/create-workflow`: Interactive modal / prompt-driven assistant to construct and validate new workflows from natural language or visual builders.
+  - `/workflows`: Dedicated route (`/workflows` or `/workflows/:id`) and workspace view listing all project workflows in glassmorphic cards with execution counts, tags, duration metrics, and 1-click launch.
+
+### R2. Beautiful Real-Time Workflow Execution & Tracking Cockpit
+Build a world-class, studio-grade visual execution tracker when a user launches a workflow:
+- **Interactive SVG Workflow Canvas**: Renders the workflow graph with animated cubic Bézier connectors, glowing node states (`:pending`, `:running`, `:completed`, `:failed`, `:paused`), active step progress rings, and real-time execution pulses.
+- **Step Telemetry & Live Inspector**: Clicking any step reveals live streaming outputs, agent thinking traces, token consumption, elapsed execution time, and generated artifacts (diffs, reports, code snippets).
+- **Interactive Execution Controls**: Full control suite to pause, resume, cancel, or retry individual workflow steps or the entire run.
+
+### R3. Advanced Deep Research Upgrades
+Enhance the existing `IexCode.Research` subsystem:
+- **Real-Time Citation & Source Graph**: Visual source cards showing domain trust ratings, relevance scores, and direct citation links in synthesized research reports.
+- **Contradiction & Conflict Resolution**: Multi-source fact verification highlighting conflicting evidence and synthesizing confidence-weighted conclusions.
+- **Export & Workflow Chaining**: Seamless handoff of research findings directly into downstream code synthesis and swarm implementation steps.
+
+### R4. Multi-Agent Swarm Coordination & Dynamic Telemetry
+Elevate multi-agent Swarm capabilities:
+- **Dynamic Role Allocation**: Swarm coordinator adapts agent roles based on task complexity (e.g. Explorer, Architect, Coder, Auditor).
+- **Consensus & Voting Matrices**: Pairwise agreement matrices for multi-model code review and automated merge gating.
+- **Live Peer Message Stream**: Real-time visual timeline showing agent-to-agent communication pulses and task handoffs.
+
+### R5. Comprehensive Test Suite & Precommit Pass
+- Author comprehensive ExUnit test suites covering workflow persistence, execution engine, LiveView `/workflows` UI, SVG canvas components, Deep Research DAG enhancements, and swarm telemetry.
+- Pass `mix precommit` cleanly with 0 failures, 0 warnings, and clean formatting repository-wide.
+
+## Verification Resources
+
+- Automated LiveView test suites verifying `/workflows` list rendering, `/create-workflow` modal creation, and real-time PubSub updates during workflow runs.
+- Unit and property tests for workflow DAG resolution, cycle detection, variable substitution, and state transitions.
+- End-to-end integration scenario testing full workflow execution from creation to completion.
+
+## Acceptance Criteria
+
+### Workflows Engine & Commands
+- [ ] `/create-workflow` opens the workflow creation interface and successfully saves a valid workflow to the database.
+- [ ] `/workflows` displays all project workflows with rich metadata cards, tags, and run history.
+- [ ] Selecting and launching a workflow immediately opens the live tracking cockpit with real-time SVG step graph and state pulses.
+- [ ] Workflow steps honor configured model reasoning efforts and tool approval policies.
+
+### Tracking Cockpit & Controls
+- [ ] Real-time updates reflect step execution status (`pending`, `running`, `completed`, `failed`) without page reloads.
+- [ ] Step inspector displays live streaming thoughts, logs, and generated artifacts.
+- [ ] User can pause, resume, retry, or cancel a running workflow run.
+
+### Deep Research & Swarm
+- [ ] Deep research generates rich citation cards and resolves conflicting source claims.
+- [ ] Swarm visualizer reflects dynamic role assignments and consensus voting results.
+
+### Code Quality & Precommit
+- [ ] Automated test suites pass 100% with zero failures.
+- [ ] `mix precommit` passes cleanly repository-wide with 0 compiler warnings and 0 format errors.

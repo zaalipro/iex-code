@@ -486,7 +486,7 @@ defmodule IexCode.Engine.DurableFleetTest do
     # A small replay chunk must yield and immediately schedule the remaining
     # chunks until the full backlog has a durable terminal receipt.
     assert {:ok, %{id: ^last_control_id, status: "applied"}} =
-             FleetManager.await_control(run.id, last_control_id, 30_000)
+             FleetManager.await_control(run.id, last_control_id, 60_000)
 
     assert length(Runs.list_run_agent_controls(planner.agent_id, status: "applied")) == 70
     assert Runs.list_run_agent_controls(planner.agent_id, status: "pending") == []
