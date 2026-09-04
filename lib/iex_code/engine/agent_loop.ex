@@ -76,7 +76,8 @@ defmodule IexCode.Engine.AgentLoop do
         max_tokens: bounded_max_tokens(value(policy, "max_tokens")),
         max_turns: max_turns,
         tool_calls: 0,
-        usage: %{input_tokens: 0, output_tokens: 0, cost_cents: 0}
+        usage: %{input_tokens: 0, output_tokens: 0, cost_cents: 0},
+        session_overrides: %{}
       }
 
       case replay_final_message(state) do
@@ -418,15 +419,23 @@ defmodule IexCode.Engine.AgentLoop do
   defp chat(state, messages, route) do
     cancelled? = fn -> cancelled?(state.run.id, state.authority) end
 
+    settings = Settings.get_settings()
+    model_name = (route && (route["model"] || route[:model])) || state.session.model_name
+    compacted_messages = IexCode.LLM.ContextCompactor.compact(messages, settings, model_name)
+
+    system_prompt =
+      IexCode.LLM.SystemPromptBuilder.build(@system_prompt, state.project_root, settings)
+
     opts = [
       cancelled?: cancelled?,
       allowed_tools: state.allowed_tools,
-      temperature: state.session.temperature,
-      max_tokens: state.max_tokens
+      temperature:
+        (route && (route["temperature"] || route[:temperature])) || state.session.temperature,
+      max_tokens: (route && (route["max_tokens"] || route[:max_tokens])) || state.max_tokens
     ]
 
     opts = if state.llm == IexCode.LLM, do: Keyword.put(opts, :resolved_route, route), else: opts
-    state.llm.chat(messages, @system_prompt, state.session, fn _chunk -> :ok end, opts)
+    state.llm.chat(compacted_messages, system_prompt, state.session, fn _chunk -> :ok end, opts)
   end
 
   defp execute_tool_calls(state, calls, turn) do
@@ -495,11 +504,37 @@ defmodule IexCode.Engine.AgentLoop do
           state.progress.(min(max(percent, 0), 100), bounded_text(message, 1_000))
         end
 
-        settle_tool_result(
-          state,
-          running,
-          state.tool_executor.execute(name, trusted_arguments, state.project_root, progress)
-        )
+        settings = Settings.get_settings()
+        session_id = state.run.session_id
+        session_overrides = Map.get(state, :session_overrides, %{})
+
+        case IexCode.Engine.SessionServer.authorize_tool(
+               session_id,
+               name,
+               trusted_arguments,
+               settings,
+               session_overrides
+             ) do
+          {:ok, :allowed, next_overrides} ->
+            updated_state = %{state | session_overrides: next_overrides}
+
+            settle_tool_result(
+              updated_state,
+              running,
+              updated_state.tool_executor.execute(
+                name,
+                trusted_arguments,
+                state.project_root,
+                progress
+              )
+            )
+
+          {:deny, reason} ->
+            settle_tool_result(state, running, {:error, {:safety_policy_denied, reason}})
+
+          {:error, {:user_denied, reason}} ->
+            settle_tool_result(state, running, {:error, {:user_denied, reason}})
+        end
       else
         settle_tool_result(state, running, {:error, {:tool_not_allowed, name}})
       end

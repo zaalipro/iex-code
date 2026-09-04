@@ -41,15 +41,40 @@ defmodule IexCode.Execution.ModelRoute do
          {:ok, current_digest} <- digest(projection),
          :ok <- validate_expected_digest(value(policy, @digest_key), current_digest) do
       provider = projection["provider"]
+      model = projection["model"]
+
+      profile_opts =
+        [
+          temperature: value(policy, "temperature"),
+          max_tokens: value(policy, "max_tokens"),
+          reasoning_effort: value(policy, "reasoning_effort"),
+          thinking_budget: value(policy, "thinking_budget") || value(policy, "budget_tokens")
+        ]
+        |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+
+      profile = IexCode.LLM.Reasoning.resolve_profile(provider, model, settings, profile_opts)
 
       {:ok,
        %{
          "provider" => provider,
-         "model" => projection["model"],
+         "model" => model,
          "base_url" => projection["base_url"],
          "api_key" => credential(settings, provider),
-         "temperature" => numeric(value(policy, "temperature"), 0.2),
-         "max_tokens" => integer(value(policy, "max_tokens"), 4_096)
+         "temperature" => profile.temperature,
+         "max_tokens" => profile.max_tokens,
+         "reasoning_effort" => profile.reasoning_effort,
+         "thinking_budget" => profile.thinking_budget,
+         "budget_tokens" => profile.thinking_budget,
+         :provider => provider,
+         :model => model,
+         :base_url => projection["base_url"],
+         :api_key => credential(settings, provider),
+         :reasoning_effort => profile.reasoning_effort,
+         :thinking_budget => profile.thinking_budget,
+         :budget_tokens => profile.thinking_budget,
+         :temperature => profile.temperature,
+         :max_tokens => profile.max_tokens,
+         :reasoning_profile => profile
        }}
     end
   end
@@ -158,11 +183,6 @@ defmodule IexCode.Execution.ModelRoute do
 
   defp valid_base_url?(_url), do: false
 
-  defp numeric(value, _fallback) when is_number(value), do: value * 1.0
-  defp numeric(_value, fallback), do: fallback
-  defp integer(value, _fallback) when is_integer(value) and value > 0, do: value
-  defp integer(_value, fallback), do: fallback
-
   defp value(map, key) when is_map(map) and is_binary(key) do
     Map.get(map, key) || Map.get(map, known_atom(key))
   end
@@ -171,6 +191,9 @@ defmodule IexCode.Execution.ModelRoute do
   defp known_atom("model_name"), do: :model_name
   defp known_atom("temperature"), do: :temperature
   defp known_atom("max_tokens"), do: :max_tokens
+  defp known_atom("reasoning_effort"), do: :reasoning_effort
+  defp known_atom("thinking_budget"), do: :thinking_budget
+  defp known_atom("budget_tokens"), do: :budget_tokens
   defp known_atom("model_route_sha256"), do: :model_route_sha256
   defp known_atom("openai_base_url"), do: :openai_base_url
   defp known_atom("anthropic_base_url"), do: :anthropic_base_url

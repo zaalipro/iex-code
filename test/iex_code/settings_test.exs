@@ -670,6 +670,66 @@ defmodule IexCode.SettingsTest do
       assert changeset.valid?
       assert Ecto.Changeset.get_change(changeset, :default_model) == "o3-mini"
     end
+
+    test "persists and broadcasts reasoning settings and model overrides matrix" do
+      assert :ok = Settings.subscribe()
+
+      overrides = %{
+        "o3-mini" => %{"reasoning_effort" => "high", "max_tokens" => 8000},
+        "claude-3-7-sonnet" => %{"budget_tokens" => 8192, "temperature" => 1.0}
+      }
+
+      assert {:ok, updated} =
+               Settings.update_settings(%{
+                 default_reasoning_effort: "high",
+                 default_thinking_budget: 8192,
+                 model_overrides: overrides
+               })
+
+      assert updated.default_reasoning_effort == "high"
+      assert updated.default_thinking_budget == 8192
+      assert updated.model_overrides["o3-mini"]["reasoning_effort"] == "high"
+      assert updated.model_overrides["claude-3-7-sonnet"]["budget_tokens"] == 8192
+
+      assert_receive {:settings_updated, ^updated}
+
+      reloaded = Settings.get_settings()
+      assert reloaded.default_reasoning_effort == "high"
+      assert reloaded.default_thinking_budget == 8192
+      assert reloaded.model_overrides["o3-mini"]["reasoning_effort"] == "high"
+    end
+
+    test "validates reasoning effort inclusion, budget bounds, and model override structure" do
+      settings = Settings.get_settings()
+
+      invalid_effort =
+        Settings.change_settings(settings, %{default_reasoning_effort: "extreme"})
+
+      refute invalid_effort.valid?
+      assert %{default_reasoning_effort: _} = errors_on(invalid_effort)
+
+      invalid_budget_low =
+        Settings.change_settings(settings, %{default_thinking_budget: 500})
+
+      refute invalid_budget_low.valid?
+      assert %{default_thinking_budget: _} = errors_on(invalid_budget_low)
+
+      invalid_budget_high =
+        Settings.change_settings(settings, %{default_thinking_budget: 200_000})
+
+      refute invalid_budget_high.valid?
+      assert %{default_thinking_budget: _} = errors_on(invalid_budget_high)
+
+      invalid_override =
+        Settings.change_settings(settings, %{
+          model_overrides: %{
+            "o3-mini" => %{"invalid_key" => "value"}
+          }
+        })
+
+      refute invalid_override.valid?
+      assert %{model_overrides: _} = errors_on(invalid_override)
+    end
   end
 
   defp disable_all_search_providers(providers) do

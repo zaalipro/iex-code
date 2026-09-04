@@ -883,6 +883,19 @@ defmodule IexCode.Tools do
     agent_name = Map.get(args, "agent_name") || Map.get(args, :agent_name) || "Agent"
     op_id = Map.get(args, "op_id") || Map.get(args, :op_id)
 
+    settings =
+      Map.get(args, "__settings__") ||
+        Map.get(args, :settings) ||
+        IexCode.Settings.get_settings()
+
+    known_secrets =
+      [
+        settings.openai_api_key,
+        settings.anthropic_api_key
+        | Map.values(settings.custom_env_vars || %{})
+      ]
+      |> Enum.filter(&(is_binary(&1) and byte_size(&1) >= 4))
+
     if session_id && session_id != "" do
       on_progress.(20, "Executing agent command in terminal: #{command}")
 
@@ -894,11 +907,12 @@ defmodule IexCode.Tools do
            ) do
         {:ok, %{exit_code: 0, output: output}} ->
           on_progress.(100, "Command exited successfully (0)")
-          {:ok, output}
+          {:ok, IexCode.Tools.SecretMasker.scrub(output, known_secrets)}
 
         {:ok, %{exit_code: exit_code, output: output}} ->
           on_progress.(100, "Command failed (code #{exit_code})")
-          {:ok, "Exit Code #{exit_code}:\n#{output}"}
+          scrubbed = IexCode.Tools.SecretMasker.scrub(output, known_secrets)
+          {:ok, "Exit Code #{exit_code}:\n#{scrubbed}"}
 
         {:error, :timeout} ->
           on_progress.(100, "Command timed out after #{requested_timeout}ms")
@@ -911,6 +925,21 @@ defmodule IexCode.Tools do
     else
       on_progress.(20, "Starting command: #{command} in #{root_path}")
 
+      sandbox_mode =
+        Map.get(args, "sandbox_mode") ||
+          Map.get(args, :sandbox_mode) ||
+          settings.sandbox_mode ||
+          "inherit_filtered"
+
+      custom_env =
+        Map.merge(
+          settings.custom_env_vars || %{},
+          Map.get(args, "env") || Map.get(args, :env) || %{}
+        )
+
+      env_map = IexCode.Tools.SecretMasker.build_sandbox_env(sandbox_mode, custom_env, root_path)
+      port_env = IexCode.Tools.SecretMasker.to_port_env(env_map)
+
       port =
         Port.open(
           {:spawn_executable, "/bin/sh"},
@@ -919,7 +948,8 @@ defmodule IexCode.Tools do
             :exit_status,
             :stderr_to_stdout,
             args: ["-c", command],
-            cd: root_path
+            cd: root_path,
+            env: port_env
           ]
         )
 
@@ -934,7 +964,9 @@ defmodule IexCode.Tools do
               ""
             end
 
-          output = IexCode.Sessions.sanitize_utf8(output) <> suffix
+          output =
+            (IexCode.Sessions.sanitize_utf8(output) <> suffix)
+            |> IexCode.Tools.SecretMasker.scrub(known_secrets)
 
           if exit_code == 0 do
             on_progress.(100, "Command exited successfully (0)")
@@ -958,8 +990,12 @@ defmodule IexCode.Tools do
               ""
             end
 
+          scrubbed_partial =
+            (IexCode.Sessions.sanitize_utf8(output) <> suffix)
+            |> IexCode.Tools.SecretMasker.scrub(known_secrets)
+
           {:error,
-           "Command timed out after #{requested_timeout}ms. Partial output:\n#{IexCode.Sessions.sanitize_utf8(output)}#{suffix}"}
+           "Command timed out after #{requested_timeout}ms. Partial output:\n#{scrubbed_partial}"}
       end
     end
   end

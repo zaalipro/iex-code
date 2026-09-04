@@ -71,22 +71,50 @@ defmodule IexCode.LLM do
          raw_provider,
          raw_model
        ) do
+    primary_provider = effective_provider(raw_provider, raw_model)
+    caps = IexCode.LLM.Capabilities.detect(primary_provider, raw_model)
+
     temperature =
-      Keyword.get(opts, :temperature) || (session && session.temperature) || settings.temperature ||
-        0.2
+      if caps.supports_temperature? do
+        Keyword.get(opts, :temperature) || (session && session.temperature) ||
+          settings.temperature ||
+          0.2
+      else
+        nil
+      end
 
     tools = IexCode.Tools.tool_definitions(Keyword.get(opts, :allowed_tools, :all))
     max_tokens = Keyword.get(opts, :max_tokens) || settings.max_tokens
 
-    # Provider selection is authoritative. Model identifiers are opaque to the
-    # gateway because OpenAI-compatible endpoints can legitimately host models
-    # whose names resemble another vendor's catalog.
-    primary_provider = effective_provider(raw_provider, raw_model)
+    overrides = IexCode.LLM.Reasoning.get_model_override(settings, raw_model)
+
+    reasoning_effort =
+      Keyword.get(opts, :reasoning_effort) ||
+        (session && Map.get(session, :reasoning_effort)) ||
+        Map.get(overrides, "reasoning_effort") ||
+        Map.get(overrides, :reasoning_effort) ||
+        settings.default_reasoning_effort ||
+        caps.default_effort ||
+        "medium"
+
+    thinking_budget =
+      Keyword.get(opts, :thinking_budget) ||
+        Keyword.get(opts, :budget_tokens) ||
+        (session && (Map.get(session, :thinking_budget) || Map.get(session, :budget_tokens))) ||
+        Map.get(overrides, "budget_tokens") ||
+        Map.get(overrides, "thinking_budget") ||
+        Map.get(overrides, :budget_tokens) ||
+        settings.default_thinking_budget ||
+        caps.default_budget ||
+        4096
 
     passthrough_opts =
       opts
       |> Keyword.take([:cancelled?, :receive_timeout])
       |> Keyword.put(:max_tokens, max_tokens)
+      |> Keyword.put(:reasoning_effort, reasoning_effort)
+      |> Keyword.put(:thinking_budget, thinking_budget)
+      |> Keyword.put(:budget_tokens, thinking_budget)
       |> Enum.reject(fn {_k, v} -> is_nil(v) end)
 
     openai_base = settings.openai_base_url || "https://cli.llmotions.com/v1"
@@ -199,7 +227,16 @@ defmodule IexCode.LLM do
     model = route_value(route, :model)
     api_key = route_value(route, :api_key)
     base_url = route_value(route, :base_url)
-    temperature = route_value(route, :temperature) || 0.2
+
+    caps = IexCode.LLM.Capabilities.detect(provider, model)
+
+    temperature =
+      if caps.supports_temperature? do
+        route_value(route, :temperature) || 0.2
+      else
+        nil
+      end
+
     max_tokens = Keyword.get(opts, :max_tokens) || route_value(route, :max_tokens)
 
     effective_api_key =
@@ -218,10 +255,27 @@ defmodule IexCode.LLM do
          true <- (is_integer(max_tokens) and max_tokens > 0) or {:error, :invalid_resolved_route} do
       tools = IexCode.Tools.tool_definitions(Keyword.get(opts, :allowed_tools, :all))
 
+      reasoning_effort =
+        Keyword.get(opts, :reasoning_effort) ||
+          route_value(route, :reasoning_effort) ||
+          caps.default_effort ||
+          "medium"
+
+      thinking_budget =
+        Keyword.get(opts, :thinking_budget) ||
+          Keyword.get(opts, :budget_tokens) ||
+          route_value(route, :thinking_budget) ||
+          route_value(route, :budget_tokens) ||
+          caps.default_budget ||
+          4096
+
       passthrough_opts =
         opts
         |> Keyword.take([:cancelled?, :receive_timeout])
         |> Keyword.put(:max_tokens, max_tokens)
+        |> Keyword.put(:reasoning_effort, reasoning_effort)
+        |> Keyword.put(:thinking_budget, thinking_budget)
+        |> Keyword.put(:budget_tokens, thinking_budget)
         |> Enum.reject(fn {_key, value} -> is_nil(value) end)
 
       callback = fn ->

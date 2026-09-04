@@ -135,6 +135,127 @@ defmodule IexCode.LLM.Discovery do
   end
 
   @doc """
+  Pings a provider endpoint (cloud or local) and returns latency, model count, and status.
+  Returns `{:ok, %{latency_ms: integer(), model_count: integer(), status: :online}}` or `{:error, reason}`.
+  """
+  @spec ping(String.t() | atom(), map() | struct() | nil, keyword()) ::
+          {:ok, %{latency_ms: integer(), model_count: integer(), status: :online}}
+          | {:error, any()}
+  def ping(provider, settings \\ nil, opts \\ []) do
+    provider_str = to_string(provider)
+
+    cond do
+      is_local_provider?(provider_str) ->
+        target =
+          Enum.find(@targets, &(&1.id == provider_str)) ||
+            %{
+              id: provider_str,
+              name: provider_str,
+              port: 0,
+              base_url: Keyword.get(opts, :base_url, default_base_url(provider_str)),
+              probe_url:
+                Keyword.get(
+                  opts,
+                  :probe_url,
+                  Keyword.get(opts, :base_url, default_base_url(provider_str)) <> "/models"
+                ),
+              version_url: nil
+            }
+
+        target =
+          if base = Keyword.get(opts, :base_url) do
+            %{target | base_url: base, probe_url: String.trim_trailing(base, "/") <> "/models"}
+          else
+            target
+          end
+
+        server = probe_target(target, opts)
+
+        if server.online do
+          {:ok,
+           %{
+             latency_ms: server.latency_ms,
+             model_count: length(server.models),
+             status: :online
+           }}
+        else
+          {:error, server.error || :offline}
+        end
+
+      provider_str == "openai" ->
+        base_url =
+          Keyword.get(opts, :base_url) ||
+            settings_value(settings, :openai_base_url, "https://cli.llmotions.com/v1")
+
+        api_key =
+          Keyword.get(opts, :api_key) ||
+            settings_value(settings, :openai_api_key, nil)
+
+        url = String.trim_trailing(base_url, "/") <> "/models"
+        headers = [{"accept", "application/json"}]
+
+        headers =
+          if is_binary(api_key) and api_key != "" do
+            [{"authorization", "Bearer " <> api_key} | headers]
+          else
+            headers
+          end
+
+        ping_http_endpoint(url, headers, opts)
+
+      provider_str == "anthropic" ->
+        base_url =
+          Keyword.get(opts, :base_url) ||
+            settings_value(settings, :anthropic_base_url, "https://api.anthropic.com")
+
+        api_key =
+          Keyword.get(opts, :api_key) ||
+            settings_value(settings, :anthropic_api_key, nil)
+
+        url = String.trim_trailing(base_url, "/") <> "/v1/models"
+
+        headers = [
+          {"accept", "application/json"},
+          {"anthropic-version", "2023-06-01"}
+        ]
+
+        headers =
+          if is_binary(api_key) and api_key != "" do
+            [{"x-api-key", api_key} | headers]
+          else
+            headers
+          end
+
+        ping_http_endpoint(url, headers, opts)
+
+      provider_str in ["gemini", "google"] ->
+        base_url = Keyword.get(opts, :base_url, "https://generativelanguage.googleapis.com")
+        url = String.trim_trailing(base_url, "/") <> "/v1beta/models"
+        headers = [{"accept", "application/json"}]
+        ping_http_endpoint(url, headers, opts)
+
+      true ->
+        {:error, :unsupported_provider}
+    end
+  end
+
+  @doc """
+  Pings a provider by provider name, base URL, and API key.
+  Returns `{:ok, latency_ms, models}` or `{:error, reason, latency_ms}`.
+  """
+  def ping_provider(provider, base_url, api_key) do
+    opts = [base_url: base_url, api_key: api_key]
+
+    case ping(provider, nil, opts) do
+      {:ok, %{latency_ms: ms}} ->
+        {:ok, ms, []}
+
+      {:error, reason} ->
+        {:error, reason, 0}
+    end
+  end
+
+  @doc """
   Probes a single target inference engine.
   """
   @spec probe_target(map(), keyword()) :: map()
@@ -351,6 +472,58 @@ defmodule IexCode.LLM.Discovery do
   defp format_error(reason) when is_atom(reason) or is_binary(reason), do: reason
   defp format_error({:unexpected_status, status}), do: {:unexpected_status, status}
   defp format_error(_), do: :error
+
+  defp ping_http_endpoint(url, headers, opts) do
+    connect_timeout = Keyword.get(opts, :connect_timeout, @default_connect_timeout)
+    receive_timeout = Keyword.get(opts, :receive_timeout, @default_receive_timeout)
+
+    req_opts =
+      [
+        connect_options: [timeout: connect_timeout],
+        receive_timeout: receive_timeout,
+        retry: false,
+        headers: headers
+      ]
+      |> maybe_put_plug(opts)
+
+    {time_us, result} =
+      :timer.tc(fn ->
+        try do
+          Req.get(url, req_opts)
+        rescue
+          err -> {:error, err}
+        catch
+          :exit, reason -> {:error, reason}
+        end
+      end)
+
+    latency_ms = max(div(time_us, 1000), 1)
+
+    case result do
+      {:ok, %{status: status, body: body}} when status in 200..299 ->
+        model_count =
+          cond do
+            is_map(body) and is_list(body["data"]) -> length(body["data"])
+            is_map(body) and is_list(body["models"]) -> length(body["models"])
+            is_list(body) -> length(body)
+            true -> 1
+          end
+
+        {:ok, %{latency_ms: latency_ms, model_count: model_count, status: :online}}
+
+      {:ok, %{status: status}} ->
+        {:error, {:unexpected_status, status}}
+
+      {:error, reason} ->
+        {:error, format_error(reason)}
+    end
+  end
+
+  defp settings_value(settings, key, default) when is_struct(settings) or is_map(settings) do
+    Map.get(settings, key) || Map.get(settings, Atom.to_string(key)) || default
+  end
+
+  defp settings_value(_settings, _key, default), do: default
 
   defp offline_result(target, reason, latency_ms) do
     %{

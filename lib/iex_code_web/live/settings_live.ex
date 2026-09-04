@@ -11,6 +11,18 @@ defmodule IexCodeWeb.SettingsLive do
   alias Ecto.Changeset
   alias IexCode.{Sessions, Settings}
   alias IexCode.Research.Registry, as: SearchRegistry
+  alias IexCode.LLM.Discovery
+
+  @studio_tabs [
+    {"providers", "Providers & Models", "hero-cpu-chip"},
+    {"reasoning", "Reasoning & Thinking", "hero-sparkles"},
+    {"safety", "Tool Safety & Approvals", "hero-shield-check"},
+    {"context", "Context & Personas", "hero-document-text"},
+    {"environment", "Environment & Secrets", "hero-variable"},
+    {"appearance", "Sound & Appearance", "hero-speaker-wave"}
+  ]
+
+  @valid_tabs ~w(providers reasoning safety context environment appearance)
 
   @settings_sections [
     {"models", "Models"},
@@ -48,6 +60,14 @@ defmodule IexCodeWeb.SettingsLive do
     {:ok,
      socket
      |> assign(:page_title, "Settings")
+     |> assign(:active_tab, :providers)
+     |> assign(:studio_tabs, @studio_tabs)
+     |> assign(:provider_latencies, %{})
+     |> assign(:provider_statuses, %{})
+     |> assign(:preview_provider, settings.default_model_provider || "openai")
+     |> assign(:preview_model, settings.default_model || "o3-mini")
+     |> assign(:preview_reasoning_effort, settings.default_reasoning_effort || "medium")
+     |> assign(:preview_thinking_budget, settings.default_thinking_budget || 4096)
      |> assign(:settings, settings)
      |> assign(:settings_form, settings_form(settings))
      |> assign(:settings_status, :idle)
@@ -67,6 +87,26 @@ defmodule IexCodeWeb.SettingsLive do
      |> assign(:usage_totals, usage_totals)
      |> assign(:usage_message, usage_message)
      |> assign(:runtime_facts, runtime_facts())}
+  end
+
+  @impl true
+  def handle_params(params, _uri, socket) do
+    tab =
+      case params["tab"] do
+        t when t in @valid_tabs -> String.to_atom(t)
+        _ -> :providers
+      end
+
+    context_session = load_context_session(params["id"])
+    invalid_session_context? = is_binary(params["id"]) and is_nil(context_session)
+
+    {:noreply,
+     socket
+     |> assign(:active_tab, tab)
+     |> assign(:context_session, context_session)
+     |> assign(:invalid_session_context?, invalid_session_context?)
+     |> assign(:return_path, return_path(context_session))
+     |> assign(:page_title, "Settings · " <> tab_title(tab))}
   end
 
   @impl true
@@ -244,6 +284,138 @@ defmodule IexCodeWeb.SettingsLive do
 
       {:error, _} ->
         {:noreply, put_flash(socket, :error, "Failed to set default model")}
+    end
+  end
+
+  @impl true
+  def handle_event("ping_provider", %{"provider" => provider}, socket) do
+    settings = socket.assigns.settings
+
+    case Discovery.ping(provider, settings) do
+      {:ok, %{latency_ms: ms, model_count: count, status: :online}} ->
+        status = if ms > 1000, do: :degraded, else: :online
+
+        latencies =
+          Map.put(socket.assigns.provider_latencies, provider, %{
+            latency_ms: ms,
+            model_count: count,
+            status: status
+          })
+
+        statuses = Map.put(socket.assigns.provider_statuses, provider, status)
+
+        {:noreply,
+         socket
+         |> assign(:provider_latencies, latencies)
+         |> assign(:provider_statuses, statuses)
+         |> put_flash(
+           :info,
+           "#{String.capitalize(to_string(provider))} online · #{ms}ms latency (#{count} models)"
+         )}
+
+      {:error, reason} ->
+        latencies =
+          Map.put(socket.assigns.provider_latencies, provider, %{
+            latency_ms: nil,
+            model_count: 0,
+            status: :offline,
+            error: inspect(reason)
+          })
+
+        statuses = Map.put(socket.assigns.provider_statuses, provider, :offline)
+
+        {:noreply,
+         socket
+         |> assign(:provider_latencies, latencies)
+         |> assign(:provider_statuses, statuses)
+         |> put_flash(
+           :error,
+           "#{String.capitalize(to_string(provider))} unreachable: #{inspect(reason)}"
+         )}
+    end
+  end
+
+  @impl true
+  def handle_event("update_preview_model", params, socket) do
+    provider = params["provider"] || socket.assigns.preview_provider
+    model = params["model"] || socket.assigns.preview_model
+    effort = params["reasoning_effort"] || socket.assigns.preview_reasoning_effort
+
+    budget =
+      case params["thinking_budget"] do
+        nil ->
+          socket.assigns.preview_thinking_budget
+
+        b when is_binary(b) ->
+          case Integer.parse(b) do
+            {int, ""} -> int
+            _ -> socket.assigns.preview_thinking_budget
+          end
+
+        b when is_integer(b) ->
+          b
+      end
+
+    {:noreply,
+     socket
+     |> assign(:preview_provider, provider)
+     |> assign(:preview_model, model)
+     |> assign(:preview_reasoning_effort, effort)
+     |> assign(:preview_thinking_budget, budget)}
+  end
+
+  @impl true
+  def handle_event("test_chime", %{"chime" => chime}, socket) do
+    vol = socket.assigns.settings.sound_volume || 80
+    IexCode.Desktop.Sound.play(chime, volume: vol)
+    {:noreply, put_flash(socket, :info, "Testing chime sound: #{chime}")}
+  end
+
+  @impl true
+  def handle_event("save_model_override", %{"override" => override_params}, socket) do
+    model = String.trim(override_params["model"] || "")
+
+    if model == "" do
+      {:noreply, put_flash(socket, :error, "Model name cannot be blank")}
+    else
+      existing = socket.assigns.settings.model_overrides || %{}
+
+      config =
+        %{}
+        |> maybe_put_override("reasoning_effort", override_params["reasoning_effort"])
+        |> maybe_put_override_int("budget_tokens", override_params["budget_tokens"])
+        |> maybe_put_override_int("max_tokens", override_params["max_tokens"])
+        |> maybe_put_override_float("temperature", override_params["temperature"])
+
+      updated_overrides = Map.put(existing, model, config)
+
+      case Settings.update_settings(%{model_overrides: updated_overrides}) do
+        {:ok, updated} ->
+          {:noreply,
+           socket
+           |> assign_saved(updated, "Model override for #{model} saved")
+           |> put_flash(:info, "Saved override for #{model}")}
+
+        {:error, _changeset} ->
+          {:noreply, put_flash(socket, :error, "Failed to save model override")}
+      end
+    end
+  end
+
+  @impl true
+  def handle_event("delete_model_override", %{"model" => model}, socket) do
+    existing = socket.assigns.settings.model_overrides || %{}
+    updated_overrides = Map.delete(existing, model)
+
+    case Settings.update_settings(%{model_overrides: updated_overrides}) do
+      {:ok, updated} ->
+        {:noreply,
+         socket
+         |> assign_saved(updated, "Override for #{model} removed")
+         |> put_flash(:info, "Removed override for #{model}")}
+
+      {:error, _changeset} ->
+        {:noreply, put_flash(socket, :error, "Failed to remove model override")}
     end
   end
 
@@ -832,6 +1004,47 @@ defmodule IexCodeWeb.SettingsLive do
   end
 
   defp map_value(_map, _key, default), do: default
+
+  def studio_tabs, do: @studio_tabs
+
+  def tab_title(:providers), do: "Providers & Models"
+  def tab_title(:reasoning), do: "Reasoning & Thinking"
+  def tab_title(:safety), do: "Tool Safety & Approvals"
+  def tab_title(:context), do: "Context & Personas"
+  def tab_title(:environment), do: "Environment & Secrets"
+  def tab_title(:appearance), do: "Sound & Appearance"
+  def tab_title(tab), do: Phoenix.Naming.humanize(to_string(tab))
+
+  def tab_path(nil, tab_id), do: ~p"/settings/#{tab_id}"
+  def tab_path(session, tab_id), do: ~p"/sessions/#{session.id}/settings/#{tab_id}"
+
+  defp maybe_put_override(map, _key, val) when val in [nil, "", "default"], do: map
+  defp maybe_put_override(map, key, val), do: Map.put(map, key, val)
+
+  defp maybe_put_override_int(map, _key, val) when val in [nil, ""], do: map
+
+  defp maybe_put_override_int(map, key, val) when is_binary(val) do
+    case Integer.parse(val) do
+      {int, ""} -> Map.put(map, key, int)
+      _ -> map
+    end
+  end
+
+  defp maybe_put_override_int(map, key, val) when is_integer(val), do: Map.put(map, key, val)
+
+  defp maybe_put_override_float(map, _key, val) when val in [nil, ""], do: map
+
+  defp maybe_put_override_float(map, key, val) when is_binary(val) do
+    case Float.parse(val) do
+      {flt, ""} -> Map.put(map, key, flt)
+      _ -> map
+    end
+  end
+
+  defp maybe_put_override_float(map, key, val) when is_float(val), do: Map.put(map, key, val)
+
+  defp maybe_put_override_float(map, key, val) when is_integer(val),
+    do: Map.put(map, key, val * 1.0)
 
   defp same_settings_version?(left, right) do
     left == right

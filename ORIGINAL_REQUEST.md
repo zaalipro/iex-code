@@ -1,223 +1,62 @@
 # Original User Request
 
-## 2026-08-23T08:22:54Z
-
-Perform an exhaustive zero-gap feature audit and refinement pass across all 9 tabs and developer tools in IexCode (Kanban, Swarm, Calendar, Changes/Git, Tests/AutoFix, AST Explorer, Chat, Files/Editor, Terminal, and Settings), ensuring every button, action, view, and workflow operates end-to-end without sandboxing or git worktree isolation.
-
-Working directory: /Users/zaali/dev/iex-code
-Integrity mode: development
-
-## Requirements
-
-### R1. Comprehensive Tab & Tool Feature Gap Elimination
-Audit every view, tab, modal, and drawer in `WorkspaceLive` and `WorkspaceComponents` to guarantee zero stubbed clicks, 100% active event handlers, and end-to-end functionality:
-- **Kanban Board**: Full task creation, status transition, priority/assignee filtering, subtask management, and detail drawer editing.
-- **Swarm Studio**: Start, pause, resume, cancel (with rollback/commit options), steer, live 4-column telemetry, DAG hierarchy, thinking trace inspection.
-- **Visual Test Runner & AutoFix**: Full suite run, failed test run, single file run, ANSI log parsing, structured failure diffs, 1-click heuristic patch preview and apply.
-- **AST Query Explorer**: Full symbol search across definitions (`def`, `defp`), macros, modules, and typespecs (`@spec`, `@type`), with jump-to-editor.
-- **Git Staging & Diff Hub**: 3-tier staging rails (Staged, Unstaged, Untracked), side-by-side & inline diff viewer, granular hunk unstaging, branch switching/creation/fetch/pull, and AI commit message generation.
-- **Inline File Editor & Explorer**: File tree navigation, fuzzy file search, buffer tabs, dirty tracking, saving, and jump-to-line.
-- **Embedded Terminal**: Interactive command execution, quick actions (`mix test`, `mix precommit`, `git status`), ANSI formatting, command history, and process interruption.
-- **AI Chat & Streaming**: Multi-model SSE streaming, prompt history, context injection, token/cost telemetry, and quick code insertion.
-- **Calendar & Timeline**: Date grid navigation, scheduled task inspection, daily activity metrics, and session timeline.
-- **Settings & Provider Hub**: Complete API key management, model selection (OpenAI, Anthropic, Gemini, local CLI proxy), temperature/token controls, and persistence.
-
-### R2. Native Workspace Execution (No Sandbox, No Git Worktree)
-- All tool operations (test execution, git commands, file reads/writes, terminal commands) operate directly and natively within the project's root directory (`/Users/zaali/dev/iex-code`).
-- No virtual containers, sandboxes, or git worktree directories are required or created.
-
-### R3. Adversarial Resilience, Quality & Precommit Verification
-- Comprehensive unit, LiveView integration, and stress tests ensuring 100% feature coverage and edge-case handling across all tabs.
-- Clean compilation (`mix compile --warnings-as-errors`), clean formatting (`mix format --check-formatted`), 0 dead assigns, and 0 compiler warnings under `mix precommit`.
-
-## Acceptance Criteria
-
-### Tab & Workflow Completeness
-- [ ] Every interactive element (buttons, modals, inputs, drag/clicks) across all 9 tabs dispatches an active LiveView event with zero crashes or unhandled callbacks.
-- [ ] Direct file editing, test execution, git staging, and terminal commands execute natively on the workspace root.
-
-### Quality & Precommit
-- [ ] `mix test` passes 100% across all suites with 0 failures.
-- [ ] `mix precommit` passes with 0 compiler warnings, 0 unused deps, and 0 format errors.
-## 2026-09-02T17:22:27Z
-
-Build, package, and launch `iex-code` as a native macOS desktop application on this laptop using `elixir-desktop`, supporting both interactive development window execution and a production `.app` release pipeline.
-
-Working directory: /Users/zaali/dev/iex-code
-Integrity mode: development
-
-## Requirements
-
-### R1. Native Desktop Window & Development Launch
-Configure `Desktop.Window` in `iex-code` with native window sizing, title, menu bar integration, and convenient launch tasks/scripts (e.g. `mix desktop` or `iex -S mix`) to launch a native macOS window displaying the LiveView workspace on this laptop.
-
-### R2. Standalone macOS `.app` Release Packaging Pipeline
-Configure OTP release assembly and desktop packaging in `mix.exs` (using `Desktop.Deployment.generate_installer/1` or release packaging steps) to compile assets and generate a standalone macOS `IexCode.app` bundle and installer.
-
-### R3. Process Lifecycle & Clean Teardown
-Implement native window close and quit handling ensuring that quitting the desktop app cleanly terminates the BEAM runtime, flushes SQLite WAL data, and releases database locks with zero orphan background processes.
-
-## Verification Resources
-
-- Automated window and process lifecycle verification testing startup, LiveView rendering, and clean shutdown.
-- Local verification command launching the desktop window and inspecting the built release bundle.
-
-## Acceptance Criteria
-
-### Desktop Runtime & Windowing
-- [ ] Native desktop window opens successfully and renders the `iex-code` Phoenix LiveView workspace.
-- [ ] Development launch command starts the native window without requiring external browsers.
-- [ ] Closing the window or triggering quit terminates the BEAM node cleanly with zero zombie processes.
-
-### Release Packaging
-- [ ] Production release packaging produces a valid macOS `.app` bundle structure without compilation errors.
-- [ ] `mix precommit` passes cleanly with 0 failures and 0 warnings.
-
-## 2026-09-03T03:35:00Z
-
-Implement four next-level native desktop capabilities for `iex-code`: native macOS notifications on swarm lifecycle events, real-time physical memory and process telemetry in the LiveView footer, dynamic macOS Dock icon agent activity badging, and zero-config local LLM auto-discovery (Ollama, MLX, llama.cpp) for offline Apple Silicon swarms.
-
-Working directory: /Users/zaali/dev/iex-code
-Integrity mode: development
-
-## Requirements
-
-### R1. Native macOS System Notifications & Sound Cues
-Dispatch native desktop notifications and sound cues upon swarm task completion, verification rejection, step failure, or pending human approval events using `Desktop.Window.show_notification` with graceful headless fallbacks.
-
-### R2. Real-Time Physical Memory & Telemetry Chip in LiveView
-Add a lightweight background memory poller that samples OS RSS and Erlang VM allocated heap (`:erlang.memory()`), broadcasting updates to LiveView to render an interactive status pill showing live footprint and micro-GC stats.
-
-### R3. Dynamic macOS Dock Icon Badging & State
-Dynamically update the macOS application Dock badge count and window title to reflect active swarm workers and waiting approval counts (e.g., `3 running`, `1 waiting`).
-
-### R4. Zero-Config Local LLM Auto-Discovery
-Implement an auto-detection probe in Settings and provider registry that discovers locally running inference servers (Ollama on `:11434`, LM Studio on `:1234`, or llama.cpp on `:8080`), querying available models and making them selectable with zero API key configuration.
-
-## Verification Resources
-
-- Automated test suites verifying notification triggers, memory poller broadcasts, dock badge calculations, and local LLM discovery endpoints.
-- Integration tests in LiveView confirming telemetry rendering and provider picker updates.
-
-## Acceptance Criteria
-
-### Desktop System Integration
-- [ ] Swarm completion, failure, and approval events trigger native macOS desktop notifications.
-- [ ] Active swarm worker counts dynamically update the application Dock badge and window title.
-
-### Observability & Local LLM
-- [ ] LiveView footer renders a live memory pill showing OS RSS, BEAM allocated memory, and active process count with micro-GC details.
-- [ ] Local LLM endpoints are auto-detected and surfaced in the provider model picker without requiring manual API keys.
-
-### Codebase Health & Quality
-- [ ] Automated tests cover notification triggers, memory sampling, dock badge logic, and local provider discovery.
-- [ ] `mix precommit` passes cleanly with 0 failures, 0 warnings, and clean formatting.
-
-## 2026-09-03T06:44:55Z
+## 2026-09-04T04:28:29Z
 
 Use a very large team of agents.
 
-Elevate `iex-code` into an advanced autonomous engineering suite featuring multi-window native desktop detachment, offline local semantic codebase indexing & vector search, atomic time-travel checkpointing & rollback scrubber, and multi-model adversarial consensus voting.
+Take the `iex-code` desktop application to the next level by closing all feature gaps with Codex CLI desktop and implementing a rich, studio-grade Settings system that supports granular, model-aware reasoning effort configuration across diverse AI providers and local LLMs.
 
 Working directory: /Users/zaali/dev/iex-code
 Integrity mode: development
 
 ## Requirements
 
-### R1. Multi-Window Native Desktop Detachment
-Enable detaching focused workspace tools (dedicated Terminal multiplexer, Diff/Git Inspector, and DAG Research visualizer) into independent native macOS `Desktop.Window` instances synchronized in real time via Phoenix PubSub.
+### R1. Adaptive Multi-Provider Reasoning Effort Configuration
+Implement a unified, model-aware reasoning configuration engine that dynamically maps reasoning parameters to each provider's native format:
+- **OpenAI & Compatible (o1, o3, o3-mini)**: `reasoning_effort` (`"low"`, `"medium"`, `"high"`), automatically omitting unsupported fields like `temperature` for reasoning models.
+- **Anthropic (Claude 3.7 Sonnet, Claude 3.5)**: Extended thinking (`thinking: %{"type" => "enabled", "budget_tokens" => budget}`), ensuring temperature is clamped to `1.0` per API spec.
+- **Google Gemini (2.0 / 3.8 Flash Thinking)**: `thinking_budget` and thinking level parameters.
+- **Local & Open Models (DeepSeek R1, Ollama, LM Studio)**: Dedicated reasoning token parsing, thinking flags, and context budget allocation.
+- **Per-Model Overrides Matrix**: Allow users to configure global default reasoning effort and define per-model custom overrides (reasoning effort, budget tokens, max tokens, temperature) with automatic capability detection.
 
-### R2. Offline Local Semantic Codebase Indexing & Vector Search
-Provide zero-cloud semantic code search and symbol indexing powered by local embeddings (via local Ollama/llama.cpp inference) stored in SQLite for instantaneous contextual code retrieval during agent planning and file navigation.
+### R2. Codex CLI Desktop Feature Gap Parity
+Fill critical feature gaps compared to Codex CLI desktop:
+- **Autonomous Tool Execution Approval Modes**: Support configurable execution safety tiers (`full_auto`, `prompt_dangerous`, `read_only`), with per-tool category overrides (`shell_execution`, `file_mutations`, `git_push`, `web_search`) and visual approval modals in LiveView.
+- **Context Window Compaction & Token Management**: Implement automated context compaction strategies (`token_compaction`, `rolling_summary`, `sliding_window`) and configurable history prune thresholds to prevent token limits.
+- **Custom System Instructions & Workspace Personas**: Allow defining project-level custom system prompts, persona presets, and coding style rules persisted in settings.
+- **Environment Variables & Secrets Sandbox**: Secure configuration of custom environment variables passed into command execution and agent subshells.
+- **Desktop Sound & Appearance Ergonomics**: Configurable sound effects (volume, completion chimes, error alerts), theme accents, and persistent layout density.
 
-### R3. Atomic Workspace Time-Travel Checkpoints & 1-Click Rollback
-Implement pre-mutation snapshot checkpoints and an interactive visual LiveView time-travel scrubber enabling instant non-destructive rollbacks of multi-file modifications made by autonomous swarms.
+### R3. Studio-Grade Settings UI & Diagnostics
+Build a comprehensive, glassmorphic Settings studio (accessible via `/settings`, Command Palette `Cmd+K`, and workspace drawer):
+- **Interactive Provider & Model Cards**: Visual health indicators, 1-click live latency ping tests, and dynamic model discovery for OpenAI, Anthropic, Ollama, LM Studio, and llama.cpp.
+- **Live Reasoning Payload Previewer**: Real-time visual inspector displaying the exact JSON payload generated for any selected model based on current reasoning effort settings.
+- **Instant Persistence & PubSub Propagation**: Atomic SQLite settings updates broadcasted via `Phoenix.PubSub` so active swarms and chat sessions adapt immediately without restarting.
 
-### R4. Multi-Model Adversarial Consensus & Swarm Voting
-Enable cross-model peer review (e.g. cloud models + local Apple Silicon models) on critical code diffs and architecture plans, presenting visual agreement matrices and automated consensus arbitration before code application.
-
-## Verification Resources
-
-- Automated test suites verifying multi-window PubSub sync, vector index/query accuracy, rollback file integrity, and multi-model consensus matrix calculations.
-- LiveView integration tests ensuring reactive UI updates across all new views and controls.
-
-## Acceptance Criteria
-
-### Desktop Windowing & Search
-- [ ] Detached windows (Terminal, Diff Inspector, DAG visualizer) mount as independent macOS windows and stay synchronized with the main workspace via PubSub.
-- [ ] Codebase files are embedded and indexed locally in SQLite, returning ranked semantic code results with sub-second retrieval latency.
-
-### Checkpoints & Consensus Voting
-- [ ] Every autonomous swarm mutation creates an atomic snapshot checkpoint that can be fully rolled back via the LiveView time-travel scrubber without leaving orphaned edits.
-- [ ] Multi-model consensus voting collects structured assessments from multiple providers, displays an agreement matrix in the UI, and enforces consensus thresholds before patch application.
-
-### Codebase Health & Integrity
-- [ ] Comprehensive test suites verify multi-window event synchronization, vector retrieval accuracy, rollback integrity, and consensus arbitration.
-- [ ] `mix precommit` passes cleanly with 0 failures, 0 warnings, and clean formatting.
-
-## 2026-09-03T08:50:26Z
-
-Use a very large team of agents.
-
-Overhaul the `iex-code` user interface and interaction design into a world-class, studio-grade developer cockpit featuring modern minimalist glassmorphism, fluid collapsible panels, interactive visual swarm DAG canvas, high-fidelity split diff inspector, and Command Palette 2.0.
-
-Working directory: /Users/zaali/dev/iex-code
-Integrity mode: development
-
-## Requirements
-
-### R1. Studio-Grade Glassmorphism & Layout Ergonomics
-Implement a modern minimalist design system featuring deep carbon slate surfaces, subtle glassmorphic backdrop filters, refined typography, layout density toggles (compact/comfortable), and fluid collapsible tool panels with keyboard shortcuts (`Cmd+B` sidebar, `Cmd+J` bottom terminal).
-
-### R2. Interactive Swarm & Workflow Visualizer Canvas
-Build a visual interactive SVG/HTML canvas component rendering real-time multi-agent swarm hierarchies, task states (idle, planning, running, verified, failed), live message flow pulses, and per-node token/memory metrics.
-
-### R3. High-Fidelity Side-by-Side & Unified Diff Inspector
-Upgrade the changes inspector with side-by-side split and unified view toggles, intra-line word-level change highlighting, syntax coloration, and integrated time-travel checkpoint navigation with 1-click hunk rollback.
-
-### R4. Command Palette 2.0 & Frictionless Keyboard Navigation
-Elevate `Cmd+K` into a rich fuzzy launcher searching files, active swarms, sessions, model endpoints, git branches, and terminal commands with instant preview cards, keyboard navigation hints, and action execution.
+### R4. End-to-End LLM Client & Swarm Integration
+Integrate the adaptive reasoning engine into `IexCode.LLM.Client`, `IexCode.LLM.OpenAI`, `IexCode.LLM.Anthropic`, and swarm dispatchers (`WorkspaceLive`, `SwarmSupervisor`, `RunDispatcher`) so all agent interactions, tools, and background runs automatically honor active reasoning profiles.
 
 ## Verification Resources
 
-- Automated LiveView test suites verifying component rendering, collapsible panel state, diff mode switching, swarm canvas node updates, and Command Palette fuzzy filtering.
-- Programmatic UI layout and assertion tests ensuring no broken styling or missing assign crashes.
+- Automated unit and component test suites covering reasoning payload generation for all model families (OpenAI, Anthropic, Gemini, Ollama).
+- LiveView integration tests for the Settings studio tabs, live ping latency tests, and tool approval modal flows.
+- Adversarial test suites for invalid reasoning values, payload compatibility, and concurrency contention.
 
 ## Acceptance Criteria
 
-### Visual Polish & Layout
-- [ ] Interface renders with consistent deep carbon glassmorphism, refined typography, and responsive collapsible panels.
-- [ ] Layout density controls toggle between compact and comfortable modes without layout breaking.
+### Reasoning Engine & Providers
+- [ ] OpenAI client correctly serializes `reasoning_effort` for o1/o3 models and omits `temperature`.
+- [ ] Anthropic client correctly serializes `thinking` budget tokens and clamps `temperature` to 1.0.
+- [ ] Settings schema persists global reasoning effort and per-model overrides.
+- [ ] Live reasoning payload previewer renders the exact serialized payload in the UI.
 
-### Interactive Visualizer & Diffs
-- [ ] Swarm visualizer dynamically updates as agents spawn, progress, and complete, showing live node states and connection lines.
-- [ ] Diff inspector supports both split (side-by-side) and unified modes with clear intra-line word diffs and hunk rollback controls.
+### Codex CLI Parity & Tool Approvals
+- [ ] Tool execution policy enforces `full_auto`, `prompt_dangerous`, and `read_only` modes with per-tool override capability.
+- [ ] Context compaction strategy triggers when conversation token usage exceeds configured thresholds.
+- [ ] Custom environment variables and system instructions are injected into agent execution contexts.
 
-### Command Palette & Quality
-- [ ] Command Palette 2.0 provides instant fuzzy filtering across files, actions, and models with smooth keyboard navigation.
-- [ ] Automated LiveView component tests verify rendering, interaction events, and modal workflows.
+### Settings UI & Quality
+- [ ] Settings studio renders with deep carbon glassmorphism, responsive tabs, and live provider ping diagnostic tools.
+- [ ] Settings can be opened directly from WorkspaceLive via Command Palette and keyboard shortcuts.
+- [ ] Automated test suites pass 100% with zero failures.
 - [ ] `mix precommit` passes cleanly with 0 failures, 0 warnings, and clean formatting.
-
-## 2026-09-03T16:59:30Z
-
-Execute Milestone 5 for the studio-grade developer cockpit UI/UX overhaul in `iex-code`:
-
-Working directory: /Users/zaali/dev/iex-code
-Integrity mode: development
-
-Milestones 1–4 are fully implemented and committed in Git (`de0311d`):
-- M1: Studio-Grade Glassmorphism & Layout Ergonomics (`Cmd+B`, `Cmd+J`, density toggles)
-- M2: Interactive Swarm & Workflow Visualizer Canvas (SVG Bézier routing, 5-state node cards, flow pulses)
-- M3: High-Fidelity Side-by-Side & Unified Diff Inspector (Myers word-level highlighting, syntax coloration, 1-click rollbacks)
-- M4: Command Palette 2.0 & Frictionless Keyboard Navigation (`Cmd+K` multi-category fuzzy launcher, sub-12ms latency, dynamic preview cards)
-
-Milestone 5 Objective:
-1. Run the comprehensive precommit verification battery (`mix compile --warnings-as-errors`, `mix deps.unlock --unused`, `mix format --check-formatted`, and all unit, component, LiveView, and E2E suites).
-2. Execute the full repository test suite under `mix precommit`.
-3. Submit the completion handoff and trigger the Sentinel's independent Victory Audit.
-
-Acceptance Criteria:
-- [ ] All milestone suites pass 100% with 0 failures and 0 warnings.
-- [ ] Full `mix precommit` passes cleanly repository-wide.
-- [ ] Sentinel independent Victory Audit confirms VICTORY CONFIRMED.
-

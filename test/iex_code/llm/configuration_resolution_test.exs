@@ -168,4 +168,70 @@ defmodule IexCode.LLM.ConfigurationResolutionTest do
     assert LLM.effective_provider("anthropic", "custom-model") == "anthropic"
     assert LLM.effective_provider(nil, "claude-test") == "anthropic"
   end
+
+  test "OpenAI reasoning model o3-mini omits temperature and serializes reasoning_effort and max_completion_tokens" do
+    {:ok, server_pid, server} = MockLLMServer.start(scenario: :standard_completion)
+    on_exit(fn -> MockLLMServer.stop(server_pid) end)
+
+    assert {:ok, _settings} =
+             Settings.update_settings(%{
+               default_model_provider: "openai",
+               default_model: "o3-mini",
+               default_reasoning_effort: "high",
+               openai_api_key: "test-openai-key",
+               openai_base_url: "#{server.url}/v1",
+               anthropic_api_key: nil
+             })
+
+    assert {:ok, _response} =
+             LLM.chat(
+               [%{role: "user", content: "reasoning probe"}],
+               "system instructions",
+               nil,
+               fn _chunk -> :ok end,
+               receive_timeout: 2_000
+             )
+
+    assert [%{path: "/v1/chat/completions", body: body}] =
+             MockLLMServer.get_requests(server_pid)
+
+    assert body["model"] == "o3-mini"
+    assert body["reasoning_effort"] == "high"
+    assert body["max_completion_tokens"] == 4096
+    refute Map.has_key?(body, "temperature")
+    refute Map.has_key?(body, "max_tokens")
+  end
+
+  test "Anthropic Claude 3.7 model clamps temperature to 1.0 and serializes thinking budget" do
+    {:ok, server_pid, server} = MockLLMServer.start(scenario: :standard_completion)
+    on_exit(fn -> MockLLMServer.stop(server_pid) end)
+
+    assert {:ok, _settings} =
+             Settings.update_settings(%{
+               default_model_provider: "anthropic",
+               default_model: "claude-3-7-sonnet",
+               default_thinking_budget: 4096,
+               temperature: 0.2,
+               anthropic_api_key: "test-anthropic-key",
+               anthropic_base_url: server.url,
+               openai_api_key: nil
+             })
+
+    assert {:ok, _response} =
+             LLM.chat(
+               [%{role: "user", content: "extended thinking probe"}],
+               "system",
+               nil,
+               fn _chunk -> :ok end,
+               receive_timeout: 2_000
+             )
+
+    assert [%{path: "/v1/messages", body: body}] =
+             MockLLMServer.get_requests(server_pid)
+
+    assert body["model"] == "claude-3-7-sonnet"
+    assert body["temperature"] == 1.0
+    assert body["thinking"] == %{"type" => "enabled", "budget_tokens" => 4096}
+    assert body["max_tokens"] > 4096
+  end
 end

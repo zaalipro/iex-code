@@ -188,6 +188,115 @@ defmodule IexCodeWeb.CommandPalette do
       }
     },
     %{
+      id: "open_settings_providers",
+      category: :action,
+      title: "Settings: Providers & Models",
+      subtitle: "AI provider endpoints, latency diagnostics, and model discovery",
+      icon: "hero-cpu-chip",
+      shortcut: "Cmd+, P",
+      event: "open_settings_providers",
+      params: %{"tab" => "providers"},
+      preview: %{
+        category: :action,
+        shortcut: "Cmd+, P",
+        description: "Configure OpenAI, Anthropic, Gemini, Ollama, LM Studio, and llama.cpp",
+        target_tab: "settings",
+        event: "open_settings_providers",
+        params: %{"tab" => "providers"}
+      }
+    },
+    %{
+      id: "open_settings_reasoning",
+      category: :action,
+      title: "Settings: Reasoning & Thinking Effort",
+      subtitle: "Reasoning effort, thinking budgets, and per-model override matrix",
+      icon: "hero-sparkles",
+      shortcut: "Cmd+, R",
+      event: "open_settings_reasoning",
+      params: %{"tab" => "reasoning"},
+      preview: %{
+        category: :action,
+        shortcut: "Cmd+, R",
+        description:
+          "Adjust o1/o3 reasoning effort, Claude 3.7 extended thinking, and Gemini budgets",
+        target_tab: "settings",
+        event: "open_settings_reasoning",
+        params: %{"tab" => "reasoning"}
+      }
+    },
+    %{
+      id: "open_settings_safety",
+      category: :action,
+      title: "Settings: Tool Safety & Approvals",
+      subtitle: "Autonomous tool execution safety tiers and category approvals",
+      icon: "hero-shield-check",
+      shortcut: "Cmd+, S",
+      event: "open_settings_safety",
+      params: %{"tab" => "safety"},
+      preview: %{
+        category: :action,
+        shortcut: "Cmd+, S",
+        description: "Set full auto, prompt dangerous, or read only execution modes",
+        target_tab: "settings",
+        event: "open_settings_safety",
+        params: %{"tab" => "safety"}
+      }
+    },
+    %{
+      id: "open_settings_context",
+      category: :action,
+      title: "Settings: Context Compaction & Personas",
+      subtitle: "Context compaction thresholds, strategies, and workspace personas",
+      icon: "hero-document-text",
+      shortcut: "Cmd+, C",
+      event: "open_settings_context",
+      params: %{"tab" => "context"},
+      preview: %{
+        category: :action,
+        shortcut: "Cmd+, C",
+        description: "Set token compaction strategies, system prompts, and personas",
+        target_tab: "settings",
+        event: "open_settings_context",
+        params: %{"tab" => "context"}
+      }
+    },
+    %{
+      id: "open_settings_environment",
+      category: :action,
+      title: "Settings: Environment & Secrets",
+      subtitle: "Custom environment variables and execution sandbox modes",
+      icon: "hero-variable",
+      shortcut: "Cmd+, E",
+      event: "open_settings_environment",
+      params: %{"tab" => "environment"},
+      preview: %{
+        category: :action,
+        shortcut: "Cmd+, E",
+        description: "Configure isolated or inherit_filtered subshell sandbox and env vars",
+        target_tab: "settings",
+        event: "open_settings_environment",
+        params: %{"tab" => "environment"}
+      }
+    },
+    %{
+      id: "open_settings_appearance",
+      category: :action,
+      title: "Settings: Sound & Appearance",
+      subtitle: "Desktop sound effects, chimes, theme accents, and layout density",
+      icon: "hero-speaker-wave",
+      shortcut: "Cmd+, A",
+      event: "open_settings_appearance",
+      params: %{"tab" => "appearance"},
+      preview: %{
+        category: :action,
+        shortcut: "Cmd+, A",
+        description: "Adjust volume, completion chimes, error alerts, and theme styling",
+        target_tab: "settings",
+        event: "open_settings_appearance",
+        params: %{"tab" => "appearance"}
+      }
+    },
+    %{
       id: "git_fetch",
       category: :action,
       title: "Git Fetch & Status",

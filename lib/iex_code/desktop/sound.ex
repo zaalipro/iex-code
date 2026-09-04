@@ -2,6 +2,9 @@ defmodule IexCode.Desktop.Sound do
   @moduledoc """
   Plays native macOS sound cues for swarm lifecycle events via `/usr/bin/afplay`.
 
+  Also broadcasts `{:play_sound, chime, volume}` over PubSub topic `"desktop:sound"`
+  so remote web clients and LiveView components can trigger Web Audio API synthesis.
+
   Gracefully falls back to a silent `:ok` in test, headless, and non-macOS environments.
   """
   require Logger
@@ -22,15 +25,21 @@ defmodule IexCode.Desktop.Sound do
     funk: "/System/Library/Sounds/Funk.aiff"
   }
 
+  @pubsub_topic "desktop:sound"
+
   @doc """
   Plays an auditory cue corresponding to a swarm event type or sound name.
 
   Options:
     * `:force` - overrides test and environment checks (useful for testing execution)
     * `:executable` - custom path to afplay or mock binary
+    * `:volume` - integer 0..100 (defaults to settings or 80)
   """
   @spec play(atom() | String.t(), keyword()) :: :ok
   def play(event_type, opts \\ []) do
+    volume = resolve_volume(opts)
+    broadcast_sound(event_type, volume)
+
     if should_play?(opts) do
       sound_path = resolve_path(event_type)
 
@@ -38,7 +47,7 @@ defmodule IexCode.Desktop.Sound do
         afplay = Keyword.get(opts, :executable) || resolve_afplay()
 
         if afplay do
-          spawn_playback(afplay, sound_path)
+          spawn_playback(afplay, sound_path, volume)
         end
       end
     end
@@ -55,7 +64,23 @@ defmodule IexCode.Desktop.Sound do
   end
 
   def resolve_path(path) when is_binary(path) do
-    if File.exists?(path), do: path, else: nil
+    atom_key =
+      try do
+        String.to_existing_atom(path)
+      rescue
+        _ -> nil
+      end
+
+    cond do
+      atom_key && Map.has_key?(@sound_map, atom_key) ->
+        Map.get(@sound_map, atom_key)
+
+      File.exists?(path) ->
+        path
+
+      true ->
+        nil
+    end
   end
 
   def resolve_path(_), do: nil
@@ -92,7 +117,10 @@ defmodule IexCode.Desktop.Sound do
       test_env?() ->
         false
 
-      not sound_enabled?() ->
+      Keyword.get(opts, :volume) == 0 ->
+        false
+
+      not sound_enabled?(opts) ->
         false
 
       not macos?() ->
@@ -124,11 +152,53 @@ defmodule IexCode.Desktop.Sound do
   end
 
   @doc """
-  Checks if desktop sound is enabled in application configuration.
+  Checks if desktop sound is enabled in application configuration or settings.
   """
-  @spec sound_enabled?() :: boolean()
-  def sound_enabled? do
-    Application.get_env(:iex_code, :desktop_sound_enabled, true)
+  @spec sound_enabled?(keyword()) :: boolean()
+  def sound_enabled?(opts \\ []) do
+    app_env_enabled = Application.get_env(:iex_code, :desktop_sound_enabled, true)
+
+    settings_enabled =
+      case Keyword.get(opts, :sound_enabled) do
+        bool when is_boolean(bool) ->
+          bool
+
+        _ ->
+          try do
+            settings = IexCode.Settings.get_settings()
+            settings.sound_enabled != false
+          rescue
+            _ -> true
+          catch
+            :exit, _ -> true
+          end
+      end
+
+    app_env_enabled and settings_enabled
+  end
+
+  @doc """
+  Resolves effective playback volume (0..100).
+  """
+  @spec resolve_volume(keyword()) :: integer()
+  def resolve_volume(opts) do
+    case Keyword.get(opts, :volume) do
+      v when is_integer(v) ->
+        max(0, min(100, v))
+
+      v when is_float(v) ->
+        round(max(0.0, min(1.0, v)) * 100)
+
+      _ ->
+        try do
+          settings = IexCode.Settings.get_settings()
+          settings.sound_volume || 80
+        rescue
+          _ -> 80
+        catch
+          :exit, _ -> 80
+        end
+    end
   end
 
   defp resolve_afplay do
@@ -140,9 +210,24 @@ defmodule IexCode.Desktop.Sound do
       end
   end
 
-  defp spawn_playback(executable, path) do
+  defp broadcast_sound(event_type, volume) do
+    try do
+      Phoenix.PubSub.broadcast(
+        IexCode.PubSub,
+        @pubsub_topic,
+        {:play_sound, to_string(event_type), volume}
+      )
+    rescue
+      _ -> :ok
+    catch
+      :exit, _ -> :ok
+    end
+  end
+
+  defp spawn_playback(executable, path, volume) do
     supervisor = Application.get_env(:iex_code, :task_supervisor, IexCode.TaskSupervisor)
-    args = ["-t", "5", path]
+    vol_float = Float.round(volume / 100.0, 2)
+    args = ["-v", to_string(vol_float), "-t", "5", path]
 
     if Process.whereis(supervisor) do
       Task.Supervisor.start_child(supervisor, fn ->

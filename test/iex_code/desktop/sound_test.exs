@@ -99,5 +99,33 @@ defmodule IexCode.Desktop.SoundTest do
       assert :ok == Sound.play(:step_failed, force: true)
       assert :ok == Sound.play(:approval_requested, force: true)
     end
+
+    test "spawns playback with volume option" do
+      mock_bin = System.find_executable("true") || "/usr/bin/true"
+      Application.put_env(:iex_code, :afplay_executable, mock_bin)
+
+      assert :ok == Sound.play("hero", force: true, volume: 50)
+      assert :ok == Sound.play(:ping, force: true, volume: 0)
+    end
+  end
+
+  describe "PubSub Broadcast & Volume Ergonomics" do
+    test "broadcasts {:play_sound, chime, volume} on desktop:sound topic" do
+      Phoenix.PubSub.subscribe(IexCode.PubSub, "desktop:sound")
+
+      Sound.play(:hero, volume: 65)
+
+      assert_receive {:play_sound, "hero", 65}
+    end
+
+    test "should_play?/1 returns false when volume is 0" do
+      refute Sound.should_play?(volume: 0)
+    end
+
+    test "resolves string chime names" do
+      assert Sound.resolve_path("hero") == "/System/Library/Sounds/Hero.aiff"
+      assert Sound.resolve_path("ping") == "/System/Library/Sounds/Ping.aiff"
+      assert Sound.resolve_path("basso") == "/System/Library/Sounds/Basso.aiff"
+    end
   end
 end

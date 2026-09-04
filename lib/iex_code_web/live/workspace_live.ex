@@ -14,8 +14,11 @@ defmodule IexCodeWeb.WorkspaceLive do
   alias IexCodeWeb.CommandPalette
   alias IexCodeWeb.Components.SwarmCanvas
   alias Phoenix.PubSub
-  import IexCodeWeb.WorkspaceComponents
+  import IexCodeWeb.WorkspaceComponents, except: [thinking_trace: 1]
   import IexCodeWeb.RunComponents
+  import IexCodeWeb.Components.QuickSettingsDrawer
+  import IexCodeWeb.ToolApprovalModal
+  import IexCodeWeb.ThinkingTrace
 
   # Terminal output is capped to the last N lines (ring buffer)
   @terminal_output_max_lines 500
@@ -239,6 +242,7 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:git_status, nil)
       |> assign(:git_error, nil)
       |> assign(:changes_subtab, "changes")
+      |> assign(:tool_approval_request, nil)
       |> assign(:project_files, files)
       |> assign(:files, files)
       # Terminal assigns
@@ -287,6 +291,7 @@ defmodule IexCodeWeb.WorkspaceLive do
       # Dropdown & Modal state
       |> assign(:open_dropdown, nil)
       |> assign(:show_settings_modal, false)
+      |> assign(:show_quick_settings, false)
       |> assign(:show_project_modal, false)
       |> assign(:show_time_picker, false)
       |> assign(:selected_time_slot, "10:30 AM - 11:00 AM")
@@ -775,6 +780,27 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> put_flash(:error, "Rejected consensus: #{reason}. Sent for revision.")
 
     {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event("approve_tool_once", params, socket) do
+    id = Map.get(params, "id") || Map.get(params, :id)
+    SessionServer.decide_tool_approval(socket.assigns.session.id, id, :approve_once)
+    {:noreply, assign(socket, :tool_approval_request, nil)}
+  end
+
+  @impl true
+  def handle_event("allow_tool_session", params, socket) do
+    id = Map.get(params, "id") || Map.get(params, :id)
+    SessionServer.decide_tool_approval(socket.assigns.session.id, id, :allow_session)
+    {:noreply, assign(socket, :tool_approval_request, nil)}
+  end
+
+  @impl true
+  def handle_event("deny_tool", params, socket) do
+    id = Map.get(params, "id") || Map.get(params, :id)
+    SessionServer.decide_tool_approval(socket.assigns.session.id, id, :deny)
+    {:noreply, assign(socket, :tool_approval_request, nil)}
   end
 
   @impl true
@@ -4097,6 +4123,77 @@ defmodule IexCodeWeb.WorkspaceLive do
   end
 
   @impl true
+  def handle_event("toggle_quick_settings", _params, socket) do
+    show? = !Map.get(socket.assigns, :show_quick_settings, false)
+    {:noreply, assign(socket, :show_quick_settings, show?)}
+  end
+
+  @impl true
+  def handle_event("open_settings_providers", _params, socket) do
+    handle_event("open_settings_tab", %{"tab" => "providers"}, socket)
+  end
+
+  @impl true
+  def handle_event("open_settings_reasoning", _params, socket) do
+    handle_event("open_settings_tab", %{"tab" => "reasoning"}, socket)
+  end
+
+  @impl true
+  def handle_event("open_settings_safety", _params, socket) do
+    handle_event("open_settings_tab", %{"tab" => "safety"}, socket)
+  end
+
+  @impl true
+  def handle_event("open_settings_context", _params, socket) do
+    handle_event("open_settings_tab", %{"tab" => "context"}, socket)
+  end
+
+  @impl true
+  def handle_event("open_settings_environment", _params, socket) do
+    handle_event("open_settings_tab", %{"tab" => "environment"}, socket)
+  end
+
+  @impl true
+  def handle_event("open_settings_appearance", _params, socket) do
+    handle_event("open_settings_tab", %{"tab" => "appearance"}, socket)
+  end
+
+  @impl true
+  def handle_event("open_settings_tab", %{"tab" => tab}, socket) do
+    target =
+      if socket.assigns[:session] && socket.assigns.session.id do
+        ~p"/sessions/#{socket.assigns.session.id}/settings/#{tab}"
+      else
+        ~p"/settings/#{tab}"
+      end
+
+    {:noreply, push_navigate(socket, to: target)}
+  end
+
+  @impl true
+  def handle_event("quick_update_settings", %{"key" => key, "value" => value}, socket) do
+    parsed_value =
+      case key do
+        "sound_enabled" -> value in [true, "true", "1"]
+        "default_thinking_budget" -> String.to_integer(value)
+        _ -> value
+      end
+
+    attrs = %{key => parsed_value}
+
+    case Settings.update_settings(attrs) do
+      {:ok, updated} ->
+        {:noreply,
+         socket
+         |> assign(:settings, updated)
+         |> put_flash(:info, "Setting updated")}
+
+      {:error, _changeset} ->
+        {:noreply, put_flash(socket, :error, "Failed to update setting")}
+    end
+  end
+
+  @impl true
   def handle_event("save_settings", %{"settings" => params}, socket) do
     case Settings.update_settings_from_form(socket.assigns.settings, params) do
       {:ok, updated} ->
@@ -4247,6 +4344,25 @@ defmodule IexCodeWeb.WorkspaceLive do
         %{assigns: %{session: %{id: session_id}}} = socket
       ) do
     {:noreply, refresh_research_results(socket)}
+  end
+
+  @impl true
+  def handle_info({:tool_approval_requested, session_id, req}, socket) do
+    if socket.assigns.session.id == session_id do
+      {:noreply, assign(socket, :tool_approval_request, req)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_info({:tool_approval_requested, req}, socket) do
+    {:noreply, assign(socket, :tool_approval_request, req)}
+  end
+
+  @impl true
+  def handle_info({:tool_approval_decision, _id, _decision}, socket) do
+    {:noreply, assign(socket, :tool_approval_request, nil)}
   end
 
   @impl true
@@ -5377,6 +5493,24 @@ defmodule IexCodeWeb.WorkspaceLive do
 
           "open_settings" ->
             handle_event("open_settings_page", %{}, socket)
+
+          "open_settings_providers" ->
+            handle_event("open_settings_providers", %{}, socket)
+
+          "open_settings_reasoning" ->
+            handle_event("open_settings_reasoning", %{}, socket)
+
+          "open_settings_safety" ->
+            handle_event("open_settings_safety", %{}, socket)
+
+          "open_settings_context" ->
+            handle_event("open_settings_context", %{}, socket)
+
+          "open_settings_environment" ->
+            handle_event("open_settings_environment", %{}, socket)
+
+          "open_settings_appearance" ->
+            handle_event("open_settings_appearance", %{}, socket)
 
           "git_fetch" ->
             handle_event("git_fetch", %{}, socket)

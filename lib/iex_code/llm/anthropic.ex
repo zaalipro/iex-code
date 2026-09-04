@@ -35,13 +35,64 @@ defmodule IexCode.LLM.Anthropic do
         }
       end)
 
+    caps = IexCode.LLM.Capabilities.detect("anthropic", model)
+    thinking_opt = Keyword.get(opts, :thinking)
+    thinking_budget = Keyword.get(opts, :thinking_budget) || Keyword.get(opts, :budget_tokens)
+    reasoning_effort = Keyword.get(opts, :reasoning_effort)
+
+    thinking_enabled? =
+      cond do
+        is_map(thinking_opt) and thinking_opt["type"] == "enabled" ->
+          true
+
+        reasoning_effort in ["none", :none] ->
+          false
+
+        thinking_budget && thinking_budget > 0 ->
+          true
+
+        caps.supports_extended_thinking? ->
+          true
+
+        true ->
+          false
+      end
+
+    {effective_temp, effective_max_tokens, thinking_map} =
+      if thinking_enabled? do
+        budget =
+          cond do
+            is_map(thinking_opt) and is_integer(thinking_opt["budget_tokens"]) ->
+              thinking_opt["budget_tokens"]
+
+            is_integer(thinking_budget) ->
+              thinking_budget
+
+            true ->
+              caps.default_budget || 4096
+          end
+
+        clamped_budget = max(budget, caps.min_budget || 1024)
+        clamped_max = max(max_tokens, clamped_budget + 1024)
+        {1.0, clamped_max, %{"type" => "enabled", "budget_tokens" => clamped_budget}}
+      else
+        {temperature, max_tokens, nil}
+      end
+
     body =
       %{
         "model" => model,
-        "max_tokens" => max_tokens,
-        "temperature" => temperature,
+        "max_tokens" => effective_max_tokens,
+        "temperature" => effective_temp,
         "messages" => formatted_messages
       }
+      |> then(fn map ->
+        if thinking_map do
+          Map.put(map, "thinking", thinking_map)
+        else
+          map
+        end
+      end)
       # The API rejects a nil system prompt; omit the field entirely when absent.
       |> then(fn map ->
         if system_prompt in [nil, ""], do: map, else: Map.put(map, "system", system_prompt)
@@ -93,6 +144,12 @@ defmodule IexCode.LLM.Anthropic do
               |> Enum.map(& &1["text"])
               |> Enum.join("")
 
+            thinking_blocks =
+              content_blocks
+              |> Enum.filter(&(&1["type"] == "thinking"))
+              |> Enum.map(&(&1["thinking"] || ""))
+              |> Enum.join("")
+
             tool_calls =
               content_blocks
               |> Enum.filter(&(&1["type"] == "tool_use"))
@@ -106,8 +163,16 @@ defmodule IexCode.LLM.Anthropic do
 
             on_chunk.(text_blocks)
 
+            reasoning = if thinking_blocks != "", do: thinking_blocks, else: nil
+
             {:ok,
-             %{text: text_blocks, tool_calls: tool_calls, raw: resp, usage: extract_usage(resp)}}
+             %{
+               text: text_blocks,
+               reasoning: reasoning,
+               tool_calls: tool_calls,
+               raw: resp,
+               usage: extract_usage(resp)
+             }}
 
           {:ok, %{status: status, body: body_resp}} ->
             {:error,

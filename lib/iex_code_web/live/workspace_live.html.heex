@@ -354,8 +354,16 @@
 
         <!-- Sidebar Footer: Settings & User Profile Card -->
         <div class="p-3 border-t border-[#21262d] bg-[#0d1117] space-y-1.5">
-          <div class="px-2 pt-1 text-[10px] font-mono text-gray-500 uppercase tracking-wider font-semibold">
-            Settings
+          <div class="px-2 pt-1 text-[10px] font-mono text-gray-500 uppercase tracking-wider font-semibold flex items-center justify-between">
+            <span>Settings</span>
+            <button
+              type="button"
+              id="sidebar-quick-settings-btn"
+              phx-click="toggle_quick_settings"
+              class="text-cyan-400 hover:text-cyan-300 text-[10px] font-sans font-medium tracking-normal lowercase transition-colors"
+            >
+              quick
+            </button>
           </div>
           <.link
             id="workspace-settings-models"
@@ -3620,14 +3628,29 @@
                     </div>
 
                     <!-- Message Body with Reasoning & Markdown -->
-                    <%= if !is_user and msg.metadata && msg.metadata["reasoning"] do %>
+                    <% msg_reasoning =
+                      is_map(msg.metadata) &&
+                        (msg.metadata["reasoning"] || msg.metadata[:reasoning]) %>
+                    <%= if !is_user and msg_reasoning do %>
                       <.thinking_trace
-                        reasoning={msg.metadata["reasoning"]}
-                        duration_ms={msg.metadata["duration_ms"]}
+                        message_id={msg_id}
+                        reasoning={msg_reasoning}
+                        duration_ms={
+                          is_map(msg.metadata) &&
+                            (msg.metadata["duration_ms"] || msg.metadata[:duration_ms])
+                        }
+                        tokens={
+                          is_map(msg.metadata) &&
+                            (msg.metadata["thinking_tokens"] || msg.metadata[:thinking_tokens])
+                        }
                       />
                     <% end %>
 
-                    <.markdown_content content={msg.content} />
+                    <.markdown_content
+                      id={"msg-content-#{msg_id}"}
+                      message_id={msg_id}
+                      content={msg.content}
+                    />
 
                     <!-- Bubble Footer Action Bar -->
                     <div class="flex items-center gap-3 pt-3 mt-3 border-t border-white/5 text-gray-500">
@@ -4998,6 +5021,9 @@
     </div>
   <% end %>
 
+  <!-- Autonomous Tool Execution Approval Modal -->
+  <.tool_approval_modal :if={@tool_approval_request} request={@tool_approval_request} />
+
   <!-- Cancel Session Modal (Rollback vs Commit) -->
   <%= if @show_cancel_modal do %>
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md p-4">
@@ -5129,7 +5155,11 @@
         </div>
         <div class="p-6 overflow-y-auto font-mono text-xs leading-relaxed text-gray-200 bg-[#0a0d12]">
           <%= if expanded_msg do %>
-            <.markdown_content content={expanded_msg.content} />
+            <.markdown_content
+              id={"expanded-msg-content-#{expanded_msg.id}"}
+              message_id={"modal-#{expanded_msg.id}"}
+              content={expanded_msg.content}
+            />
           <% end %>
         </div>
       </div>
@@ -5681,6 +5711,8 @@
       </div>
     </div>
   <% end %>
+
+  <.quick_settings_drawer show={@show_quick_settings} settings={@settings} session={@session} />
 
   <%= if @show_all_usage_modal do %>
     <div class="fixed inset-0 z-[60] flex items-center justify-center overflow-y-auto bg-black/80 p-4 backdrop-blur-md">

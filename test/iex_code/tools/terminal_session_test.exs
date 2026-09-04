@@ -91,8 +91,8 @@ defmodule IexCode.Tools.TerminalSessionTest do
       send(pid, {nil, {:data, <<154, 128>>}})
       _ = :sys.get_state(pid)
 
-      assert_receive {:terminal_output, %{data: data}}, 3_000
-      assert data =~ "🚀"
+      assert {:ok, output} = receive_matching_output(session_id, "🚀")
+      assert output =~ "🚀"
     end
 
     test "supports fallback mode execution", %{session_id: session_id} do

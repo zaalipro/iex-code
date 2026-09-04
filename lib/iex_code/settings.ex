@@ -81,6 +81,9 @@ defmodule IexCode.Settings do
     |> normalize_float("temperature")
     |> normalize_booleans()
     |> normalize_default_tools()
+    |> normalize_model_overrides()
+    |> normalize_tool_category_overrides()
+    |> normalize_custom_env_vars()
     |> normalize_provider_order()
     |> merge_search_provider_settings(current)
   end
@@ -237,6 +240,9 @@ defmodule IexCode.Settings do
       auto_save: true,
       temperature: 0.2,
       max_tokens: 4096,
+      default_reasoning_effort: "medium",
+      default_thinking_budget: 4096,
+      model_overrides: %{},
       default_dispatch_mode: "background",
       default_run_mode: "swarm",
       default_run_priority: "normal",
@@ -257,7 +263,30 @@ defmodule IexCode.Settings do
       research_require_conflict_audit: true,
       research_max_cost_cents: nil,
       research_max_tokens: nil,
-      research_time_budget_minutes: nil
+      research_time_budget_minutes: nil,
+      tool_approval_mode: "prompt_dangerous",
+      tool_category_overrides: %{
+        "shell_execution" => "prompt",
+        "file_mutations" => "prompt",
+        "git_push" => "prompt",
+        "web_search" => "auto"
+      },
+      context_window_tokens: 128_000,
+      context_prune_threshold_percent: 75,
+      context_compaction_strategy: "token_compaction",
+      keep_recent_turns: 6,
+      custom_system_prompt: nil,
+      workspace_persona: "pragmatic_engineer",
+      coding_style_rules: nil,
+      custom_env_vars: %{},
+      sandbox_mode: "inherit_filtered",
+      sound_enabled: true,
+      sound_volume: 80,
+      completion_chime: "hero",
+      error_alert_chime: "basso",
+      approval_prompt_chime: "ping",
+      theme_accent: "cyan",
+      layout_density: "comfortable"
     }
   end
 
@@ -356,7 +385,7 @@ defmodule IexCode.Settings do
 
     {:ok, result}
   rescue
-    e in [Exqlite.Error, DBConnection.ConnectionError] ->
+    e in [Exqlite.Error, DBConnection.ConnectionError, DBConnection.OwnershipError] ->
       Logger.error("Settings.fetch_latest_settings failed: #{Exception.message(e)}")
       {:error, Exception.message(e)}
   end
@@ -444,11 +473,46 @@ defmodule IexCode.Settings do
           if(is_boolean(settings.goal_auto_start), do: settings.goal_auto_start, else: true),
         agent_max_turns: settings.agent_max_turns || 8,
         swarm_max_retries: settings.swarm_max_retries || 3,
+        default_reasoning_effort: settings.default_reasoning_effort || "medium",
+        default_thinking_budget: settings.default_thinking_budget || 4096,
+        model_overrides:
+          if(is_map(settings.model_overrides), do: settings.model_overrides, else: %{}),
         default_tools:
           if(is_map(settings.default_tools),
             do: normalize_policy_tools(settings.default_tools, %{}),
             else: %{"ast_search" => true, "web_search" => false}
-          )
+          ),
+        tool_approval_mode: settings.tool_approval_mode || "prompt_dangerous",
+        tool_category_overrides:
+          if(
+            is_map(settings.tool_category_overrides) and
+              map_size(settings.tool_category_overrides) > 0,
+            do: settings.tool_category_overrides,
+            else: %{
+              "shell_execution" => "prompt",
+              "file_mutations" => "prompt",
+              "git_push" => "prompt",
+              "web_search" => "auto"
+            }
+          ),
+        context_window_tokens: settings.context_window_tokens || 128_000,
+        context_prune_threshold_percent: settings.context_prune_threshold_percent || 75,
+        context_compaction_strategy: settings.context_compaction_strategy || "token_compaction",
+        keep_recent_turns: settings.keep_recent_turns || 6,
+        custom_system_prompt: settings.custom_system_prompt,
+        workspace_persona: settings.workspace_persona || "pragmatic_engineer",
+        coding_style_rules: settings.coding_style_rules,
+        custom_env_vars:
+          if(is_map(settings.custom_env_vars), do: settings.custom_env_vars, else: %{}),
+        sandbox_mode: settings.sandbox_mode || "inherit_filtered",
+        sound_enabled:
+          if(is_boolean(settings.sound_enabled), do: settings.sound_enabled, else: true),
+        sound_volume: if(is_integer(settings.sound_volume), do: settings.sound_volume, else: 80),
+        completion_chime: settings.completion_chime || "hero",
+        error_alert_chime: settings.error_alert_chime || "basso",
+        approval_prompt_chime: settings.approval_prompt_chime || "ping",
+        theme_accent: settings.theme_accent || "cyan",
+        layout_density: settings.layout_density || "comfortable"
     }
   end
 
@@ -500,7 +564,7 @@ defmodule IexCode.Settings do
 
   defp normalize_required_integers(params) do
     Enum.reduce(
-      ~w(swarm_agent_count max_tokens research_max_sources research_parallelism default_run_max_attempts agent_max_turns swarm_max_retries),
+      ~w(swarm_agent_count max_tokens default_thinking_budget research_max_sources research_parallelism default_run_max_attempts agent_max_turns swarm_max_retries context_window_tokens context_prune_threshold_percent keep_recent_turns sound_volume),
       params,
       &normalize_integer(&2, &1, false)
     )
@@ -556,7 +620,7 @@ defmodule IexCode.Settings do
 
   defp normalize_booleans(params) do
     Enum.reduce(
-      ~w(auto_save research_require_conflict_audit goal_auto_start),
+      ~w(auto_save research_require_conflict_audit goal_auto_start sound_enabled),
       params,
       fn field, current ->
         case parse_boolean(Map.get(current, field)) do
@@ -581,6 +645,48 @@ defmodule IexCode.Settings do
         Map.put(params, "default_tools", normalized)
 
       _other ->
+        params
+    end
+  end
+
+  defp normalize_model_overrides(params) do
+    case Map.get(params, "model_overrides") do
+      val when is_binary(val) ->
+        case Jason.decode(val) do
+          {:ok, decoded} when is_map(decoded) -> Map.put(params, "model_overrides", decoded)
+          _ -> params
+        end
+
+      _ ->
+        params
+    end
+  end
+
+  defp normalize_tool_category_overrides(params) do
+    case Map.get(params, "tool_category_overrides") do
+      val when is_binary(val) ->
+        case Jason.decode(val) do
+          {:ok, decoded} when is_map(decoded) ->
+            Map.put(params, "tool_category_overrides", decoded)
+
+          _ ->
+            params
+        end
+
+      _ ->
+        params
+    end
+  end
+
+  defp normalize_custom_env_vars(params) do
+    case Map.get(params, "custom_env_vars") do
+      val when is_binary(val) ->
+        case Jason.decode(val) do
+          {:ok, decoded} when is_map(decoded) -> Map.put(params, "custom_env_vars", decoded)
+          _ -> params
+        end
+
+      _ ->
         params
     end
   end

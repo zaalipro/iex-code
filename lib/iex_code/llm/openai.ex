@@ -49,11 +49,43 @@ defmodule IexCode.LLM.OpenAI do
         }
       end)
 
+    caps = IexCode.LLM.Capabilities.detect(provider, model)
+
+    reasoning_model? =
+      caps.type == :openai or (caps.reasoning_supported? and not caps.supports_temperature?)
+
+    reasoning_effort =
+      case Keyword.get(opts, :reasoning_effort) do
+        nil -> if reasoning_model?, do: caps.default_effort || "medium", else: nil
+        effort -> to_string(effort)
+      end
+
+    max_tokens = Keyword.get(opts, :max_completion_tokens) || Keyword.get(opts, :max_tokens)
+    temperature = Keyword.get(opts, :temperature)
+
     body =
       %{"model" => model, "messages" => formatted_messages}
-      # Reasoning models (o1/o3) reject temperature; only send it when explicitly provided.
-      |> put_optional("temperature", Keyword.get(opts, :temperature))
-      |> put_optional("max_tokens", Keyword.get(opts, :max_tokens))
+      |> then(fn map ->
+        if reasoning_model? do
+          map
+          |> put_optional("reasoning_effort", reasoning_effort)
+          |> put_optional("max_completion_tokens", max_tokens)
+        else
+          map
+          |> put_optional("temperature", temperature)
+          |> put_optional("max_tokens", max_tokens)
+        end
+      end)
+      |> then(fn map ->
+        if caps.type == :local do
+          Map.put(map, "options", %{
+            "num_ctx" => 16_384,
+            "temperature" => temperature || 0.6
+          })
+        else
+          map
+        end
+      end)
       |> then(fn map ->
         if openai_tools != [] do
           Map.put(map, "tools", openai_tools)
@@ -97,6 +129,21 @@ defmodule IexCode.LLM.OpenAI do
           {:ok, %{status: 200, body: %{"choices" => [choice | _]} = resp}} ->
             msg = choice["message"] || %{}
             text = msg["content"] || ""
+            reasoning = msg["reasoning_content"] || msg["reasoning"]
+
+            {extracted_reasoning, clean_text} =
+              if reasoning in [nil, ""] and String.contains?(text, "<think>") do
+                IexCode.LLM.ThinkTagParser.extract(text)
+              else
+                {reasoning, text}
+              end
+
+            final_reasoning =
+              cond do
+                reasoning not in [nil, ""] -> reasoning
+                extracted_reasoning not in [nil, ""] -> extracted_reasoning
+                true -> nil
+              end
 
             tool_calls =
               (msg["tool_calls"] || [])
@@ -114,8 +161,16 @@ defmodule IexCode.LLM.OpenAI do
                 }
               end)
 
-            on_chunk.(text)
-            {:ok, %{text: text, tool_calls: tool_calls, raw: resp, usage: extract_usage(resp)}}
+            on_chunk.(clean_text)
+
+            {:ok,
+             %{
+               text: clean_text,
+               reasoning: final_reasoning,
+               tool_calls: tool_calls,
+               raw: resp,
+               usage: extract_usage(resp)
+             }}
 
           {:ok, %{status: status, body: body_resp}} ->
             {:error,

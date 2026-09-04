@@ -121,6 +121,159 @@ defmodule IexCode.Engine.SessionServer do
     call_session_server(session_id, :get_state)
   end
 
+  @doc """
+  Gets the current session tool execution overrides.
+  """
+  def get_session_overrides(session_id) do
+    case GenServer.whereis(via_tuple(session_id)) do
+      pid when is_pid(pid) ->
+        try do
+          GenServer.call(pid, :get_session_overrides, 5_000)
+        catch
+          :exit, _ -> Process.get({:session_overrides, session_id}, %{})
+        end
+
+      _ ->
+        Process.get({:session_overrides, session_id}, %{})
+    end
+  end
+
+  @doc """
+  Updates session tool execution overrides (e.g. category => "auto").
+  """
+  def update_session_overrides(session_id, new_overrides) when is_map(new_overrides) do
+    curr = Process.get({:session_overrides, session_id}, %{})
+    merged = Map.merge(curr, stringify_map(new_overrides))
+    Process.put({:session_overrides, session_id}, merged)
+
+    case GenServer.whereis(via_tuple(session_id)) do
+      pid when is_pid(pid) ->
+        try do
+          GenServer.call(pid, {:update_session_overrides, merged}, 5_000)
+        catch
+          :exit, _ -> {:ok, merged}
+        end
+
+      _ ->
+        {:ok, merged}
+    end
+  end
+
+  @doc """
+  Submits an approval decision (:approve_once, :allow_session, :deny) for a tool approval request.
+  Broadcasts to PubSub topic session:SESSION_ID and notifies the SessionServer GenServer.
+  """
+  def decide_tool_approval(session_id, approval_id, decision) do
+    Phoenix.PubSub.broadcast(
+      IexCode.PubSub,
+      "session:#{session_id}",
+      {:tool_approval_decision, approval_id, decision}
+    )
+
+    case GenServer.whereis(via_tuple(session_id)) do
+      pid when is_pid(pid) ->
+        try do
+          GenServer.cast(pid, {:tool_approval_decision, approval_id, decision})
+        catch
+          :exit, _ -> :ok
+        end
+
+      _ ->
+        :ok
+    end
+
+    :ok
+  end
+
+  @doc """
+  Evaluates safety policy and authorizes or requests approval for a tool invocation.
+  Returns `{:ok, :allowed, next_overrides}`, `{:deny, reason}`, or `{:error, {:user_denied, reason}}`.
+  """
+  def authorize_tool(
+        session_id,
+        tool_name,
+        trusted_args,
+        settings,
+        session_overrides \\ %{},
+        timeout_ms \\ 60_000
+      ) do
+    tool_str = to_string(tool_name)
+    category = IexCode.Tools.SafetyPolicy.category_for_tool(tool_str)
+
+    effective_overrides =
+      Map.merge(get_session_overrides(session_id), stringify_map(session_overrides))
+
+    case IexCode.Tools.SafetyPolicy.evaluate(tool_str, settings, effective_overrides) do
+      :allow ->
+        {:ok, :allowed, effective_overrides}
+
+      {:deny, reason} ->
+        {:deny, reason}
+
+      {:prompt, reason} ->
+        cat_override = Map.get(effective_overrides, category)
+        tool_override = Map.get(effective_overrides, tool_str)
+
+        if cat_override == "auto" or tool_override == "auto" do
+          {:ok, :allowed, effective_overrides}
+        else
+          req_id = "approval-" <> Ecto.UUID.generate()
+          tier = (settings && Map.get(settings, :tool_approval_mode)) || "prompt_dangerous"
+
+          req = %{
+            id: req_id,
+            session_id: session_id,
+            tool_name: tool_str,
+            category: category,
+            arguments: trusted_args,
+            reason: reason,
+            tier: tier
+          }
+
+          topic = "session:#{session_id}"
+          _ = Phoenix.PubSub.subscribe(IexCode.PubSub, topic)
+
+          Phoenix.PubSub.broadcast(
+            IexCode.PubSub,
+            topic,
+            {:tool_approval_requested, session_id, req}
+          )
+
+          decision =
+            receive do
+              {:tool_approval_decision, ^req_id, dec} ->
+                dec
+
+              {:tool_approval_decision, dec} when dec in [:approve_once, :allow_session, :deny] ->
+                dec
+
+              {:tool_approval_decision, %{"id" => ^req_id, "decision" => dec}} ->
+                dec
+
+              {:tool_approval_decision, %{id: ^req_id, decision: dec}} ->
+                dec
+            after
+              timeout_ms -> :deny
+            end
+
+          _ = Phoenix.PubSub.unsubscribe(IexCode.PubSub, topic)
+
+          case decision do
+            dec when dec in [:approve_once, "approve_once"] ->
+              {:ok, :allowed, effective_overrides}
+
+            dec when dec in [:allow_session, "allow_session"] ->
+              next_overrides = Map.put(effective_overrides, category, "auto")
+              update_session_overrides(session_id, next_overrides)
+              {:ok, :allowed, next_overrides}
+
+            _deny_or_timeout ->
+              {:error, {:user_denied, "Tool execution was denied by user"}}
+          end
+        end
+    end
+  end
+
   defp call_session_server(session_id, request, timeout \\ 5_000, opts \\ []) do
     attempts = Keyword.get(opts, :attempts, @session_call_attempts)
     retry_after_call_exit? = Keyword.get(opts, :retry_after_call_exit?, true)
@@ -304,7 +457,8 @@ defmodule IexCode.Engine.SessionServer do
       current_task: nil,
       task_ref: nil,
       run_mode: nil,
-      active_goal: nil
+      active_goal: nil,
+      session_overrides: %{}
     }
 
     state =
@@ -529,6 +683,26 @@ defmodule IexCode.Engine.SessionServer do
 
       {:reply, result_state, result_state}
     end
+  end
+
+  @impl true
+  def handle_call(:get_session_overrides, _from, state) do
+    {:reply, state.session_overrides, state}
+  end
+
+  @impl true
+  def handle_call({:update_session_overrides, new_overrides}, _from, state) do
+    updated = Map.merge(state.session_overrides, stringify_map(new_overrides))
+    {:reply, {:ok, updated}, %{state | session_overrides: updated}}
+  end
+
+  @impl true
+  def handle_cast({:tool_approval_decision, id, decision}, state) do
+    if is_pid(state.current_task) do
+      send(state.current_task, {:tool_approval_decision, id, decision})
+    end
+
+    {:noreply, state}
   end
 
   @impl true
@@ -782,6 +956,9 @@ defmodule IexCode.Engine.SessionServer do
           finish_cancelled(session_id)
 
         :go ->
+          settings = IexCode.Settings.get_settings()
+          model_name = session.model_name
+
           # Fetch previous messages
           prev_messages =
             try do
@@ -791,11 +968,17 @@ defmodule IexCode.Engine.SessionServer do
               _ -> []
             end
 
-          system_prompt = """
+          compacted_messages =
+            IexCode.LLM.ContextCompactor.compact(prev_messages, settings, model_name)
+
+          base_system_prompt = """
           You are an intelligent, proactive coding assistant in IexCode desktop environment.
           You have tools to read, search, modify, and run code in the user's project workspace (#{project_root}).
           When using tools, you can execute them directly.
           """
+
+          system_prompt =
+            IexCode.LLM.SystemPromptBuilder.build(base_system_prompt, project_root, settings)
 
           # Spawn root LLM operation
           op_result =
@@ -812,7 +995,7 @@ defmodule IexCode.Engine.SessionServer do
                   "Querying model (#{session.model_provider}: #{session.model_name})..."
                 )
 
-                LLM.chat(prev_messages, system_prompt, session, fn _c -> :ok end,
+                LLM.chat(compacted_messages, system_prompt, session, fn _c -> :ok end,
                   cancelled?: cancelled?,
                   allowed_tools: allowed_tools
                 )
@@ -827,7 +1010,15 @@ defmodule IexCode.Engine.SessionServer do
           end
 
           case op_result do
-            {:ok, %{text: response_text, tool_calls: tool_calls}} ->
+            {:ok, %{text: response_text, tool_calls: tool_calls} = llm_res} ->
+              reasoning = Map.get(llm_res, :reasoning) || Map.get(llm_res, "reasoning")
+              usage = Map.get(llm_res, :usage) || Map.get(llm_res, "usage") || %{}
+
+              thinking_tokens =
+                Map.get(usage, "thinking_tokens") || Map.get(usage, :thinking_tokens)
+
+              duration_ms = Map.get(llm_res, :duration_ms) || Map.get(llm_res, "duration_ms")
+
               # If there are tool calls, execute each in a dedicated process!
               tool_results =
                 Enum.map(tool_calls, fn tc ->
@@ -853,17 +1044,26 @@ defmodule IexCode.Engine.SessionServer do
                     :go ->
                       tool_result =
                         if tool_allowed?(tc.name, allowed_tools) do
-                          OperationManager.run_sync_operation(
-                            session_id,
-                            nil,
-                            "AssistantAgent",
-                            tc.name,
-                            "Tool: #{tc.name} (#{Map.get(trusted_args, "path", Map.get(trusted_args, "command", ""))})",
-                            trusted_args,
-                            fn progress ->
-                              Tools.execute(tc.name, trusted_args, project_root, progress)
-                            end
-                          )
+                          case authorize_tool(session_id, tc.name, trusted_args, settings) do
+                            {:ok, :allowed, _overrides} ->
+                              OperationManager.run_sync_operation(
+                                session_id,
+                                nil,
+                                "AssistantAgent",
+                                tc.name,
+                                "Tool: #{tc.name} (#{Map.get(trusted_args, "path", Map.get(trusted_args, "command", ""))})",
+                                trusted_args,
+                                fn progress ->
+                                  Tools.execute(tc.name, trusted_args, project_root, progress)
+                                end
+                              )
+
+                            {:deny, reason} ->
+                              {:error, {:safety_policy_denied, reason}}
+
+                            {:error, {:user_denied, reason}} ->
+                              {:error, {:user_denied, reason}}
+                          end
                         else
                           {:error, {:tool_not_allowed, tc.name}}
                         end
@@ -888,11 +1088,18 @@ defmodule IexCode.Engine.SessionServer do
                   response_text
                 end
 
+              msg_metadata =
+                %{}
+                |> maybe_put_meta("reasoning", reasoning)
+                |> maybe_put_meta("thinking_tokens", thinking_tokens)
+                |> maybe_put_meta("duration_ms", duration_ms)
+
               case Sessions.create_message(%{
                      session_id: session_id,
                      role: "assistant",
                      agent_name: "Assistant",
-                     content: final_content
+                     content: final_content,
+                     metadata: msg_metadata
                    }) do
                 {:ok, asst_msg} -> broadcast(session_id, {:message_created, asst_msg})
                 _ -> :ok
@@ -1750,4 +1957,16 @@ defmodule IexCode.Engine.SessionServer do
   rescue
     _ -> :ok
   end
+
+  defp stringify_map(map) when is_map(map) do
+    Enum.reduce(map, %{}, fn {k, v}, acc ->
+      Map.put(acc, to_string(k), to_string(v))
+    end)
+  end
+
+  defp stringify_map(_), do: %{}
+
+  defp maybe_put_meta(map, _key, nil), do: map
+  defp maybe_put_meta(map, _key, ""), do: map
+  defp maybe_put_meta(map, key, val), do: Map.put(map, key, val)
 end
