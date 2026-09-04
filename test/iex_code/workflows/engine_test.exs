@@ -316,5 +316,113 @@ defmodule IexCode.Workflows.EngineTest do
       cancelled_run = Workflows.get_run!(run.id)
       assert cancelled_run.status == "cancelled"
     end
+
+    test "gracefully aborts workflow run when critical memory pressure persists beyond threshold" do
+      project = create_test_project()
+
+      single_step_workflow = %{
+        project_id: project.id,
+        name: "Memory Pressure Pipeline",
+        slug: "mem-pressure-pipeline-#{System.unique_integer([:positive])}",
+        steps: [
+          %{
+            "key" => "step_1",
+            "kind" => "deep_research",
+            "title" => "Step 1",
+            "depends_on" => [],
+            "params" => %{"query" => "Query 1"}
+          }
+        ]
+      }
+
+      {:ok, workflow} = Workflows.create_workflow(single_step_workflow)
+      {:ok, run} = Workflows.launch_workflow(workflow, %{}, async: false)
+
+      Phoenix.PubSub.subscribe(IexCode.PubSub, "workflow_run:#{run.id}")
+
+      # Start Engine with simulated persistent critical memory pressure
+      {:ok, engine_pid} =
+        Engine.start_link(
+          run_id: run.id,
+          memory_checker: fn -> true end,
+          max_pressure_backoffs: 2,
+          pressure_backoff_interval_ms: 10
+        )
+
+      ref = Process.monitor(engine_pid)
+
+      assert_receive {:workflow_run_started, _started_run}, 2000
+
+      assert_receive {:workflow_run_failed, failed_run,
+                      "Workflow run aborted: critical memory pressure persisted for >120s"},
+                     2000
+
+      assert failed_run.status == "failed"
+      assert failed_run.error_message =~ "critical memory pressure persisted for >120s"
+
+      # Engine shuts down gracefully with :normal exit
+      assert_receive {:DOWN, ^ref, :process, ^engine_pid, :normal}, 2000
+
+      # DB record reflects failed status and explicit abort reason
+      db_run = Workflows.get_run!(run.id)
+      assert db_run.status == "failed"
+
+      assert db_run.error_message ==
+               "Workflow run aborted: critical memory pressure persisted for >120s"
+    end
+
+    test "recovers and executes workflow steps when memory pressure subsides before threshold" do
+      project = create_test_project()
+
+      single_step_workflow = %{
+        project_id: project.id,
+        name: "Recovering Pipeline",
+        slug: "recovering-pipeline-#{System.unique_integer([:positive])}",
+        steps: [
+          %{
+            "key" => "step_1",
+            "kind" => "deep_research",
+            "title" => "Step 1",
+            "depends_on" => [],
+            "params" => %{"query" => "Query 1"}
+          }
+        ]
+      }
+
+      {:ok, workflow} = Workflows.create_workflow(single_step_workflow)
+      {:ok, run} = Workflows.launch_workflow(workflow, %{}, async: false)
+
+      Phoenix.PubSub.subscribe(IexCode.PubSub, "workflow_run:#{run.id}")
+
+      # Start with counter: first check is true, second check is false (cleared)
+      agent = start_supervised!({Agent, fn -> 1 end})
+
+      pressure_checker = fn ->
+        Agent.get_and_update(agent, fn count ->
+          {count > 0, count - 1}
+        end)
+      end
+
+      {:ok, engine_pid} =
+        Engine.start_link(
+          run_id: run.id,
+          memory_checker: pressure_checker,
+          max_pressure_backoffs: 5,
+          pressure_backoff_interval_ms: 10
+        )
+
+      ref = Process.monitor(engine_pid)
+
+      assert_receive {:workflow_run_started, _started_run}, 2000
+      assert_receive {:workflow_step_started, "step_1", _step}, 2000
+      assert_receive {:workflow_step_completed, "step_1", _output}, 3000
+      assert_receive {:workflow_run_completed, completed_run}, 3000
+
+      assert completed_run.status == "completed"
+      assert_receive {:DOWN, ^ref, :process, ^engine_pid, :normal}, 2000
+
+      db_run = Workflows.get_run!(run.id)
+      assert db_run.status == "completed"
+    end
   end
 end

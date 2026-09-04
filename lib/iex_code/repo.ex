@@ -52,5 +52,7 @@ defmodule IexCode.Repo do
     )
   rescue
     e -> {:error, e}
+  catch
+    :exit, e -> {:error, e}
   end
 end

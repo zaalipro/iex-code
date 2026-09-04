@@ -27,7 +27,11 @@ defmodule IexCode.Workflows.Engine do
     step_outputs: %{},
     active_tasks: %{},
     paused?: false,
-    cancelled?: false
+    cancelled?: false,
+    pressure_backoff_count: 0,
+    max_pressure_backoffs: 120,
+    pressure_backoff_interval_ms: 1_000,
+    memory_checker: &IexCode.Observability.MemoryGuardrail.critical?/0
   ]
 
   # Client API
@@ -114,8 +118,21 @@ defmodule IexCode.Workflows.Engine do
   @impl true
   def init(opts) do
     run_id = Keyword.fetch!(opts, :run_id)
+    max_pressure_backoffs = Keyword.get(opts, :max_pressure_backoffs, 120)
+    pressure_backoff_interval_ms = Keyword.get(opts, :pressure_backoff_interval_ms, 1_000)
+
+    memory_checker =
+      Keyword.get(opts, :memory_checker, &IexCode.Observability.MemoryGuardrail.critical?/0)
+
     send(self(), :initialize_run)
-    {:ok, %__MODULE__{run_id: run_id}}
+
+    {:ok,
+     %__MODULE__{
+       run_id: run_id,
+       max_pressure_backoffs: max_pressure_backoffs,
+       pressure_backoff_interval_ms: pressure_backoff_interval_ms,
+       memory_checker: memory_checker
+     }}
   end
 
   @impl true
@@ -189,46 +206,71 @@ defmodule IexCode.Workflows.Engine do
 
   @impl true
   def handle_info(:execute_next_layer, state) do
-    completed_keys =
-      state.step_states
-      |> Enum.filter(fn {_, s} -> Map.get(s, "status") == "completed" end)
-      |> Enum.map(&elem(&1, 0))
+    if state.memory_checker.() do
+      new_count = state.pressure_backoff_count + 1
 
-    failed_keys =
-      state.step_states
-      |> Enum.filter(fn {_, s} -> Map.get(s, "status") == "failed" end)
-      |> Enum.map(&elem(&1, 0))
+      if new_count >= state.max_pressure_backoffs do
+        Logger.error(
+          "[Workflows.Engine] Critical memory pressure persisted for >=#{state.max_pressure_backoffs} attempts; aborting run #{state.run_id}"
+        )
 
-    running_keys =
-      state.step_states
-      |> Enum.filter(fn {_, s} -> Map.get(s, "status") == "running" end)
-      |> Enum.map(&elem(&1, 0))
+        finalize_run_failure(
+          state,
+          "Workflow run aborted: critical memory pressure persisted for >120s"
+        )
+      else
+        Logger.warning(
+          "[Workflows.Engine] Critical memory pressure detected (#{new_count}/#{state.max_pressure_backoffs}); deferring step launch for run #{state.run_id}"
+        )
 
-    cond do
-      failed_keys != [] and running_keys == [] ->
-        # Run has failed steps and no more running steps
-        finalize_run_failure(state, "Step(s) failed: #{Enum.join(failed_keys, ", ")}")
+        Process.send_after(self(), :execute_next_layer, state.pressure_backoff_interval_ms)
+        {:noreply, %{state | pressure_backoff_count: new_count}}
+      end
+    else
+      # Reset pressure backoff counter if pressure has cleared
+      state = %{state | pressure_backoff_count: 0}
 
-      length(completed_keys) == length(state.steps) ->
-        # All steps completed!
-        finalize_run_completion(state)
+      completed_keys =
+        state.step_states
+        |> Enum.filter(fn {_, s} -> Map.get(s, "status") == "completed" end)
+        |> Enum.map(&elem(&1, 0))
 
-      true ->
-        ready = WorkflowDag.ready_steps(state.steps, completed_keys, failed_keys)
-        ready_not_running = Enum.reject(ready, &(WorkflowDag.step_key(&1) in running_keys))
+      failed_keys =
+        state.step_states
+        |> Enum.filter(fn {_, s} -> Map.get(s, "status") == "failed" end)
+        |> Enum.map(&elem(&1, 0))
 
-        if ready_not_running == [] and running_keys == [] and
-             length(completed_keys) < length(state.steps) do
-          # Deadlock or unmet dependencies without failure
-          finalize_run_failure(state, "Unresolvable dependency block in workflow steps")
-        else
-          new_state =
-            Enum.reduce(ready_not_running, state, fn step, acc ->
-              launch_step(step, acc)
-            end)
+      running_keys =
+        state.step_states
+        |> Enum.filter(fn {_, s} -> Map.get(s, "status") == "running" end)
+        |> Enum.map(&elem(&1, 0))
 
-          {:noreply, new_state}
-        end
+      cond do
+        failed_keys != [] and running_keys == [] ->
+          # Run has failed steps and no more running steps
+          finalize_run_failure(state, "Step(s) failed: #{Enum.join(failed_keys, ", ")}")
+
+        length(completed_keys) == length(state.steps) ->
+          # All steps completed!
+          finalize_run_completion(state)
+
+        true ->
+          ready = WorkflowDag.ready_steps(state.steps, completed_keys, failed_keys)
+          ready_not_running = Enum.reject(ready, &(WorkflowDag.step_key(&1) in running_keys))
+
+          if ready_not_running == [] and running_keys == [] and
+               length(completed_keys) < length(state.steps) do
+            # Deadlock or unmet dependencies without failure
+            finalize_run_failure(state, "Unresolvable dependency block in workflow steps")
+          else
+            new_state =
+              Enum.reduce(ready_not_running, state, fn step, acc ->
+                launch_step(step, acc)
+              end)
+
+            {:noreply, new_state}
+          end
+      end
     end
   end
 
@@ -349,7 +391,13 @@ defmodule IexCode.Workflows.Engine do
 
   @impl true
   def handle_call(:get_status, _from, state) do
-    {:reply, {:ok, %{status: state.status, step_states: state.step_states}}, state}
+    {:reply,
+     {:ok,
+      %{
+        status: state.status,
+        step_states: state.step_states,
+        pressure_backoff_count: state.pressure_backoff_count
+      }}, state}
   end
 
   @impl true
@@ -631,6 +679,8 @@ defmodule IexCode.Workflows.Engine do
     end)
   rescue
     _ -> nil
+  catch
+    :exit, _ -> nil
   end
 
   defp update_run_record(run, attrs) do
@@ -650,6 +700,10 @@ defmodule IexCode.Workflows.Engine do
   rescue
     e ->
       Logger.error("Exception updating workflow run: #{inspect(e)}")
+      run
+  catch
+    :exit, e ->
+      Logger.error("Exit updating workflow run: #{inspect(e)}")
       run
   end
 

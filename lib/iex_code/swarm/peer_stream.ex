@@ -250,7 +250,7 @@ defmodule IexCode.Swarm.PeerStream do
     try do
       String.to_existing_atom(val)
     rescue
-      ArgumentError -> String.to_atom(val)
+      ArgumentError -> :general
     end
   end
 

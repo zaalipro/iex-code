@@ -103,7 +103,7 @@ defmodule IexCode.Swarm.RoleSpec do
     try do
       String.to_existing_atom(val)
     rescue
-      ArgumentError -> String.to_atom(val)
+      ArgumentError -> :unknown
     end
   end
 

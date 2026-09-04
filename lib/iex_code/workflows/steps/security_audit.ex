@@ -173,25 +173,38 @@ defmodule IexCode.Workflows.Steps.SecurityAudit do
     end
   end
 
+  defp fetch_key(map, key) when is_map(map) and is_binary(key) do
+    case Map.fetch(map, key) do
+      {:ok, val} ->
+        val
+
+      :error ->
+        try do
+          Map.get(map, String.to_existing_atom(key))
+        rescue
+          ArgumentError -> nil
+        end
+    end
+  end
+
+  defp fetch_key(map, key) when is_map(map), do: Map.get(map, key)
+  defp fetch_key(_, _), do: nil
+
   defp get_str(map, key) when is_map(map) do
-    val = Map.get(map, key) || Map.get(map, String.to_atom(key))
+    val = fetch_key(map, key)
     if is_binary(val), do: String.trim(val), else: nil
-  rescue
-    ArgumentError -> nil
   end
 
   defp get_str(_, _), do: nil
 
   defp get_value(map, key) when is_map(map) do
-    Map.get(map, key) || Map.get(map, String.to_atom(key))
-  rescue
-    ArgumentError -> nil
+    fetch_key(map, key)
   end
 
   defp get_value(_, _), do: nil
 
   defp get_bool(map, key, default) when is_map(map) do
-    case Map.get(map, key) || Map.get(map, String.to_atom(key)) do
+    case fetch_key(map, key) do
       b when is_boolean(b) -> b
       "true" -> true
       "false" -> false
@@ -204,7 +217,7 @@ defmodule IexCode.Workflows.Steps.SecurityAudit do
   defp get_bool(_, _, default), do: default
 
   defp get_map(map, key) when is_map(map) do
-    case Map.get(map, key) || Map.get(map, String.to_atom(key)) do
+    case fetch_key(map, key) do
       m when is_map(m) -> m
       _ -> %{}
     end

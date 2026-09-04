@@ -37,7 +37,9 @@ defmodule IexCode.Application do
         IexCode.Desktop.Dock,
         IexCode.Desktop.ActivityTracker,
         IexCode.Desktop.SwarmHooks,
-        IexCode.Swarm.PeerStream
+        IexCode.Swarm.PeerStream,
+        IexCode.Observability.ETSPruner,
+        IexCode.Observability.MemoryGuardrail
       ]
       |> Enum.reject(&is_nil/1)
 
