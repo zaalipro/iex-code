@@ -617,7 +617,7 @@ defmodule IexCodeWeb.CommandPalette do
       "terminal"
     ]
 
-    if effective_category not in valid_categories do
+    if effective_category not in valid_categories or byte_size(q) > 200 do
       []
     else
       workspace_root = Map.get(extra_map, :workspace_root, ".")
@@ -950,21 +950,22 @@ defmodule IexCodeWeb.CommandPalette do
   end
 
   defp is_subsequence?(<<>>, _), do: true
+  defp is_subsequence?(q, t) when byte_size(q) > byte_size(t), do: false
 
-  defp is_subsequence?(<<c::utf8, rest_q::binary>>, <<c::utf8, rest_t::binary>>) do
-    is_subsequence?(rest_q, rest_t)
-  end
+  defp is_subsequence?(<<c::utf8, rest_q::binary>>, t) do
+    case :binary.match(t, <<c::utf8>>) do
+      {pos, len} ->
+        rem_len = byte_size(t) - pos - len
 
-  defp is_subsequence?(<<_::utf8, _::binary>> = q, <<_::utf8, rest_t::binary>>) do
-    is_subsequence?(q, rest_t)
-  end
+        if rem_len >= byte_size(rest_q) do
+          is_subsequence?(rest_q, :binary.part(t, pos + len, rem_len))
+        else
+          false
+        end
 
-  defp is_subsequence?(<<c, rest_q::binary>>, <<c, rest_t::binary>>) do
-    is_subsequence?(rest_q, rest_t)
-  end
-
-  defp is_subsequence?(<<_, _::binary>> = q, <<_, rest_t::binary>>) do
-    is_subsequence?(q, rest_t)
+      :nomatch ->
+        false
+    end
   end
 
   defp is_subsequence?(_, _), do: false
@@ -1112,31 +1113,72 @@ defmodule IexCodeWeb.CommandPalette do
         nil
 
       has_slash ->
-        case score_prepared(q, p, q_len, p_len, q_chars, q_chars_count) do
-          {:ok, s} when s > 0 -> {p, s}
-          _ -> nil
+        case :binary.match(p, q) do
+          {0, _} ->
+            {p, 500 + q_len * 10}
+
+          {pos, _} ->
+            is_boundary = :binary.at(p, pos - 1) in [?_, ?-, ?/, ?., ?\s, ?:, ?@, ?$, ?!, ?>]
+            boundary_bonus = if is_boundary, do: 50, else: 0
+            {p, 300 + q_len * 10 + boundary_bonus}
+
+          :nomatch ->
+            if q_chars_count <= p_len and is_subsequence?(q, p) do
+              case match_subsequence(q_chars, p, 0, nil, nil, 100, p_len, q_chars_count) do
+                {:ok, s} when s > 0 -> {p, s}
+                _ -> nil
+              end
+            else
+              nil
+            end
         end
 
       true ->
         bn = fast_basename(p)
         bn_len = byte_size(bn)
 
-        if q_len <= bn_len do
-          case score_prepared(q, bn, q_len, bn_len, q_chars, q_chars_count) do
-            {:ok, bs} when bs > 0 ->
-              {p, bs}
+        case :binary.match(bn, q) do
+          {0, _} ->
+            {p, 500 + q_len * 10}
 
-            _ ->
-              case score_prepared(q, p, q_len, p_len, q_chars, q_chars_count) do
-                {:ok, s} when s > 0 -> {p, s}
-                _ -> nil
-              end
-          end
-        else
-          case score_prepared(q, p, q_len, p_len, q_chars, q_chars_count) do
-            {:ok, s} when s > 0 -> {p, s}
-            _ -> nil
-          end
+          {pos, _} ->
+            is_boundary = :binary.at(bn, pos - 1) in [?_, ?-, ?/, ?., ?\s, ?:, ?@, ?$, ?!, ?>]
+            boundary_bonus = if is_boundary, do: 50, else: 0
+            {p, 300 + q_len * 10 + boundary_bonus}
+
+          :nomatch ->
+            case :binary.match(p, q) do
+              {0, _} ->
+                {p, 500 + q_len * 10}
+
+              {pos, _} ->
+                is_boundary = :binary.at(p, pos - 1) in [?_, ?-, ?/, ?., ?\s, ?:, ?@, ?$, ?!, ?>]
+                boundary_bonus = if is_boundary, do: 50, else: 0
+                {p, 300 + q_len * 10 + boundary_bonus}
+
+              :nomatch ->
+                if is_subsequence?(q, p) do
+                  if q_len <= bn_len and is_subsequence?(q, bn) do
+                    case match_subsequence(q_chars, bn, 0, nil, nil, 100, bn_len, q_chars_count) do
+                      {:ok, bs} when bs > 0 ->
+                        {p, bs}
+
+                      _ ->
+                        case match_subsequence(q_chars, p, 0, nil, nil, 100, p_len, q_chars_count) do
+                          {:ok, s} when s > 0 -> {p, s}
+                          _ -> nil
+                        end
+                    end
+                  else
+                    case match_subsequence(q_chars, p, 0, nil, nil, 100, p_len, q_chars_count) do
+                      {:ok, s} when s > 0 -> {p, s}
+                      _ -> nil
+                    end
+                  end
+                else
+                  nil
+                end
+            end
         end
     end
   end
@@ -1155,29 +1197,6 @@ defmodule IexCodeWeb.CommandPalette do
       if rem_len > 0, do: :binary.part(p, idx + 1, rem_len), else: p
     else
       find_last_slash(p, idx - 1)
-    end
-  end
-
-  defp score_prepared(q, t, q_len, t_len, q_chars, q_chars_count) do
-    if t == q do
-      {:ok, 1000}
-    else
-      case :binary.match(t, q) do
-        {0, _} ->
-          {:ok, 500 + q_len * 10}
-
-        {pos, _} ->
-          is_boundary = :binary.at(t, pos - 1) in [?_, ?-, ?/, ?., ?\s, ?:, ?@, ?$, ?!, ?>]
-          boundary_bonus = if is_boundary, do: 50, else: 0
-          {:ok, 300 + q_len * 10 + boundary_bonus}
-
-        :nomatch ->
-          if q_chars_count > t_len or not is_subsequence?(q, t) do
-            :nomatch
-          else
-            match_subsequence(q_chars, t, 0, nil, nil, 100, t_len, q_chars_count)
-          end
-      end
     end
   end
 
@@ -1257,12 +1276,10 @@ defmodule IexCodeWeb.CommandPalette do
           {:ok, 300 + q_len * 10 + boundary_bonus}
 
         true ->
-          if (q_chars != [] and :binary.match(t, hd(q_chars)) == :nomatch) or
-               (q_chars_count >= 3 and
-                  :binary.match(t, Enum.at(q_chars, div(q_chars_count, 2))) == :nomatch) do
-            :nomatch
-          else
+          if is_subsequence?(q, t) do
             match_subsequence(q_chars, t, 0, nil, nil, 100, t_len, q_chars_count)
+          else
+            :nomatch
           end
       end
     end
@@ -1335,6 +1352,20 @@ defmodule IexCodeWeb.CommandPalette do
   end
 
   defp read_file_preview(path, workspace_root) do
+    cache_key = {:command_palette_file_preview, workspace_root, path}
+
+    case Process.get(cache_key) do
+      nil ->
+        result = do_read_file_preview(path, workspace_root)
+        Process.put(cache_key, result)
+        result
+
+      cached ->
+        cached
+    end
+  end
+
+  defp do_read_file_preview(path, workspace_root) do
     full_path =
       cond do
         is_binary(workspace_root) and workspace_root != "" and not (Path.type(path) == :absolute) ->

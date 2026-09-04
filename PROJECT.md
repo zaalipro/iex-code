@@ -77,7 +77,7 @@ This project elevates `iex-code` to full parity with Codex CLI desktop and imple
 | 2 | Codex CLI Desktop Parity & Autonomous Tool Safety Engine | SafetyPolicy, safety tiers & category overrides, ContextCompactor, SystemPromptBuilder, env sandbox & SecretMasker, sound & appearance | M1 | DONE |
 | 3 | Studio-Grade Settings UI & Diagnostics | Tabbed `/settings/:tab` studio, legacy section ID preservation, Provider Cards with live ping, Live Payload Previewer, Command Palette shortcuts, Quick Drawer | M1, M2 | DONE |
 | 4 | Swarm, Tool Approval Modal & Runtime Integration | LiveView Tool Approval Modal (`#tool-approval-modal`), wire SafetyPolicy, ContextCompactor, SystemPromptBuilder, ModelRoute into AgentLoop & SessionServer | M1, M2, M3 | DONE |
-| 5 | Comprehensive Test Suite, Adversarial Hardening & Precommit | Tiers 1-4 automated test suites, adversarial tests, live ping/modal flows, clean `mix precommit` (0 warnings, 0 failures) | M1, M2, M3, M4 | PLANNED |
+| 5 | Comprehensive Test Suite, Adversarial Hardening & Precommit | Tiers 1-4 automated test suites, adversarial tests, live ping/modal flows, clean `mix precommit` (0 warnings, 0 failures) | M1, M2, M3, M4 | DONE |
 
 ## Interface Contracts
 
