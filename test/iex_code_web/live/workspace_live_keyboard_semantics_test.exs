@@ -50,14 +50,27 @@ defmodule IexCodeWeb.WorkspaceLiveKeyboardSemanticsTest do
            )
   end
 
-  test "kanban ribbons and cards are native buttons", %{view: view, task: task} do
+  test "kanban cards stay draggable native buttons after a patch", %{
+    view: view,
+    task: task,
+    session: session
+  } do
     assert has_element?(view, "button[id^='kanban-col-'][aria-expanded='false']")
 
     view
     |> element("#kanban-col-ready")
     |> render_click()
 
-    assert has_element?(view, "button#task-card-#{task.id}")
+    assert has_element?(view, "button#task-card-#{task.id}[draggable='true']")
+
+    view |> element("#header-swarm-toggle") |> render_click()
+
+    assert has_element?(
+             view,
+             "#header-swarm-toggle[aria-pressed='#{not session.swarm_mode}']"
+           )
+
+    assert has_element?(view, "#kanban-cards-ready button#task-card-#{task.id}[draggable='true']")
   end
 
   test "calendar day selectors and scheduled tasks are separate native buttons", %{

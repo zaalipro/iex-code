@@ -1307,6 +1307,7 @@
                           phx-value-id={task.id}
                           phx-hook=".KanbanCard"
                           data-task-id={task.id}
+                          draggable="true"
                           aria-expanded={
                             to_string(@selected_task != nil and @selected_task.id == task.id)
                           }
