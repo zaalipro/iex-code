@@ -4,6 +4,8 @@ import {LiveSocket} from "phoenix_live_view"
 import {hooks as colocatedHooks} from "phoenix-colocated/iex_code"
 import topbar from "../vendor/topbar"
 import TerminalHook from "./hooks/terminal_hook"
+import SidebarResize from "./hooks/sidebar_resize"
+import ModelPicker from "./hooks/model_picker"
 
 // Theme behavior lives in the supported application bundle rather than an
 // inline layout script, so CSP can remain strict in desktop and release builds.
@@ -52,6 +54,8 @@ document.addEventListener("click", (event) => {
 
 const Hooks = {
   TerminalHook,
+  SidebarResize,
+  ModelPicker,
   ModalFocus: {
     mounted() {
       const activeElement = document.activeElement

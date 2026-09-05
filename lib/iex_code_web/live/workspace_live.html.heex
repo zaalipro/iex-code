@@ -15,7 +15,7 @@
         "workspace-sidebar bg-[#11151c]/95 backdrop-blur-xl border-r border-[#21262d] flex flex-col justify-between shrink-0 transition-all duration-200 ease-out",
         @sidebar_collapsed &&
           "w-0 min-w-0 opacity-0 pointer-events-none overflow-hidden border-none lg:w-0",
-        !@sidebar_collapsed && "w-64 min-w-[16rem]"
+        !@sidebar_collapsed && "min-w-0"
       ]}
     >
       <button
@@ -27,7 +27,23 @@
       >
         <.icon name="hero-x-mark" class="w-5 h-5" />
       </button>
-      <div class="flex flex-col h-full overflow-hidden">
+      <div
+        id="workspace-sidebar-resizer"
+        phx-hook="SidebarResize"
+        phx-update="ignore"
+        class="workspace-sidebar-resizer"
+        role="separator"
+        tabindex="0"
+        aria-label="Resize sidebar"
+        aria-controls="workspace-sidebar"
+        aria-orientation="vertical"
+        aria-valuemin="240"
+        aria-valuemax="440"
+        aria-valuenow="256"
+        title="Drag to resize. Arrow keys adjust width; double-click to reset."
+      >
+      </div>
+      <div class="workspace-sidebar-content flex flex-col h-full overflow-hidden">
         <!-- Brand / Workspace Header -->
         <div class="p-3.5 border-b border-[#21262d] relative">
           <button
@@ -594,7 +610,7 @@
               id="tab-btn-consensus"
               phx-click="switch_tab"
               phx-value-tab="consensus"
-              aria-pressed={@active_tab == "consensus"}
+              aria-pressed={to_string(@active_tab == "consensus")}
               class={[
                 "px-3 py-1 rounded-lg text-xs font-mono font-medium flex items-center gap-1.5 transition-smooth",
                 @active_tab == "consensus" &&
@@ -1271,7 +1287,7 @@
                     data-status={col_status}
                     aria-label={"Expand #{col_status} column"}
                     aria-expanded="false"
-                    class="w-12 flex-shrink-0 bg-[#11151c] border border-[#21262d] hover:border-gray-500 rounded-2xl flex flex-col items-center py-4 justify-between transition-smooth cursor-pointer group"
+                    class="w-24 flex-shrink-0 bg-[#11151c] border border-[#21262d] hover:border-gray-500 rounded-2xl flex flex-col items-center px-1 py-4 justify-between transition-smooth cursor-pointer group"
                     title={"Click to expand #{col_status} column"}
                   >
                     <div class="flex flex-col items-center gap-3">
@@ -1287,7 +1303,7 @@
                         col_status == "review" && "bg-amber-400",
                         col_status == "done" && "bg-gray-500"
                       ]}></span>
-                      <span class="writing-vertical text-xs font-mono font-bold uppercase tracking-wider text-gray-400 group-hover:text-white transition-colors">
+                      <span class="whitespace-nowrap text-xs font-mono font-bold uppercase tracking-wider text-gray-400 group-hover:text-white transition-colors">
                         {String.upcase(col_status)}
                       </span>
                     </div>
@@ -4666,6 +4682,7 @@
                       phx-click-away={@open_dropdown == "model" && "close_dropdowns"}
                     >
                       <button
+                        id="model-picker-trigger"
                         type="button"
                         phx-click="toggle_dropdown"
                         phx-value-name="model"
@@ -4685,9 +4702,11 @@
                       <%= if @open_dropdown == "model" do %>
                         <div
                           id="model-picker-listbox"
+                          phx-hook="ModelPicker"
+                          popover="manual"
                           role="listbox"
                           aria-label="AI model"
-                          class="absolute left-0 bottom-full mb-2 w-72 bg-[#11151c]/95 border border-[#21262d] rounded-2xl p-1.5 shadow-2xl backdrop-blur-xl z-50 animate-in fade-in zoom-in-95 max-h-96 overflow-y-auto"
+                          class="model-picker-popover w-72 bg-[#11151c] border border-[#30363d] rounded-2xl p-1.5 shadow-2xl max-h-96 overflow-y-auto"
                         >
                           <div class="px-3 py-1.5 text-[10px] font-mono text-gray-400 uppercase tracking-wider border-b border-[#21262d] mb-1">
                             Select AI Model
@@ -4963,7 +4982,9 @@
 
         this.setSidebarAccessibility = (isOpen) => {
           const isDesktop = this.desktopQuery.matches
-          this.sidebar.inert = !isDesktop && !isOpen
+          this.sidebar.inert = isDesktop
+            ? this.sidebar.dataset.collapsed === 'true'
+            : !isOpen
           if (isDesktop) {
             this.sidebar.removeAttribute('aria-hidden')
           } else {
@@ -5028,6 +5049,10 @@
         this.el.addEventListener('click', this.handleClick)
         window.addEventListener('keydown', this.handleKeydown)
         this.desktopQuery.addEventListener('change', this.handleViewportChange)
+      },
+
+      updated() {
+        this.setSidebarAccessibility(this.el.classList.contains('sidebar-is-open'))
       },
 
       destroyed() {

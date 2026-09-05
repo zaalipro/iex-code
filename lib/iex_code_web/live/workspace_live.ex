@@ -74,7 +74,7 @@ defmodule IexCodeWeb.WorkspaceLive do
                          pretty: true
                        )
                        |> IO.iodata_to_binary()
-  @workspace_tabs ~w(kanban workflows swarm research calendar changes tests ast chat files terminal)
+  @workspace_tabs ~w(kanban workflows swarm research calendar changes tests ast consensus chat files terminal)
 
   @impl true
   def mount(params, _session, socket) do
