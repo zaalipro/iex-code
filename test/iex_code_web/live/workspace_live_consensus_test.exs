@@ -45,6 +45,35 @@ defmodule IexCodeWeb.WorkspaceLiveConsensusTest do
   end
 
   describe "Tier 1: Visual Agreement Matrix & Heat-Map Rendering" do
+    test "an unreviewed session has no fabricated assessments, scores, or approval", %{
+      conn: conn,
+      session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      view |> element("#tab-btn-consensus") |> render_click()
+
+      assert has_element?(view, "#consensus-review-status", "Awaiting reviews")
+      assert has_element?(view, "#consensus-reviewers-empty")
+
+      assert has_element?(
+               view,
+               "#consensus-decision[data-decision='unavailable']",
+               "Awaiting reviews"
+             )
+
+      assert has_element?(view, "#consensus-concordance-percent", "—")
+      assert has_element?(view, "#consensus-concordance-value", "—")
+      assert has_element?(view, "#consensus-confidence-value", "—")
+      assert has_element?(view, "#consensus-concordance-bar[style='width: 0%']")
+      assert has_element?(view, "#consensus-confidence-bar[style='width: 0%']")
+      refute has_element?(view, "#consensus-agreement-matrix tbody tr")
+
+      for dimension <- ~w(correctness security architectural_fit maintainability testability) do
+        assert has_element?(view, "#consensus-score-#{dimension}-value", "—")
+        assert has_element?(view, "#consensus-score-#{dimension}-bar[style='width: 0%']")
+      end
+    end
+
     test "T1_R4_LV_01: mounts workspace and renders consensus agreement matrix", %{
       conn: conn,
       session: session
@@ -82,32 +111,30 @@ defmodule IexCodeWeb.WorkspaceLiveConsensusTest do
   end
 
   describe "Tier 1 & 2: Interactive Human Arbitration Controls" do
-    test "T1_R4_LV_04: renders approve and reject buttons for contested arbitration", %{
+    test "approval is unavailable until a reviewed proposal exists", %{
       conn: conn,
       session: session
     } do
-      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}?tab=consensus")
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      view |> element("#tab-btn-consensus") |> render_click()
 
-      if has_element?(view, "#consensus-btn-approve") do
-        render_click(view, "approve_consensus", %{})
-        assert render(view) =~ "Approved" or render(view) =~ "Success"
-      else
-        assert true
-      end
+      assert has_element?(view, "#consensus-btn-approve[disabled]")
+      render_click(view, "approve_consensus", %{})
+      assert has_element?(view, "#consensus-decision[data-decision='unavailable']")
+      assert has_element?(view, "#consensus-btn-approve[disabled]")
     end
 
-    test "T2_R4_LV_01: rejecting consensus patch triggers swarm self-correction feedback", %{
+    test "rejection is unavailable until a reviewed proposal exists", %{
       conn: conn,
       session: session
     } do
-      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}?tab=consensus")
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+      view |> element("#tab-btn-consensus") |> render_click()
 
-      if has_element?(view, "#consensus-btn-reject") do
-        render_click(view, "reject_consensus", %{"reason" => "Security concerns"})
-        assert render(view) =~ "Rejected" or render(view) =~ "Revision"
-      else
-        assert true
-      end
+      assert has_element?(view, "#consensus-btn-reject[disabled]")
+      render_click(view, "reject_consensus", %{"reason" => "Security concerns"})
+      assert has_element?(view, "#consensus-decision[data-decision='unavailable']")
+      assert has_element?(view, "#consensus-btn-reject[disabled]")
     end
   end
 end

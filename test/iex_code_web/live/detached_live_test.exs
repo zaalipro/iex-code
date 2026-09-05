@@ -10,9 +10,9 @@ defmodule IexCodeWeb.DetachedLiveTest do
       project = create_project_fixture(%{root_path: path})
       session = create_session_fixture(project)
 
-      {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}/detached/terminal")
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}/detached/terminal")
 
-      assert html =~ "TERMINAL MULTIPLEXER"
+      assert has_element?(view, "#detached-terminal-toolbar-title", "Terminal multiplexer")
       assert has_element?(view, "#terminal-session-container")
 
       # Tab switching
@@ -32,9 +32,9 @@ defmodule IexCodeWeb.DetachedLiveTest do
       project = create_project_fixture(%{root_path: path})
       session = create_session_fixture(project)
 
-      {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}/detached/diff")
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}/detached/diff")
 
-      assert html =~ "GIT STAGING &amp; DIFF INSPECTOR"
+      assert has_element?(view, "#detached-diff-toolbar-title", "Git staging & diff inspector")
       assert has_element?(view, "button", "Stage All")
       assert has_element?(view, "button", "Unstage All")
 
@@ -59,9 +59,9 @@ defmodule IexCodeWeb.DetachedLiveTest do
       project = create_project_fixture(%{root_path: path})
       session = create_session_fixture(project)
 
-      {:ok, _view, html} = live(conn, ~p"/sessions/#{session.id}/detached/dag")
+      {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}/detached/dag")
 
-      assert html =~ "DAG TOPOLOGICAL MAP"
+      assert has_element?(view, "#detached-dag-toolbar-title", "DAG topological map")
       assert html =~ "STEP INSPECTOR"
     end
   end

@@ -225,13 +225,25 @@ defmodule IexCodeWeb.WorkspaceComponentsTest do
         <.diff_viewer diff_text={@diff_text} diff_mode={@diff_mode} file_path={@file_path} />
         """)
 
-      assert html =~ "lib/calc.ex"
-      assert html =~ "bg-emerald-950/40"
-      assert html =~ "bg-rose-950/40"
-      assert html =~ "text-emerald-300"
-      assert html =~ "text-rose-300"
-      assert html =~ "def add(a, b), do: a + b"
-      assert html =~ "def add(a, b), do: a - b"
+      document = LazyHTML.from_fragment(html)
+      hunk = LazyHTML.query(document, "#diff-viewer-container-hunk-card-hunk-1")
+      addition = LazyHTML.query(hunk, "div[class~='border-success'] > div")
+      deletion = LazyHTML.query(hunk, "div[class~='border-danger'] > div")
+
+      assert Enum.count(hunk) == 1
+      assert Enum.count(addition) == 1
+      assert Enum.count(deletion) == 1
+      assert LazyHTML.text(hunk) =~ "@@ -1,3 +1,3 @@"
+
+      assert addition |> LazyHTML.text() |> String.replace(~r/\s+/, "") ==
+               "defadd(a,b),do:a+b"
+
+      assert deletion |> LazyHTML.text() |> String.replace(~r/\s+/, "") ==
+               "defadd(a,b),do:a-b"
+
+      assert document
+             |> LazyHTML.query("#diff-viewer-container-copy-btn")
+             |> LazyHTML.attribute("data-code") == [diff]
     end
 
     test "renders side-by-side split diff mode" do
@@ -276,10 +288,21 @@ defmodule IexCodeWeb.WorkspaceComponentsTest do
         />
         """)
 
-      assert html =~ "1 files"
-      assert html =~ "lib/engine.ex"
-      refute html =~ "lib/app.ex"
-      assert html =~ "Select a workspace file on the left to preview contents"
+      document = LazyHTML.from_fragment(html)
+
+      assert document
+             |> LazyHTML.query("#file-tree-panel button[phx-click='select_file']")
+             |> LazyHTML.attribute("phx-value-path") == ["lib/engine.ex"]
+
+      assert document
+             |> LazyHTML.query("#file-filter-form #file-filter-input[name='filter']")
+             |> LazyHTML.attribute("value") == ["engine"]
+
+      assert document
+             |> LazyHTML.query("#file-editor-panel #file-editor-empty[role='status']")
+             |> Enum.count() == 1
+
+      assert document |> LazyHTML.query("#code-editor-textarea") |> Enum.empty?()
     end
 
     test "renders selected file content and copy button" do

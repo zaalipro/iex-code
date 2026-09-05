@@ -28,16 +28,38 @@ defmodule IexCodeWeb.Components.DiffInspectorTest do
           lines: hunk.lines
         })
 
-      # Verifies both Original and Modified headers exist
-      assert rendered =~ "Original"
-      assert rendered =~ "Modified"
-      # Verifies addition and deletion styling
-      assert rendered =~ "bg-rose-950/40"
-      assert rendered =~ "bg-emerald-950/40"
-      # Verifies aligned end line rendered in both columns
-      assert rendered =~ "end"
-      # Verifies empty spacer cell rendered for asymmetric addition
-      assert rendered =~ "border-transparent"
+      document = LazyHTML.from_fragment(rendered)
+      assert LazyHTML.text(document) =~ "Original"
+      assert LazyHTML.text(document) =~ "Modified"
+
+      rows = LazyHTML.query(document, "div.group")
+      assert Enum.count(rows) == 4
+
+      for row <- rows do
+        assert row |> LazyHTML.child_nodes() |> LazyHTML.filter("div") |> Enum.count() == 2
+      end
+
+      assert document
+             |> LazyHTML.query("div[class~='border-danger'] > div")
+             |> Enum.map(&(LazyHTML.text(&1) |> String.replace(~r/\s+/, ""))) == ["a+b"]
+
+      assert document
+             |> LazyHTML.query("div[class~='border-success'] > div")
+             |> Enum.map(&(LazyHTML.text(&1) |> String.replace(~r/\s+/, ""))) ==
+               ["#comment", "a+b"]
+
+      spacer = LazyHTML.query(document, "div.group > div:first-child > div.border-transparent")
+      assert Enum.count(spacer) == 1
+      spacer_row = spacer |> LazyHTML.parent_node() |> LazyHTML.parent_node()
+
+      assert spacer_row
+             |> LazyHTML.query("div[class~='border-success'] > div")
+             |> LazyHTML.text()
+             |> String.replace(~r/\s+/, "") == "a+b"
+
+      assert document
+             |> LazyHTML.query("div.group:last-child > div > div > div")
+             |> Enum.map(&(LazyHTML.text(&1) |> String.trim())) == ["end", "end"]
     end
 
     test "renders intra-line word diff chips on changed rows" do
@@ -60,11 +82,7 @@ defmodule IexCodeWeb.Components.DiffInspectorTest do
           lines: hunk.lines
         })
 
-      # Word highlight chips in deletion and addition cells
-      assert rendered =~ "bg-rose-500/30"
-      assert rendered =~ "first_name"
-      assert rendered =~ "bg-emerald-500/30"
-      assert rendered =~ "full_name"
+      assert_changed_name_highlights(LazyHTML.from_fragment(rendered))
     end
   end
 
@@ -89,12 +107,19 @@ defmodule IexCodeWeb.Components.DiffInspectorTest do
           lines: hunk.lines
         })
 
-      assert rendered =~ "bg-rose-950/40"
-      assert rendered =~ "bg-emerald-950/40"
-      assert rendered =~ "bg-rose-500/30"
-      assert rendered =~ "bg-emerald-500/30"
-      assert rendered =~ "first_name"
-      assert rendered =~ "full_name"
+      assert_changed_name_highlights(LazyHTML.from_fragment(rendered))
+    end
+  end
+
+  defp assert_changed_name_highlights(document) do
+    for {tone, changed_name} <- [{"danger", "first_name"}, {"success", "full_name"}] do
+      line = LazyHTML.query(document, "div[class~='border-#{tone}'] > div")
+      assert Enum.count(line) == 1
+
+      assert line |> LazyHTML.text() |> String.replace(~r/\s+/, "") == "user.#{changed_name}"
+
+      highlighted_words = LazyHTML.query(line, "span.whitespace-pre-wrap > span.font-semibold")
+      assert Enum.map(highlighted_words, &LazyHTML.text/1) == [changed_name]
     end
   end
 

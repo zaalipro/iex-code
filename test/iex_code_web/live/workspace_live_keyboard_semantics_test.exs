@@ -39,7 +39,7 @@ defmodule IexCodeWeb.WorkspaceLiveKeyboardSemanticsTest do
   } do
     assert has_element?(
              view,
-             "a#profile-settings-card[href='/sessions/#{session.id}/settings#runtime'][data-phx-link='redirect']"
+             "a#profile-settings-card[href='/sessions/#{session.id}/settings/providers#runtime'][data-phx-link='redirect']"
            )
 
     refute has_element?(view, "#workspace-shell.select-none")

@@ -27,24 +27,24 @@
 :root,
 [data-ui-theme="midnight"] {
   color-scheme: dark;
-  --ui-bg: #111318;
-  --ui-surface: #191c22;
-  --ui-surface-raised: #23272f;
-  --ui-surface-inset: #0d0f13;
-  --ui-border: #303640;
-  --ui-border-strong: #485362;
-  --ui-text: #edf1f7;
-  --ui-muted: #adb6c5;
-  --ui-subtle: #8490a2;
-  --ui-accent: #8bb8ff;
-  --ui-accent-strong: #afceff;
-  --ui-accent-text: #101d32;
-  --ui-accent-soft: rgb(139 184 255 / 0.14);
-  --ui-accent-softer: rgb(139 184 255 / 0.08);
-  --ui-focus: #afceff;
-  --ui-focus-soft: rgb(175 206 255 / 0.28);
+  --ui-bg: #080e18;
+  --ui-surface: #101c2b;
+  --ui-surface-raised: #182b3d;
+  --ui-surface-inset: #060b13;
+  --ui-border: #263e53;
+  --ui-border-strong: #45677e;
+  --ui-text: #eaf5fb;
+  --ui-muted: #a6bccb;
+  --ui-subtle: #7f9baa;
+  --ui-accent: #67e8f9;
+  --ui-accent-strong: #a5f3fc;
+  --ui-accent-text: #07232b;
+  --ui-accent-soft: rgb(103 232 249 / 0.14);
+  --ui-accent-softer: rgb(103 232 249 / 0.08);
+  --ui-focus: #a5f3fc;
+  --ui-focus-soft: rgb(165 243 252 / 0.28);
   --ui-overlay: rgb(3 4 10 / 0.76);
-  --ui-selection: rgb(139 184 255 / 0.3);
+  --ui-selection: rgb(103 232 249 / 0.3);
   --ui-success: #6ed5a9;
   --ui-success-soft: rgb(110 213 169 / 0.13);
   --ui-warning: #efbd73;
@@ -53,34 +53,34 @@
   --ui-danger-soft: rgb(241 139 155 / 0.13);
   --ui-info: #7fc6f4;
   --ui-info-soft: rgb(127 198 244 / 0.13);
-  --ui-shadow-card: 0 5px 18px rgb(2 4 12 / 0.38), 0 1px 0 rgb(255 255 255 / 0.045) inset;
-  --ui-shadow-control: 0 2px 5px rgb(2 4 12 / 0.24), 0 1px 0 rgb(255 255 255 / 0.05) inset;
+  --ui-shadow-card: 0 16px 38px rgb(1 6 14 / 0.42), 0 1px 0 rgb(255 255 255 / 0.045) inset;
+  --ui-shadow-control: 0 4px 14px rgb(1 6 14 / 0.26), 0 1px 0 rgb(255 255 255 / 0.05) inset;
   --ui-shadow-modal: 0 24px 64px rgb(2 4 12 / 0.62), 0 1px 0 rgb(255 255 255 / 0.06) inset;
   --ui-shadow-inset: inset 0 1px 4px rgb(1 3 10 / 0.42);
   --ui-highlight: rgb(255 255 255 / 0.055);
-  --ui-grid: rgb(139 184 255 / 0.045);
+  --ui-grid: rgb(103 232 249 / 0.045);
 }
 
 [data-ui-theme="graphite"] {
   color-scheme: dark;
-  --ui-bg: #0d0e10;
-  --ui-surface: #151619;
-  --ui-surface-raised: #1e2024;
+  --ui-bg: #101112;
+  --ui-surface: #1a1c20;
+  --ui-surface-raised: #26292e;
   --ui-surface-inset: #090a0c;
   --ui-border: #33363d;
   --ui-border-strong: #4b4f59;
   --ui-text: #f2f1ef;
   --ui-muted: #b1afb0;
   --ui-subtle: #7f7e82;
-  --ui-accent: #ef806b;
-  --ui-accent-strong: #ff9b86;
-  --ui-accent-text: #27100b;
-  --ui-accent-soft: rgb(239 128 107 / 0.14);
-  --ui-accent-softer: rgb(239 128 107 / 0.075);
-  --ui-focus: #ff9b86;
-  --ui-focus-soft: rgb(255 155 134 / 0.27);
+  --ui-accent: #f3c58d;
+  --ui-accent-strong: #ffdeb1;
+  --ui-accent-text: #2c1d0d;
+  --ui-accent-soft: rgb(243 197 141 / 0.14);
+  --ui-accent-softer: rgb(243 197 141 / 0.075);
+  --ui-focus: #ffdeb1;
+  --ui-focus-soft: rgb(255 222 177 / 0.27);
   --ui-overlay: rgb(5 5 6 / 0.78);
-  --ui-selection: rgb(239 128 107 / 0.3);
+  --ui-selection: rgb(243 197 141 / 0.3);
   --ui-success: #79ce9b;
   --ui-success-soft: rgb(121 206 155 / 0.13);
   --ui-warning: #e6b768;
@@ -94,7 +94,7 @@
   --ui-shadow-modal: 0 24px 64px rgb(0 0 0 / 0.66), 0 1px 0 rgb(255 255 255 / 0.055) inset;
   --ui-shadow-inset: inset 0 1px 4px rgb(0 0 0 / 0.46);
   --ui-highlight: rgb(255 255 255 / 0.05);
-  --ui-grid: rgb(239 128 107 / 0.035);
+  --ui-grid: rgb(243 197 141 / 0.035);
 }
 
 [data-ui-theme="aurora"] {

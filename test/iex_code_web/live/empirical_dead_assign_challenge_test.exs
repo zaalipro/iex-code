@@ -102,7 +102,7 @@ defmodule IexCodeWeb.EmpiricalDeadAssignChallengeTest do
 
       assert calendar_html =~ "SCHEDULED TASKS"
       assert calendar_html =~ "ACTIVE"
-      assert calendar_html =~ "MONTHLY RUNS:"
+      refute calendar_html =~ "MONTHLY RUNS:"
     end
 
     test "fuzzes 40 random UI event clicks and ensures LiveView never crashes or enters zombie state",

@@ -361,7 +361,7 @@ defmodule IexCodeWeb.Components.SwarmCanvasTest do
          %{conn: conn, session: session} do
       {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}/detached/dag")
 
-      assert html =~ "DAG TOPOLOGICAL MAP"
+      assert has_element?(view, "#detached-dag-toolbar-title", "DAG topological map")
       assert html =~ "STEP INSPECTOR"
       assert has_element?(view, "#dag-view-toggle-canvas")
       assert has_element?(view, "#dag-view-toggle-stages")

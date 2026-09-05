@@ -221,55 +221,55 @@ defmodule IexCodeWeb.Detached.TerminalLive do
         class="flex flex-col h-screen w-screen bg-[#0a0d12] overflow-hidden"
       >
         <!-- Top Navigation Bar -->
-        <header class="flex items-center justify-between px-4 py-2.5 bg-[#161b22] border-b border-[#30363d] shrink-0">
-          <div class="flex items-center gap-3">
-            <div class="flex items-center gap-2">
-              <span class="w-3 h-3 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]"></span>
-              <span class="font-mono text-sm font-semibold text-white tracking-wide">TERMINAL MULTIPLEXER</span>
-            </div>
-            <span class="text-xs px-2 py-0.5 rounded bg-zinc-800 text-zinc-400 font-mono">
-              Session: {@session_id}
-            </span>
-          </div>
-
-          <!-- Multiplexer Tabs -->
-          <div class="flex items-center gap-1 bg-[#0d1117] p-1 rounded-lg border border-[#30363d]">
+        <.page_toolbar
+          id="detached-terminal-toolbar"
+          title="Terminal multiplexer"
+          heading_tag="h1"
+        >
+          <:leading>
+            <.icon name="hero-command-line" class="size-[18px] text-accent" />
+          </:leading>
+          <span class="max-w-60 truncate text-xs text-muted" title={@session_id}>
+            Session: {@session_id}
+          </span>
+          <div class="flex flex-wrap items-center gap-1" role="group" aria-label="Terminal tabs">
             <%= for tab <- @tabs do %>
               <button
+                id={"detached-terminal-tab-#{tab.id}"}
+                type="button"
                 phx-click="switch_tab"
                 phx-value-tab={tab.id}
-                class={[
-                  "flex items-center gap-1.5 px-3 py-1 rounded text-xs font-mono transition-smooth",
-                  @active_tab == tab.id && "bg-[#21262d] text-white font-bold shadow-sm",
-                  @active_tab != tab.id && "text-zinc-400 hover:text-zinc-200"
-                ]}
+                aria-pressed={to_string(@active_tab == tab.id)}
+                class="header-control"
               >
                 <.icon name={tab.icon} class="w-3.5 h-3.5" />
                 <span>{tab.label}</span>
               </button>
             <% end %>
           </div>
-
-          <!-- Actions -->
-          <div class="flex items-center gap-2">
+          <:actions>
             <button
+              id="detached-terminal-restart"
+              type="button"
               phx-click="restart_terminal_session"
-              class="px-2.5 py-1 text-xs font-mono rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-[#30363d] transition-smooth flex items-center gap-1"
+              class="header-control"
               title="Restart PTY"
             >
-              <.icon name="hero-arrow-path" class="w-3 h-3" />
+              <.icon name="hero-arrow-path" class="w-3.5 h-3.5" />
               <span>Restart</span>
             </button>
             <button
+              id="detached-terminal-clear"
+              type="button"
               phx-click="clear_terminal"
-              class="px-2.5 py-1 text-xs font-mono rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-[#30363d] transition-smooth flex items-center gap-1"
+              class="header-control"
               title="Clear screen"
             >
-              <.icon name="hero-trash" class="w-3 h-3" />
+              <.icon name="hero-trash" class="w-3.5 h-3.5" />
               <span>Clear</span>
             </button>
-          </div>
-        </header>
+          </:actions>
+        </.page_toolbar>
 
         <!-- Main Terminal Body -->
         <main class="flex-1 min-h-0 relative">

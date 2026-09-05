@@ -31,36 +31,46 @@ defmodule IexCodeWeb.WorkspaceLiveTest do
     |> element("#tab-btn-swarm")
     |> render_click()
 
-    assert render(view) =~ "PlannerAgent"
-    assert render(view) =~ "ExplorerAgent"
+    assert has_element?(view, "#subagent-card-planner")
+    assert has_element?(view, "#subagent-card-explorer")
 
     # Switch to calendar tab
     view
     |> element("#tab-btn-calendar")
     |> render_click()
 
-    current_month = Calendar.strftime(Date.utc_today(), "%B, %Y")
-    assert render(view) =~ "Scheduled Tasks" or render(view) =~ current_month
+    current_month = Calendar.strftime(Date.utc_today(), "%B %Y")
+    assert has_element?(view, "#calendar-page-header-title", current_month)
+    assert has_element?(view, "#calendar-grid")
 
     # Switch to changes tab
     view
     |> element("#tab-btn-changes")
     |> render_click()
 
-    assert render(view) =~ "All Changes"
-    assert render(view) =~ "Canvas"
+    assert has_element?(view, "#changes-staging-panel")
+    assert has_element?(view, "#changes-diff-panel")
 
     # Switch to chat tab
     view
     |> element("#tab-btn-chat")
     |> render_click()
 
+    assert has_element?(view, "#chat-viewport")
+
+    # Switch to files tab
+    view
+    |> element("#tab-btn-files")
+    |> render_click()
+
+    assert has_element?(view, "#file-explorer-container")
+
     # Switch to terminal tab
     view
     |> element("#tab-btn-terminal")
     |> render_click()
 
-    assert render(view) =~ "mix test"
+    assert has_element?(view, "#terminal-page-toolbar")
   end
 
   test "toggles swarm mode", %{conn: conn, workspace_path: path} do
@@ -68,13 +78,16 @@ defmodule IexCodeWeb.WorkspaceLiveTest do
     session = create_session_fixture(project)
     {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
 
-    assert render(view) =~ "Swarm:"
+    assert has_element?(view, "#header-swarm-toggle[aria-pressed='#{session.swarm_mode}']")
 
     view
-    |> element("button[phx-click='toggle_swarm']")
+    |> element("#header-swarm-toggle")
     |> render_click()
 
-    assert render(view) =~ "Swarm Mode" or render(view) =~ "Single Agent Mode"
+    assert has_element?(view, "#header-swarm-toggle[aria-pressed='#{not session.swarm_mode}']")
+
+    view |> element("#header-swarm-toggle") |> render_click()
+    assert has_element?(view, "#header-swarm-toggle[aria-pressed='#{session.swarm_mode}']")
   end
 
   test "creates a new session when clicking the plus button", %{conn: conn, workspace_path: path} do
@@ -517,19 +530,17 @@ defmodule IexCodeWeb.WorkspaceLiveTest do
     {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
 
     # 1. Verify "Scheduled" tab label
-    html = render(view)
-    assert html =~ "Scheduled"
+    assert has_element?(view, "#tab-btn-calendar", "Scheduled")
 
     # 2. Switch to Scheduled (calendar) tab
     view
     |> element("#tab-btn-calendar")
     |> render_click()
 
-    html = render(view)
-    current_cal_month = Calendar.strftime(Date.utc_today(), "%B, %Y")
-    assert html =~ current_cal_month
-    assert html =~ "calendar-day-16"
-    assert html =~ "calendar-day-7"
+    current_cal_month = Calendar.strftime(Date.utc_today(), "%B %Y")
+    assert has_element?(view, "#calendar-page-header-title", current_cal_month)
+    assert has_element?(view, "#calendar-day-16")
+    assert has_element?(view, "#calendar-day-7")
 
     # 3. Click empty day (e.g. Day 18) -> opens Create Task modal with preselected date
     html =

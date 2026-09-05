@@ -244,7 +244,25 @@ defmodule IexCodeWeb.M3ChallengerTest do
         <.diff_viewer diff_text={@diff_text} diff_mode={@diff_mode} file_path={@file_path} />
         """)
 
-      assert html_add =~ "bg-emerald-950/40"
+      addition_document = LazyHTML.from_fragment(html_add)
+
+      added_lines =
+        LazyHTML.query(
+          addition_document,
+          "#diff-viewer-container-hunk-card-hunk-1 div[class~='border-success'] > div"
+        )
+
+      assert Enum.map(added_lines, &(LazyHTML.text(&1) |> String.replace(~r/\s+/, ""))) == [
+               "defmoduleNewFiledo",
+               "defhello,do::world",
+               "end"
+             ]
+
+      assert addition_document
+             |> LazyHTML.query(
+               "#diff-viewer-container-hunk-card-hunk-1 div[class~='border-danger']"
+             )
+             |> Enum.empty?()
 
       # 2. Pure deletion
       deletion_diff = """
@@ -263,7 +281,25 @@ defmodule IexCodeWeb.M3ChallengerTest do
         <.diff_viewer diff_text={@diff_text} diff_mode={@diff_mode} file_path={@file_path} />
         """)
 
-      assert html_del =~ "bg-rose-950/40"
+      deletion_document = LazyHTML.from_fragment(html_del)
+
+      deleted_lines =
+        LazyHTML.query(
+          deletion_document,
+          "#diff-viewer-container-hunk-card-hunk-1 div[class~='border-danger'] > div"
+        )
+
+      assert Enum.map(deleted_lines, &(LazyHTML.text(&1) |> String.replace(~r/\s+/, ""))) == [
+               "defmoduleOldFiledo",
+               "defgoodbye,do::farewell",
+               "end"
+             ]
+
+      assert deletion_document
+             |> LazyHTML.query(
+               "#diff-viewer-container-hunk-card-hunk-1 div[class~='border-success']"
+             )
+             |> Enum.empty?()
 
       # 3. Binary diff & No newline at end of file
       binary_diff = """

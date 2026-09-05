@@ -383,7 +383,7 @@ defmodule IexCodeWeb.CommandPaletteAdversarialM4Test do
       {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
 
       # Action A: Toggle Swarm Mode
-      assert has_element?(view, "#workspace-header-actions", "Swarm: OFF")
+      assert has_element?(view, "#header-swarm-toggle[aria-pressed='false']")
       render_click(view, "toggle_command_palette")
       render_click(view, "command_palette_set_category", %{"category" => "actions"})
       render_change(view, "command_palette_search", %{"query" => "Toggle Swarm Mode"})
@@ -392,7 +392,7 @@ defmodule IexCodeWeb.CommandPaletteAdversarialM4Test do
       # Modal cleanly closed
       refute has_element?(view, "#command-palette-modal")
       # State updated
-      assert has_element?(view, "#workspace-header-actions", "Swarm: ON")
+      assert has_element?(view, "#header-swarm-toggle[aria-pressed='true']")
 
       # Action B: AST Symbol Search
       render_click(view, "toggle_command_palette")

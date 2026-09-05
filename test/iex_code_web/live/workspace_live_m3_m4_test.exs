@@ -77,7 +77,9 @@ defmodule IexCodeWeb.WorkspaceLiveM3M4Test do
       |> element("button[phx-click='close_file_buffer'][phx-value-path='lib/demo_worker.ex']")
       |> render_click()
 
-      assert render(view) =~ "Select a workspace file on the left to preview contents"
+      assert has_element?(view, "#file-editor-empty[role='status']")
+      refute has_element?(view, "#code-editor-viewport")
+      refute has_element?(view, "button[phx-click='close_file_buffer']")
     end
   end
 
@@ -373,22 +375,24 @@ defmodule IexCodeWeb.WorkspaceLiveM3M4Test do
       view |> element("#tab-btn-calendar") |> render_click()
 
       today = Date.utc_today()
-      current_month_str = Calendar.strftime(today, "%B, %Y")
+      current_month_str = Calendar.strftime(today, "%B %Y")
 
       next_month_date =
         if today.month == 12,
           do: Date.new!(today.year + 1, 1, 1),
           else: Date.new!(today.year, today.month + 1, 1)
 
-      next_month_str = Calendar.strftime(next_month_date, "%B, %Y")
+      next_month_str = Calendar.strftime(next_month_date, "%B %Y")
+
+      assert has_element?(view, "#calendar-page-header-title", current_month_str)
 
       # Next month
-      render_click(view, "calendar_next_month")
-      assert render(view) =~ next_month_str
+      view |> element("#calendar-next-month-btn") |> render_click()
+      assert has_element?(view, "#calendar-page-header-title", next_month_str)
 
       # Prev month back to current month
-      render_click(view, "calendar_prev_month")
-      assert render(view) =~ current_month_str
+      view |> element("#calendar-prev-month-btn") |> render_click()
+      assert has_element?(view, "#calendar-page-header-title", current_month_str)
     end
 
     test "modifies task priority and assignee from Task Drawer", %{
@@ -427,12 +431,29 @@ defmodule IexCodeWeb.WorkspaceLiveM3M4Test do
 
     test "toggles prompt bar tool pills and usage history modal", %{view: view} do
       # Toggle tool pills
+      ast_search_enabled? =
+        has_element?(
+          view,
+          "#prompt-composer button[phx-value-tool='ast_search'][aria-pressed='true']"
+        )
+
       render_click(view, "toggle_tool", %{"tool" => "ast_search"})
+
+      assert has_element?(
+               view,
+               "#prompt-composer button[phx-value-tool='ast_search'][aria-pressed='#{not ast_search_enabled?}']"
+             )
+
       render_click(view, "toggle_tool", %{"tool" => "swarm"})
 
       # Toggle usage history
+      refute has_element?(view, "#all-usage-modal")
       render_click(view, "toggle_all_usage_modal")
-      assert render(view) =~ "Usage History" or render(view) =~ "OBSERVED SESSION TOKENS"
+      assert has_element?(view, "#all-usage-modal[role='dialog'][aria-modal='true']")
+      assert has_element?(view, "#all-usage-rows")
+
+      view |> element("#all-usage-modal-close") |> render_click()
+      refute has_element?(view, "#all-usage-modal")
     end
 
     test "executes terminal commands, handles replay and stop", %{view: view} do

@@ -271,6 +271,6 @@
   }
 
   .page-toolbar__main {
-    flex-basis: 100%;
+    flex-basis: auto;
   }
 }

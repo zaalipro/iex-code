@@ -1,5 +1,8 @@
 <Layouts.app flash={@flash}>
-  <div id="workflows-live-container" class="min-h-screen bg-canvas text-content flex flex-col">
+  <div
+    id="workflows-live-container"
+    class="orbital-workflows min-h-dvh bg-canvas text-content flex flex-col"
+  >
     <.page_toolbar id="workflows-navigation">
       <:leading>
         <.link
@@ -58,12 +61,22 @@
       </:actions>
     </.page_toolbar>
 
-    <!-- Main Content Area -->
-    <main class="flex-1 overflow-y-auto p-6 max-w-[100rem] mx-auto w-full">
-      <!-- =================================================================== -->
-      <!-- 1. GALLERY VIEW (:index, :session_index)                             -->
-      <!-- =================================================================== -->
+    <%!-- Main Content Area --%>
+    <main class="orbital-workflows-main flex-1 overflow-y-auto p-6 max-w-[100rem] mx-auto w-full">
+      <%!-- =================================================================== --%>
+      <%!-- 1. GALLERY VIEW (:index, :session_index)                             --%>
+      <%!-- =================================================================== --%>
       <%= if @live_action in [:index, :session_index] do %>
+        <% query = @search_query |> String.trim() |> String.downcase() %>
+        <% visible_workflows =
+          Enum.filter(@workflows, fn workflow ->
+            matches_query? =
+              String.contains?(String.downcase(workflow.name || ""), query) ||
+                String.contains?(String.downcase(workflow.slug || ""), query)
+
+            matches_tag? = @tag_filter == "all" || @tag_filter in (workflow.tags || [])
+            matches_query? && matches_tag?
+          end) %>
         <div id="workflows-gallery" class="space-y-6">
           <.page_header
             id="workflows-gallery-header"
@@ -83,29 +96,80 @@
             </:actions>
           </.page_header>
 
-          <!-- Controls: Search & Tag Filters -->
-          <div class="flex flex-col sm:flex-row items-center justify-between gap-4">
-            <div class="relative w-full sm:w-80">
+          <section
+            id="workflows-overview"
+            class="workflow-overview"
+            aria-label="Workflow activity"
+          >
+            <div class="workflow-overview-intro">
+              <div class="workflow-orbit-emblem ui-depth-effect" aria-hidden="true">
+                <span class="workflow-orbit-emblem-ring"></span>
+                <.icon name="hero-square-3-stack-3d" class="w-7 h-7" />
+              </div>
+              <div>
+                <h2>Your execution library</h2>
+                <p>Choose a pipeline. Follow every step from research to verification.</p>
+              </div>
+            </div>
+            <dl class="workflow-overview-metrics">
+              <div>
+                <dt>Workflows</dt>
+                <dd>{length(@workflows)}</dd>
+              </div>
+              <div>
+                <dt>Running</dt>
+                <dd class="text-accent">{Enum.count(@active_runs, &(&1.status == "running"))}</dd>
+              </div>
+              <div>
+                <dt>Recent runs</dt>
+                <dd>{length(@active_runs)}</dd>
+              </div>
+            </dl>
+          </section>
+
+          <%!-- Controls: Search & Tag Filters --%>
+          <div class="workflow-library-controls flex flex-col sm:flex-row items-center justify-between gap-4">
+            <.form
+              for={to_form(%{"query" => @search_query})}
+              id="workflows-search-form"
+              phx-change="search"
+              phx-submit="search"
+              class="workflow-search relative w-full sm:w-80"
+            >
               <.icon
                 name="hero-magnifying-glass"
                 class="w-4 h-4 text-subtle absolute left-3.5 top-3"
               />
-              <input
+              <.input
                 type="text"
                 id="workflows-search-input"
+                name="query"
+                aria-label="Search workflows"
                 placeholder="Search workflows by name or slug..."
                 value={@search_query}
-                phx-input="search"
-                class="w-full pl-10 pr-4 py-2 rounded-xl bg-surface border border-line text-xs font-mono text-content placeholder:text-subtle focus:border-accent focus:ring-1 focus:ring-accent outline-none transition-all"
+                class="w-full pl-10 pr-10 py-2 rounded-xl bg-surface border border-line text-xs font-mono text-content placeholder:text-subtle focus:border-accent focus:ring-1 focus:ring-accent outline-none transition-all"
               />
-            </div>
+              <button
+                :if={@search_query != ""}
+                type="button"
+                id="workflows-search-clear"
+                aria-label="Clear workflow search"
+                phx-click="search"
+                phx-value-query=""
+                class="absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-lg text-muted hover:bg-accent/10 hover:text-content"
+              >
+                <.icon name="hero-x-mark" class="h-3.5 w-3.5" />
+              </button>
+            </.form>
 
-            <!-- Tags Filter -->
+            <%!-- Tags Filter --%>
             <div class="flex items-center gap-1.5 overflow-x-auto w-full sm:w-auto pb-1 sm:pb-0">
               <button
                 type="button"
+                id="workflows-filter-all"
                 phx-click="filter_tag"
                 phx-value-tag="all"
+                aria-pressed={to_string(@tag_filter == "all")}
                 class={[
                   "px-3 py-1.5 rounded-lg text-xs font-mono transition-colors shrink-0",
                   @tag_filter == "all" &&
@@ -118,8 +182,10 @@
               <%= for tag <- ["autonomous", "swarm", "full-cycle", "research"] do %>
                 <button
                   type="button"
+                  id={"workflows-filter-#{tag}"}
                   phx-click="filter_tag"
                   phx-value-tag={tag}
+                  aria-pressed={to_string(@tag_filter == tag)}
                   class={[
                     "px-3 py-1.5 rounded-lg text-xs font-mono transition-colors shrink-0",
                     @tag_filter == tag &&
@@ -133,10 +199,13 @@
             </div>
           </div>
 
-          <!-- Workflows Cards Grid -->
-          <%= if length(@workflows) > 0 do %>
-            <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-              <%= for workflow <- @workflows do %>
+          <%!-- Workflows Cards Grid --%>
+          <%= if length(visible_workflows) > 0 do %>
+            <div
+              id="workflows-library-grid"
+              class="workflow-library-grid grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6"
+            >
+              <%= for workflow <- visible_workflows do %>
                 <% active_run =
                   Enum.find(@active_runs, fn r ->
                     r.workflow_id == workflow.id and r.status == "running"
@@ -150,32 +219,64 @@
               <% end %>
             </div>
           <% else %>
-            <!-- Empty State -->
-            <div class="rounded-3xl border border-dashed border-line p-12 text-center space-y-4">
-              <.icon name="hero-rectangle-stack" class="w-12 h-12 mx-auto text-subtle" />
-              <div class="max-w-md mx-auto">
-                <h3 class="text-base font-bold text-content">No workflows configured yet</h3>
-                <p class="text-xs text-subtle mt-1">
-                  Synthesize an autonomous 5-step pipeline from a natural language objective or build a custom DAG.
-                </p>
+            <%!-- Empty State --%>
+            <div
+              id="workflows-empty-state"
+              class="workflow-empty-state rounded-3xl border border-line p-12"
+            >
+              <div class="workflow-observatory ui-depth-effect" aria-hidden="true">
+                <span class="workflow-observatory-orbit workflow-observatory-orbit--outer"></span>
+                <span class="workflow-observatory-orbit workflow-observatory-orbit--inner"></span>
+                <span class="workflow-observatory-core"><.icon
+                  name="hero-square-3-stack-3d"
+                  class="w-9 h-9"
+                /></span>
+                <span class="workflow-observatory-satellite workflow-observatory-satellite--one"><.icon
+                  name="hero-magnifying-glass"
+                  class="w-4 h-4"
+                /></span>
+                <span class="workflow-observatory-satellite workflow-observatory-satellite--two"><.icon
+                  name="hero-code-bracket"
+                  class="w-4 h-4"
+                /></span>
+                <span class="workflow-observatory-satellite workflow-observatory-satellite--three"><.icon
+                  name="hero-check"
+                  class="w-4 h-4"
+                /></span>
               </div>
-              <.link
-                navigate={IexCodeWeb.WorkflowsLive.workflows_new_path(@context_session)}
-                class="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-accent bg-accent text-accent-ink font-mono text-xs font-bold hover:bg-accent-strong shadow-[var(--ui-shadow-control)] transition-colors"
-              >
-                <.icon name="hero-plus" class="w-4 h-4" />
-                <span>Create Workflow</span>
-              </.link>
+              <div class="workflow-empty-copy">
+                <h3 class="text-base font-bold text-content">
+                  {if @search_query != "" || @tag_filter != "all",
+                    do: "No matching workflows",
+                    else: "No workflows configured yet"}
+                </h3>
+                <p class="text-xs text-muted mt-2">
+                  <%= if @search_query != "" || @tag_filter != "all" do %>
+                    Try a different search or select another tag to find a pipeline.
+                  <% else %>
+                    Describe your objective to create a five-step pipeline, then inspect its architecture before launch.
+                  <% end %>
+                </p>
+                <.link
+                  id="workflows-empty-create"
+                  navigate={IexCodeWeb.WorkflowsLive.workflows_new_path(@context_session)}
+                  class="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-accent bg-accent text-accent-ink font-mono text-xs font-bold hover:bg-accent-strong shadow-[var(--ui-shadow-control)] transition-colors"
+                >
+                  <.icon name="hero-plus" class="w-4 h-4" />
+                  <span>Create Workflow</span>
+                </.link>
+              </div>
             </div>
           <% end %>
 
-          <!-- Recent Runs Section -->
+          <%!-- Recent Runs Section --%>
           <%= if length(@active_runs) > 0 do %>
-            <div class="mt-10 pt-8 border-t border-line space-y-4">
-              <h3 class="text-sm font-mono text-muted uppercase tracking-wider font-bold">
-                Recent Execution Runs
-              </h3>
-              <div class="overflow-x-auto rounded-2xl border border-line bg-surface">
+            <section id="workflows-recent-runs" class="workflow-recent-runs space-y-4">
+              <div class="workflow-section-heading">
+                <h3>Recent execution runs</h3>
+                <span>Latest {length(@active_runs)}</span>
+              </div>
+              <div class="workflow-runs-table overflow-x-auto rounded-2xl border border-line bg-surface">
                 <table class="w-full text-left text-xs font-mono">
                   <thead class="bg-raised text-muted border-b border-line">
                     <tr>
@@ -189,7 +290,10 @@
                   </thead>
                   <tbody class="divide-y divide-line text-muted">
                     <%= for run <- @active_runs do %>
-                      <tr class="hover:bg-accent/5 transition-colors">
+                      <tr
+                        id={"workflow-run-row-#{run.id}"}
+                        class="hover:bg-accent/5 transition-colors"
+                      >
                         <td class="p-3.5 text-accent">
                           #{String.slice(to_string(run.id), 0, 8)}
                         </td>
@@ -221,6 +325,7 @@
                         </td>
                         <td class="p-3.5 text-right">
                           <.link
+                            id={"workflow-run-open-#{run.id}"}
                             navigate={
                               IexCodeWeb.WorkflowsLive.workflow_run_path(
                                 @context_session,
@@ -238,16 +343,16 @@
                   </tbody>
                 </table>
               </div>
-            </div>
+            </section>
           <% end %>
         </div>
       <% end %>
 
-      <!-- =================================================================== -->
-      <!-- 2. WORKFLOW BUILDER / ASSISTANT (:new, :session_new)                 -->
-      <!-- =================================================================== -->
+      <%!-- =================================================================== --%>
+      <%!-- 2. WORKFLOW BUILDER / ASSISTANT (:new, :session_new)                 --%>
+      <%!-- =================================================================== --%>
       <%= if @live_action in [:new, :session_new] do %>
-        <div id="workflows-builder" class="space-y-8 max-w-4xl mx-auto">
+        <div id="workflows-builder" class="space-y-6 max-w-6xl mx-auto">
           <.page_header
             id="workflows-builder-header"
             class="page-header--flush"
@@ -257,122 +362,168 @@
             icon="hero-rectangle-stack"
           />
 
-          <!-- Natural Language Synthesis Assistant -->
-          <div class="rounded-2xl border border-accent/30 bg-surface p-6 space-y-4 shadow-xl">
-            <div class="flex items-center gap-2 text-accent font-mono text-xs font-bold">
-              <.icon name="hero-sparkles" class="w-4 h-4 text-accent" />
-              <span>Autonomous Blueprint Synthesizer</span>
-            </div>
-
-            <form id="blueprint-prompt-form" phx-submit="synthesize_blueprint" class="space-y-3">
-              <div class="relative">
-                <textarea
-                  id="blueprint-prompt-input"
-                  name="prompt"
-                  rows="3"
-                  placeholder="e.g. Build user authentication with bcrypt, rate limiting, live tests, security audits, and git commits..."
-                  class="w-full p-3.5 rounded-xl bg-inset border border-line text-xs font-mono text-content placeholder:text-subtle focus:border-accent focus:ring-1 focus:ring-accent outline-none"
-                >{@blueprint_prompt}</textarea>
-              </div>
-
-              <div class="flex justify-end">
-                <button
-                  type="submit"
-                  id="btn-synthesize-blueprint"
-                  class="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-accent bg-accent text-accent-ink font-mono text-xs font-bold hover:bg-accent-strong shadow-[var(--ui-shadow-control)] transition-colors"
-                >
-                  <.icon name="hero-sparkles" class="w-4 h-4" />
-                  <span>Synthesize 5-Step Pipeline</span>
-                </button>
-              </div>
-            </form>
-          </div>
-
-          <!-- Workflow Definition Form -->
-          <div class="rounded-2xl border border-line bg-surface p-6 space-y-6">
-            <h3 class="text-sm font-mono text-content font-bold uppercase tracking-wider">
-              Workflow Configuration
-            </h3>
-
-            <.form
-              for={@workflow_form}
-              id="workflow-config-form"
-              phx-change="validate_workflow"
-              phx-submit="save_workflow"
-              class="space-y-4"
+          <%!-- Natural Language Synthesis Assistant --%>
+          <div class="workflow-builder-layout">
+            <section
+              id="workflow-blueprint-assistant"
+              class="workflow-blueprint-panel rounded-2xl border border-accent/30 bg-surface p-6 space-y-4"
             >
-              <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <.input
-                  field={@workflow_form[:name]}
-                  label="Workflow Name"
-                  placeholder="e.g. Feature Implementation Pipeline"
-                  required
-                />
-                <.input
-                  field={@workflow_form[:slug]}
-                  label="URL Slug"
-                  placeholder="e.g. feature-pipeline"
-                />
-              </div>
-
-              <.input
-                field={@workflow_form[:description]}
-                type="textarea"
-                label="Description"
-                placeholder="Explain what this workflow accomplishes..."
-                rows="2"
-              />
-
-              <div class="pt-4 border-t border-line">
-                <h4 class="text-xs font-mono text-muted font-bold uppercase mb-2">
-                  Configured DAG Steps
-                </h4>
-                <div class="space-y-2">
-                  <% steps = @workflow_form[:steps].value || [] %>
-                  <%= for {step, idx} <- Enum.with_index(steps) do %>
-                    <div class="p-3 rounded-xl bg-raised border border-line flex items-center justify-between text-xs font-mono">
-                      <div class="flex items-center gap-2">
-                        <span class="w-5 h-5 rounded-full bg-accent/15 text-accent flex items-center justify-center text-[10px] font-bold">
-                          {idx + 1}
-                        </span>
-                        <span class="text-content font-bold">{Map.get(step, "title") ||
-                          Map.get(step, :title)}</span>
-                        <span class="text-subtle">({Map.get(step, "kind") ||
-                          Map.get(step, :kind)})</span>
-                      </div>
-                      <span class="text-[10px] text-muted">
-                        deps: {inspect(Map.get(step, "depends_on") || [])}
-                      </span>
-                    </div>
-                  <% end %>
+              <div class="workflow-panel-heading">
+                <span class="workflow-section-icon"><.icon name="hero-sparkles" class="w-5 h-5" /></span>
+                <div>
+                  <h2>Start with an objective</h2>
+                  <p>Autonomous Blueprint Synthesizer</p>
                 </div>
               </div>
 
-              <div class="flex items-center justify-end gap-3 pt-6 border-t border-line">
-                <.link
-                  navigate={IexCodeWeb.WorkflowsLive.workflows_index_path(@context_session)}
-                  class="px-4 py-2 rounded-xl text-xs font-mono text-muted hover:text-content"
-                >
-                  Cancel
-                </.link>
+              <.form
+                for={to_form(%{"prompt" => @blueprint_prompt})}
+                id="blueprint-prompt-form"
+                phx-submit="synthesize_blueprint"
+                class="space-y-3"
+              >
+                <div class="relative">
+                  <.input
+                    type="textarea"
+                    id="blueprint-prompt-input"
+                    name="prompt"
+                    label="What should this workflow accomplish?"
+                    value={@blueprint_prompt}
+                    rows="6"
+                    placeholder="e.g. Build user authentication with bcrypt, rate limiting, live tests, security audits, and git commits..."
+                    class="w-full p-3.5 rounded-xl bg-inset border border-line text-xs font-mono text-content placeholder:text-subtle focus:border-accent focus:ring-1 focus:ring-accent outline-none"
+                  />
+                </div>
 
-                <button
-                  type="submit"
-                  id="btn-save-workflow"
-                  class="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl border border-accent bg-accent text-accent-ink font-mono text-xs font-bold hover:bg-accent-strong shadow-[var(--ui-shadow-control)] transition-colors"
-                >
-                  <.icon name="hero-check" class="w-4 h-4" />
-                  <span>Save Workflow</span>
-                </button>
+                <div class="flex justify-end">
+                  <button
+                    type="submit"
+                    id="btn-synthesize-blueprint"
+                    phx-disable-with="Synthesizing pipeline…"
+                    class="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-accent bg-accent text-accent-ink font-mono text-xs font-bold hover:bg-accent-strong shadow-[var(--ui-shadow-control)] transition-colors"
+                  >
+                    <.icon name="hero-sparkles" class="w-4 h-4" />
+                    <span>Synthesize 5-Step Pipeline</span>
+                  </button>
+                </div>
+              </.form>
+              <div class="workflow-blueprint-guide">
+                <.icon name="hero-arrow-path-rounded-square" class="w-5 h-5" />
+                <p>
+                  The generated steps appear in the configuration. Review the sequence and dependencies before saving.
+                </p>
               </div>
-            </.form>
+            </section>
+
+            <%!-- Workflow Definition Form --%>
+            <section
+              id="workflow-configuration"
+              class="workflow-config-panel rounded-2xl border border-line bg-surface p-6 space-y-6"
+            >
+              <div class="workflow-panel-heading">
+                <span class="workflow-section-icon"><.icon
+                  name="hero-adjustments-horizontal"
+                  class="w-5 h-5"
+                /></span>
+                <div>
+                  <h2>Workflow configuration</h2>
+                  <p>Define the identity and review each step.</p>
+                </div>
+              </div>
+
+              <.form
+                for={@workflow_form}
+                id="workflow-config-form"
+                phx-change="validate_workflow"
+                phx-submit="save_workflow"
+                class="space-y-4"
+              >
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <.input
+                    field={@workflow_form[:name]}
+                    label="Workflow Name"
+                    placeholder="e.g. Feature Implementation Pipeline"
+                    required
+                  />
+                  <.input
+                    field={@workflow_form[:slug]}
+                    label="URL Slug"
+                    placeholder="e.g. feature-pipeline"
+                  />
+                </div>
+
+                <.input
+                  field={@workflow_form[:description]}
+                  type="textarea"
+                  label="Description"
+                  placeholder="Explain what this workflow accomplishes..."
+                  rows="2"
+                />
+
+                <div class="workflow-configured-steps pt-4 border-t border-line">
+                  <div class="workflow-section-heading">
+                    <h3>Configured DAG steps</h3>
+                    <span>{length(@workflow_form[:steps].value || [])} steps</span>
+                  </div>
+                  <div class="workflow-step-sequence space-y-2">
+                    <% steps = @workflow_form[:steps].value || [] %>
+                    <%= if steps == [] do %>
+                      <div id="workflow-steps-empty" class="workflow-steps-empty">
+                        <.icon name="hero-square-3-stack-3d" class="w-6 h-6" />
+                        <p>Your pipeline will appear here.</p>
+                        <span>Synthesize an objective to populate its steps.</span>
+                      </div>
+                    <% end %>
+                    <%= for {step, idx} <- Enum.with_index(steps) do %>
+                      <div
+                        id={"workflow-configured-step-#{idx}"}
+                        class="workflow-configured-step p-3 rounded-xl bg-raised border border-line flex items-center justify-between text-xs font-mono"
+                      >
+                        <div class="workflow-step-label flex items-center gap-2">
+                          <span class="workflow-step-number w-5 h-5 rounded-full bg-accent/15 text-accent flex items-center justify-center text-[10px] font-bold">
+                            {idx + 1}
+                          </span>
+                          <div class="min-w-0">
+                            <span class="text-content font-bold block">{Map.get(step, "title") ||
+                              Map.get(step, :title)}</span>
+                            <span class="text-subtle text-[10px]">{Map.get(step, "kind") ||
+                              Map.get(step, :kind)}</span>
+                          </div>
+                        </div>
+                        <span class="text-[10px] text-muted">
+                          deps: {inspect(Map.get(step, "depends_on") || [])}
+                        </span>
+                      </div>
+                    <% end %>
+                  </div>
+                </div>
+
+                <div class="flex items-center justify-end gap-3 pt-6 border-t border-line">
+                  <.link
+                    navigate={IexCodeWeb.WorkflowsLive.workflows_index_path(@context_session)}
+                    class="px-4 py-2 rounded-xl text-xs font-mono text-muted hover:text-content"
+                  >
+                    Cancel
+                  </.link>
+
+                  <button
+                    type="submit"
+                    id="btn-save-workflow"
+                    class="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl border border-accent bg-accent text-accent-ink font-mono text-xs font-bold hover:bg-accent-strong shadow-[var(--ui-shadow-control)] transition-colors"
+                  >
+                    <.icon name="hero-check" class="w-4 h-4" />
+                    <span>Save Workflow</span>
+                  </button>
+                </div>
+              </.form>
+            </section>
           </div>
         </div>
       <% end %>
 
-      <!-- =================================================================== -->
-      <!-- 3. WORKFLOW DETAILS (:show, :session_show)                           -->
-      <!-- =================================================================== -->
+      <%!-- =================================================================== --%>
+      <%!-- 3. WORKFLOW DETAILS (:show, :session_show)                           --%>
+      <%!-- =================================================================== --%>
       <%= if @live_action in [:show, :session_show] && @workflow do %>
         <div id="workflows-details" class="space-y-6">
           <.page_header
@@ -400,34 +551,72 @@
             </:actions>
           </.page_header>
 
-          <!-- Static Preview of DAG Canvas -->
-          <div class="space-y-2">
-            <h3 class="text-xs font-mono text-muted uppercase tracking-wider font-bold">
-              Directed Graph Architecture
-            </h3>
-            <.workflow_canvas
-              id="details-preview-canvas"
-              workflow={@workflow}
-              run={
-                %WorkflowRun{
-                  status: "pending",
-                  progress: 0,
-                  resolved_steps: @workflow.steps,
-                  step_states: %{}
+          <%!-- Static Preview of DAG Canvas --%>
+          <div class="workflow-detail-layout">
+            <section class="workflow-map-panel space-y-3">
+              <div class="workflow-section-heading">
+                <h2>Directed graph architecture</h2>
+                <span>{length(@workflow.steps || [])} steps</span>
+              </div>
+              <.workflow_canvas
+                id="details-preview-canvas"
+                workflow={@workflow}
+                run={
+                  %WorkflowRun{
+                    status: "pending",
+                    progress: 0,
+                    resolved_steps: @workflow.steps,
+                    step_states: %{}
+                  }
                 }
-              }
-              zoom_level={0.9}
-            />
+                zoom_level={0.9}
+              />
+            </section>
+            <aside id="workflow-launch-checklist" class="workflow-launch-checklist">
+              <div class="workflow-panel-heading">
+                <span class="workflow-section-icon"><.icon
+                  name="hero-list-bullet"
+                  class="w-5 h-5"
+                /></span>
+                <div>
+                  <h2>Pipeline overview</h2>
+                  <p>Execution steps and launch inputs.</p>
+                </div>
+              </div>
+              <ol class="workflow-detail-steps">
+                <%= for {step, index} <- Enum.with_index(@workflow.steps || []) do %>
+                  <li>
+                    <span class="workflow-step-number">{index + 1}</span>
+                    <div>
+                      <strong>{Map.get(step, "title") || Map.get(step, :title)}</strong>
+                      <span>{Map.get(step, "kind") || Map.get(step, :kind)}</span>
+                    </div>
+                  </li>
+                <% end %>
+              </ol>
+              <div class="workflow-launch-inputs">
+                <h3>Launch inputs <span>{length(@workflow.variables || [])}</span></h3>
+                <%= if (@workflow.variables || []) == [] do %>
+                  <p>This workflow needs no additional inputs.</p>
+                <% else %>
+                  <div class="workflow-variable-list">
+                    <%= for variable <- @workflow.variables do %>
+                      <span>{Map.get(variable, "name") || Map.get(variable, :name)}</span>
+                    <% end %>
+                  </div>
+                <% end %>
+              </div>
+            </aside>
           </div>
         </div>
       <% end %>
 
-      <!-- =================================================================== -->
-      <!-- 4. REAL-TIME EXECUTION COCKPIT (:run, :session_run)                  -->
-      <!-- =================================================================== -->
+      <%!-- =================================================================== --%>
+      <%!-- 4. REAL-TIME EXECUTION COCKPIT (:run, :session_run)                  --%>
+      <%!-- =================================================================== --%>
       <%= if @live_action in [:run, :session_run] && @run && @workflow do %>
         <div id="workflows-cockpit" class="space-y-6">
-          <!-- Execution Toolbar -->
+          <%!-- Execution Toolbar --%>
           <.execution_toolbar
             run={@run}
             workflow={@workflow}
@@ -437,8 +626,27 @@
             on_launch="launch_workflow"
           />
 
-          <!-- Interactive SVG DAG Canvas -->
-          <div class="space-y-2">
+          <%!-- Interactive SVG DAG Canvas --%>
+          <section class="workflow-map-panel workflow-map-panel--live space-y-3">
+            <div class="workflow-section-heading">
+              <div>
+                <h2>Execution map</h2>
+                <p>Select a step to inspect its output, metrics, and artifacts.</p>
+              </div>
+              <span>{Enum.count(@run.step_states || %{}, fn {_key, state} ->
+                Map.get(state, "status") == "completed"
+              end)} / {length(@run.resolved_steps || @workflow.steps || [])} steps complete</span>
+            </div>
+            <div
+              class="workflow-run-progress"
+              role="progressbar"
+              aria-label="Workflow completion"
+              aria-valuenow={@run.progress}
+              aria-valuemin="0"
+              aria-valuemax="100"
+            >
+              <span style={"width: #{@run.progress}%"}></span>
+            </div>
             <.workflow_canvas
               id="cockpit-canvas"
               workflow={@workflow}
@@ -450,9 +658,9 @@
               on_pan="canvas_pan"
               on_zoom="canvas_zoom"
             />
-          </div>
+          </section>
 
-          <!-- Slide-over Live Step Inspector Drawer -->
+          <%!-- Slide-over Live Step Inspector Drawer --%>
           <%= if @selected_step do %>
             <.step_inspector
               step={@selected_step}
@@ -466,9 +674,9 @@
         </div>
       <% end %>
 
-      <!-- =================================================================== -->
-      <!-- 5. LAUNCH MODAL WITH VARIABLE PROMPTS                                -->
-      <!-- =================================================================== -->
+      <%!-- =================================================================== --%>
+      <%!-- 5. LAUNCH MODAL WITH VARIABLE PROMPTS                                --%>
+      <%!-- =================================================================== --%>
       <%= if @show_launch_modal && @launching_workflow do %>
         <div
           id="launch-workflow-modal-backdrop"
@@ -476,17 +684,22 @@
         >
           <div
             id="launch-workflow-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="launch-workflow-title"
             class="ui-dialog w-full max-w-lg border border-line bg-surface p-6 space-y-5 text-content"
           >
             <div class="flex items-center justify-between border-b border-line pb-4">
               <div>
-                <h3 class="text-base font-bold text-content">
+                <h3 id="launch-workflow-title" class="text-base font-bold text-content">
                   Launch {@launching_workflow.name}
                 </h3>
                 <p class="text-xs font-mono text-muted mt-0.5">Provide execution inputs</p>
               </div>
               <button
                 type="button"
+                id="btn-close-launch-modal"
+                aria-label="Close launch dialog"
                 phx-click="close_launch_modal"
                 class="p-2 text-muted hover:text-content rounded-lg hover:bg-accent/10"
               >

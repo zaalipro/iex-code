@@ -372,7 +372,10 @@ defmodule IexCodeWeb.DesktopAdversarialChallengeTest do
 
         # Menus
         assert opts[:menubar] == IexCodeWeb.MenuBar
-        assert opts[:icon_menu] == IexCodeWeb.TrayMenu
+
+        assert opts[:icon_menu] ==
+                 if(match?({:unix, :darwin}, :os.type()), do: nil, else: IexCodeWeb.TrayMenu)
+
         assert opts[:on_close] == :quit
 
         # URL function contract

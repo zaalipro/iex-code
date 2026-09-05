@@ -179,13 +179,93 @@ defmodule IexCodeWeb.WorkflowsLiveTest do
       assert html =~ workflow.name
     end
 
-    test "search input filters displayed workflows", %{conn: conn, project: project} do
-      _w1 = create_sample_workflow(project)
+    test "search form filters by name and slug, shows no matches, and restores cards when cleared",
+         %{
+           conn: conn,
+           project: project,
+           session: session
+         } do
+      workflow = create_sample_workflow(project)
 
-      {:ok, view, _html} = live(conn, ~p"/workflows")
+      {:ok, release_workflow} =
+        Workflows.create_workflow(%{
+          project_id: project.id,
+          name: "Release Readiness",
+          slug: "delivery-readiness-#{System.unique_integer([:positive])}",
+          tags: ["research"],
+          steps: workflow.steps,
+          variables: workflow.variables
+        })
 
-      assert render_hook(view, "search", %{"query" => "Autonomous"}) =~
-               "Autonomous Full-Cycle Pipeline"
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}/workflows")
+
+      assert has_element?(view, "#workflow-card-#{workflow.id}")
+      assert has_element?(view, "#workflow-card-#{release_workflow.id}")
+
+      view
+      |> form("#workflows-search-form", %{"query" => "  AUTONOMOUS  "})
+      |> render_change()
+
+      assert has_element?(view, "#workflow-card-#{workflow.id}")
+      refute has_element?(view, "#workflow-card-#{release_workflow.id}")
+
+      view
+      |> form("#workflows-search-form", %{"query" => "delivery-readiness"})
+      |> render_change()
+
+      refute has_element?(view, "#workflow-card-#{workflow.id}")
+      assert has_element?(view, "#workflow-card-#{release_workflow.id}")
+
+      view
+      |> form("#workflows-search-form", %{"query" => "no-matching-pipeline"})
+      |> render_change()
+
+      assert has_element?(view, "#workflows-empty-state", "No matching workflows")
+      refute has_element?(view, "#workflows-library-grid")
+
+      view |> element("#workflows-search-clear") |> render_click()
+
+      assert has_element?(view, "#workflows-search-input[value='']")
+      assert has_element?(view, "#workflow-card-#{workflow.id}")
+      assert has_element?(view, "#workflow-card-#{release_workflow.id}")
+      refute has_element?(view, "#workflows-empty-state")
+      refute has_element?(view, "#workflows-search-clear")
+    end
+
+    test "search and tag filters combine and clearing the search retains the selected tag", %{
+      conn: conn,
+      project: project,
+      session: session
+    } do
+      workflow = create_sample_workflow(project)
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}/workflows")
+
+      assert has_element?(view, "#workflows-filter-all[aria-pressed='true']")
+      assert has_element?(view, "#workflows-filter-research[aria-pressed='false']")
+
+      view
+      |> form("#workflows-search-form", %{"query" => "Autonomous"})
+      |> render_change()
+
+      view |> element("#workflows-filter-research") |> render_click()
+
+      assert has_element?(view, "#workflows-filter-research[aria-pressed='true']")
+      assert has_element?(view, "#workflows-filter-all[aria-pressed='false']")
+      refute has_element?(view, "#workflow-card-#{workflow.id}")
+      assert has_element?(view, "#workflows-empty-state")
+
+      view |> element("#workflows-search-clear") |> render_click()
+
+      assert has_element?(view, "#workflows-search-input[value='']")
+      assert has_element?(view, "#workflows-filter-research[aria-pressed='true']")
+      refute has_element?(view, "#workflow-card-#{workflow.id}")
+
+      view |> element("#workflows-filter-all") |> render_click()
+
+      assert has_element?(view, "#workflows-filter-all[aria-pressed='true']")
+      assert has_element?(view, "#workflow-card-#{workflow.id}")
+      refute has_element?(view, "#workflows-empty-state")
     end
 
     test "launching a workflow without missing required variables starts execution and redirects to cockpit",
@@ -231,20 +311,20 @@ defmodule IexCodeWeb.WorkflowsLiveTest do
     test "synthesizes 5-step DAG blueprint from prompt", %{conn: conn} do
       {:ok, view, _html} = live(conn, ~p"/workflows/new")
 
-      html =
-        view
-        |> form("#blueprint-prompt-form", %{
-          "prompt" => "Implement User Registration and Auth with rate limits"
-        })
-        |> render_submit()
+      view
+      |> form("#blueprint-prompt-form", %{
+        "prompt" => "Implement User Registration and Auth with rate limits"
+      })
+      |> render_submit()
 
-      assert html =~ "Workflow blueprint synthesized successfully"
-      assert html =~ "Configured DAG Steps"
-      assert html =~ "deep_research"
-      assert html =~ "swarm_code_gen"
-      assert html =~ "test_verification"
-      assert html =~ "security_audit"
-      assert html =~ "git_commit"
+      assert has_element?(view, "#flash-info", "Workflow blueprint synthesized successfully")
+      assert has_element?(view, "#workflow-configured-step-0", "deep_research")
+      assert has_element?(view, "#workflow-configured-step-1", "swarm_code_gen")
+      assert has_element?(view, "#workflow-configured-step-2", "test_verification")
+      assert has_element?(view, "#workflow-configured-step-3", "security_audit")
+      assert has_element?(view, "#workflow-configured-step-4", "git_commit")
+      refute has_element?(view, "#workflow-configured-step-5")
+      refute has_element?(view, "#workflow-steps-empty")
     end
 
     test "metadata validation preserves generated steps when saving a session workflow", %{
@@ -322,12 +402,20 @@ defmodule IexCodeWeb.WorkflowsLiveTest do
     } do
       workflow = create_sample_workflow(project)
 
-      {:ok, view, html} = live(conn, ~p"/workflows/#{workflow.id}")
+      {:ok, view, _html} = live(conn, ~p"/workflows/#{workflow.id}")
 
-      assert html =~ workflow.name
-      assert html =~ workflow.slug
-      assert html =~ "Directed Graph Architecture"
-      assert has_element?(view, "#details-preview-canvas")
+      assert has_element?(view, "#workflows-detail-header h1", workflow.name)
+      assert has_element?(view, "#workflows-detail-header", workflow.slug)
+      assert has_element?(view, "#details-preview-canvas #details-preview-canvas-svg")
+
+      for step <- workflow.steps do
+        assert has_element?(
+                 view,
+                 "#details-preview-canvas #step-node-#{step["key"]}",
+                 step["title"]
+               )
+      end
+
       assert has_element?(view, "#btn-launch-details")
     end
   end

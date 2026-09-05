@@ -1,47 +1,67 @@
 <Layouts.app flash={@flash}>
   <main
     id="settings-page"
-    class="settings-page min-h-dvh overflow-x-hidden bg-canvas text-content"
+    class="orbital-settings settings-page min-h-dvh overflow-x-hidden bg-canvas text-content"
   >
-    <header class="settings-masthead">
-      <.link
-        id="settings-return-workspace"
-        navigate={@return_path}
-        data-settings-navigation
-        data-unsaved-confirm={
-          @settings_status in [:dirty, :error] &&
-            "Discard your unsaved settings and return to the workspace?"
-        }
-        class="settings-back-link"
-      >
-        <.icon name="hero-arrow-left" class="h-4 w-4" />
-        <span>Workspace</span>
-      </.link>
-      <span class="settings-masthead-divider" aria-hidden="true"></span>
-      <h1>Settings</h1>
-      <details id="settings-scope-summary" class="settings-scope-details">
-        <summary aria-labelledby="settings-scope-title">
-          <.icon name="hero-computer-desktop" class="h-4 w-4" />
-          <span id="settings-scope-title">Global defaults</span>
-          <.icon name="hero-chevron-down" class="h-3 w-3" />
-        </summary>
-        <div class="settings-scope-popover">
-          <p>Saved on this Mac and shared by every workspace.</p>
-          <p>
-            Global defaults seed newly launched work. Existing sessions retain only their
-            session-level provider, model, and temperature overrides.
-          </p>
-          <div :if={@context_session} id="settings-session-context" class="settings-context-note">
-            <span>Returning to</span>
-            <strong>{@context_session.title}</strong>
-            <span>{@context_session.model_provider} · {@context_session.model_name}</span>
+    <.page_toolbar
+      id="settings-navigation"
+      title="Settings"
+      heading_tag="h1"
+      class="settings-masthead"
+    >
+      <:leading>
+        <.link
+          id="settings-return-workspace"
+          navigate={@return_path}
+          data-settings-navigation
+          data-unsaved-confirm={
+            @settings_status in [:dirty, :error] &&
+              "Discard your unsaved settings and return to the workspace?"
+          }
+          class="header-control"
+        >
+          <.icon name="hero-arrow-left" class="h-4 w-4" />
+          <span>Workspace</span>
+        </.link>
+      </:leading>
+      <:actions>
+        <details id="settings-scope-summary" class="settings-scope-details">
+          <summary aria-labelledby="settings-scope-title" class="header-control">
+            <.icon name="hero-computer-desktop" class="h-4 w-4" />
+            <span id="settings-scope-title">Global defaults</span>
+            <.icon name="hero-chevron-down" class="h-3 w-3" />
+          </summary>
+          <div class="settings-scope-popover">
+            <p>Saved on this Mac and shared by every workspace.</p>
+            <p>
+              Global defaults seed newly launched work. Existing sessions retain only their
+              session-level provider, model, and temperature overrides.
+            </p>
+            <div
+              :if={@context_session}
+              id="settings-session-context"
+              class="settings-context-note"
+            >
+              <span>Returning to</span>
+              <strong>{@context_session.title}</strong>
+              <span>{@context_session.model_provider} · {@context_session.model_name}</span>
+            </div>
           </div>
-        </div>
-      </details>
-    </header>
+        </details>
+      </:actions>
+    </.page_toolbar>
 
     <div class="settings-shell">
       <aside class="settings-sidebar">
+        <div class="settings-nav-identity">
+          <span class="settings-nav-insignia" aria-hidden="true">
+            <.icon name="hero-adjustments-horizontal" class="h-4 w-4" />
+          </span>
+          <div>
+            <strong>Preferences</strong>
+            <span>Your workspace, configured</span>
+          </div>
+        </div>
         <nav id="settings-studio-tabs" aria-label="Settings categories">
           <div id="settings-section-nav" class="settings-category-list">
             <div
@@ -70,15 +90,18 @@
             </div>
           </div>
         </nav>
-        <p class="settings-sidebar-note">
-          Changes apply to new work.<br />Your sessions keep their overrides.
-        </p>
+        <div class="settings-sidebar-note">
+          <.icon name="hero-computer-desktop" class="h-4 w-4" />
+          <strong>Stored on this Mac</strong>
+          <p>Changes apply to new work. Your sessions keep their overrides.</p>
+        </div>
       </aside>
 
       <div class="settings-main">
         <.page_header
           id="settings-category-header"
           class="settings-category-header page-header--flush"
+          icon={tab_icon(@active_tab)}
           title={tab_title(@active_tab)}
           description={tab_description(@active_tab)}
         />
@@ -1582,7 +1605,7 @@
                   </header>
 
                   <div class="appearance-studio-grid">
-                    <div class="min-w-0">
+                    <div class="appearance-controls-column min-w-0">
                       <% theme_errors = appearance_theme_errors(@settings_form) %>
                       <fieldset
                         id="settings-theme-choices"
@@ -1590,9 +1613,9 @@
                         aria-invalid={theme_errors != [] && "true"}
                         aria-describedby={theme_errors != [] && "settings-ui-theme-error"}
                       >
-                        <legend class="appearance-field-label">Theme</legend>
+                        <legend class="appearance-field-label">Workspace palette</legend>
                         <p class="appearance-field-help">
-                          Five palettes for the entire workspace.
+                          A different atmosphere. The same workspace.
                         </p>
 
                         <div class="appearance-theme-grid">
@@ -1600,6 +1623,7 @@
                             :for={theme <- appearance_themes()}
                             for={"settings-ui-theme-#{theme.id}"}
                             class="appearance-theme-choice"
+                            title={theme.description}
                           >
                             <input
                               id={"settings-ui-theme-#{theme.id}"}
@@ -1613,8 +1637,15 @@
                               class="appearance-theme-card"
                               data-theme-swatch={theme.id}
                             >
-                              <span class="appearance-theme-swatch" aria-hidden="true">
-                                <span></span><span></span><span></span><span></span>
+                              <span
+                                class="appearance-theme-swatch"
+                                data-ui-theme={theme.id}
+                                aria-hidden="true"
+                              >
+                                <span class="appearance-swatch-orbit"></span>
+                                <span class="appearance-swatch-planet"></span>
+                                <span class="appearance-swatch-console"><i></i><i></i><i></i></span>
+                                <span class="appearance-swatch-spectrum"><i></i><i></i><i></i></span>
                               </span>
                               <span class="appearance-theme-copy">
                                 <span class="appearance-theme-name">{theme.name}</span>
@@ -1741,7 +1772,7 @@
 
                     <aside class="appearance-preview-column" aria-label="Appearance preview">
                       <div class="appearance-preview-label">
-                        <span>Preview</span>
+                        <span><.icon name="hero-eye" class="h-3.5 w-3.5" />Workspace preview</span>
                         <span>{String.capitalize(appearance_theme(@settings_form))}</span>
                       </div>
                       <div

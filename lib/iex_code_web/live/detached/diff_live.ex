@@ -526,123 +526,105 @@ defmodule IexCodeWeb.Detached.DiffLive do
         class="flex flex-col h-screen w-screen bg-[#0a0d12] overflow-hidden text-gray-200"
       >
         <!-- Top Navigation Bar -->
-        <header class="flex items-center justify-between px-4 py-2.5 bg-[#161b22] border-b border-[#30363d] shrink-0">
-          <div class="flex items-center gap-3">
-            <div class="flex items-center gap-2">
-              <span class="w-3 h-3 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.5)]"></span>
-              <span class="font-mono text-sm font-semibold text-white tracking-wide">GIT STAGING & DIFF INSPECTOR</span>
-            </div>
-            <span class="text-xs px-2 py-0.5 rounded bg-zinc-800 text-zinc-400 font-mono">
-              Branch: <span class="text-blue-400 font-bold">{@current_branch}</span>
-            </span>
-
-            <!-- Subtab Switcher: Staging & Diff vs Time-Travel -->
-            <div class="flex items-center gap-1 bg-[#0d1117] p-1 rounded-lg border border-[#30363d] text-xs font-mono ml-2">
-              <button
-                type="button"
-                phx-click="switch_changes_subtab"
-                phx-value-tab="changes"
-                class={[
-                  "px-2.5 py-1 rounded transition-smooth flex items-center gap-1.5",
-                  @changes_subtab == "changes" && "bg-blue-600 text-white font-semibold",
-                  @changes_subtab != "changes" && "text-zinc-400 hover:text-white"
-                ]}
-              >
-                <.icon name="hero-arrows-right-left" class="w-3.5 h-3.5" />
-                <span>Staging & Diff</span>
-              </button>
-              <button
-                type="button"
-                phx-click="switch_changes_subtab"
-                phx-value-tab="checkpoints"
-                class={[
-                  "px-2.5 py-1 rounded transition-smooth flex items-center gap-1.5",
-                  @changes_subtab == "checkpoints" && "bg-blue-600 text-white font-semibold",
-                  @changes_subtab != "checkpoints" && "text-zinc-400 hover:text-white"
-                ]}
-              >
-                <.icon name="hero-clock" class="w-3.5 h-3.5" />
-                <span>Time-Travel ({length(@checkpoints)})</span>
-              </button>
-            </div>
+        <.page_toolbar
+          id="detached-diff-toolbar"
+          title="Git staging & diff inspector"
+          heading_tag="h1"
+        >
+          <:leading>
+            <.icon name="hero-arrows-right-left" class="size-[18px] text-accent" />
+          </:leading>
+          <span class="max-w-60 truncate text-xs text-muted" title={@current_branch}>
+            Branch: <span class="font-medium text-accent">{@current_branch}</span>
+          </span>
+          <div class="flex flex-wrap items-center gap-1" role="group" aria-label="Changes view">
+            <button
+              id="detached-diff-tab-changes"
+              type="button"
+              phx-click="switch_changes_subtab"
+              phx-value-tab="changes"
+              aria-pressed={to_string(@changes_subtab == "changes")}
+              class="header-control"
+            >
+              <.icon name="hero-arrows-right-left" class="w-3.5 h-3.5" />
+              <span>Staging & Diff</span>
+            </button>
+            <button
+              id="detached-diff-tab-checkpoints"
+              type="button"
+              phx-click="switch_changes_subtab"
+              phx-value-tab="checkpoints"
+              aria-pressed={to_string(@changes_subtab == "checkpoints")}
+              class="header-control"
+            >
+              <.icon name="hero-clock" class="w-3.5 h-3.5" />
+              <span>Time-Travel ({length(@checkpoints)})</span>
+            </button>
           </div>
-
-          <!-- Top Right Actions -->
-          <div class="flex items-center gap-3">
+          <:actions>
             <%= if @changes_subtab == "changes" do %>
-              <!-- Scope Toggles (Unstaged vs Staged) -->
-              <div class="flex items-center gap-1 bg-[#0d1117] p-1 rounded-lg border border-[#30363d] text-xs font-mono">
+              <div class="flex flex-wrap items-center gap-1" role="group" aria-label="Diff scope">
                 <button
+                  id="detached-diff-scope-unstaged"
                   type="button"
                   phx-click="set_diff_scope"
                   phx-value-scope="unstaged"
-                  class={[
-                    "px-3 py-1 rounded transition-smooth",
-                    @active_diff_scope == :unstaged && "bg-[#21262d] text-white font-bold",
-                    @active_diff_scope != :unstaged && "text-zinc-400 hover:text-zinc-200"
-                  ]}
+                  aria-pressed={to_string(@active_diff_scope == :unstaged)}
+                  class="header-control"
                 >
                   Unstaged ({length(@git_status.unstaged)})
                 </button>
                 <button
+                  id="detached-diff-scope-staged"
                   type="button"
                   phx-click="set_diff_scope"
                   phx-value-scope="staged"
-                  class={[
-                    "px-3 py-1 rounded transition-smooth",
-                    @active_diff_scope == :staged && "bg-[#21262d] text-white font-bold",
-                    @active_diff_scope != :staged && "text-zinc-400 hover:text-zinc-200"
-                  ]}
+                  aria-pressed={to_string(@active_diff_scope == :staged)}
+                  class="header-control"
                 >
                   Staged ({length(@git_status.staged)})
                 </button>
               </div>
             <% else %>
-              <!-- Checkpoint Actions: 1-Click Rollback Latest -->
               <%= if @checkpoints != [] do %>
                 <button
+                  id="detached-diff-rollback-latest"
                   type="button"
                   phx-click="rollback_latest_checkpoint"
-                  class="px-2.5 py-1 rounded bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs font-mono transition-smooth flex items-center gap-1.5 shadow-sm"
+                  class="header-control"
                   title="Rollback the most recent checkpoint"
                 >
-                  <.icon name="hero-arrow-uturn-left" class="w-3.5 h-3.5" />
+                  <.icon name="hero-arrow-uturn-left" class="w-3.5 h-3.5 text-danger" />
                   <span>Rollback Latest</span>
                 </button>
               <% end %>
             <% end %>
-
-            <!-- Diff Mode Switcher -->
-            <div class="flex items-center gap-1 bg-[#0d1117] p-1 rounded-lg border border-[#30363d] text-xs font-mono">
+            <div class="flex flex-wrap items-center gap-1" role="group" aria-label="Diff layout">
               <button
+                id="detached-diff-mode-split"
                 type="button"
                 phx-click="set_diff_mode"
                 phx-value-mode="split"
-                class={[
-                  "px-2.5 py-1 rounded transition-smooth flex items-center gap-1",
-                  @diff_mode in ["split", "side-by-side"] && "bg-[#21262d] text-white font-bold",
-                  @diff_mode not in ["split", "side-by-side"] && "text-zinc-400 hover:text-zinc-200"
-                ]}
+                aria-pressed={to_string(@diff_mode in ["split", "side-by-side"])}
+                class="header-control"
               >
                 <.icon name="hero-view-columns" class="w-3.5 h-3.5" />
                 <span>Split</span>
               </button>
               <button
+                id="detached-diff-mode-inline"
                 type="button"
                 phx-click="set_diff_mode"
                 phx-value-mode="inline"
-                class={[
-                  "px-2.5 py-1 rounded transition-smooth flex items-center gap-1",
-                  @diff_mode in ["inline", "unified"] && "bg-[#21262d] text-white font-bold",
-                  @diff_mode not in ["inline", "unified"] && "text-zinc-400 hover:text-zinc-200"
-                ]}
+                aria-pressed={to_string(@diff_mode in ["inline", "unified"])}
+                class="header-control"
               >
                 <.icon name="hero-bars-3-bottom-left" class="w-3.5 h-3.5" />
                 <span>Unified</span>
               </button>
             </div>
-          </div>
-        </header>
+          </:actions>
+        </.page_toolbar>
 
         <!-- Main Content Area: Sidebar & Diff Viewer -->
         <div class="flex flex-1 min-h-0 overflow-hidden">

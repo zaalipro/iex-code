@@ -9,6 +9,8 @@
 @import "./mission_control.css";
 @import "./appearance_settings.css";
 @import "./page_headers.css";
+@import "./orbital_workflows.css";
+@import "./orbital_foundation.css";
 
 @source "../css";
 @source "../js";

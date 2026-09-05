@@ -29,17 +29,27 @@ defmodule IexCodeWeb.M3Round2AdversarialTest do
         <.diff_viewer diff_text={@diff_text} diff_mode={@diff_mode} file_path={@file_path} />
         """)
 
-      # Assert exact code presence
-      assert html =~ "defmodule MyApp do"
+      document = LazyHTML.from_fragment(html)
+      hunk = LazyHTML.query(document, "#diff-viewer-container-hunk-card-hunk-1")
+      addition = LazyHTML.query(hunk, "div[class~='border-success'] > div")
+      deletion = LazyHTML.query(hunk, "div[class~='border-danger'] > div")
 
-      assert html =~ "-  def greet(name), do: &quot;Hello &quot; &lt;&gt; name" or
-               html =~ "-  def greet(name), do: \"Hello \" &lt;&gt; name" or
-               html =~ "def greet(name)"
+      assert Enum.count(hunk) == 1
+      assert Enum.count(addition) == 1
+      assert Enum.count(deletion) == 1
+      assert LazyHTML.text(hunk) =~ "@@ -10,4 +10,4 @@"
 
-      assert html =~ "+  def greet(name), do:" or html =~ "Welcome, "
-      refute html =~ "{line}"
-      assert html =~ "bg-emerald-950/40"
-      assert html =~ "bg-rose-950/40"
+      assert addition |> LazyHTML.text() |> String.replace(~r/\s+/, "") ==
+               ~s|defgreet(name),do:"Welcome,"<>name<>"!"|
+
+      assert deletion |> LazyHTML.text() |> String.replace(~r/\s+/, "") ==
+               ~s|defgreet(name),do:"Hello"<>name|
+
+      refute LazyHTML.text(hunk) =~ "{line}"
+
+      assert document
+             |> LazyHTML.query("#diff-viewer-container-copy-btn")
+             |> LazyHTML.attribute("data-code") == [sample_diff]
     end
 
     test "split mode renders exact line code on both sides and does not emit literal {line}" do

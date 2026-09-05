@@ -43,7 +43,8 @@ defmodule IexCodeWeb.WorkspaceLiveEditorDiffsTest do
       assert html =~ "lib/iex_code/auth/token.ex"
       assert html =~ "assets/css/app.css"
       assert html =~ "assets/js/app.js"
-      assert html =~ "Select a workspace file on the left to preview contents"
+      assert has_element?(view, "#file-editor-panel #file-editor-empty[role='status']")
+      refute has_element?(view, "#code-editor-textarea")
 
       # Filter for 'token'
       render_change(view, "filter_files", %{"filter" => "token"})
@@ -212,10 +213,23 @@ defmodule IexCodeWeb.WorkspaceLiveEditorDiffsTest do
       {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
 
       render_click(view, "select_file", %{"path" => "lib/close_me.ex"})
-      assert render(view) =~ "lib/close_me.ex"
+      assert has_element?(view, "#code-editor-textarea", "defmodule CloseMe do end")
+
+      assert has_element?(
+               view,
+               "[phx-click='close_file_buffer'][phx-value-path='lib/close_me.ex']"
+             )
+
+      refute has_element?(view, "#file-editor-empty")
 
       render_click(view, "close_file_buffer", %{"path" => "lib/close_me.ex"})
-      assert render(view) =~ "Select a workspace file on the left to preview contents"
+      assert has_element?(view, "#file-editor-panel #file-editor-empty[role='status']")
+      refute has_element?(view, "#code-editor-textarea")
+
+      refute has_element?(
+               view,
+               "[phx-click='close_file_buffer'][phx-value-path='lib/close_me.ex']"
+             )
     end
   end
 
@@ -438,12 +452,19 @@ defmodule IexCodeWeb.WorkspaceLiveEditorDiffsTest do
       rendered =
         Phoenix.LiveViewTest.render_component(&WorkspaceComponents.inline_diff/1, %{diff: diff})
 
-      assert rendered =~ "bg-emerald-950/40"
-      assert rendered =~ "def new_val, do: 2"
-      assert rendered =~ "bg-rose-950/40"
-      assert rendered =~ "def old_val, do: 1"
-      assert rendered =~ "defmodule Test do"
-      assert rendered =~ "text-indigo-300"
+      document = LazyHTML.from_fragment(rendered)
+      additions = LazyHTML.query(document, "div[class~='border-success'] > span:last-child")
+      deletions = LazyHTML.query(document, "div[class~='border-danger'] > span:last-child")
+      headers = LazyHTML.query(document, "div[class~='text-accent']")
+
+      assert Enum.map(additions, &(LazyHTML.text(&1) |> String.replace(~r/\s+/, ""))) ==
+               ["+defnew_val,do:2"]
+
+      assert Enum.map(deletions, &(LazyHTML.text(&1) |> String.replace(~r/\s+/, ""))) ==
+               ["-defold_val,do:1"]
+
+      assert LazyHTML.text(document) =~ "defmodule Test do"
+      assert LazyHTML.text(headers) =~ "@@ -1,3 +1,3 @@"
     end
 
     test "renders split_diff with dual columns for original and modified" do

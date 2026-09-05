@@ -1,16 +1,20 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
   <defs>
     <linearGradient id="surface" x1="0" y1="0" x2="0.7" y2="1">
-      <stop stop-color="#303743"/>
-      <stop offset="1" stop-color="#11151c"/>
+      <stop stop-color="#153246"/>
+      <stop offset="1" stop-color="#07101d"/>
     </linearGradient>
     <linearGradient id="ink" x1="0" y1="0" x2="1" y2="1">
-      <stop stop-color="#b4d3ff"/>
-      <stop offset="1" stop-color="#78a8ef"/>
+      <stop stop-color="#c5fbff"/>
+      <stop offset="1" stop-color="#56d8ed"/>
     </linearGradient>
   </defs>
   <rect x="64" y="64" width="896" height="896" rx="202" fill="url(#surface)"/>
   <rect x="66" y="66" width="892" height="892" rx="200" fill="none" stroke="#ffffff" stroke-opacity=".12" stroke-width="4"/>
+  <ellipse cx="512" cy="512" rx="408" ry="215" transform="rotate(-29 512 512)" fill="none" stroke="#67e8f9" stroke-opacity=".22" stroke-width="5"/>
+  <ellipse cx="512" cy="512" rx="360" ry="355" fill="none" stroke="#67e8f9" stroke-opacity=".045" stroke-width="1"/>
+  <circle cx="849" cy="320" r="14" fill="#a5f3fc"/>
+  <circle cx="162" cy="653" r="6" fill="#67e8f9" fill-opacity=".55"/>
   <g fill="url(#ink)">
     <rect x="253" y="290" width="94" height="88" rx="24"/>
     <rect x="253" y="434" width="94" height="298" rx="24"/>

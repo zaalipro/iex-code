@@ -90,7 +90,7 @@ defmodule IexCodeWeb.Challenger2M1TemplateStressTest do
       # Switch to calendar tab
       html = render_click(view, "switch_tab", %{"tab" => "calendar"})
       assert html =~ "SCHEDULED TASKS"
-      assert html =~ "MONTHLY RUNS:"
+      refute html =~ "MONTHLY RUNS:"
     end
 
     test "handles changes tab dynamic canvas and diff rendering", %{

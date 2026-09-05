@@ -22,7 +22,10 @@ defmodule IexCodeWeb.DesktopIntegrationTest do
         assert opts[:size] == {1440, 920}
         assert opts[:min_size] == {1024, 700}
         assert opts[:menubar] == IexCodeWeb.MenuBar
-        assert opts[:icon_menu] == IexCodeWeb.TrayMenu
+
+        assert opts[:icon_menu] ==
+                 if(match?({:unix, :darwin}, :os.type()), do: nil, else: IexCodeWeb.TrayMenu)
+
         assert opts[:on_close] == :quit
         assert is_function(opts[:url], 0)
         assert opts[:url].() =~ "http"
@@ -62,23 +65,23 @@ defmodule IexCodeWeb.DesktopIntegrationTest do
       assert rendered_str =~ ~s(label="Help")
 
       # Verify accelerators
-      assert rendered_str =~ "Cmd+N"
-      assert rendered_str =~ "Cmd+,"
-      assert rendered_str =~ "Cmd+W"
-      assert rendered_str =~ "Cmd+Q"
-      assert rendered_str =~ "Cmd+Z"
-      assert rendered_str =~ "Cmd+Shift+Z"
-      assert rendered_str =~ "Cmd+X"
-      assert rendered_str =~ "Cmd+C"
-      assert rendered_str =~ "Cmd+V"
-      assert rendered_str =~ "Cmd+R"
-      assert rendered_str =~ "Cmd+B"
-      assert rendered_str =~ "Cmd+K"
-      assert rendered_str =~ "Cmd+1"
-      assert rendered_str =~ "Cmd+2"
-      assert rendered_str =~ "Cmd+3"
-      assert rendered_str =~ "Cmd+4"
-      assert rendered_str =~ "Cmd+5"
+      assert rendered_str =~ "Ctrl+N"
+      assert rendered_str =~ "Ctrl+,"
+      assert rendered_str =~ "Ctrl+W"
+      assert rendered_str =~ "Ctrl+Q"
+      assert rendered_str =~ "Ctrl+Z"
+      assert rendered_str =~ "Ctrl+Shift+Z"
+      assert rendered_str =~ "Ctrl+X"
+      assert rendered_str =~ "Ctrl+C"
+      assert rendered_str =~ "Ctrl+V"
+      assert rendered_str =~ "Ctrl+R"
+      assert rendered_str =~ "Ctrl+Shift+N"
+      assert rendered_str =~ "Ctrl+K"
+      assert rendered_str =~ "Ctrl+1"
+      assert rendered_str =~ "Ctrl+2"
+      assert rendered_str =~ "Ctrl+3"
+      assert rendered_str =~ "Ctrl+4"
+      assert rendered_str =~ "Ctrl+5"
 
       # Verify Desktop.Menu.Parser parses without errors
       dom = Desktop.Menu.Parser.parse(rendered)

@@ -28,32 +28,32 @@ defmodule IexCodeWeb.SettingsLive do
     %{
       id: "midnight",
       name: "Midnight",
-      description: "Cool graphite and navy with a soft blue accent.",
-      mood: "Focused after dark"
+      description: "Deep space surfaces illuminated by ice cyan.",
+      mood: "Deep space · ice cyan"
     },
     %{
       id: "graphite",
       name: "Graphite",
-      description: "Neutral charcoal sharpened by warm coral.",
-      mood: "Studio neutral"
+      description: "Carbon surfaces with the warmth of amber bronze.",
+      mood: "Carbon · amber bronze"
     },
     %{
       id: "aurora",
       name: "Aurora",
-      description: "Forest layers with a crisp mint current.",
-      mood: "Calm and alive"
+      description: "Dark forest layers with a clear mint glow.",
+      mood: "Deep forest · mint"
     },
     %{
       id: "porcelain",
       name: "Porcelain",
       description: "Cool white surfaces with precise blue ink.",
-      mood: "Bright and exact"
+      mood: "Cool white · blue ink"
     },
     %{
       id: "sandstone",
       name: "Sandstone",
       description: "Warm paper grounded by terracotta.",
-      mood: "Soft daylight"
+      mood: "Warm paper · terracotta"
     }
   ]
 
@@ -1088,6 +1088,13 @@ defmodule IexCodeWeb.SettingsLive do
   defp map_value(_map, _key, default), do: default
 
   def studio_tabs, do: @studio_tabs
+
+  def tab_icon(tab) do
+    case Enum.find(@studio_tabs, fn {id, _label, _icon} -> id == to_string(tab) end) do
+      {_id, _label, icon} -> icon
+      nil -> "hero-adjustments-horizontal"
+    end
+  end
 
   def tab_title(:providers), do: "Providers & models"
   def tab_title(:reasoning), do: "Reasoning"

@@ -227,7 +227,7 @@ defmodule IexCodeWeb.Live.DagLiveCanvasEmpiricalChallengeTest do
 
       case result do
         {:ok, view, html} ->
-          assert html =~ "DAG TOPOLOGICAL MAP"
+          assert has_element?(view, "#detached-dag-toolbar-title", "DAG topological map")
           assert html =~ "Initial Architecture Analysis"
           assert html =~ "Verification Pass"
 
@@ -297,7 +297,7 @@ defmodule IexCodeWeb.Live.DagLiveCanvasEmpiricalChallengeTest do
 
       # Mount Detached DagLive
       {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}/detached/dag")
-      assert html =~ "DAG TOPOLOGICAL MAP"
+      assert has_element?(view, "#detached-dag-toolbar-title", "DAG topological map")
       assert html =~ "DAG v1 Step Title"
       assert Process.alive?(view.pid)
     end
@@ -360,7 +360,7 @@ defmodule IexCodeWeb.Live.DagLiveCanvasEmpiricalChallengeTest do
 
       {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}/detached/dag")
 
-      assert html =~ "DAG TOPOLOGICAL MAP"
+      assert has_element?(view, "#detached-dag-toolbar-title", "DAG topological map")
       assert html =~ "Run: #{run.id} (running)"
       assert has_element?(view, "#detached-dag-canvas")
 
@@ -586,7 +586,7 @@ defmodule IexCodeWeb.Live.DagLiveCanvasEmpiricalChallengeTest do
       # line 231 executes: revision: if(run, do: Map.get(run, :event_sequence, 0), else: 0)
       {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}/detached/dag")
 
-      assert html =~ "DAG TOPOLOGICAL MAP"
+      assert has_element?(view, "#detached-dag-toolbar-title", "DAG topological map")
       assert html =~ "Fallback Analysis Step"
       assert html =~ "Run: #{run.id} (queued)"
       assert Process.alive?(view.pid)

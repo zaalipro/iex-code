@@ -77,7 +77,7 @@ defmodule IexCodeWeb.RunComponents do
         id="async-run-header"
         title_id="async-run-heading"
         title="Mission Control"
-        description="Track background runs and keep work moving."
+        description="Direct background runs, manage agents, and follow every result."
         icon="hero-command-line"
         class="page-header--embedded"
       >
@@ -390,6 +390,14 @@ defmodule IexCodeWeb.RunComponents do
             id="async-run-selection-empty"
             class="mission-selection-empty"
           >
+            <div class="mission-orbit" aria-hidden="true">
+              <span class="mission-orbit-ring mission-orbit-ring-outer"></span>
+              <span class="mission-orbit-ring mission-orbit-ring-middle"></span>
+              <span class="mission-orbit-ring mission-orbit-ring-inner"></span>
+              <span class="mission-orbit-axis mission-orbit-axis-horizontal"></span>
+              <span class="mission-orbit-axis mission-orbit-axis-vertical"></span>
+              <span class="mission-orbit-satellite"></span>
+            </div>
             <div class="mission-empty-icon mission-empty-icon-accent" aria-hidden="true">
               <.icon
                 name={if @runs == [], do: "hero-command-line", else: "hero-cursor-arrow-rays"}
@@ -397,12 +405,12 @@ defmodule IexCodeWeb.RunComponents do
               />
             </div>
             <h3 class="mission-empty-title">
-              {if @runs == [], do: "Start your first background run", else: "Select a run to inspect"}
+              {if @runs == [], do: "Ready for your first mission", else: "Select a run to inspect"}
             </h3>
             <p class="mission-empty-copy">
               <%= if @runs == [] do %>
-                Describe a task in the composer, review your run setup, and queue it in Background mode.
-                Its progress, agents, and saved results will appear here.
+                Describe a task below and queue it in Background mode.
+                Follow its progress, agents, and saved results here.
               <% else %>
                 Choose a run from the ledger to review progress, manage agents, and inspect its activity.
               <% end %>
@@ -417,7 +425,7 @@ defmodule IexCodeWeb.RunComponents do
               }
               class="mission-button mission-button-primary ui-depth-effect"
             >
-              Write a task <.icon name="hero-arrow-down" class="h-3.5 w-3.5" />
+              Compose a run <.icon name="hero-arrow-down" class="h-3.5 w-3.5" />
             </button>
             <span :if={@runs == []} class="mission-empty-note">
               <.icon name="hero-bookmark" class="h-3.5 w-3.5" />

@@ -208,11 +208,15 @@ defmodule IexCodeWeb.WorkflowComponents do
                   r="6"
                   fill="#22d3ee"
                   opacity="0.3"
-                  class="filter drop-shadow-[0_0_8px_#22d3ee]"
+                  class="workflow-flow-particle filter drop-shadow-[0_0_8px_#22d3ee]"
                 >
                   <animateMotion path={edge.d} dur="1.2s" repeatCount="indefinite" />
                 </circle>
-                <circle r="3" fill="#ffffff" class="filter drop-shadow-[0_0_4px_#22d3ee]">
+                <circle
+                  r="3"
+                  fill="#ffffff"
+                  class="workflow-flow-particle filter drop-shadow-[0_0_4px_#22d3ee]"
+                >
                   <animateMotion path={edge.d} dur="1.2s" repeatCount="indefinite" />
                 </circle>
               <% end %>
@@ -233,6 +237,7 @@ defmodule IexCodeWeb.WorkflowComponents do
                   id={"step-node-#{node.key}"}
                   data-step-key={node.key}
                   data-step-status={node.status}
+                  data-selected={to_string(@selected_step_key == node.key)}
                   phx-click={@on_select_step}
                   phx-value-key={node.key}
                   class={[
@@ -1026,95 +1031,84 @@ defmodule IexCodeWeb.WorkflowComponents do
 
   def execution_toolbar(assigns) do
     ~H"""
-    <section
+    <.page_toolbar
       id="workflow-execution-toolbar"
-      class="flex flex-wrap items-center justify-between gap-4 p-4 rounded-2xl border border-white/10 bg-surface/90 backdrop-blur-xl shadow-2xl"
+      title={@workflow.name}
+      class="page-toolbar--panel"
     >
-      <!-- Left: Workflow Info & Status -->
-      <div class="flex items-center gap-4 min-w-0">
+      <:leading>
         <.step_progress_ring status={@run.status} progress={@run.progress} />
-        <div class="min-w-0">
-          <div class="flex items-center gap-2">
-            <h2 class="text-base font-bold text-white tracking-tight truncate">
-              {@workflow.name}
-            </h2>
-            <span class="font-mono text-xs text-subtle truncate max-w-[120px]">
-              #{String.slice(to_string(@run.id), 0, 8)}
-            </span>
-          </div>
-          <div class="flex items-center gap-3 font-mono text-[11px] text-muted mt-0.5">
-            <span class="flex items-center gap-1.5">
-              <span class={["w-2 h-2 rounded-full", status_dot_class(@run.status)]}></span>
-              <strong class="uppercase text-white">{@run.status}</strong>
-            </span>
-            <span class="text-subtle">·</span>
-            <span>{@run.progress}% completed</span>
-            <span class="text-subtle">·</span>
-            <span class="tabular-nums">{format_duration(@run.duration_ms)}</span>
-          </div>
+      </:leading>
+
+      <span class="font-mono text-xs text-subtle truncate max-w-[120px]">
+        #{String.slice(to_string(@run.id), 0, 8)}
+      </span>
+      <span class="flex items-center gap-1.5 font-mono text-[11px] text-content">
+        <span class={["w-2 h-2 rounded-full", status_dot_class(@run.status)]}></span>
+        <strong class="uppercase">{@run.status}</strong>
+      </span>
+      <span class="font-mono text-[11px] text-muted">{@run.progress}% completed</span>
+      <span class="font-mono text-[11px] text-muted tabular-nums">
+        {format_duration(@run.duration_ms)}
+      </span>
+
+      <:actions>
+        <div id="workflow-run-actions" class="flex flex-wrap items-center gap-2">
+          <%= if @run.status == "running" do %>
+            <button
+              type="button"
+              id="toolbar-pause-btn"
+              phx-click={@on_pause}
+              phx-value-id={@run.id}
+              class="header-control"
+            >
+              <.icon name="hero-pause" class="w-3.5 h-3.5" />
+              <span>Pause</span>
+            </button>
+          <% end %>
+
+          <%= if @run.status == "paused" do %>
+            <button
+              type="button"
+              id="toolbar-resume-btn"
+              phx-click={@on_resume}
+              phx-value-id={@run.id}
+              class="header-control header-control--primary"
+            >
+              <.icon name="hero-play" class="w-3.5 h-3.5" />
+              <span>Resume</span>
+            </button>
+          <% end %>
+
+          <%= if @run.status in ["running", "paused", "pending"] do %>
+            <button
+              type="button"
+              id="toolbar-cancel-btn"
+              phx-click={@on_cancel}
+              phx-value-id={@run.id}
+              data-confirm="Are you sure you want to cancel this workflow run?"
+              class="header-control"
+            >
+              <.icon name="hero-stop" class="w-3.5 h-3.5" />
+              <span>Cancel</span>
+            </button>
+          <% end %>
+
+          <%= if @run.status in ["completed", "failed", "cancelled"] do %>
+            <button
+              type="button"
+              id="toolbar-rerun-btn"
+              phx-click={@on_launch}
+              phx-value-id={@workflow.id}
+              class="header-control header-control--primary"
+            >
+              <.icon name="hero-arrow-path" class="w-3.5 h-3.5" />
+              <span>Run Again</span>
+            </button>
+          <% end %>
         </div>
-      </div>
-
-      <!-- Right: Global Actions -->
-      <div id="workflow-run-actions" class="flex items-center gap-2 shrink-0">
-        <!-- Pause -->
-        <%= if @run.status == "running" do %>
-          <button
-            type="button"
-            id="toolbar-pause-btn"
-            phx-click={@on_pause}
-            phx-value-id={@run.id}
-            class="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-300 font-mono text-xs font-semibold hover:bg-amber-500/20 transition-all shadow-[0_0_12px_rgba(245,158,11,0.15)]"
-          >
-            <.icon name="hero-pause" class="w-4 h-4" />
-            <span>Pause</span>
-          </button>
-        <% end %>
-
-        <!-- Resume -->
-        <%= if @run.status == "paused" do %>
-          <button
-            type="button"
-            id="toolbar-resume-btn"
-            phx-click={@on_resume}
-            phx-value-id={@run.id}
-            class="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 text-emerald-300 font-mono text-xs font-semibold hover:bg-emerald-500/20 transition-all shadow-[0_0_12px_rgba(16,185,129,0.15)]"
-          >
-            <.icon name="hero-play" class="w-4 h-4" />
-            <span>Resume</span>
-          </button>
-        <% end %>
-
-        <!-- Cancel -->
-        <%= if @run.status in ["running", "paused", "pending"] do %>
-          <button
-            type="button"
-            id="toolbar-cancel-btn"
-            phx-click={@on_cancel}
-            phx-value-id={@run.id}
-            data-confirm="Are you sure you want to cancel this workflow run?"
-            class="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl border border-rose-500/30 bg-rose-500/10 text-rose-300 font-mono text-xs font-semibold hover:bg-rose-500/20 transition-all"
-          >
-            <.icon name="hero-stop" class="w-4 h-4" />
-            <span>Cancel</span>
-          </button>
-        <% end %>
-
-        <!-- Re-run / Launch -->
-        <%= if @run.status in ["completed", "failed", "cancelled"] do %>
-          <button
-            type="button"
-            id="toolbar-rerun-btn"
-            phx-click={@on_launch}
-            phx-value-id={@workflow.id}
-            class="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 text-white font-mono text-xs font-bold hover:brightness-110 shadow-lg shadow-cyan-500/20 transition-all"
-          >
-            <.icon name="hero-arrow-path" class="w-4 h-4" />
-            <span>Run Again</span>
-          </button>
-        <% end %>
-      </div>
-    </section>
+      </:actions>
+    </.page_toolbar>
     """
   end
 

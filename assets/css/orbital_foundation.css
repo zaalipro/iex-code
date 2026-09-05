@@ -1,0 +1,130 @@
+@font-face {
+  font-family: "Space Grotesk";
+  src: url("/fonts/space-grotesk-variable.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: swap;
+}
+
+:root {
+  --ui-font-display: "Space Grotesk", -apple-system, BlinkMacSystemFont, sans-serif;
+  --orbital-edge: color-mix(in srgb, var(--ui-accent) 20%, var(--ui-border));
+  --orbital-glass: color-mix(in srgb, var(--ui-surface) 88%, transparent);
+  --orbital-light: color-mix(in srgb, var(--ui-accent) 7%, transparent);
+  --orbital-radius: 20px;
+}
+
+/* Shared materials stay legible in every palette; only the surrounding light moves. */
+.studio-application {
+  background-color: var(--ui-bg);
+  background-image:
+    radial-gradient(ellipse at 12% 2%, var(--orbital-light), transparent 44%),
+    radial-gradient(ellipse at 96% 95%, var(--orbital-light), transparent 38%);
+}
+
+.orbital-surface {
+  border: 1px solid var(--orbital-edge);
+  border-radius: var(--orbital-radius);
+  background: var(--orbital-glass);
+  box-shadow: var(--ui-shadow-card);
+}
+
+.orbital-field {
+  border: 1px solid var(--ui-border);
+  border-radius: 12px;
+  background: var(--ui-surface-inset);
+  box-shadow: var(--ui-shadow-inset);
+}
+
+.page-header,
+.page-toolbar {
+  position: relative;
+  border-color: var(--orbital-edge);
+  background: color-mix(in srgb, var(--ui-surface) 92%, var(--ui-bg));
+}
+
+.page-header--embedded,
+.page-header--flush,
+.page-toolbar--flush { background: transparent; }
+
+.page-header .page-header__title,
+.page-toolbar .page-toolbar__title {
+  font-family: var(--ui-font-display);
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.035em;
+}
+
+.page-header__icon { color: var(--ui-accent); }
+.page-header__count {
+  font-family: var(--ui-font-display);
+  border-color: var(--orbital-edge);
+  background: var(--ui-accent-softer);
+  color: var(--ui-accent);
+}
+
+.page-header .header-control,
+.page-toolbar .header-control {
+  border-color: var(--orbital-edge);
+  background: color-mix(in srgb, var(--ui-surface-raised) 78%, transparent);
+  box-shadow: var(--ui-shadow-control);
+}
+
+.page-header .header-control--primary,
+.page-toolbar .header-control--primary,
+.ui-button-primary {
+  border-color: var(--ui-accent-strong);
+  background: var(--ui-accent);
+  color: var(--ui-accent-text);
+}
+
+.page-header .header-control:is([aria-pressed="true"], [aria-selected="true"]),
+.page-toolbar .header-control:is([aria-pressed="true"], [aria-selected="true"]) {
+  border-color: var(--ui-accent);
+  background: var(--ui-accent-soft);
+  color: var(--ui-accent-strong);
+}
+
+.studio-application :is(.ui-card, .ui-card-raised, .ui-dialog) {
+  border-color: var(--orbital-edge);
+}
+
+.studio-application :is([role="dialog"], .model-picker-popover) {
+  border-radius: 22px;
+  border-color: var(--orbital-edge);
+  box-shadow: var(--ui-shadow-modal);
+}
+
+.studio-application :is([role="dialog"], .model-picker-popover) :is(h2, h3) {
+  font-family: var(--ui-font-display);
+}
+
+.studio-application :where(input:not([type="checkbox"]):not([type="radio"]), textarea, select) {
+  border-color: var(--ui-border);
+}
+
+.studio-application :where(input, textarea, select):focus-visible {
+  outline: 2px solid var(--ui-focus);
+  outline-offset: 2px;
+}
+
+/* The navigation layer, not the content, gets the glass reflection. */
+html:not([data-depth-effects="false"]) :is(.orbital-surface, .page-toolbar, .page-header:not(.page-header--embedded):not(.page-header--flush)) {
+  background-image: linear-gradient(118deg, color-mix(in srgb, var(--ui-highlight) 58%, transparent), transparent 48%);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+html[data-depth-effects="false"] .studio-application { background-image: none; }
+html[data-depth-effects="false"] :is(.orbital-surface, .page-header, .page-toolbar) {
+  background-image: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .studio-application :is(.orbital-surface, .page-header, .page-toolbar) {
+    animation: none !important;
+    transition-duration: 0.01ms !important;
+  }
+}

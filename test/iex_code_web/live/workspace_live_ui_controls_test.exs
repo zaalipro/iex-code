@@ -22,7 +22,7 @@ defmodule IexCodeWeb.WorkspaceLiveUIControlsTest do
         {"#sidebar-tab-swarm", "swarm", "Milo"},
         {"#sidebar-tab-calendar", "calendar", today_month},
         {"#sidebar-tab-changes", "changes", "All Changes"},
-        {"#sidebar-tab-files", "files", "Select a workspace file"},
+        {"#sidebar-tab-files", "files", "Your source, in focus"},
         {"#sidebar-tab-terminal", "terminal", "mix test"}
       ]
 

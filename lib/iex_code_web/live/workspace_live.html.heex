@@ -4,7 +4,7 @@
     id="workspace-shell"
     phx-hook=".ResponsiveShell"
     data-density={@layout_density}
-    class="workspace-studio-root workspace-shell studio-shell flex h-dvh min-h-0 w-full bg-canvas text-content font-sans antialiased overflow-hidden"
+    class="workspace-studio-root orbital-workspace workspace-shell studio-shell flex h-dvh min-h-0 w-full bg-canvas text-content font-sans antialiased overflow-hidden"
   >
     <%!-- Sidebar: Sessions & Projects Navigation --%>
     <aside
@@ -47,6 +47,7 @@
         <%!-- Brand / Workspace Header --%>
         <div class="studio-project-switcher p-3.5 border-b border-line relative">
           <button
+            id="workspace-project-switcher"
             phx-click="toggle_workspace_menu"
             class="studio-project-button studio-control w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl text-left transition-smooth group"
           >
@@ -125,7 +126,7 @@
         </div>
 
         <%!-- Search Bar --%>
-        <div class="px-3 pt-3 pb-1">
+        <div class="studio-sidebar-search px-3 pt-3 pb-1">
           <.form
             for={@workspace_search_form}
             id="workspace-search-form"
@@ -138,7 +139,7 @@
             />
             <input
               type="text"
-              placeholder="Search..."
+              placeholder="Find a workspace…"
               name="query"
               value={@workspace_search}
               class="w-full bg-[#161b22] border border-[#21262d] rounded-xl pl-8 pr-3 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-gray-400 transition-smooth font-mono"
@@ -543,7 +544,7 @@
                 id="tab-btn-kanban"
                 phx-click="switch_tab"
                 phx-value-tab="kanban"
-                aria-pressed={@active_tab == "kanban"}
+                aria-pressed={to_string(@active_tab == "kanban")}
                 class={[
                   "px-3 py-1 rounded-lg text-xs font-mono font-medium flex items-center gap-1.5 transition-smooth",
                   @active_tab == "kanban" && "bg-[#21262d] text-white shadow-sm",
@@ -558,7 +559,7 @@
                 id="tab-btn-workflows"
                 phx-click="switch_tab"
                 phx-value-tab="workflows"
-                aria-pressed={@active_tab == "workflows"}
+                aria-pressed={to_string(@active_tab == "workflows")}
                 class={[
                   "px-3 py-1 rounded-lg text-xs font-mono font-medium flex items-center gap-1.5 transition-smooth",
                   @active_tab == "workflows" && "bg-[#21262d] text-white shadow-sm",
@@ -573,7 +574,7 @@
                 id="tab-btn-swarm"
                 phx-click="switch_tab"
                 phx-value-tab="swarm"
-                aria-pressed={@active_tab == "swarm"}
+                aria-pressed={to_string(@active_tab == "swarm")}
                 class={[
                   "px-3 py-1 rounded-lg text-xs font-mono font-medium flex items-center gap-1.5 transition-smooth",
                   @active_tab == "swarm" && "bg-[#21262d] text-white shadow-sm",
@@ -602,7 +603,7 @@
                 id="tab-btn-calendar"
                 phx-click="switch_tab"
                 phx-value-tab="calendar"
-                aria-pressed={@active_tab == "calendar"}
+                aria-pressed={to_string(@active_tab == "calendar")}
                 class={[
                   "px-3 py-1 rounded-lg text-xs font-mono font-medium flex items-center gap-1.5 transition-smooth",
                   @active_tab == "calendar" && "bg-[#21262d] text-white shadow-sm",
@@ -617,7 +618,7 @@
                 id="tab-btn-changes"
                 phx-click="switch_tab"
                 phx-value-tab="changes"
-                aria-pressed={@active_tab == "changes"}
+                aria-pressed={to_string(@active_tab == "changes")}
                 class={[
                   "px-3 py-1 rounded-lg text-xs font-mono font-medium flex items-center gap-1.5 transition-smooth",
                   @active_tab == "changes" && "bg-[#21262d] text-white shadow-sm",
@@ -632,7 +633,7 @@
                 id="tab-btn-tests"
                 phx-click="switch_tab"
                 phx-value-tab="tests"
-                aria-pressed={@active_tab == "tests"}
+                aria-pressed={to_string(@active_tab == "tests")}
                 class={[
                   "px-3 py-1 rounded-lg text-xs font-mono font-medium flex items-center gap-1.5 transition-smooth",
                   @active_tab == "tests" && "bg-[#21262d] text-white shadow-sm",
@@ -663,7 +664,7 @@
                 id="tab-btn-ast"
                 phx-click="switch_tab"
                 phx-value-tab="ast"
-                aria-pressed={@active_tab == "ast"}
+                aria-pressed={to_string(@active_tab == "ast")}
                 class={[
                   "px-3 py-1 rounded-lg text-xs font-mono font-medium flex items-center gap-1.5 transition-smooth",
                   @active_tab == "ast" && "bg-[#21262d] text-white shadow-sm",
@@ -678,7 +679,7 @@
                 id="tab-btn-chat"
                 phx-click="switch_tab"
                 phx-value-tab="chat"
-                aria-pressed={@active_tab == "chat"}
+                aria-pressed={to_string(@active_tab == "chat")}
                 class={[
                   "px-3 py-1 rounded-lg text-xs font-mono font-medium flex items-center gap-1.5 transition-smooth",
                   @active_tab == "chat" && "bg-[#21262d] text-white shadow-sm",
@@ -693,7 +694,7 @@
                 id="tab-btn-files"
                 phx-click="switch_tab"
                 phx-value-tab="files"
-                aria-pressed={@active_tab == "files"}
+                aria-pressed={to_string(@active_tab == "files")}
                 class={[
                   "px-3 py-1 rounded-lg text-xs font-mono font-medium flex items-center gap-1.5 transition-smooth",
                   @active_tab == "files" && "bg-[#21262d] text-white shadow-sm",
@@ -708,7 +709,7 @@
                 id="tab-btn-terminal"
                 phx-click="switch_tab"
                 phx-value-tab="terminal"
-                aria-pressed={@active_tab == "terminal"}
+                aria-pressed={to_string(@active_tab == "terminal")}
                 class={[
                   "px-3 py-1 rounded-lg text-xs font-mono font-medium flex items-center gap-1.5 transition-smooth",
                   @active_tab == "terminal" && "bg-[#21262d] text-white shadow-sm",
@@ -942,7 +943,7 @@
                         phx-click="toggle_dropdown"
                         phx-value-name="priority"
                         aria-haspopup="listbox"
-                        aria-expanded={@open_dropdown == "priority"}
+                        aria-expanded={to_string(@open_dropdown == "priority")}
                         aria-controls={
                           if(@open_dropdown == "priority",
                             do: "priority-filter-listbox",
@@ -982,7 +983,7 @@
                           <button
                             type="button"
                             role="option"
-                            aria-selected={@kanban_filter["priority"] == ""}
+                            aria-selected={to_string(@kanban_filter["priority"] == "")}
                             phx-click="select_kanban_filter"
                             phx-value-key="priority"
                             phx-value-value=""
@@ -997,7 +998,7 @@
                             <button
                               type="button"
                               role="option"
-                              aria-selected={@kanban_filter["priority"] == p}
+                              aria-selected={to_string(@kanban_filter["priority"] == p)}
                               phx-click="select_kanban_filter"
                               phx-value-key="priority"
                               phx-value-value={p}
@@ -1032,7 +1033,7 @@
                         phx-click="toggle_dropdown"
                         phx-value-name="status"
                         aria-haspopup="listbox"
-                        aria-expanded={@open_dropdown == "status"}
+                        aria-expanded={to_string(@open_dropdown == "status")}
                         aria-controls={
                           if(@open_dropdown == "status", do: "status-filter-listbox", else: nil)
                         }
@@ -1065,7 +1066,7 @@
                           <button
                             type="button"
                             role="option"
-                            aria-selected={@kanban_filter["status"] == ""}
+                            aria-selected={to_string(@kanban_filter["status"] == "")}
                             phx-click="select_kanban_filter"
                             phx-value-key="status"
                             phx-value-value=""
@@ -1080,7 +1081,7 @@
                             <button
                               type="button"
                               role="option"
-                              aria-selected={@kanban_filter["status"] == s}
+                              aria-selected={to_string(@kanban_filter["status"] == s)}
                               phx-click="select_kanban_filter"
                               phx-value-key="status"
                               phx-value-value={s}
@@ -1120,7 +1121,7 @@
                         phx-click="toggle_dropdown"
                         phx-value-name="assignee"
                         aria-haspopup="listbox"
-                        aria-expanded={@open_dropdown == "assignee"}
+                        aria-expanded={to_string(@open_dropdown == "assignee")}
                         aria-controls={
                           if(@open_dropdown == "assignee",
                             do: "assignee-filter-listbox",
@@ -1156,7 +1157,7 @@
                           <button
                             type="button"
                             role="option"
-                            aria-selected={@kanban_filter["assignee"] == ""}
+                            aria-selected={to_string(@kanban_filter["assignee"] == "")}
                             phx-click="select_kanban_filter"
                             phx-value-key="assignee"
                             phx-value-value=""
@@ -1171,7 +1172,7 @@
                             <button
                               type="button"
                               role="option"
-                              aria-selected={@kanban_filter["assignee"] == a}
+                              aria-selected={to_string(@kanban_filter["assignee"] == a)}
                               phx-click="select_kanban_filter"
                               phx-value-key="assignee"
                               phx-value-value={a}
@@ -1271,7 +1272,13 @@
                       <span class="studio-stage-dot" aria-hidden="true"></span>
                       <span>{String.capitalize(col_status)}</span>
                     </span>
-                    <span class="studio-stage-count">{length(col_tasks)}</span>
+                    <span class="studio-stage-reading">
+                      <span class="studio-stage-count">{length(col_tasks)}</span>
+                      <.icon
+                        name="hero-arrow-up-right"
+                        class="studio-stage-direction h-3.5 w-3.5"
+                      />
+                    </span>
                   </button>
                 <% end %>
               </div>
@@ -1288,7 +1295,10 @@
                       <h3>{String.capitalize(col_status)}</h3>
                       <span class="studio-stage-canvas-count">{length(col_tasks)}</span>
                     </div>
-                    <span class="studio-board-drag-hint">Drag tasks between stages</span>
+                    <span class="studio-board-drag-hint">
+                      <.icon name="hero-arrows-right-left" class="h-3 w-3" />
+                      Drag tasks between stages
+                    </span>
                   </div>
                   <div
                     id={"kanban-cards-#{col_status}"}
@@ -1301,13 +1311,17 @@
                       id={"kanban-stage-empty-#{col_status}"}
                       class="studio-stage-empty"
                     >
-                      <.icon name="hero-rectangle-stack" class="h-7 w-7" />
+                      <div class="orbital-empty-mark" aria-hidden="true">
+                        <span class="orbital-empty-core">
+                          <.icon name="hero-square-3-stack-3d" class="h-6 w-6" />
+                        </span>
+                      </div>
                       <h3>
                         No tasks {if col_status == "running",
                           do: "running",
                           else: "in #{col_status}"}
                       </h3>
-                      <p>Move a task into this stage or create a new task above.</p>
+                      <p>Create your next task, then follow its progress through every stage.</p>
                     </div>
                     <%= for task <- col_tasks do %>
                       <button
@@ -1317,6 +1331,9 @@
                         phx-value-id={task.id}
                         phx-hook=".KanbanCard"
                         data-task-id={task.id}
+                        aria-expanded={
+                          to_string(@selected_task != nil and @selected_task.id == task.id)
+                        }
                         class={[
                           "studio-task-card w-full p-3.5 bg-raised border rounded-2xl transition-smooth cursor-pointer space-y-2.5 group text-left",
                           @selected_task && @selected_task.id == task.id &&
@@ -1325,7 +1342,7 @@
                             "border-[#21262d]"
                         ]}
                       >
-                        <div class="flex items-center justify-between text-[10px] font-mono text-gray-500">
+                        <div class="studio-task-meta flex items-center justify-between text-[10px] font-mono text-gray-500">
                           <span class="uppercase tracking-wider">#{String.slice(task.id, 0..4)}</span>
                           <span class={[
                             "px-1.5 py-0.5 rounded font-semibold",
@@ -1352,7 +1369,7 @@
                           </p>
                         <% end %>
 
-                        <div class="flex items-center justify-between pt-2 border-t border-white/5 text-[10px] font-mono text-gray-400">
+                        <div class="studio-task-footer flex items-center justify-between pt-2 border-t border-white/5 text-[10px] font-mono text-gray-400">
                           <div class="flex items-center gap-1.5">
                             <span class="w-4 h-4 rounded-full bg-[#21262d] text-center font-bold text-[8px] flex items-center justify-center text-white">
                               <%= if is_binary(task.assignee) and task.assignee != "" do %>
@@ -1377,7 +1394,11 @@
                   id="kanban-stage-unselected"
                   class="studio-stage-empty studio-stage-unselected"
                 >
-                  <.icon name="hero-view-columns" class="h-7 w-7" />
+                  <div class="orbital-empty-mark" aria-hidden="true">
+                    <span class="orbital-empty-core">
+                      <.icon name="hero-view-columns" class="h-6 w-6" />
+                    </span>
+                  </div>
                   <h3>Choose a stage</h3>
                   <p>Select a stage above to see its tasks.</p>
                 </div>
@@ -1471,8 +1492,15 @@
                 <% end %>
               </div>
             <% else %>
-              <div class="rounded-2xl border border-dashed border-zinc-800 p-10 text-center space-y-3">
-                <.icon name="hero-rectangle-stack" class="w-10 h-10 mx-auto text-zinc-600" />
+              <div
+                id="workflows-empty-state"
+                class="orbital-panel-empty rounded-2xl border border-dashed border-zinc-800 p-10 text-center space-y-3"
+              >
+                <div class="orbital-empty-mark" aria-hidden="true">
+                  <span class="orbital-empty-core">
+                    <.icon name="hero-rectangle-stack" class="h-6 w-6" />
+                  </span>
+                </div>
                 <h3 class="text-sm font-bold text-white">No workflows configured</h3>
                 <p class="text-xs text-zinc-500 max-w-sm mx-auto">
                   Build and automate your first multi-step agent workflow.
@@ -1491,7 +1519,10 @@
 
         <%!-- TAB 2: COACH & SWARM VIEW --%>
         <%= if @active_tab == "swarm" do %>
-          <div class="flex-1 flex flex-col h-full overflow-y-auto p-5 space-y-5">
+          <div
+            id="workspace-swarm-pane"
+            class="orbital-content-pane flex-1 flex flex-col h-full overflow-y-auto p-5 space-y-5"
+          >
             <.run_control_plane
               runs={@run_rows}
               run_count={@run_count}
@@ -1568,23 +1599,36 @@
             >
               <div class="flex flex-wrap items-center justify-between gap-3 border-b border-[#21262d] pb-3">
                 <div class="flex items-center gap-2.5">
-                  <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                  <span class={[
+                    "w-2.5 h-2.5 rounded-full",
+                    (@swarm_roster || []) == [] && "bg-subtle",
+                    (@swarm_roster || []) != [] && "bg-success"
+                  ]}></span>
                   <span class="text-xs font-mono font-bold uppercase tracking-wider text-white">
                     Dynamic Swarm Roster
                   </span>
-                  <span class="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-950/60 border border-emerald-800/40 text-emerald-300 font-bold">
-                    Tier Active
+                  <span class="text-[10px] font-mono px-2 py-0.5 rounded-lg bg-inset border border-line text-muted font-medium">
+                    {if (@swarm_roster || []) == [], do: "No agents", else: "Agents available"}
                   </span>
                 </div>
 
                 <div class="flex items-center gap-3">
-                  <.merge_gating_badge decision={
-                    (@consensus_matrix && @consensus_matrix.decision) || :approved
-                  } />
+                  <.merge_gating_badge
+                    :if={@consensus_matrix && @consensus_matrix.decision}
+                    decision={@consensus_matrix.decision}
+                  />
+                  <span
+                    :if={is_nil(@consensus_matrix) || is_nil(@consensus_matrix.decision)}
+                    id="workspace-merge-awaiting"
+                    class="px-2.5 py-1 rounded-lg text-[10px] font-mono border border-line text-muted"
+                  >
+                    Awaiting reviews
+                  </span>
                   <div class="flex items-center gap-2">
                     <button
                       type="button"
                       id="swarm-btn-approve-merge"
+                      disabled={is_nil(@consensus_matrix)}
                       phx-click="approve_consensus"
                       class="px-3 py-1.5 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 text-emerald-300 font-mono text-xs font-semibold flex items-center gap-1.5 transition-smooth"
                     >
@@ -1594,6 +1638,7 @@
                     <button
                       type="button"
                       id="swarm-btn-reject-merge"
+                      disabled={is_nil(@consensus_matrix)}
                       phx-click="reject_consensus"
                       phx-value-reason="Arbitration requested by operator"
                       class="px-3 py-1.5 rounded-lg bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/30 text-rose-300 font-mono text-xs font-semibold flex items-center gap-1.5 transition-smooth"
@@ -1781,7 +1826,7 @@
                     <button
                       phx-click="toggle_coach_menu"
                       aria-haspopup="menu"
-                      aria-expanded={@open_dropdown == "coach_menu"}
+                      aria-expanded={to_string(@open_dropdown == "coach_menu")}
                       aria-label="Agent configuration menu"
                       class="p-1.5 rounded-lg hover:bg-[#161b22] text-gray-400 hover:text-white transition-smooth"
                       title="Agent Configuration Menu"
@@ -1964,9 +2009,15 @@
 
         <%!-- TAB 3: SCHEDULED TASKS & CALENDAR VIEW --%>
         <%= if @active_tab == "calendar" do %>
-          <div class="flex-1 flex flex-col h-full overflow-y-auto p-5 space-y-5">
+          <div
+            id="workspace-calendar-pane"
+            class="orbital-content-pane flex-1 flex flex-col h-full overflow-y-auto p-5 space-y-5"
+          >
             <%!-- Centered Dark Calendar Container --%>
-            <div class="bg-[#11151c] border border-[#21262d] rounded-3xl p-6 shadow-2xl max-w-4xl w-full mx-auto">
+            <div
+              id="workspace-calendar-panel"
+              class="bg-[#11151c] border border-[#21262d] rounded-3xl p-6 shadow-2xl max-w-4xl w-full mx-auto"
+            >
               <%!-- Calendar Header Row --%>
               <.page_header
                 id="calendar-page-header"
@@ -2071,7 +2122,7 @@
                       phx-value-day={cell.day}
                       phx-value-date={date_str}
                       aria-label={"Schedule task on #{date_str}"}
-                      aria-pressed={cell.is_selected}
+                      aria-pressed={to_string(cell.is_selected)}
                       class="absolute inset-0 z-0 cursor-pointer rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff5e3a] focus-visible:ring-offset-2 focus-visible:ring-offset-[#11151c]"
                       title={"Click to schedule task on #{date_str}"}
                     >
@@ -2145,12 +2196,9 @@
                 <% scheduled_count = length(@tasks)
 
                 active_count =
-                  Enum.count(@tasks, &(&1.status in ["in_progress", "running", "scheduled"]))
-
-                monthly_runs_count = max(scheduled_count * 12 + length(@operations), 1) %>
+                  Enum.count(@tasks, &(&1.status in ["in_progress", "running", "scheduled"])) %>
                 <div class="flex items-center gap-6">
                   <span>{scheduled_count} SCHEDULED TASKS · {active_count} ACTIVE</span>
-                  <span class="text-white font-semibold">MONTHLY RUNS: {monthly_runs_count}</span>
                 </div>
               </div>
             </div>
@@ -2796,7 +2844,9 @@
               icon="hero-scale"
             >
               <:meta>
-                <span class="text-xs text-gray-400">Swarm voting active</span>
+                <span id="consensus-review-status" class="text-xs text-muted">
+                  {if is_nil(@consensus_matrix), do: "Awaiting reviews", else: "Reviews available"}
+                </span>
               </:meta>
               <:actions>
                 <%= if @consensus_status == :approved do %>
@@ -2817,6 +2867,7 @@
                   <button
                     type="button"
                     id="consensus-btn-approve"
+                    disabled={is_nil(@consensus_matrix)}
                     phx-click="approve_consensus"
                     class="header-control header-control--primary"
                   >
@@ -2826,6 +2877,7 @@
                   <button
                     type="button"
                     id="consensus-btn-reject"
+                    disabled={is_nil(@consensus_matrix)}
                     phx-click="reject_consensus"
                     phx-value-reason="Security concerns"
                     class="header-control"
@@ -2852,6 +2904,13 @@
                   </div>
 
                   <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <p
+                      :if={(@consensus_assessments || []) == []}
+                      id="consensus-reviewers-empty"
+                      class="col-span-full py-2 text-xs leading-5 text-muted"
+                    >
+                      No reviewer assessments are available for this session.
+                    </p>
                     <%= for reviewer <- (@consensus_assessments || []) do %>
                       <div class="p-3 bg-[#161b22] border border-[#30363d] rounded-lg flex flex-col gap-2">
                         <div class="flex items-center justify-between">
@@ -2884,7 +2943,9 @@
                             </strong>
                           </span>
                           <span>Confidence:
-                          <strong class="text-white">{trunc((reviewer.confidence || 1.0) * 100)}%</strong></span>
+                          <strong class="text-content">{if is_number(reviewer.confidence),
+                            do: "#{trunc(reviewer.confidence * 100)}%",
+                            else: "—"}</strong></span>
                         </div>
 
                         <p class="text-[11px] text-gray-400 italic">
@@ -2971,8 +3032,10 @@
                         )
                       end) %>
                     <%= if all_critiques == [] do %>
-                      <p class="text-gray-500 italic p-2">
-                        No blocker or critical critiques raised by reviewers.
+                      <p id="consensus-critiques-empty" class="text-muted p-2">
+                        {if (@consensus_assessments || []) == [],
+                          do: "Reviewer feedback will appear when assessments are available.",
+                          else: "No blocker or critical critiques raised by reviewers."}
                       </p>
                     <% else %>
                       <%= for c <- all_critiques do %>
@@ -3001,161 +3064,126 @@
                 </div>
               </div>
 
-              <%!-- Right Column: Dimensional Score Progress Bars & Concordance Metrics --%>
+              <%!-- Scores are unavailable until real reviewer assessments produce a matrix. --%>
+              <% concordance = @consensus_matrix && @consensus_matrix.swarm_concordance
+              weighted_score = @consensus_matrix && @consensus_matrix.weighted_score
+              decision = @consensus_matrix && @consensus_matrix.decision
+              scores = (@consensus_matrix && @consensus_matrix.dimensional_averages) || %{} %>
               <div class="w-full lg:w-80 flex flex-col gap-4 shrink-0">
-                <%!-- Concordance & Weighted Score Card --%>
-                <div class="p-4 bg-[#11151c] border border-[#21262d] rounded-xl space-y-3">
-                  <div class="text-xs font-bold text-gray-300 border-b border-[#21262d] pb-2 flex items-center justify-between">
+                <div
+                  id="consensus-summary"
+                  class="p-4 bg-surface border border-line rounded-xl space-y-3"
+                >
+                  <div class="text-xs font-bold text-muted border-b border-line pb-2 flex items-center justify-between">
                     <span>SWARM CONCORDANCE</span>
-                    <span class="text-emerald-400 font-bold">
-                      {Float.round(
-                        ((@consensus_matrix && @consensus_matrix.swarm_concordance) || 0.95) *
-                          100,
-                        1
-                      )}%
+                    <span id="consensus-concordance-percent" class="text-content font-mono">
+                      {if is_number(concordance),
+                        do: "#{Float.round(concordance * 100.0, 1)}%",
+                        else: "—"}
                     </span>
                   </div>
 
                   <div class="space-y-2">
-                    <div class="flex items-center justify-between text-[11px] text-gray-400">
-                      <span>Concordance (\bar{A})</span>
-                      <strong class="text-white">{Float.round(
-                        (@consensus_matrix && @consensus_matrix.swarm_concordance) || 0.95,
-                        2
-                      )}</strong>
+                    <div class="flex items-center justify-between text-[11px] text-muted">
+                      <span>Concordance</span>
+                      <strong id="consensus-concordance-value" class="text-content">
+                        {if is_number(concordance),
+                          do: Float.round(concordance * 1.0, 2),
+                          else: "—"}
+                      </strong>
                     </div>
-                    <div class="w-full bg-[#0d1117] rounded-full h-2 overflow-hidden">
+                    <div
+                      class="w-full bg-inset rounded-full h-2 overflow-hidden"
+                      aria-hidden="true"
+                    >
                       <div
-                        class="bg-emerald-500 h-2 rounded-full transition-smooth"
-                        style={"width: #{trunc(((@consensus_matrix && @consensus_matrix.swarm_concordance) || 0.95) * 100)}%"}
+                        id="consensus-concordance-bar"
+                        class="bg-accent h-2 rounded-full transition-smooth"
+                        style={"width: #{if is_number(concordance), do: trunc(min(max(concordance, 0), 1) * 100), else: 0}%"}
                       >
                       </div>
                     </div>
 
-                    <div class="flex items-center justify-between text-[11px] text-gray-400 pt-2">
-                      <span>Weighted Confidence (C)</span>
-                      <strong class="text-white">{Float.round(
-                        (@consensus_matrix && @consensus_matrix.weighted_score) || 0.90,
-                        2
-                      )}</strong>
+                    <div class="flex items-center justify-between text-[11px] text-muted pt-2">
+                      <span>Weighted Confidence</span>
+                      <strong id="consensus-confidence-value" class="text-content">
+                        {if is_number(weighted_score),
+                          do: Float.round(weighted_score * 1.0, 2),
+                          else: "—"}
+                      </strong>
                     </div>
-                    <div class="w-full bg-[#0d1117] rounded-full h-2 overflow-hidden">
+                    <div
+                      class="w-full bg-inset rounded-full h-2 overflow-hidden"
+                      aria-hidden="true"
+                    >
                       <div
-                        class="bg-cyan-500 h-2 rounded-full transition-smooth"
-                        style={"width: #{trunc(max(0, ((@consensus_matrix && @consensus_matrix.weighted_score) || 0.90)) * 100)}%"}
+                        id="consensus-confidence-bar"
+                        class="bg-accent h-2 rounded-full transition-smooth"
+                        style={"width: #{if is_number(weighted_score), do: trunc(min(max(weighted_score, 0), 1) * 100), else: 0}%"}
                       >
                       </div>
                     </div>
 
-                    <div class="flex items-center justify-between text-[11px] text-gray-400 pt-2 border-t border-[#21262d]">
+                    <div class="flex items-center justify-between text-[11px] text-muted pt-2 border-t border-line">
                       <span>Decision</span>
-                      <span class="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-emerald-950 text-emerald-300 border border-emerald-800">
-                        {(@consensus_matrix && @consensus_matrix.decision) || :approved}
+                      <span
+                        id="consensus-decision"
+                        data-decision={decision || :unavailable}
+                        class={[
+                          "px-2 py-0.5 rounded text-[10px] font-semibold border",
+                          decision in [:approved, "approved"] &&
+                            "bg-success/10 text-success border-success/25",
+                          decision in [:rejected, "rejected"] &&
+                            "bg-danger/10 text-danger border-danger/25",
+                          decision in [:revision_required, "revision_required"] &&
+                            "bg-warning/10 text-warning border-warning/25",
+                          is_nil(decision) && "bg-inset text-muted border-line"
+                        ]}
+                      >
+                        {if decision,
+                          do: decision |> to_string() |> String.replace("_", " "),
+                          else: "Awaiting reviews"}
                       </span>
                     </div>
                   </div>
                 </div>
 
-                <%!-- Dimensional Score Progress Bars --%>
-                <div class="p-4 bg-[#11151c] border border-[#21262d] rounded-xl space-y-4">
-                  <div class="text-xs font-bold text-gray-300 border-b border-[#21262d] pb-2">
+                <div
+                  id="consensus-dimensional-scores"
+                  class="p-4 bg-surface border border-line rounded-xl space-y-4"
+                >
+                  <div class="text-xs font-bold text-muted border-b border-line pb-2">
                     DIMENSIONAL SCORES
                   </div>
 
-                  <% scores =
-                    (@consensus_matrix && @consensus_matrix.dimensional_averages) ||
-                      %{
-                        correctness: 0.90,
-                        security: 0.88,
-                        architectural_fit: 0.85,
-                        maintainability: 0.82,
-                        testability: 0.88
-                      } %>
+                  <%= for {dimension, label} <- [correctness: "Correctness", security: "Security", architectural_fit: "Architecture", maintainability: "Maintainability", testability: "Testability"] do %>
+                    <% score = scores[dimension]
 
-                  <%!-- Correctness --%>
-                  <div id="consensus-score-correctness" class="space-y-1">
-                    <div class="flex items-center justify-between text-[11px]">
-                      <span class="text-gray-300 font-semibold">Correctness</span>
-                      <span class="text-emerald-400 font-mono">{trunc(
-                        (scores[:correctness] || 0.90) * 100
-                      )}%</span>
-                    </div>
-                    <div class="w-full bg-[#0d1117] rounded-full h-2 overflow-hidden">
+                    score_percent =
+                      if is_number(score), do: trunc(min(max(score, 0), 1) * 100), else: 0 %>
+                    <div id={"consensus-score-#{dimension}"} class="space-y-1">
+                      <div class="flex items-center justify-between text-[11px]">
+                        <span class="text-muted font-semibold">{label}</span>
+                        <span
+                          id={"consensus-score-#{dimension}-value"}
+                          class="text-content font-mono"
+                        >
+                          {if is_number(score), do: "#{score_percent}%", else: "—"}
+                        </span>
+                      </div>
                       <div
-                        class="bg-emerald-500 h-2 rounded-full"
-                        style={"width: #{trunc((scores[:correctness] || 0.90) * 100)}%"}
+                        class="w-full bg-inset rounded-full h-2 overflow-hidden"
+                        aria-hidden="true"
                       >
+                        <div
+                          id={"consensus-score-#{dimension}-bar"}
+                          class="bg-accent h-2 rounded-full"
+                          style={"width: #{score_percent}%"}
+                        >
+                        </div>
                       </div>
                     </div>
-                  </div>
-
-                  <%!-- Security --%>
-                  <div class="space-y-1">
-                    <div class="flex items-center justify-between text-[11px]">
-                      <span class="text-gray-300 font-semibold">Security</span>
-                      <span class="text-cyan-400 font-mono">{trunc(
-                        (scores[:security] || 0.88) * 100
-                      )}%</span>
-                    </div>
-                    <div class="w-full bg-[#0d1117] rounded-full h-2 overflow-hidden">
-                      <div
-                        class="bg-cyan-500 h-2 rounded-full"
-                        style={"width: #{trunc((scores[:security] || 0.88) * 100)}%"}
-                      >
-                      </div>
-                    </div>
-                  </div>
-
-                  <%!-- Architectural Fit / Architecture --%>
-                  <div class="space-y-1">
-                    <div class="flex items-center justify-between text-[11px]">
-                      <span class="text-gray-300 font-semibold">Architecture</span>
-                      <span class="text-purple-400 font-mono">{trunc(
-                        (scores[:architectural_fit] || 0.85) * 100
-                      )}%</span>
-                    </div>
-                    <div class="w-full bg-[#0d1117] rounded-full h-2 overflow-hidden">
-                      <div
-                        class="bg-purple-500 h-2 rounded-full"
-                        style={"width: #{trunc((scores[:architectural_fit] || 0.85) * 100)}%"}
-                      >
-                      </div>
-                    </div>
-                  </div>
-
-                  <%!-- Maintainability --%>
-                  <div class="space-y-1">
-                    <div class="flex items-center justify-between text-[11px]">
-                      <span class="text-gray-300 font-semibold">Maintainability</span>
-                      <span class="text-indigo-400 font-mono">{trunc(
-                        (scores[:maintainability] || 0.82) * 100
-                      )}%</span>
-                    </div>
-                    <div class="w-full bg-[#0d1117] rounded-full h-2 overflow-hidden">
-                      <div
-                        class="bg-indigo-500 h-2 rounded-full"
-                        style={"width: #{trunc((scores[:maintainability] || 0.82) * 100)}%"}
-                      >
-                      </div>
-                    </div>
-                  </div>
-
-                  <%!-- Testability --%>
-                  <div class="space-y-1">
-                    <div class="flex items-center justify-between text-[11px]">
-                      <span class="text-gray-300 font-semibold">Testability</span>
-                      <span class="text-blue-400 font-mono">{trunc(
-                        (scores[:testability] || 0.88) * 100
-                      )}%</span>
-                    </div>
-                    <div class="w-full bg-[#0d1117] rounded-full h-2 overflow-hidden">
-                      <div
-                        class="bg-blue-500 h-2 rounded-full"
-                        style={"width: #{trunc((scores[:testability] || 0.88) * 100)}%"}
-                      >
-                      </div>
-                    </div>
-                  </div>
+                  <% end %>
                 </div>
               </div>
             </div>
@@ -3164,7 +3192,7 @@
 
         <%!-- TAB: AST QUERY EXPLORER & SYMBOL NAVIGATOR / SEMANTIC SEARCH --%>
         <%= if @active_tab == "ast" do %>
-          <div class="flex-1 flex flex-col h-full overflow-hidden">
+          <div id="workspace-symbols-pane" class="flex-1 flex flex-col h-full overflow-hidden">
             <%!-- Mode Switcher Bar --%>
             <.page_toolbar id="symbol-explorer-mode-toolbar">
               <:leading>
@@ -3356,11 +3384,11 @@
                     <div>
                       <h3 class="text-base font-semibold text-white">Research brief</h3>
                       <p class="mt-1 text-xs leading-5 text-gray-500">
-                        Queued as a durable finite DAG with exact level limits.
+                        Set the question, choose the depth, and review the evidence as it arrives.
                       </p>
                     </div>
                     <span class="research-badge border border-violet-500/20 bg-violet-500/[0.05] px-2 py-1 font-mono text-[9px] uppercase tracking-wider text-violet-300">
-                      async · durable
+                      background research
                     </span>
                   </div>
 
@@ -3506,7 +3534,7 @@
                         id="deep-research-attachment-picker-toggle"
                         type="button"
                         phx-click="toggle_research_attachment_picker"
-                        aria-expanded={@research_attachment_picker_open?}
+                        aria-expanded={to_string(@research_attachment_picker_open?)}
                         aria-controls="deep-research-attachment-picker"
                         class="research-action inline-flex min-h-10 items-center gap-2 border border-[#303844] px-3 font-mono text-[9px] uppercase tracking-wider text-gray-300 hover:border-violet-400/40"
                       >
@@ -3553,9 +3581,11 @@
                         phx-click="toggle_research_attachment"
                         phx-value-id={research_result_public_id(result)}
                         aria-pressed={
-                          MapSet.member?(
-                            @research_attachments,
-                            research_result_public_id(result)
+                          to_string(
+                            MapSet.member?(
+                              @research_attachments,
+                              research_result_public_id(result)
+                            )
                           )
                         }
                         class={[
@@ -3838,17 +3868,18 @@
               <div
                 :if={@messages == []}
                 id="chat-empty-state"
-                class="m-auto flex max-w-md flex-col items-center px-6 py-12 text-center"
+                class="orbital-chat-empty m-auto flex max-w-md flex-col items-center px-6 py-12 text-center"
               >
-                <span class="flex h-11 w-11 items-center justify-center rounded-2xl border border-[#30363d] bg-[#11151c] text-gray-400 shadow-lg shadow-black/20">
-                  <.icon name="hero-chat-bubble-left-right" class="h-5 w-5" />
-                </span>
+                <div class="orbital-empty-mark" aria-hidden="true">
+                  <span class="orbital-empty-core">
+                    <.icon name="hero-chat-bubble-left-right" class="h-6 w-6" />
+                  </span>
+                </div>
                 <h3 class="mt-4 text-sm font-semibold text-gray-100">
                   Start with a clean conversation
                 </h3>
                 <p class="mt-2 text-xs leading-5 text-gray-400">
-                  No fabricated history is added to a new session. Send a prompt below when you
-                  are ready to begin.
+                  Bring a question, an idea, or a piece of code. Your conversation starts below.
                 </p>
               </div>
 
@@ -3996,10 +4027,13 @@
         <% end %>
 
         <%!-- TAB 7: TERMINAL SESSION RUNNER --%>
-        <div class={[
-          "flex-1 flex flex-col h-full bg-[#0a0d12] overflow-hidden",
-          @active_tab != "terminal" && "hidden"
-        ]}>
+        <div
+          id="workspace-terminal-pane"
+          class={[
+            "flex-1 flex flex-col h-full bg-[#0a0d12] overflow-hidden",
+            @active_tab != "terminal" && "hidden"
+          ]}
+        >
           <.page_toolbar id="terminal-page-toolbar" title="Terminal">
             <:actions>
               <button
@@ -4641,16 +4675,21 @@
                   </button>
                 </div>
                 <label for="prompt-textarea" class="sr-only">Agent prompt or swarm instruction</label>
-                <textarea
-                  id="prompt-textarea"
-                  name="prompt"
-                  rows="1"
-                  required
-                  aria-required="true"
-                  phx-hook="KeyboardSubmit"
-                  placeholder="Ask IexCode to build, investigate, or review…"
-                  class="studio-prompt-input w-full bg-transparent border-0 text-content placeholder:text-subtle font-sans text-sm focus:outline-none focus:ring-0 resize-none px-2 py-1"
-                ></textarea>
+                <div class="orbital-prompt-row">
+                  <span class="orbital-prompt-mark" aria-hidden="true">
+                    <.icon name="hero-command-line" class="h-4 w-4" />
+                  </span>
+                  <textarea
+                    id="prompt-textarea"
+                    name="prompt"
+                    rows="1"
+                    required
+                    aria-required="true"
+                    phx-hook="KeyboardSubmit"
+                    placeholder="Ask IexCode to build, investigate, or review…"
+                    class="studio-prompt-input w-full bg-transparent border-0 text-content placeholder:text-subtle font-sans text-sm focus:outline-none focus:ring-0 resize-none px-2 py-1"
+                  ></textarea>
+                </div>
 
                 <%!-- Bottom Action Toolbar --%>
                 <div class="studio-composer-toolbar flex min-w-0 items-center justify-between gap-2">
@@ -4660,7 +4699,7 @@
                       id="toggle-run-setup"
                       type="button"
                       phx-click="toggle_run_setup"
-                      aria-expanded={@run_setup_open?}
+                      aria-expanded={to_string(@run_setup_open?)}
                       aria-controls="run-setup-panel"
                       class="studio-run-setup-toggle hidden sm:inline-flex items-center gap-1.5 rounded-lg text-xs text-muted transition-colors"
                     >
@@ -4671,7 +4710,7 @@
                       id="toggle-run-setup-mobile"
                       type="button"
                       phx-click="toggle_run_setup"
-                      aria-expanded={@run_setup_open?}
+                      aria-expanded={to_string(@run_setup_open?)}
                       aria-controls="run-setup-panel"
                       aria-label={
                         if @run_setup_open?, do: "Close run setup", else: "Open run setup"
@@ -4736,7 +4775,7 @@
                         phx-click="toggle_dropdown"
                         phx-value-name="model"
                         aria-haspopup="listbox"
-                        aria-expanded={@open_dropdown == "model"}
+                        aria-expanded={to_string(@open_dropdown == "model")}
                         aria-controls={
                           if(@open_dropdown == "model", do: "model-picker-listbox", else: nil)
                         }
@@ -4770,8 +4809,10 @@
                               role="option"
                               id={"model-picker-option-#{model_id}"}
                               aria-selected={
-                                @session.model_name == model_id and
-                                  @session.model_provider == provider_id
+                                to_string(
+                                  @session.model_name == model_id and
+                                    @session.model_provider == provider_id
+                                )
                               }
                               phx-click="change_model"
                               phx-value-model={model_id}
@@ -4801,8 +4842,10 @@
                                 role="option"
                                 id={"model-picker-option-#{m.id}"}
                                 aria-selected={
-                                  @session.model_name == m.id and
-                                    @session.model_provider == m.provider
+                                  to_string(
+                                    @session.model_name == m.id and
+                                      @session.model_provider == m.provider
+                                  )
                                 }
                                 phx-click="change_model"
                                 phx-value-model={m.id}
@@ -4850,7 +4893,7 @@
                         phx-click="toggle_tool"
                         phx-value-tool="ast_search"
                         aria-label="Toggle AST search tool"
-                        aria-pressed={MapSet.member?(@active_tools, "ast_search")}
+                        aria-pressed={to_string(MapSet.member?(@active_tools, "ast_search"))}
                         class={[
                           "p-1.5 rounded-lg border transition-smooth",
                           MapSet.member?(@active_tools, "ast_search") &&
@@ -4883,7 +4926,7 @@
                         phx-click="toggle_tool"
                         phx-value-tool="web_search"
                         aria-label="Toggle live web search tool"
-                        aria-pressed={MapSet.member?(@active_tools, "web_search")}
+                        aria-pressed={to_string(MapSet.member?(@active_tools, "web_search"))}
                         class={[
                           "p-1.5 rounded-lg border transition-smooth",
                           MapSet.member?(@active_tools, "web_search") &&
@@ -4914,11 +4957,13 @@
                   <%!-- Right Send Button --%>
                   <div class="tooltip-trigger shrink-0">
                     <button
+                      id="prompt-submit"
                       type="submit"
                       phx-disable-with="Executing..."
                       class="studio-primary-action ui-depth-effect px-4 py-2 rounded-full bg-accent-strong text-accent-ink font-semibold text-xs transition-smooth"
                     >
                       {if @dispatch_mode == "background", do: "Queue run", else: "Send"}
+                      <.icon name="hero-arrow-up-right" class="h-3.5 w-3.5" />
                     </button>
                     <div class="luxury-tooltip luxury-tooltip-left">
                       <div class="text-xs font-semibold text-white tracking-tight mb-1">
@@ -6571,7 +6616,7 @@
                 phx-click="toggle_modal_dropdown"
                 phx-value-name="modal_status"
                 aria-haspopup="listbox"
-                aria-expanded={@open_modal_dropdown == "modal_status"}
+                aria-expanded={to_string(@open_modal_dropdown == "modal_status")}
                 aria-controls={
                   if(@open_modal_dropdown == "modal_status",
                     do: "modal-status-dropdown-menu",
@@ -6620,7 +6665,7 @@
                     <button
                       type="button"
                       role="option"
-                      aria-selected={@new_task_status == s_val}
+                      aria-selected={to_string(@new_task_status == s_val)}
                       phx-click="select_modal_status"
                       phx-value-status={s_val}
                       class={[
@@ -6655,7 +6700,7 @@
                 phx-click="toggle_modal_dropdown"
                 phx-value-name="modal_priority"
                 aria-haspopup="listbox"
-                aria-expanded={@open_modal_dropdown == "modal_priority"}
+                aria-expanded={to_string(@open_modal_dropdown == "modal_priority")}
                 aria-controls={
                   if(@open_modal_dropdown == "modal_priority",
                     do: "modal-priority-dropdown-menu",
@@ -6698,7 +6743,7 @@
                     <button
                       type="button"
                       role="option"
-                      aria-selected={@new_task_priority == p_val}
+                      aria-selected={to_string(@new_task_priority == p_val)}
                       phx-click="select_modal_priority"
                       phx-value-priority={p_val}
                       class={[
@@ -6736,7 +6781,7 @@
                 phx-click="toggle_modal_dropdown"
                 phx-value-name="modal_assignee"
                 aria-haspopup="listbox"
-                aria-expanded={@open_modal_dropdown == "modal_assignee"}
+                aria-expanded={to_string(@open_modal_dropdown == "modal_assignee")}
                 aria-controls={
                   if(@open_modal_dropdown == "modal_assignee",
                     do: "modal-assignee-dropdown-menu",
@@ -6792,7 +6837,7 @@
                     <button
                       type="button"
                       role="option"
-                      aria-selected={@new_task_assignee == a_val}
+                      aria-selected={to_string(@new_task_assignee == a_val)}
                       phx-click="select_modal_assignee"
                       phx-value-assignee={a_val}
                       class={[
@@ -6852,7 +6897,7 @@
                   id="target-date-picker-trigger"
                   phx-click="toggle_date_picker_popover"
                   aria-haspopup="dialog"
-                  aria-expanded={@show_date_picker_popover}
+                  aria-expanded={to_string(@show_date_picker_popover)}
                   aria-label="Target date picker"
                   class="w-full bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-1.5 text-white font-mono text-xs flex items-center justify-between cursor-pointer hover:border-gray-400 transition-smooth select-none"
                   title="Click to open calendar date picker"

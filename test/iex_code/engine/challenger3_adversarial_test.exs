@@ -12,9 +12,12 @@ defmodule IexCode.Engine.Challenger3AdversarialTest do
   alias IexCode.Sessions.Operation
   import Ecto.Query
 
-  setup do
+  setup context do
     {:ok, project} =
-      Projects.create_project(%{name: "Challenger 3 Proj", root_path: File.cwd!()})
+      Projects.create_project(%{
+        name: "Challenger 3 Proj",
+        root_path: Path.expand(context[:tmp_dir] || File.cwd!())
+      })
 
     {:ok, session} =
       Sessions.create_session(%{project_id: project.id, title: "Challenger 3 Session"})
@@ -109,18 +112,43 @@ defmodule IexCode.Engine.Challenger3AdversarialTest do
       assert AgentRegistry.list_agents(sid) == []
     end
 
+    @tag :tmp_dir
     test "handles large payload (1MB string) across subagents without memory exhaustion or crash",
          %{session: session, project: project} do
       sid = session.id
 
+      # Exercise payload transport and real workspace tools without scanning or
+      # recompiling the host application and unrelated temporary test fixtures.
+      File.mkdir_p!(Path.join(project.root_path, "lib"))
+
+      File.write!(Path.join(project.root_path, "mix.exs"), """
+      defmodule LargePayloadFixture.MixProject do
+        use Mix.Project
+        def project, do: [app: :large_payload_fixture, version: "0.1.0", deps: []]
+      end
+      """)
+
+      File.write!(Path.join(project.root_path, "lib/large_payload_fixture.ex"), """
+      defmodule LargePayloadFixture do
+        @moduledoc "Refactor modular architecture fixture."
+        def architecture, do: :modular
+      end
+      """)
+
       {:ok, planner_pid} =
-        AgentSupervisor.start_agent(sid, :planner, project_root: project.root_path)
+        AgentSupervisor.start_agent(sid, :planner,
+          project_root: project.root_path,
+          llm: IexCode.ConcurrentAgentLLMStub
+        )
 
       {:ok, explorer_pid} =
         AgentSupervisor.start_agent(sid, :explorer, project_root: project.root_path)
 
       {:ok, coder_pid} =
-        AgentSupervisor.start_agent(sid, :coder, project_root: project.root_path)
+        AgentSupervisor.start_agent(sid, :coder,
+          project_root: project.root_path,
+          llm: IexCode.ConcurrentAgentLLMStub
+        )
 
       {:ok, verifier_pid} =
         AgentSupervisor.start_agent(sid, :verifier, project_root: project.root_path)
@@ -136,14 +164,24 @@ defmodule IexCode.Engine.Challenger3AdversarialTest do
       assert is_binary(plan_text) and byte_size(plan_text) > 0
 
       assert {:ok, exp_res} = ExplorerAgent.explore(sid, huge_goal, timeout: 60_000)
-      assert is_binary(exp_res) or is_map(exp_res)
+      assert is_binary(exp_res)
+      assert exp_res =~ "large_payload_fixture.ex"
 
       # CoderAgent handles large payloads safely
       code_res = CoderAgent.code(sid, huge_goal, timeout: 60_000)
       assert match?({:ok, _}, code_res) or match?({:error, _}, code_res)
 
       assert {:ok, verif_res} = VerifierAgent.check_compile(sid, timeout: 60_000)
-      assert is_map(verif_res) or is_binary(verif_res) or is_struct(verif_res)
+      assert is_binary(verif_res)
+      refute String.starts_with?(verif_res, "Exit Code ")
+
+      assert [_compiled_module] =
+               Path.wildcard(
+                 Path.join(
+                   project.root_path,
+                   "_build/*/lib/large_payload_fixture/ebin/Elixir.LargePayloadFixture.beam"
+                 )
+               )
 
       AgentSupervisor.stop_all_agents(sid)
     end
@@ -253,7 +291,7 @@ defmodule IexCode.Engine.Challenger3AdversarialTest do
       :timer.sleep(2000)
 
       # Query DB across all 5 sessions
-      all_ops = Repo.all(from o in Operation, where: o.session_id in ^session_ids)
+      all_ops = Repo.all(from(o in Operation, where: o.session_id in ^session_ids))
       assert length(all_ops) == 50
 
       # EMPIRICAL VALIDATION: ZERO running operations

@@ -833,6 +833,10 @@ defmodule IexCodeWeb.WorkspaceLive do
   end
 
   @impl true
+  def handle_event("approve_consensus", _params, %{assigns: %{consensus_matrix: nil}} = socket) do
+    {:noreply, put_flash(socket, :error, "No reviewed proposal is available to approve.")}
+  end
+
   def handle_event("approve_consensus", _params, socket) do
     socket =
       socket
@@ -843,6 +847,10 @@ defmodule IexCodeWeb.WorkspaceLive do
   end
 
   @impl true
+  def handle_event("reject_consensus", _params, %{assigns: %{consensus_matrix: nil}} = socket) do
+    {:noreply, put_flash(socket, :error, "No reviewed proposal is available to reject.")}
+  end
+
   def handle_event("reject_consensus", params, socket) do
     reason = params["reason"] || "Security concerns"
 
@@ -7295,129 +7303,14 @@ defmodule IexCodeWeb.WorkspaceLive do
   defp all_directory_paths(_), do: MapSet.new()
 
   defp assign_initial_consensus(socket) do
-    assessments = sample_consensus_assessments()
-    matrix = IexCode.Consensus.Matrix.compute(assessments)
-    roster = sample_dynamic_roster()
-    peer_messages = sample_peer_messages()
-
     socket
-    |> assign(:consensus_assessments, assessments)
-    |> assign(:consensus_matrix, matrix)
+    |> assign(:consensus_assessments, [])
+    |> assign(:consensus_matrix, nil)
     |> assign(:consensus_status, :idle)
     |> assign(:consensus_rejection_reason, nil)
-    |> assign(:dynamic_roster, roster)
-    |> assign(:swarm_roster, roster)
-    |> assign(:peer_messages, peer_messages)
-  end
-
-  defp sample_dynamic_roster do
-    [
-      %{
-        role: :explorer,
-        display_name: "Explorer Lead",
-        model_provider: "anthropic",
-        model_id: "claude-3-7-sonnet"
-      },
-      %{
-        role: :architect,
-        display_name: "Architect Lead",
-        model_provider: "anthropic",
-        model_id: "claude-3-7-sonnet"
-      },
-      %{
-        role: :coder,
-        display_name: "Coder Agent",
-        model_provider: "anthropic",
-        model_id: "claude-3-7-sonnet"
-      },
-      %{
-        role: :auditor,
-        display_name: "Auditor Agent",
-        model_provider: "openai",
-        model_id: "gpt-4o"
-      }
-    ]
-  end
-
-  defp sample_peer_messages do
-    [
-      %{
-        id: "peer-sample-1",
-        from_agent: "explorer-1",
-        to_agent: "architect-lead",
-        role: :explorer,
-        type: :context_handoff,
-        payload: %{"status" => "Codebase AST symbols indexed", "target_files" => ["lib/core.ex"]},
-        timestamp: DateTime.utc_now()
-      },
-      %{
-        id: "peer-sample-2",
-        from_agent: "architect-lead",
-        to_agent: "coder-1",
-        role: :architect,
-        type: :architecture_spec,
-        payload: %{"contract" => "Interface specification validated"},
-        timestamp: DateTime.utc_now()
-      },
-      %{
-        id: "peer-sample-3",
-        from_agent: "coder-1",
-        to_agent: "swarm:all",
-        role: :coder,
-        type: :proposal_submission,
-        payload: %{"patches_count" => 1},
-        timestamp: DateTime.utc_now()
-      }
-    ]
-  end
-
-  defp sample_consensus_assessments do
-    [
-      %IexCode.Consensus.Assessment{
-        reviewer_id: "cloud_claude",
-        provider: "anthropic",
-        model: "claude-3-7-sonnet",
-        vote: :approve,
-        confidence: 0.95,
-        scores: %{
-          correctness: 0.92,
-          security: 0.90,
-          architectural_fit: 0.88,
-          maintainability: 0.85,
-          testability: 0.90
-        },
-        verdict_reason:
-          "Clean implementation following OTP conventions with thorough test coverage",
-        critique_points: [
-          %{
-            severity: :minor,
-            category: "style",
-            file_path: "lib/core.ex",
-            line_number: 42,
-            description: "Consider documenting type specification for public API"
-          }
-        ],
-        suggested_modifications: ["Add @spec declarations"]
-      },
-      %IexCode.Consensus.Assessment{
-        reviewer_id: "local_llama",
-        provider: "ollama",
-        model: "llama3.2:latest",
-        vote: :approve,
-        confidence: 0.88,
-        scores: %{
-          correctness: 0.88,
-          security: 0.85,
-          architectural_fit: 0.82,
-          maintainability: 0.80,
-          testability: 0.85
-        },
-        verdict_reason:
-          "Verified locally on Apple Silicon Metal runtime; memory usage within budget",
-        critique_points: [],
-        suggested_modifications: []
-      }
-    ]
+    |> assign(:dynamic_roster, [])
+    |> assign(:swarm_roster, [])
+    |> assign(:peer_messages, [])
   end
 
   defp refresh_swarm_canvas(socket) do

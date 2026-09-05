@@ -139,9 +139,11 @@ defmodule IexCodeWeb.Live.Challenger2ExplorerEditorChatLiveStressTest do
       |> element("#tab-btn-files")
       |> render_click()
 
-      rendered = render(view)
-      assert rendered =~ "0 files"
-      assert rendered =~ "Select a workspace file on the left"
+      assert has_element?(view, "#file-tree-panel", "0 files")
+      assert has_element?(view, "#file-tree-empty")
+      assert has_element?(view, "#file-editor-panel #file-editor-empty[role='status']")
+      refute has_element?(view, "#file-tree-panel button[phx-click='select_file']")
+      refute has_element?(view, "#code-editor-textarea")
     end
   end
 

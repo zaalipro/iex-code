@@ -57,7 +57,7 @@ defmodule IexCodeWeb.Detached.DiffLiveTest do
       assert has_element?(view, "#detached-diff-container")
       assert html =~ "No staged changes"
       assert html =~ "No unstaged changes"
-      assert html =~ "GIT STAGING &amp; DIFF INSPECTOR"
+      assert has_element?(view, "#detached-diff-toolbar-title", "Git staging & diff inspector")
       refute html =~ "KeyError"
       refute html =~ "Protocol.UndefinedError"
     end

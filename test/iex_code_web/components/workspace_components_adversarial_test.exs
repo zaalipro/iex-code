@@ -81,61 +81,42 @@ defmodule IexCodeWeb.WorkspaceComponentsAdversarialTest do
     test "handles negative, nil, floating point, and overflow progress values gracefully" do
       now = DateTime.utc_now() |> DateTime.truncate(:second)
 
-      ops = [
-        # Nil progress
-        %Operation{
-          id: "op-p-nil",
-          session_id: "s1",
-          agent_name: "PlannerAgent",
-          op_type: "plan",
-          status: "idle",
-          progress: nil,
-          started_at: now
-        },
-        # Running with 0 progress -> minimum 10% bar width
-        %Operation{
-          id: "op-p-zero-run",
-          session_id: "s1",
-          agent_name: "ExplorerAgent",
-          op_type: "explore",
-          status: "running",
-          progress: 0,
-          started_at: now
-        },
-        # Negative progress (-25) -> max(-25, 0) => 0% or 10% if running
-        %Operation{
-          id: "op-p-neg",
-          session_id: "s1",
-          agent_name: "CoderAgent",
-          op_type: "code",
-          status: "idle",
-          progress: -25,
-          started_at: now
-        },
-        # 100% completed
-        %Operation{
-          id: "op-p-100",
-          session_id: "s1",
-          agent_name: "VerifierAgent",
-          op_type: "verify",
-          status: "completed",
-          progress: 100,
-          started_at: now
+      for {progress, status, expected} <- [
+            {nil, "idle", "0"},
+            {0, "running", "0"},
+            {-25, "running", "0"},
+            {42.75, "running", "42.75"},
+            {100, "completed", "100"},
+            {145, "running", "100"}
+          ] do
+        assigns = %{
+          operations: [
+            %Operation{
+              id: "op-progress-edge",
+              session_id: "s1",
+              agent_name: "CoderAgent",
+              op_type: "code",
+              status: status,
+              progress: progress,
+              started_at: now
+            }
+          ]
         }
-      ]
 
-      assigns = %{operations: ops}
+        document =
+          rendered_to_string(~H"""
+          <.subagent_cards operations={@operations} />
+          """)
+          |> LazyHTML.from_fragment()
 
-      html =
-        rendered_to_string(~H"""
-        <.subagent_cards operations={@operations} />
-        """)
+        card = LazyHTML.query(document, "#subagent-card-coder")
 
-      assert html =~ "0%"
-      assert html =~ "100%"
-      assert html =~ "width: 10%"
-      assert html =~ "width: 0%"
-      assert html =~ "width: 100%"
+        assert card |> LazyHTML.query("div[style^='width:']") |> LazyHTML.attribute("style") ==
+                 ["width: #{expected}%"]
+
+        assert Regex.scan(~r/-?\d+(?:\.\d+)?%/, LazyHTML.text(card)) == [["#{expected}%"]]
+        assert LazyHTML.text(card) =~ String.upcase(status)
+      end
     end
   end
 

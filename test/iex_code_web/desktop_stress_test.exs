@@ -465,7 +465,9 @@ defmodule IexCodeWeb.DesktopStressTest do
         assert {Desktop.Window, opts} = child_spec
         assert opts[:id] == IexCodeWindow
         assert opts[:menubar] == IexCodeWeb.MenuBar
-        assert opts[:icon_menu] == IexCodeWeb.TrayMenu
+
+        assert opts[:icon_menu] ==
+                 if(match?({:unix, :darwin}, :os.type()), do: nil, else: IexCodeWeb.TrayMenu)
       after
         Application.put_env(:iex_code, :start_desktop_window, original_window)
         Application.put_env(:iex_code, IexCodeWeb.Endpoint, original_endpoint)

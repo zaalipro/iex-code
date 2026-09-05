@@ -118,12 +118,12 @@ defmodule IexCodeWeb.EmpiricalSettingsStudioChallengeTest do
 
     test "direct URL navigation activates the targeted tab and hides all others", %{conn: conn} do
       tabs = [
-        {"providers", "Providers & Models"},
-        {"reasoning", "Reasoning & Thinking"},
-        {"safety", "Tool Safety & Approvals"},
-        {"context", "Context & Personas"},
-        {"environment", "Environment & Secrets"},
-        {"appearance", "Sound & Appearance"}
+        {"providers", "Providers & models"},
+        {"reasoning", "Reasoning"},
+        {"safety", "Execution & safety"},
+        {"context", "Context & research"},
+        {"environment", "Environment"},
+        {"appearance", "Appearance & sound"}
       ]
 
       for {tab_id, expected_title_part} <- tabs do

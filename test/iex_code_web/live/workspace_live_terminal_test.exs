@@ -290,9 +290,8 @@ defmodule IexCodeWeb.WorkspaceLiveTerminalTest do
       )
 
       # Banner must now be visible with agent details
-      assert has_element?(view, "#terminal-agent-banner")
-      assert render(view) =~ "ExplorerAgent"
-      assert render(view) =~ "Agent Active"
+      assert has_element?(view, "#terminal-agent-banner", "ExplorerAgent")
+      assert has_element?(view, "#terminal-agent-banner", "op-42")
 
       # Send occupant change back to :user
       send(view.pid, {:terminal_occupant, %{session_id: session.id, occupant: :user}})

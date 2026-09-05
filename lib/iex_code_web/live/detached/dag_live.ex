@@ -245,35 +245,31 @@ defmodule IexCodeWeb.Detached.DagLive do
         class="flex flex-col h-screen w-screen bg-[#0a0d12] overflow-hidden text-gray-200"
       >
         <!-- Header -->
-        <header class="flex items-center justify-between px-4 py-2.5 bg-[#161b22] border-b border-[#30363d] shrink-0">
-          <div class="flex items-center gap-3">
-            <div class="flex items-center gap-2">
-              <span class="w-3 h-3 rounded-full bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.5)] animate-pulse"></span>
-              <span class="font-mono text-sm font-semibold text-white tracking-wide">DAG TOPOLOGICAL MAP</span>
-            </div>
-            <span class="text-xs px-2 py-0.5 rounded bg-zinc-800 text-zinc-400 font-mono">
-              Session: {@session_id}
+        <.page_toolbar
+          id="detached-dag-toolbar"
+          title="DAG topological map"
+          heading_tag="h1"
+        >
+          <:leading>
+            <.icon name="hero-share" class="size-[18px] text-accent" />
+          </:leading>
+          <span class="max-w-60 truncate text-xs text-muted" title={@session_id}>
+            Session: {@session_id}
+          </span>
+          <%= if @run do %>
+            <span class="max-w-72 truncate rounded-lg border border-accent/30 bg-accent/10 px-2 py-1 text-xs text-accent">
+              Run: {@run.id} ({@run.status})
             </span>
-            <%= if @run do %>
-              <span class="text-xs px-2 py-0.5 rounded bg-cyan-950/60 border border-cyan-800/50 text-cyan-300 font-mono">
-                Run: {@run.id} ({@run.status})
-              </span>
-            <% end %>
-          </div>
-
-          <div class="flex items-center gap-3 text-xs font-mono">
-            <div class="flex items-center rounded-lg bg-[#0d1117] p-0.5 border border-[#30363d]">
+          <% end %>
+          <:actions>
+            <div class="flex flex-wrap items-center gap-1" role="group" aria-label="DAG view">
               <button
                 type="button"
                 id="dag-view-toggle-canvas"
                 phx-click="toggle_dag_view"
                 phx-value-mode="canvas"
-                class={[
-                  "px-2.5 py-1 rounded text-xs font-medium transition-colors flex items-center gap-1.5",
-                  @canvas_view_mode == "canvas" &&
-                    "bg-cyan-950/80 text-cyan-300 border border-cyan-800/60 shadow-sm",
-                  @canvas_view_mode != "canvas" && "text-zinc-400 hover:text-white"
-                ]}
+                aria-pressed={to_string(@canvas_view_mode == "canvas")}
+                class="header-control"
               >
                 <.icon name="hero-share" class="w-3.5 h-3.5" /> Canvas View
               </button>
@@ -282,29 +278,23 @@ defmodule IexCodeWeb.Detached.DagLive do
                 id="dag-view-toggle-stages"
                 phx-click="toggle_dag_view"
                 phx-value-mode="stages"
-                class={[
-                  "px-2.5 py-1 rounded text-xs font-medium transition-colors flex items-center gap-1.5",
-                  @canvas_view_mode == "stages" &&
-                    "bg-cyan-950/80 text-cyan-300 border border-cyan-800/60 shadow-sm",
-                  @canvas_view_mode != "stages" && "text-zinc-400 hover:text-white"
-                ]}
+                aria-pressed={to_string(@canvas_view_mode == "stages")}
+                class="header-control"
               >
                 <.icon name="hero-view-columns" class="w-3.5 h-3.5" /> Stage Columns
               </button>
             </div>
-
-            <div class="flex items-center gap-2 bg-[#0d1117] px-2.5 py-1 rounded border border-[#30363d]">
-              <span class="text-zinc-500">Engine:</span>
-              <span class="text-cyan-300 font-semibold">{@projection[:engine] || "dag_v1"}</span>
-            </div>
-            <div class="flex items-center gap-2 bg-[#0d1117] px-2.5 py-1 rounded border border-[#30363d]">
-              <span class="text-zinc-500">Nodes:</span>
-              <span class="text-emerald-300 font-semibold">
+            <span class="inline-flex items-center gap-1.5 text-xs text-muted">
+              Engine: <span class="font-medium text-accent">{@projection[:engine] || "dag_v1"}</span>
+            </span>
+            <span class="inline-flex items-center gap-1.5 text-xs text-muted">
+              Nodes:
+              <span class="font-medium text-content">
                 {(@projection[:layers] || []) |> List.flatten() |> length()}
               </span>
-            </div>
-          </div>
-        </header>
+            </span>
+          </:actions>
+        </.page_toolbar>
 
         <!-- Main Content: Left DAG Projection, Right Step Details -->
         <div class="flex flex-1 min-h-0 overflow-hidden">
