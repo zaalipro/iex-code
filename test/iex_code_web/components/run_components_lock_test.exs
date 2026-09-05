@@ -48,13 +48,14 @@ defmodule IexCodeWeb.RunComponentsLockTest do
       |> LazyHTML.from_fragment()
 
     assert LazyHTML.query(document, "#workspace-lock-overview[data-lock-state='held']")
+    assert LazyHTML.query(document, "#workspace-lock-overview.rounded-2xl")
 
     assert LazyHTML.query(document, "#workspace-lock-summary") |> LazyHTML.text() =~
              "Reserved by this run"
 
-    assert document |> compact_text("#workspace-lock-held-count") =~ "1 held resources"
+    assert document |> compact_text("#workspace-lock-held-count") =~ "1 held"
 
-    assert document |> compact_text("#workspace-lock-waiting-count") =~ "1 waiting resources"
+    assert document |> compact_text("#workspace-lock-waiting-count") =~ "1 waiting"
 
     assert LazyHTML.query(document, "#workspace-lock-details")
     assert LazyHTML.query(document, "#workspace-lock-lock-held[data-lock-status='held']")

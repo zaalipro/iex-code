@@ -8,6 +8,42 @@ defmodule IexCode.Desktop.Lifecycle do
   """
   require Logger
 
+  @quit_coordinator __MODULE__.QuitCoordinator
+  @default_cleanup_timeout_ms 2_000
+  @default_force_halt_after_ms 7_000
+
+  @doc """
+  Starts the bounded desktop quit sequence without blocking a native menu callback.
+
+  The first caller owns shutdown. Later Dock or keyboard quit events are
+  idempotent. Cleanup gets a short grace period, graceful OTP shutdown is then
+  requested, and an independent watchdog hard-halts the runtime if the whole
+  sequence does not complete within seven seconds by default.
+  """
+  @spec request_quit(keyword()) :: :ok
+  def request_quit(opts \\ []) do
+    coordinator =
+      spawn(fn ->
+        # Application masters kill all processes belonging to their group
+        # leader during shutdown, even unlinked ones. Detach before starting
+        # quit so this coordinator and its watchdog survive application cleanup.
+        Process.group_leader(self(), Process.whereis(:init))
+
+        receive do
+          {:begin_quit, quit_opts} -> coordinate_quit(quit_opts)
+        end
+      end)
+
+    try do
+      true = Process.register(coordinator, @quit_coordinator)
+      send(coordinator, {:begin_quit, opts})
+    rescue
+      ArgumentError -> Process.exit(coordinator, :kill)
+    end
+
+    :ok
+  end
+
   @doc """
   Runs the teardown pipeline.
 
@@ -206,6 +242,90 @@ defmodule IexCode.Desktop.Lifecycle do
       true ->
         System.stop(0)
     end
+  end
+
+  defp coordinate_quit(opts) do
+    cleanup_timeout_ms =
+      non_negative_timeout(opts[:cleanup_timeout_ms], @default_cleanup_timeout_ms)
+
+    force_halt_after_ms =
+      non_negative_timeout(opts[:force_halt_after_ms], @default_force_halt_after_ms)
+
+    cleanup_fn = opts[:cleanup_fn] || default_cleanup_fn()
+    stop_fn = opts[:stop_fn] || default_stop_fn()
+    halt_fn = opts[:halt_fn] || default_force_halt_fn()
+
+    watchdog? = Keyword.has_key?(opts, :halt_fn) or default_halt?()
+    coordinator = self()
+
+    if watchdog? do
+      spawn(fn ->
+        receive do
+        after
+          force_halt_after_ms ->
+            safely_invoke(halt_fn, :hard_halt)
+            send(coordinator, :hard_halt_returned)
+        end
+      end)
+    end
+
+    run_bounded_cleanup(cleanup_fn, cleanup_timeout_ms)
+    safely_invoke(stop_fn, :graceful_stop)
+
+    if Keyword.get(opts, :linger, default_halt?()) and watchdog? do
+      receive do
+        :hard_halt_returned -> :ok
+      end
+    end
+  end
+
+  defp run_bounded_cleanup(cleanup_fn, timeout_ms) when is_function(cleanup_fn, 0) do
+    {cleanup_pid, cleanup_ref} =
+      spawn_monitor(fn ->
+        safely_invoke(cleanup_fn, :cleanup)
+      end)
+
+    receive do
+      {:DOWN, ^cleanup_ref, :process, ^cleanup_pid, _reason} -> :ok
+    after
+      timeout_ms ->
+        Logger.warning("IexCode.Desktop.Lifecycle: Cleanup timed out; continuing shutdown")
+        Process.exit(cleanup_pid, :kill)
+        Process.demonitor(cleanup_ref, [:flush])
+    end
+  end
+
+  defp safely_invoke(fun, stage) when is_function(fun, 0) do
+    fun.()
+  rescue
+    error ->
+      Logger.warning(
+        "IexCode.Desktop.Lifecycle: #{stage} failed during quit: #{Exception.message(error)}"
+      )
+
+      :ok
+  catch
+    kind, reason ->
+      Logger.warning(
+        "IexCode.Desktop.Lifecycle: #{stage} failed during quit: #{inspect({kind, reason})}"
+      )
+
+      :ok
+  end
+
+  defp non_negative_timeout(value, _default) when is_integer(value) and value >= 0, do: value
+  defp non_negative_timeout(_value, default), do: default
+
+  defp default_stop_fn do
+    if default_halt?(), do: fn -> System.stop(0) end, else: fn -> :ok end
+  end
+
+  defp default_cleanup_fn do
+    if default_halt?(), do: fn -> teardown(halt: false) end, else: fn -> :ok end
+  end
+
+  defp default_force_halt_fn do
+    if default_halt?(), do: fn -> System.halt(0) end, else: fn -> :ok end
   end
 
   @doc """

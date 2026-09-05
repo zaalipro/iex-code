@@ -71,7 +71,12 @@ export const TerminalHook = {
     // 5. Custom Key Event Interceptor (macOS Cmd+C copy / Windows Ctrl+Shift+C copy, shortcut passthroughs)
     this.term.attachCustomKeyEventHandler((event) => {
       if (event.type === "keydown") {
-        // Let global shortcuts pass through to window listener
+        // Let global shortcuts pass through to the window listener.
+        if (event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey &&
+            event.key.toLowerCase() === "n") {
+          return false
+        }
+
         if (
           (event.metaKey || event.ctrlKey) &&
           (event.key === "b" || event.key === "B" ||

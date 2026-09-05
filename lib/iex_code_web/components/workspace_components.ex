@@ -2028,7 +2028,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
           >
             <h2 id="command-palette-title" class="sr-only">Command palette</h2>
             <p id="command-palette-description" class="sr-only">
-              Search workspace files, sessions, swarms, models, branches, terminal commands, views, and actions.
+              Find a command, file, model, or workspace view.
             </p>
 
             <%!-- Search Header Input --%>
@@ -2056,7 +2056,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
                   phx-debounce="80"
                   autocomplete="off"
                   spellcheck="false"
-                  placeholder="Type a command or prefix: > actions, # files, @ swarms, $ models, / branches, ! terminal... (Cmd+K)"
+                  placeholder="Search commands, files, and models…"
                   class="w-full bg-transparent border-0 text-content placeholder:text-subtle font-sans text-sm focus:outline-none focus:ring-0 p-0"
                 />
               </form>
@@ -2092,7 +2092,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
                   class={[
                     "px-2.5 py-1 rounded-lg transition-smooth font-medium text-[11px] shrink-0 flex items-center gap-1.5",
                     @category == cat &&
-                      "bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 font-semibold shadow-sm",
+                      "bg-accent/10 text-accent border border-accent/25 font-semibold",
                     @category != cat &&
                       "text-muted hover:text-content hover:bg-raised border border-transparent"
                   ]}
@@ -2103,13 +2103,13 @@ defmodule IexCodeWeb.WorkspaceComponents do
             </div>
 
             <%!-- Split-Pane Main Container --%>
-            <div class="flex-1 flex min-h-[420px] max-h-[60vh] overflow-hidden divide-x divide-[#21262d]">
+            <div class="flex-1 flex min-h-[min(26rem,50dvh)] max-h-[60dvh] overflow-hidden divide-x divide-line">
               <%!-- Left Pane: Results List (w-7/12) --%>
               <div
                 id="command-palette-results"
                 role="listbox"
                 aria-label="Command palette results"
-                class="w-7/12 flex flex-col min-w-0 overflow-y-auto p-2 space-y-1 font-sans text-sm"
+                class="w-full sm:w-7/12 flex flex-col min-w-0 overflow-y-auto p-2 space-y-1 font-sans text-sm"
               >
                 <%= if @results == [] do %>
                   <div class="py-16 text-center text-subtle font-mono text-xs">
@@ -2139,7 +2139,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
                       class={[
                         "w-full flex items-center justify-between p-2.5 rounded-xl text-left transition-smooth group",
                         is_selected &&
-                          "bg-cyan-950/40 text-cyan-200 border border-cyan-500/40 font-medium shadow-sm",
+                          "bg-accent/10 text-content border border-accent/25 font-medium",
                         !is_selected && "hover:bg-raised text-muted border border-transparent"
                       ]}
                     >
@@ -2207,7 +2207,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
               <%!-- Right Pane: Dynamic Rich Preview Card (w-5/12) --%>
               <div
                 id="command-palette-preview"
-                class="w-5/12 flex flex-col min-w-0 overflow-y-auto p-4 bg-inset/90 font-sans"
+                class="hidden sm:flex w-5/12 flex-col min-w-0 overflow-y-auto p-4 bg-inset/90 font-sans"
               >
                 <%= if @selected_item do %>
                   <% preview = Map.get(@selected_item, :preview, %{}) %>
@@ -2616,7 +2616,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
                 Close</span>
                 <span><kbd class="px-1.5 py-0.5 bg-raised border border-line rounded text-muted">Cmd+K</kbd>
                 Toggle</span>
-                <span><kbd class="px-1.5 py-0.5 bg-raised border border-line rounded text-muted">Cmd+B</kbd>
+                <span><kbd class="px-1.5 py-0.5 bg-raised border border-line rounded text-muted">Cmd+N</kbd>
                 Sidebar</span>
                 <span><kbd class="px-1.5 py-0.5 bg-raised border border-line rounded text-muted">Cmd+J</kbd>
                 Terminal</span>

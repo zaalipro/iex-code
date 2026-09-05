@@ -115,7 +115,7 @@ defmodule IexCodeWeb.Components.CommandPaletteComponentTest do
       assert rendered =~ "Select"
       assert rendered =~ "Close"
       assert rendered =~ "Cmd+K"
-      assert rendered =~ "Cmd+B"
+      assert rendered =~ "Cmd+N"
       assert rendered =~ "Cmd+J"
     end
   end

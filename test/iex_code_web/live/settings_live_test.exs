@@ -11,9 +11,21 @@ defmodule IexCodeWeb.SettingsLiveTest do
     assert has_element?(view, "#settings-form[phx-submit='save_settings']")
     assert has_element?(view, "#settings-return-workspace[href='/']")
 
-    for section <- ~w(models execution goals swarm research providers editor usage runtime) do
+    section_routes = %{
+      "models" => "/settings/providers#models",
+      "execution" => "/settings/safety#execution",
+      "goals" => "/settings/safety#goals",
+      "swarm" => "/settings/safety#swarm",
+      "research" => "/settings/context#research",
+      "providers" => "/settings/providers#providers",
+      "editor" => "/settings/appearance#editor",
+      "usage" => "/settings/appearance#usage",
+      "runtime" => "/settings/providers#runtime"
+    }
+
+    for {section, route} <- section_routes do
       assert has_element?(view, "section##{section}")
-      assert has_element?(view, "#settings-nav-#{section}[href='##{section}']")
+      assert has_element?(view, "#settings-nav-#{section}[href='#{route}']")
     end
 
     assert has_element?(view, "#settings-save-bar #settings-save[type='submit'][disabled]")
@@ -83,6 +95,26 @@ defmodule IexCodeWeb.SettingsLiveTest do
              "#settings-page",
              "Existing sessions retain only their session-level provider"
            )
+  end
+
+  test "section navigation reveals its owning tab and preserves an unsaved draft", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/settings")
+    persisted_model = Settings.get_settings().default_model
+
+    view
+    |> form("#settings-form", %{"settings" => %{"default_model" => "section-nav-draft"}})
+    |> render_change()
+
+    assert has_element?(view, "#settings-save-status", "Unsaved changes")
+
+    view |> element("#settings-nav-execution") |> render_click()
+
+    assert_patch(view, "/settings/safety")
+    assert has_element?(view, "#tab-panel-safety:not(.hidden)")
+    assert has_element?(view, "#tab-link-safety[aria-current='page']")
+    assert has_element?(view, "#settings-default-model[value='section-nav-draft']")
+    assert has_element?(view, "#settings-save-status", "Unsaved changes")
+    assert Settings.get_settings().default_model == persisted_model
   end
 
   test "session route shows valid context, scopes the return link, and rejects invalid context safely",

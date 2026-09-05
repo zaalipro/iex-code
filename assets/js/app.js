@@ -197,10 +197,11 @@ const Hooks = {
           return
         }
 
-        // Cmd+B or Ctrl+B toggles the sidebar
-        if ((e.metaKey || e.ctrlKey) && (e.key === "b" || e.key === "B")) {
+        // Cmd+N toggles the sidebar; retain Cmd+B / Ctrl+B as aliases.
+        if ((e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "n") ||
+            ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "b")) {
           e.preventDefault()
-          this.pushEvent("toggle_sidebar", {})
+          if (!e.repeat) this.pushEvent("toggle_sidebar", {})
           return
         }
 

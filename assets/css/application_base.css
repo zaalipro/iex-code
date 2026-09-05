@@ -15,7 +15,7 @@
   --color-carbon-400: var(--ui-border-strong);
 
   --font-mono: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
 }
 
 /* Studio-Grade Glassmorphism & Layout Ergonomics Tokens */
@@ -1166,26 +1166,3 @@ body.phx-disconnected::after {
 .settings-page .settings-control { border-radius: var(--ui-radius-control); }
 .settings-page .settings-save-button { color: var(--ui-accent-text); }
 .settings-page .settings-save-bar { background: color-mix(in srgb, var(--ui-surface) 92%, transparent); }
-
-/* Keep the commit action within reach while editing long settings panels. */
-.settings-page { padding-bottom: 7rem; }
-.settings-page .settings-save-bar {
-  position: fixed;
-  left: 1rem;
-  right: 1rem;
-  bottom: 1rem;
-  border-radius: 1rem;
-  box-shadow: var(--ui-shadow-modal);
-}
-body:has(#settings-page) #flash-info { bottom: 7rem; }
-body:has(#settings-page) #flash-error { bottom: 15rem; }
-@media (max-width: 39.99rem) {
-  body:has(#settings-page) #flash-info { bottom: 12rem; max-width: calc(100vw - 2.5rem); }
-  body:has(#settings-page) #flash-error { bottom: 20rem; max-width: calc(100vw - 2.5rem); }
-}
-@media (min-width: 64rem) {
-  .settings-page .settings-save-bar {
-    left: max(19rem, calc((100vw - 90rem) / 2 + 19rem));
-    right: max(2rem, calc((100vw - 90rem) / 2 + 2rem));
-  }
-}

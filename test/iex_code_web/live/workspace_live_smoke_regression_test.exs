@@ -20,8 +20,13 @@ defmodule IexCodeWeb.WorkspaceLiveSmokeRegressionTest do
 
     {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
 
-    assert has_element?(view, "#kanban-empty-state")
-    assert has_element?(view, "#kanban-empty-create-task")
+    assert has_element?(view, "#kanban-empty-state.sr-only")
+
+    assert has_element?(
+             view,
+             "#kanban-header-actions #kanban-empty-create-task[phx-click='toggle_new_task_modal']"
+           )
+
     assert Kanban.list_tasks(project.id) == []
     assert Sessions.list_messages(session.id) == []
     assert Runs.list_runs(project_id: project.id) == []
@@ -70,13 +75,22 @@ defmodule IexCodeWeb.WorkspaceLiveSmokeRegressionTest do
     assert has_element?(view, "#kanban-filter-empty-state", "No tasks match these filters")
     assert has_element?(view, "#kanban-clear-filters[phx-click='clear_kanban_filters']")
     refute has_element?(view, "#kanban-empty-state")
-    refute has_element?(view, "#kanban-empty-create-task")
+
+    assert has_element?(
+             view,
+             "#kanban-header-actions #kanban-empty-create-task[phx-click='toggle_new_task_modal']"
+           )
 
     view |> element("#kanban-clear-filters") |> render_click()
 
     refute has_element?(view, "#kanban-filter-empty-state")
     refute has_element?(view, "#kanban-empty-state")
     assert has_element?(view, "#task-card-#{task.id}")
+
+    assert has_element?(
+             view,
+             "#kanban-header-actions #kanban-empty-create-task[phx-click='toggle_new_task_modal']"
+           )
   end
 
   test "workspace search forms filter projects and sessions without mutating messages", %{
@@ -439,8 +453,8 @@ defmodule IexCodeWeb.WorkspaceLiveSmokeRegressionTest do
 
     view |> element("#sidebar-tab-changes") |> render_click()
     assert has_element?(view, "#changes-toolbar")
-    assert has_element?(view, "#changes-layout #changes-staging-panel")
-    assert has_element?(view, "#changes-layout #changes-diff-panel")
+    assert has_element?(view, "#changes-layout.gap-3 #changes-staging-panel.rounded-2xl")
+    assert has_element?(view, "#changes-layout.gap-3 #changes-diff-panel.rounded-2xl")
 
     view |> element("#sidebar-tab-files") |> render_click()
 
@@ -493,17 +507,17 @@ defmodule IexCodeWeb.WorkspaceLiveSmokeRegressionTest do
 
     assert has_element?(
              view,
-             "#workspace-settings-models[href='/sessions/#{session.id}/settings#models']"
+             "#workspace-settings-models[href='/sessions/#{session.id}/settings/providers#models']"
            )
 
     assert has_element?(
              view,
-             "#workspace-settings-general[href='/sessions/#{session.id}/settings#execution']"
+             "#workspace-settings-general[href='/sessions/#{session.id}/settings/safety#execution']"
            )
 
     assert has_element?(
              view,
-             "#profile-settings-card[href='/sessions/#{session.id}/settings#runtime']"
+             "#profile-settings-card[href='/sessions/#{session.id}/settings/providers#runtime']"
            )
 
     render_click(view, "toggle_project_modal")

@@ -3,6 +3,18 @@
 :where(body) {
   background: var(--ui-bg);
   color: var(--ui-text);
+  -webkit-font-smoothing: antialiased;
+  font-variant-numeric: tabular-nums;
+  text-rendering: optimizeLegibility;
+}
+
+:where(h1, h2, h3) {
+  text-wrap: balance;
+}
+
+:where(button, a, input, textarea, select, summary):focus-visible {
+  outline: 2px solid var(--ui-focus);
+  outline-offset: 3px;
 }
 
 :where(.ui-card, .settings-section-card) {
@@ -57,7 +69,7 @@
 
 :where(.ui-button) {
   display: inline-flex;
-  min-height: 2.5rem;
+  min-height: 2.25rem;
   align-items: center;
   justify-content: center;
   gap: 0.5rem;

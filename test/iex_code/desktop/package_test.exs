@@ -163,6 +163,7 @@ defmodule IexCode.Desktop.PackageTest do
       # Info.plist
       plist_path = Path.join(contents_dir, "Info.plist")
       assert File.exists?(plist_path)
+      assert File.exists?(Path.join([contents_dir, "Resources", "AppIcon.icns"]))
       assert File.read!(plist_path) =~ "com.iexcode.app"
 
       # PkgInfo

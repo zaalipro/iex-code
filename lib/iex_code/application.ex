@@ -34,6 +34,7 @@ defmodule IexCode.Application do
         IexCodeWeb.Endpoint,
         IexCode.Desktop.WindowSupervisor,
         desktop_child(),
+        desktop_native_lifecycle_child(),
         IexCode.Desktop.Dock,
         IexCode.Desktop.ActivityTracker,
         IexCode.Desktop.SwarmHooks,
@@ -56,14 +57,27 @@ defmodule IexCode.Application do
          title: "IexCode - Desktop AI Coding Harness",
          size: {1440, 920},
          min_size: {1024, 700},
+         icon: "desktop/AppIcon.png",
+         taskbar_icon: "desktop/AppIcon.png",
          menubar: IexCodeWeb.MenuBar,
-         icon_menu: IexCodeWeb.TrayMenu,
+         icon_menu: desktop_icon_menu(),
          on_close: :quit,
          url: &IexCodeWeb.Endpoint.url/0
        ]}
     else
       nil
     end
+  end
+
+  def desktop_native_lifecycle_child do
+    if Application.get_env(:iex_code, :start_desktop_window, false) and
+         match?({:unix, :darwin}, :os.type()) do
+      IexCode.Desktop.NativeLifecycle
+    end
+  end
+
+  defp desktop_icon_menu do
+    if match?({:unix, :darwin}, :os.type()), do: nil, else: IexCodeWeb.TrayMenu
   end
 
   defp run_dispatcher_child do

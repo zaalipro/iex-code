@@ -27,24 +27,24 @@
 :root,
 [data-ui-theme="midnight"] {
   color-scheme: dark;
-  --ui-bg: #090b14;
-  --ui-surface: #10131f;
-  --ui-surface-raised: #181c2b;
-  --ui-surface-inset: #070912;
-  --ui-border: #2b3044;
-  --ui-border-strong: #414966;
-  --ui-text: #f1f2fb;
-  --ui-muted: #a9aec4;
-  --ui-subtle: #747b97;
-  --ui-accent: #a99cf7;
-  --ui-accent-strong: #c2b8ff;
-  --ui-accent-text: #17122f;
-  --ui-accent-soft: rgb(169 156 247 / 0.14);
-  --ui-accent-softer: rgb(169 156 247 / 0.08);
-  --ui-focus: #c2b8ff;
-  --ui-focus-soft: rgb(194 184 255 / 0.28);
+  --ui-bg: #111318;
+  --ui-surface: #191c22;
+  --ui-surface-raised: #23272f;
+  --ui-surface-inset: #0d0f13;
+  --ui-border: #303640;
+  --ui-border-strong: #485362;
+  --ui-text: #edf1f7;
+  --ui-muted: #adb6c5;
+  --ui-subtle: #8490a2;
+  --ui-accent: #8bb8ff;
+  --ui-accent-strong: #afceff;
+  --ui-accent-text: #101d32;
+  --ui-accent-soft: rgb(139 184 255 / 0.14);
+  --ui-accent-softer: rgb(139 184 255 / 0.08);
+  --ui-focus: #afceff;
+  --ui-focus-soft: rgb(175 206 255 / 0.28);
   --ui-overlay: rgb(3 4 10 / 0.76);
-  --ui-selection: rgb(169 156 247 / 0.3);
+  --ui-selection: rgb(139 184 255 / 0.3);
   --ui-success: #6ed5a9;
   --ui-success-soft: rgb(110 213 169 / 0.13);
   --ui-warning: #efbd73;
@@ -53,12 +53,12 @@
   --ui-danger-soft: rgb(241 139 155 / 0.13);
   --ui-info: #7fc6f4;
   --ui-info-soft: rgb(127 198 244 / 0.13);
-  --ui-shadow-card: 0 18px 44px rgb(2 4 12 / 0.38), 0 1px 0 rgb(255 255 255 / 0.045) inset;
-  --ui-shadow-control: 0 7px 18px rgb(2 4 12 / 0.24), 0 1px 0 rgb(255 255 255 / 0.05) inset;
-  --ui-shadow-modal: 0 28px 90px rgb(2 4 12 / 0.62), 0 1px 0 rgb(255 255 255 / 0.06) inset;
+  --ui-shadow-card: 0 5px 18px rgb(2 4 12 / 0.38), 0 1px 0 rgb(255 255 255 / 0.045) inset;
+  --ui-shadow-control: 0 2px 5px rgb(2 4 12 / 0.24), 0 1px 0 rgb(255 255 255 / 0.05) inset;
+  --ui-shadow-modal: 0 24px 64px rgb(2 4 12 / 0.62), 0 1px 0 rgb(255 255 255 / 0.06) inset;
   --ui-shadow-inset: inset 0 1px 4px rgb(1 3 10 / 0.42);
   --ui-highlight: rgb(255 255 255 / 0.055);
-  --ui-grid: rgb(169 156 247 / 0.045);
+  --ui-grid: rgb(139 184 255 / 0.045);
 }
 
 [data-ui-theme="graphite"] {
@@ -89,9 +89,9 @@
   --ui-danger-soft: rgb(238 132 144 / 0.13);
   --ui-info: #86bde1;
   --ui-info-soft: rgb(134 189 225 / 0.13);
-  --ui-shadow-card: 0 18px 44px rgb(0 0 0 / 0.42), 0 1px 0 rgb(255 255 255 / 0.045) inset;
-  --ui-shadow-control: 0 7px 18px rgb(0 0 0 / 0.28), 0 1px 0 rgb(255 255 255 / 0.045) inset;
-  --ui-shadow-modal: 0 28px 90px rgb(0 0 0 / 0.66), 0 1px 0 rgb(255 255 255 / 0.055) inset;
+  --ui-shadow-card: 0 5px 18px rgb(0 0 0 / 0.42), 0 1px 0 rgb(255 255 255 / 0.045) inset;
+  --ui-shadow-control: 0 2px 5px rgb(0 0 0 / 0.28), 0 1px 0 rgb(255 255 255 / 0.045) inset;
+  --ui-shadow-modal: 0 24px 64px rgb(0 0 0 / 0.66), 0 1px 0 rgb(255 255 255 / 0.055) inset;
   --ui-shadow-inset: inset 0 1px 4px rgb(0 0 0 / 0.46);
   --ui-highlight: rgb(255 255 255 / 0.05);
   --ui-grid: rgb(239 128 107 / 0.035);
@@ -125,9 +125,9 @@
   --ui-danger-soft: rgb(239 143 150 / 0.13);
   --ui-info: #7acbd2;
   --ui-info-soft: rgb(122 203 210 / 0.13);
-  --ui-shadow-card: 0 18px 44px rgb(1 9 7 / 0.48), 0 1px 0 rgb(220 255 242 / 0.05) inset;
-  --ui-shadow-control: 0 7px 18px rgb(1 9 7 / 0.3), 0 1px 0 rgb(220 255 242 / 0.05) inset;
-  --ui-shadow-modal: 0 28px 90px rgb(1 8 6 / 0.7), 0 1px 0 rgb(220 255 242 / 0.06) inset;
+  --ui-shadow-card: 0 5px 18px rgb(1 9 7 / 0.48), 0 1px 0 rgb(220 255 242 / 0.05) inset;
+  --ui-shadow-control: 0 2px 5px rgb(1 9 7 / 0.3), 0 1px 0 rgb(220 255 242 / 0.05) inset;
+  --ui-shadow-modal: 0 24px 64px rgb(1 8 6 / 0.7), 0 1px 0 rgb(220 255 242 / 0.06) inset;
   --ui-shadow-inset: inset 0 1px 4px rgb(1 8 6 / 0.52);
   --ui-highlight: rgb(220 255 242 / 0.055);
   --ui-grid: rgb(121 218 180 / 0.04);
@@ -161,9 +161,9 @@
   --ui-danger-soft: rgb(184 59 82 / 0.1);
   --ui-info: #176e9a;
   --ui-info-soft: rgb(23 110 154 / 0.1);
-  --ui-shadow-card: 0 18px 42px rgb(42 62 92 / 0.11), 0 1px 2px rgb(42 62 92 / 0.08);
-  --ui-shadow-control: 0 6px 16px rgb(42 62 92 / 0.1), 0 1px 2px rgb(42 62 92 / 0.08);
-  --ui-shadow-modal: 0 28px 80px rgb(31 49 76 / 0.22), 0 2px 5px rgb(31 49 76 / 0.1);
+  --ui-shadow-card: 0 5px 18px rgb(42 62 92 / 0.11), 0 1px 2px rgb(42 62 92 / 0.08);
+  --ui-shadow-control: 0 2px 5px rgb(42 62 92 / 0.1), 0 1px 2px rgb(42 62 92 / 0.08);
+  --ui-shadow-modal: 0 24px 64px rgb(31 49 76 / 0.22), 0 2px 5px rgb(31 49 76 / 0.1);
   --ui-shadow-inset: inset 0 1px 3px rgb(42 62 92 / 0.11);
   --ui-highlight: rgb(255 255 255 / 0.85);
   --ui-grid: rgb(53 111 209 / 0.045);
@@ -197,18 +197,18 @@
   --ui-danger-soft: rgb(173 64 82 / 0.1);
   --ui-info: #326d8d;
   --ui-info-soft: rgb(50 109 141 / 0.1);
-  --ui-shadow-card: 0 18px 42px rgb(77 56 36 / 0.12), 0 1px 2px rgb(77 56 36 / 0.08);
-  --ui-shadow-control: 0 6px 16px rgb(77 56 36 / 0.1), 0 1px 2px rgb(77 56 36 / 0.08);
-  --ui-shadow-modal: 0 28px 80px rgb(64 45 29 / 0.22), 0 2px 5px rgb(64 45 29 / 0.1);
+  --ui-shadow-card: 0 5px 18px rgb(77 56 36 / 0.12), 0 1px 2px rgb(77 56 36 / 0.08);
+  --ui-shadow-control: 0 2px 5px rgb(77 56 36 / 0.1), 0 1px 2px rgb(77 56 36 / 0.08);
+  --ui-shadow-modal: 0 24px 64px rgb(64 45 29 / 0.22), 0 2px 5px rgb(64 45 29 / 0.1);
   --ui-shadow-inset: inset 0 1px 3px rgb(77 56 36 / 0.11);
   --ui-highlight: rgb(255 255 255 / 0.78);
   --ui-grid: rgb(181 84 57 / 0.04);
 }
 
 html {
-  --ui-radius-control: 0.75rem;
-  --ui-radius-card: 1.25rem;
-  --ui-radius-dialog: 1.5rem;
+  --ui-radius-control: 0.625rem;
+  --ui-radius-card: 1.125rem;
+  --ui-radius-dialog: 1.375rem;
   --ui-transition-fast: 140ms cubic-bezier(0.16, 1, 0.3, 1);
   --ui-transition: 220ms cubic-bezier(0.16, 1, 0.3, 1);
   background: var(--ui-bg);

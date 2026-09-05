@@ -14,12 +14,12 @@ defmodule IexCodeWeb.SettingsLive do
   alias IexCode.LLM.Discovery
 
   @studio_tabs [
-    {"providers", "Providers & Models", "hero-cpu-chip"},
-    {"reasoning", "Reasoning & Thinking", "hero-sparkles"},
-    {"safety", "Tool Safety & Approvals", "hero-shield-check"},
-    {"context", "Context & Personas", "hero-document-text"},
-    {"environment", "Environment & Secrets", "hero-variable"},
-    {"appearance", "Sound & Appearance", "hero-speaker-wave"}
+    {"providers", "Providers & models", "hero-cpu-chip"},
+    {"reasoning", "Reasoning", "hero-sparkles"},
+    {"safety", "Execution & safety", "hero-shield-check"},
+    {"context", "Context & research", "hero-document-text"},
+    {"environment", "Environment", "hero-variable"},
+    {"appearance", "Appearance & sound", "hero-swatch"}
   ]
 
   @valid_tabs ~w(providers reasoning safety context environment appearance)
@@ -28,7 +28,7 @@ defmodule IexCodeWeb.SettingsLive do
     %{
       id: "midnight",
       name: "Midnight",
-      description: "Deep navy with a quiet lavender signal.",
+      description: "Cool graphite and navy with a soft blue accent.",
       mood: "Focused after dark"
     },
     %{
@@ -60,16 +60,48 @@ defmodule IexCodeWeb.SettingsLive do
   @appearance_theme_ids Enum.map(@appearance_themes, & &1.id)
 
   @settings_sections [
-    {"models", "Models"},
-    {"execution", "Execution"},
+    {"models", "Model defaults"},
+    {"provider-diagnostics", "Connection tests"},
+    {"providers", "Search providers"},
+    {"runtime", "Runtime status"},
+    {"reasoning-profiles", "Thinking defaults"},
+    {"model-overrides-card", "Model overrides"},
+    {"payload-inspector-card", "Payload inspector"},
+    {"safety-policy-card", "Approvals & sandbox"},
+    {"execution", "Run defaults"},
     {"goals", "Goals"},
     {"swarm", "Swarm"},
+    {"context-compaction-card", "Context window"},
+    {"workspace-persona-card", "Instructions"},
     {"research", "Research"},
-    {"providers", "Providers"},
+    {"environment-vars-card", "Variables & secrets"},
+    {"visual-appearance-card", "Theme & depth"},
+    {"audio-ergonomics-card", "Sound"},
     {"editor", "Editor"},
-    {"usage", "Usage"},
-    {"runtime", "Runtime"}
+    {"usage", "Usage"}
   ]
+
+  @section_tabs %{
+    "models" => "providers",
+    "provider-diagnostics" => "providers",
+    "providers" => "providers",
+    "runtime" => "providers",
+    "reasoning-profiles" => "reasoning",
+    "model-overrides-card" => "reasoning",
+    "payload-inspector-card" => "reasoning",
+    "safety-policy-card" => "safety",
+    "execution" => "safety",
+    "goals" => "safety",
+    "swarm" => "safety",
+    "context-compaction-card" => "context",
+    "workspace-persona-card" => "context",
+    "research" => "context",
+    "environment-vars-card" => "environment",
+    "visual-appearance-card" => "appearance",
+    "audio-ergonomics-card" => "appearance",
+    "editor" => "appearance",
+    "usage" => "appearance"
+  }
 
   @impl true
   def mount(params, _session, socket) do
@@ -492,6 +524,12 @@ defmodule IexCodeWeb.SettingsLive do
 
   def settings_sections, do: @settings_sections
 
+  def settings_sections(tab_id) do
+    Enum.filter(@settings_sections, fn {section_id, _label} ->
+      Map.fetch!(@section_tabs, section_id) == tab_id
+    end)
+  end
+
   def appearance_themes, do: @appearance_themes
 
   def appearance_theme(form) do
@@ -517,17 +555,9 @@ defmodule IexCodeWeb.SettingsLive do
 
   def settings_section_header(assigns) do
     ~H"""
-    <header class="mb-6 border-b border-[#29313a] pb-5">
-      <p class={[
-        "font-mono text-[11px] font-semibold uppercase tracking-[0.16em]",
-        if(@tone == "research", do: "text-violet-300", else: "text-[#ff8a68]")
-      ]}>
-        {@eyebrow}
-      </p>
-      <h2 id={@id} class="mt-2 text-xl font-semibold tracking-[-0.02em] text-white sm:text-2xl">
-        {@title}
-      </h2>
-      <p class="mt-2 max-w-[68ch] text-sm leading-6 text-gray-400">{@description}</p>
+    <header class="settings-section-header">
+      <h3 id={@id}>{@title}</h3>
+      <p>{@description}</p>
     </header>
     """
   end
@@ -537,10 +567,10 @@ defmodule IexCodeWeb.SettingsLive do
   def credential_badge(assigns) do
     ~H"""
     <span class={[
-      "shrink-0 border px-2 py-1 font-mono text-[11px] font-semibold uppercase tracking-wider",
+      "settings-credential-badge shrink-0 border px-2 py-1 text-[11px] font-medium",
       if(@configured,
         do: "border-emerald-400/25 bg-emerald-400/[0.06] text-emerald-300",
-        else: "border-[#3a424c] bg-[#0b0f14] text-gray-500"
+        else: "border-line bg-inset text-subtle"
       )
     ]}>
       {if @configured, do: "Configured", else: "Not configured"}
@@ -564,11 +594,11 @@ defmodule IexCodeWeb.SettingsLive do
         name={@name}
         value="true"
         checked={@checked}
-        class="mt-0.5 h-4 w-4 shrink-0 accent-[#ff8a68]"
+        class="mt-0.5 h-4 w-4 shrink-0 accent-accent"
       />
       <span>
-        <span class="block text-sm font-semibold text-gray-200">{@label}</span>
-        <span class="mt-1 block text-xs leading-5 text-gray-500">{@description}</span>
+        <span class="block text-sm font-semibold text-content">{@label}</span>
+        <span class="mt-1 block text-xs leading-5 text-muted">{@description}</span>
       </span>
     </label>
     """
@@ -759,7 +789,7 @@ defmodule IexCodeWeb.SettingsLive do
   def status_text_class(:dirty), do: "text-amber-300"
   def status_text_class(:saved), do: "text-emerald-300"
   def status_text_class(:error), do: "text-rose-300"
-  def status_text_class(_status), do: "text-gray-200"
+  def status_text_class(_status), do: "text-content"
 
   def usage_dom_id(row) do
     case usage_value(row, :id) do
@@ -1059,16 +1089,34 @@ defmodule IexCodeWeb.SettingsLive do
 
   def studio_tabs, do: @studio_tabs
 
-  def tab_title(:providers), do: "Providers & Models"
-  def tab_title(:reasoning), do: "Reasoning & Thinking"
-  def tab_title(:safety), do: "Tool Safety & Approvals"
-  def tab_title(:context), do: "Context & Personas"
-  def tab_title(:environment), do: "Environment & Secrets"
-  def tab_title(:appearance), do: "Sound & Appearance"
+  def tab_title(:providers), do: "Providers & models"
+  def tab_title(:reasoning), do: "Reasoning"
+  def tab_title(:safety), do: "Execution & safety"
+  def tab_title(:context), do: "Context & research"
+  def tab_title(:environment), do: "Environment"
+  def tab_title(:appearance), do: "Appearance & sound"
   def tab_title(tab), do: Phoenix.Naming.humanize(to_string(tab))
+
+  def tab_description(:providers), do: "Connect your models and choose defaults for new sessions."
+
+  def tab_description(:reasoning),
+    do: "Balance thinking effort, response limits, and model-specific behavior."
+
+  def tab_description(:safety), do: "Choose how agents run, what they can do, and when they ask."
+
+  def tab_description(:context),
+    do: "Manage conversation memory, instructions, and research limits."
+
+  def tab_description(:environment), do: "Review the environment available to agent tools."
+  def tab_description(:appearance), do: "Make the workspace comfortable for the way you work."
 
   def tab_path(nil, tab_id), do: ~p"/settings/#{tab_id}"
   def tab_path(session, tab_id), do: ~p"/sessions/#{session.id}/settings/#{tab_id}"
+
+  def section_path(session, section_id) do
+    tab_id = Map.fetch!(@section_tabs, section_id)
+    tab_path(session, tab_id) <> "#" <> section_id
+  end
 
   defp maybe_put_override(map, _key, val) when val in [nil, "", "default"], do: map
   defp maybe_put_override(map, key, val), do: Map.put(map, key, val)

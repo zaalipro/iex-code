@@ -264,7 +264,8 @@ defmodule Mix.Tasks.Desktop.Package do
     # Change to app support directory
     cd "$APP_SUPPORT_DIR"
 
-    # Execute OTP release binary
+    # Execute OTP release binary in the foreground so macOS owns the BEAM
+    # process for the lifetime of the application bundle.
     exec "$REL_DIR/bin/#{rel_bin_name}" start
     """
   end

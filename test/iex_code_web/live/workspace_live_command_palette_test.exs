@@ -289,7 +289,7 @@ defmodule IexCodeWeb.WorkspaceLiveCommandPaletteTest do
       session = create_session_fixture(project, %{swarm_mode: false})
       {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
 
-      assert has_element?(view, "#workspace-header-actions", "Swarm: OFF")
+      assert has_element?(view, "#header-swarm-toggle[aria-pressed='false']")
 
       render_click(view, "toggle_command_palette")
       render_click(view, "command_palette_set_category", %{"category" => "actions"})
@@ -297,7 +297,7 @@ defmodule IexCodeWeb.WorkspaceLiveCommandPaletteTest do
       render_click(view, "command_palette_select_item", %{"index" => "0"})
 
       refute has_element?(view, "#command-palette-modal")
-      assert has_element?(view, "#workspace-header-actions", "Swarm: ON")
+      assert has_element?(view, "#header-swarm-toggle[aria-pressed='true']")
     end
   end
 

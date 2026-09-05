@@ -24,14 +24,25 @@ defmodule IexCode.Desktop.DesktopE2ETest do
         assert opts[:title] == "IexCode - Desktop AI Coding Harness"
         assert opts[:size] == {1440, 920}
         assert opts[:min_size] == {1024, 700}
+        assert opts[:icon] == "desktop/AppIcon.png"
+        assert opts[:taskbar_icon] == "desktop/AppIcon.png"
         assert opts[:menubar] == IexCodeWeb.MenuBar
-        assert opts[:icon_menu] == IexCodeWeb.TrayMenu
+
+        expected_icon_menu =
+          if match?({:unix, :darwin}, :os.type()), do: nil, else: IexCodeWeb.TrayMenu
+
+        assert opts[:icon_menu] == expected_icon_menu
         assert opts[:on_close] == :quit
 
         assert is_function(opts[:url], 0)
         resolved_url = opts[:url].()
         assert is_binary(resolved_url)
         assert resolved_url =~ ~r/^https?:\/\//
+
+        expected_native_lifecycle =
+          if match?({:unix, :darwin}, :os.type()), do: IexCode.Desktop.NativeLifecycle
+
+        assert IexCode.Application.desktop_native_lifecycle_child() == expected_native_lifecycle
       after
         Application.put_env(:iex_code, :start_desktop_window, original_env)
       end
@@ -64,23 +75,23 @@ defmodule IexCode.Desktop.DesktopE2ETest do
       assert rendered_str =~ ~s(label="Help")
 
       # Accelerators
-      assert rendered_str =~ "Cmd+N"
-      assert rendered_str =~ "Cmd+,"
-      assert rendered_str =~ "Cmd+W"
-      assert rendered_str =~ "Cmd+Q"
-      assert rendered_str =~ "Cmd+Z"
-      assert rendered_str =~ "Cmd+Shift+Z"
-      assert rendered_str =~ "Cmd+X"
-      assert rendered_str =~ "Cmd+C"
-      assert rendered_str =~ "Cmd+V"
-      assert rendered_str =~ "Cmd+R"
-      assert rendered_str =~ "Cmd+B"
-      assert rendered_str =~ "Cmd+K"
-      assert rendered_str =~ "Cmd+1"
-      assert rendered_str =~ "Cmd+2"
-      assert rendered_str =~ "Cmd+3"
-      assert rendered_str =~ "Cmd+4"
-      assert rendered_str =~ "Cmd+5"
+      assert rendered_str =~ "Ctrl+N"
+      assert rendered_str =~ "Ctrl+,"
+      assert rendered_str =~ "Ctrl+W"
+      assert rendered_str =~ "Ctrl+Q"
+      assert rendered_str =~ "Ctrl+Z"
+      assert rendered_str =~ "Ctrl+Shift+Z"
+      assert rendered_str =~ "Ctrl+X"
+      assert rendered_str =~ "Ctrl+C"
+      assert rendered_str =~ "Ctrl+V"
+      assert rendered_str =~ "Ctrl+R"
+      assert rendered_str =~ "Ctrl+J"
+      assert rendered_str =~ "Ctrl+K"
+      assert rendered_str =~ "Ctrl+1"
+      assert rendered_str =~ "Ctrl+2"
+      assert rendered_str =~ "Ctrl+3"
+      assert rendered_str =~ "Ctrl+4"
+      assert rendered_str =~ "Ctrl+5"
 
       # Verify parser compliance
       assert {:menubar, _, menus} = Desktop.Menu.Parser.parse(rendered)

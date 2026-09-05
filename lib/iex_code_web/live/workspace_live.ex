@@ -2996,6 +2996,7 @@ defmodule IexCodeWeb.WorkspaceLive do
                socket
                |> assign(:tasks, tasks)
                |> assign(:selected_task, task)
+               |> assign(:expanded_column, task.status)
                |> assign(:show_new_task_modal, false)
                |> put_flash(:info, "Task created")}
 

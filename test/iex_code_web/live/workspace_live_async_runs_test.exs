@@ -22,7 +22,7 @@ defmodule IexCodeWeb.WorkspaceLiveAsyncRunsTest do
     assert has_element?(view, "#async-run-control", "Mission Control")
     assert has_element?(view, "#async-runs-empty")
     assert has_element?(view, "#dispatch-mode-background")
-    assert render(view) =~ "Durable mode"
+    assert has_element?(view, "#dispatch-mode-background[aria-pressed='true']")
 
     view
     |> form("#prompt-form", %{"prompt" => "Audit concurrency and produce a safe patch"})

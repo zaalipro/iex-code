@@ -34,7 +34,7 @@ defmodule IexCodeWeb.TrayMenu do
         PubSub.broadcast(@pubsub, "desktop:events", {:desktop_action, :new_session})
 
       "quit" ->
-        Lifecycle.teardown()
+        Lifecycle.request_quit()
 
       _ ->
         :ok
