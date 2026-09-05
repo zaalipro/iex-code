@@ -1245,12 +1245,128 @@
               No tasks yet. Use Create task to add the first item to this board.
             </p>
 
-            <%!-- Stage selectors stay compact; the selected stage owns the task canvas. --%>
-            <div id="kanban-board" class="studio-kanban-board">
-              <div id="kanban-stage-strip" class="studio-kanban-stages" aria-label="Task stages">
-                <%= for col_status <- Kanban.Task.statuses() do %>
-                  <% col_tasks = Enum.filter(@tasks, &(&1.status == col_status))
-                  is_expanded = @expanded_column == col_status %>
+            <%!-- Classic accordion: tall stage rails and one expanded card column. --%>
+            <div id="kanban-board" class="studio-kanban-board" aria-label="Task stages">
+              <%= for col_status <- Kanban.Task.statuses() do %>
+                <% col_tasks = Enum.filter(@tasks, &(&1.status == col_status))
+                is_expanded = @expanded_column == col_status %>
+
+                <%= if is_expanded do %>
+                  <%!-- Expanded Column --%>
+                  <div
+                    id={"kanban-col-#{col_status}"}
+                    class="studio-kanban-column"
+                    data-status={col_status}
+                    aria-label={"#{String.capitalize(col_status)} tasks"}
+                  >
+                    <%!-- Column Header --%>
+                    <div class="p-3.5 border-b border-[#21262d] flex items-center justify-between shrink-0">
+                      <div class="flex items-center gap-2 font-mono text-xs font-bold uppercase tracking-wider text-gray-300">
+                        <span class={[
+                          "w-2 h-2 rounded-full",
+                          col_status == "running" &&
+                            "bg-emerald-400",
+                          col_status == "ready" && "bg-blue-400",
+                          col_status == "scheduled" && "bg-indigo-400",
+                          col_status == "todo" && "bg-purple-400",
+                          col_status == "triage" && "bg-gray-400",
+                          col_status == "blocked" && "bg-red-400",
+                          col_status == "review" && "bg-amber-400",
+                          col_status == "done" && "bg-gray-500"
+                        ]}></span>
+                        <span class="uppercase">{String.upcase(col_status)}</span>
+                        <span class="text-gray-500 text-[11px]">({length(col_tasks)})</span>
+                      </div>
+                      <button
+                        type="button"
+                        phx-click="toggle_column"
+                        phx-value-status={col_status}
+                        id={"kanban-collapse-#{col_status}"}
+                        aria-label={"Collapse #{col_status} column"}
+                        aria-expanded="true"
+                        aria-controls={"kanban-cards-#{col_status}"}
+                        class="text-gray-500 hover:text-white p-1 rounded-lg hover:bg-[#161b22] transition-smooth"
+                        title="Collapse Column"
+                      >
+                        <.icon name="hero-chevron-left" class="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+
+                    <%!-- Column Cards List --%>
+                    <div
+                      id={"kanban-cards-#{col_status}"}
+                      phx-hook=".KanbanDrag"
+                      data-status={col_status}
+                      class="studio-kanban-cards flex-1 overflow-y-auto p-3 space-y-2.5"
+                    >
+                      <%= for task <- col_tasks do %>
+                        <button
+                          type="button"
+                          id={"task-card-#{task.id}"}
+                          phx-click="open_task_drawer"
+                          phx-value-id={task.id}
+                          phx-hook=".KanbanCard"
+                          data-task-id={task.id}
+                          aria-expanded={
+                            to_string(@selected_task != nil and @selected_task.id == task.id)
+                          }
+                          class={[
+                            "studio-task-card w-full p-3.5 bg-raised border rounded-2xl transition-smooth cursor-pointer space-y-2.5 group text-left",
+                            @selected_task && @selected_task.id == task.id &&
+                              "border-emerald-500/60 ring-1 ring-emerald-500/20",
+                            !(@selected_task && @selected_task.id == task.id) &&
+                              "border-[#21262d]"
+                          ]}
+                        >
+                          <div class="flex items-center justify-between text-[10px] font-mono text-gray-500">
+                            <span class="uppercase tracking-wider">#{String.slice(task.id, 0..4)}</span>
+                            <span class={[
+                              "px-1.5 py-0.5 rounded font-semibold",
+                              task.priority == "critical" &&
+                                "bg-red-500/10 text-red-400 border border-red-500/20",
+                              task.priority == "high" &&
+                                "bg-orange-500/10 text-orange-400 border border-orange-500/20",
+                              task.priority == "medium" &&
+                                "bg-blue-500/10 text-blue-400 border border-blue-500/20",
+                              task.priority == "low" &&
+                                "bg-gray-500/10 text-gray-400 border border-gray-500/20"
+                            ]}>
+                              {String.upcase(task.priority || "MEDIUM")}
+                            </span>
+                          </div>
+
+                          <h4 class="text-xs font-semibold text-white font-sans leading-snug group-hover:text-cyan-300 transition-colors">
+                            {task.title}
+                          </h4>
+
+                          <%= if task.description do %>
+                            <p class="text-[11px] text-gray-400 line-clamp-2 leading-relaxed">
+                              {task.description}
+                            </p>
+                          <% end %>
+
+                          <div class="flex items-center justify-between pt-2 border-t border-white/5 text-[10px] font-mono text-gray-400">
+                            <div class="flex items-center gap-1.5">
+                              <span class="w-4 h-4 rounded-full bg-[#21262d] text-center font-bold text-[8px] flex items-center justify-center text-white">
+                                <%= if is_binary(task.assignee) and task.assignee != "" do %>
+                                  {String.first(task.assignee) |> String.upcase()}
+                                <% else %>
+                                  D
+                                <% end %>
+                              </span>
+                              <span>{task.assignee}</span>
+                            </div>
+
+                            <%= if task.worker_pid do %>
+                              <span class="text-emerald-400">{task.worker_pid}</span>
+                            <% end %>
+                          </div>
+                        </button>
+                      <% end %>
+                    </div>
+                  </div>
+                <% else %>
+                  <%!-- Collapsed Vertical Ribbon --%>
                   <button
                     type="button"
                     id={"kanban-col-#{col_status}"}
@@ -1258,150 +1374,34 @@
                     phx-value-status={col_status}
                     phx-hook=".KanbanDrag"
                     data-status={col_status}
-                    aria-label={"#{if is_expanded, do: "Collapse", else: "Expand"} #{col_status} column"}
-                    aria-expanded={to_string(is_expanded)}
-                    aria-controls={if is_expanded, do: "kanban-cards-#{col_status}", else: nil}
-                    class={[
-                      "studio-kanban-stage transition-smooth group",
-                      is_expanded && "studio-kanban-stage-active",
-                      !is_expanded && "studio-kanban-rail"
-                    ]}
-                    title={"#{String.capitalize(col_status)} · #{length(col_tasks)} tasks"}
+                    aria-label={"Expand #{col_status} column"}
+                    aria-expanded="false"
+                    class="studio-kanban-rail transition-smooth cursor-pointer group"
+                    title={"Click to expand #{col_status} column"}
                   >
-                    <span class="studio-stage-label">
-                      <span class="studio-stage-dot" aria-hidden="true"></span>
-                      <span>{String.capitalize(col_status)}</span>
-                    </span>
-                    <span class="studio-stage-reading">
-                      <span class="studio-stage-count">{length(col_tasks)}</span>
-                      <.icon
-                        name="hero-arrow-up-right"
-                        class="studio-stage-direction h-3.5 w-3.5"
-                      />
+                    <div class="flex flex-col items-center gap-3">
+                      <span class={[
+                        "w-2.5 h-2.5 rounded-full shrink-0",
+                        col_status == "running" &&
+                          "bg-emerald-400",
+                        col_status == "ready" && "bg-blue-400",
+                        col_status == "scheduled" && "bg-indigo-400",
+                        col_status == "todo" && "bg-purple-400",
+                        col_status == "triage" && "bg-gray-400",
+                        col_status == "blocked" && "bg-red-400",
+                        col_status == "review" && "bg-amber-400",
+                        col_status == "done" && "bg-gray-500"
+                      ]}></span>
+                      <span class="whitespace-nowrap text-xs font-mono font-bold uppercase tracking-wider text-gray-400 group-hover:text-white transition-colors">
+                        {String.upcase(col_status)}
+                      </span>
+                    </div>
+
+                    <span class="px-2 py-0.5 rounded-full bg-[#1c2128] text-[10px] font-mono text-gray-400 border border-white/5">
+                      {length(col_tasks)}
                     </span>
                   </button>
                 <% end %>
-              </div>
-
-              <%= if @expanded_column do %>
-                <% col_status = @expanded_column
-                col_tasks = Enum.filter(@tasks, &(&1.status == col_status)) %>
-                <section
-                  class="studio-kanban-column"
-                  aria-label={"#{String.capitalize(col_status)} tasks"}
-                >
-                  <div class="studio-stage-canvas-header">
-                    <div class="flex items-center gap-2">
-                      <h3>{String.capitalize(col_status)}</h3>
-                      <span class="studio-stage-canvas-count">{length(col_tasks)}</span>
-                    </div>
-                    <span class="studio-board-drag-hint">
-                      <.icon name="hero-arrows-right-left" class="h-3 w-3" />
-                      Drag tasks between stages
-                    </span>
-                  </div>
-                  <div
-                    id={"kanban-cards-#{col_status}"}
-                    phx-hook=".KanbanDrag"
-                    data-status={col_status}
-                    class="studio-task-grid"
-                  >
-                    <div
-                      :if={col_tasks == []}
-                      id={"kanban-stage-empty-#{col_status}"}
-                      class="studio-stage-empty"
-                    >
-                      <div class="orbital-empty-mark" aria-hidden="true">
-                        <span class="orbital-empty-core">
-                          <.icon name="hero-square-3-stack-3d" class="h-6 w-6" />
-                        </span>
-                      </div>
-                      <h3>
-                        No tasks {if col_status == "running",
-                          do: "running",
-                          else: "in #{col_status}"}
-                      </h3>
-                      <p>Create your next task, then follow its progress through every stage.</p>
-                    </div>
-                    <%= for task <- col_tasks do %>
-                      <button
-                        type="button"
-                        id={"task-card-#{task.id}"}
-                        phx-click="open_task_drawer"
-                        phx-value-id={task.id}
-                        phx-hook=".KanbanCard"
-                        data-task-id={task.id}
-                        aria-expanded={
-                          to_string(@selected_task != nil and @selected_task.id == task.id)
-                        }
-                        class={[
-                          "studio-task-card w-full p-3.5 bg-raised border rounded-2xl transition-smooth cursor-pointer space-y-2.5 group text-left",
-                          @selected_task && @selected_task.id == task.id &&
-                            "border-emerald-500/60 ring-1 ring-emerald-500/20",
-                          !(@selected_task && @selected_task.id == task.id) &&
-                            "border-[#21262d]"
-                        ]}
-                      >
-                        <div class="studio-task-meta flex items-center justify-between text-[10px] font-mono text-gray-500">
-                          <span class="uppercase tracking-wider">#{String.slice(task.id, 0..4)}</span>
-                          <span class={[
-                            "px-1.5 py-0.5 rounded font-semibold",
-                            task.priority == "critical" &&
-                              "bg-red-500/10 text-red-400 border border-red-500/20",
-                            task.priority == "high" &&
-                              "bg-orange-500/10 text-orange-400 border border-orange-500/20",
-                            task.priority == "medium" &&
-                              "bg-blue-500/10 text-blue-400 border border-blue-500/20",
-                            task.priority == "low" &&
-                              "bg-gray-500/10 text-gray-400 border border-gray-500/20"
-                          ]}>
-                            {String.upcase(task.priority || "MEDIUM")}
-                          </span>
-                        </div>
-
-                        <h4 class="text-xs font-semibold text-white font-sans leading-snug group-hover:text-cyan-300 transition-colors">
-                          {task.title}
-                        </h4>
-
-                        <%= if task.description do %>
-                          <p class="text-[11px] text-gray-400 line-clamp-2 leading-relaxed">
-                            {task.description}
-                          </p>
-                        <% end %>
-
-                        <div class="studio-task-footer flex items-center justify-between pt-2 border-t border-white/5 text-[10px] font-mono text-gray-400">
-                          <div class="flex items-center gap-1.5">
-                            <span class="w-4 h-4 rounded-full bg-[#21262d] text-center font-bold text-[8px] flex items-center justify-center text-white">
-                              <%= if is_binary(task.assignee) and task.assignee != "" do %>
-                                {String.first(task.assignee) |> String.upcase()}
-                              <% else %>
-                                D
-                              <% end %>
-                            </span>
-                            <span>{task.assignee}</span>
-                          </div>
-
-                          <%= if task.worker_pid do %>
-                            <span class="text-emerald-400">{task.worker_pid}</span>
-                          <% end %>
-                        </div>
-                      </button>
-                    <% end %>
-                  </div>
-                </section>
-              <% else %>
-                <div
-                  id="kanban-stage-unselected"
-                  class="studio-stage-empty studio-stage-unselected"
-                >
-                  <div class="orbital-empty-mark" aria-hidden="true">
-                    <span class="orbital-empty-core">
-                      <.icon name="hero-view-columns" class="h-6 w-6" />
-                    </span>
-                  </div>
-                  <h3>Choose a stage</h3>
-                  <p>Select a stage above to see its tasks.</p>
-                </div>
               <% end %>
             </div>
           </div>

@@ -966,219 +966,71 @@ html[data-depth-effects="false"] .workspace-studio-root .studio-primary-action {
   background: var(--ui-accent-soft);
 }
 
+/* The original eight-column accordion board. Rails retain readable titles. */
 .orbital-workspace .studio-kanban-board {
   display: flex;
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
-  flex-direction: column;
-  gap: 15px;
-  padding: 0;
-  overflow: hidden;
-}
-
-.orbital-workspace .studio-kanban-stages {
-  display: flex;
-  flex: 0 0 auto;
-  gap: 8px;
-  padding: 1px 1px 5px;
+  align-items: stretch;
+  gap: 12px;
+  padding: 2px 2px 8px;
   overflow-x: auto;
+  overflow-y: hidden;
   overscroll-behavior-x: contain;
   scrollbar-width: thin;
 }
 
-.orbital-workspace :is(.studio-kanban-stage, .studio-kanban-rail) {
-  position: relative;
+.orbital-workspace .studio-kanban-column,
+.orbital-workspace .studio-kanban-rail {
   display: flex;
-  flex: 1 0 89px;
-  width: auto;
-  min-width: 89px;
-  max-width: none;
-  min-height: 82px;
   flex-direction: column;
-  align-items: stretch;
-  justify-content: space-between;
-  gap: 11px;
-  padding: 12px;
-  overflow: hidden;
   border: 1px solid var(--ui-border);
-  border-radius: 16px;
-  color: var(--ui-muted);
-  background:
-    linear-gradient(150deg, color-mix(in srgb, var(--ui-text) 2.5%, transparent), transparent 65%),
-    color-mix(in srgb, var(--ui-surface) 81%, var(--ui-bg));
-  box-shadow: var(--ui-shadow-control);
-  text-align: left;
-  transition: color 180ms ease, border-color 180ms ease, background-color 180ms ease, transform 180ms ease;
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--ui-surface) 94%, transparent);
+  box-shadow: var(--ui-shadow-card);
 }
-
-.orbital-workspace .studio-kanban-stage:hover {
-  color: var(--ui-text);
-  border-color: color-mix(in srgb, var(--ui-accent) 33%, var(--ui-border));
-  background-color: var(--ui-surface-raised);
-}
-
-.orbital-workspace .studio-kanban-stage[aria-expanded="true"] {
-  color: var(--ui-text);
-  border-color: color-mix(in srgb, var(--ui-accent) 50%, var(--ui-border));
-  background:
-    radial-gradient(ellipse at 100% 0%, color-mix(in srgb, var(--ui-accent) 14%, transparent), transparent 80%),
-    color-mix(in srgb, var(--ui-accent) 6%, var(--ui-surface-raised));
-}
-
-.orbital-workspace .studio-kanban-stage[aria-expanded="true"]::before {
-  content: "";
-  position: absolute;
-  inset: 0 16px auto;
-  height: 1px;
-  background: var(--ui-accent);
-}
-
-.orbital-workspace .studio-stage-label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 10px;
-  font-weight: 550;
-  line-height: 13px;
-  white-space: nowrap;
-}
-
-.orbital-workspace .studio-stage-dot {
-  display: inline-block;
-  width: 5px;
-  height: 5px;
-  flex: 0 0 5px;
-  border-radius: 50%;
-  background: var(--ui-subtle);
-}
-
-.orbital-workspace .studio-kanban-stage[data-status="running"] .studio-stage-dot { background: var(--ui-success); }
-.orbital-workspace .studio-kanban-stage[data-status="blocked"] .studio-stage-dot { background: var(--ui-danger); }
-.orbital-workspace .studio-kanban-stage[aria-expanded="true"] .studio-stage-dot { background: var(--ui-accent); }
-
-.orbital-workspace .studio-stage-reading {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 5px;
-}
-
-.orbital-workspace .studio-stage-count {
-  color: var(--ui-muted);
-  font-family: var(--ui-font-display, var(--font-sans));
-  font-size: 25px;
-  font-weight: 450;
-  line-height: 26px;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -0.055em;
-}
-
-.orbital-workspace .studio-stage-direction { margin-bottom: 3px; color: var(--ui-subtle); opacity: 0.4; }
-.orbital-workspace .studio-kanban-stage[aria-expanded="true"] .studio-stage-count { color: var(--ui-text); }
-.orbital-workspace .studio-kanban-stage[aria-expanded="true"] .studio-stage-direction { color: var(--ui-accent); opacity: 1; }
 
 .orbital-workspace .studio-kanban-column {
-  position: relative;
-  isolation: isolate;
-  display: flex;
-  flex: 1 1 auto;
-  min-width: 0;
+  flex: 0 0 320px;
+  width: 320px;
+  min-width: 320px;
   min-height: 0;
-  flex-direction: column;
   overflow: hidden;
-  border: 1px solid var(--orbital-hairline);
-  border-radius: 22px;
-  background:
-    radial-gradient(ellipse at 76% 115%, color-mix(in srgb, var(--ui-accent) 7%, transparent), transparent 55%),
-    color-mix(in srgb, var(--ui-surface) 50%, var(--ui-bg));
-  box-shadow: var(--ui-shadow-inset);
 }
 
-.orbital-workspace .studio-kanban-column::before {
-  content: "";
-  position: absolute;
-  z-index: -1;
-  inset: 0;
-  pointer-events: none;
-  border-radius: inherit;
-  background-image:
-    linear-gradient(color-mix(in srgb, var(--ui-accent) 3%, transparent) 1px, transparent 1px),
-    linear-gradient(90deg, color-mix(in srgb, var(--ui-accent) 3%, transparent) 1px, transparent 1px);
-  background-size: 48px 48px;
-  mask-image: linear-gradient(135deg, transparent 15%, #000 100%);
-}
-
-.orbital-workspace .studio-kanban-column > .studio-stage-canvas-header {
-  display: flex;
-  flex: 0 0 auto;
+.orbital-workspace .studio-kanban-column > div:first-child {
   min-height: 48px;
+  padding: 13px 14px;
+  border-color: var(--ui-border);
+}
+
+.orbital-workspace .studio-kanban-cards {
+  min-height: 0;
+  overscroll-behavior-y: contain;
+}
+
+.orbital-workspace .studio-kanban-rail {
+  flex: 0 0 96px;
+  width: 96px;
+  min-width: 96px;
+  max-width: 96px;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
-  padding: 13px 18px;
-  border-bottom: 1px solid color-mix(in srgb, var(--ui-border) 76%, transparent);
-  background: color-mix(in srgb, var(--ui-surface) 64%, transparent);
+  padding: 16px 4px;
+  color: var(--ui-muted);
 }
 
-.orbital-workspace .studio-stage-canvas-header h3 { font-size: 12px; font-weight: 600; letter-spacing: -0.01em; }
-
-.orbital-workspace .studio-stage-canvas-count {
-  display: inline-flex;
-  min-width: 21px;
-  min-height: 21px;
-  align-items: center;
-  justify-content: center;
-  padding-inline: 5px;
-  border: 1px solid var(--ui-border);
-  border-radius: 7px;
-  color: var(--ui-subtle);
-  background: var(--ui-surface-inset);
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
+.orbital-workspace .studio-kanban-rail:hover {
+  border-color: color-mix(in srgb, var(--ui-accent) 34%, var(--ui-border));
+  background: var(--ui-surface-raised);
 }
 
-.orbital-workspace .studio-board-drag-hint {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--ui-subtle);
-  font-size: 10px;
+.orbital-workspace .studio-kanban-rail:focus-visible {
+  outline: 2px solid var(--ui-focus);
+  outline-offset: -3px;
 }
 
-.orbital-workspace .studio-task-grid {
-  display: grid;
-  flex: 1 1 auto;
-  min-height: 0;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 250px), 1fr));
-  grid-auto-rows: min-content;
-  align-content: start;
-  align-items: start;
-  gap: 13px;
-  padding: 17px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-
-.orbital-workspace .studio-task-grid:has(.studio-stage-empty) {
-  grid-template-columns: 1fr;
-  grid-template-rows: 1fr;
-  align-items: stretch;
-}
-
-.orbital-workspace .studio-stage-empty {
-  display: flex;
-  min-height: 185px;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 9px;
-  padding: 22px;
-  color: var(--ui-subtle);
-  text-align: center;
-}
-
-.orbital-workspace .studio-stage-empty h3,
 .orbital-workspace .orbital-panel-empty h3,
 .orbital-workspace .orbital-chat-empty h3 {
   color: var(--ui-text);
@@ -1187,21 +1039,6 @@ html[data-depth-effects="false"] .workspace-studio-root .studio-primary-action {
   font-weight: 500;
   line-height: 24px;
   letter-spacing: -0.025em;
-}
-
-.orbital-workspace .studio-stage-empty p {
-  max-width: 290px;
-  color: var(--ui-muted);
-  font-size: 11.5px;
-  line-height: 19px;
-  text-wrap: pretty;
-}
-
-.orbital-workspace .studio-stage-unselected {
-  flex: 1 1 auto;
-  border: 1px solid var(--ui-border);
-  border-radius: 22px;
-  background: color-mix(in srgb, var(--ui-surface) 50%, var(--ui-bg));
 }
 
 /* An orbital diagram anchors empty states without inventing task or agent activity. */
@@ -1539,7 +1376,7 @@ html[data-depth-shadows="false"] .orbital-workspace *::after {
 }
 
 html[data-depth-effects="false"] .orbital-workspace,
-html[data-depth-effects="false"] .orbital-workspace :is(.studio-sidebar, .studio-sidebar-nav > [aria-current="page"], .studio-stage, .studio-toolbar, .studio-kanban-stage, .studio-kanban-column, .studio-task-card, .studio-composer-frame, .studio-composer-surface, .orbital-empty-core, .research-panel, .orbital-panel-empty, #workspace-calendar-panel, #workspace-swarm-canvas-section, #workspace-swarm-roster-section, #workspace-swarm-consensus-heatmap, #workspace-swarm-dimensional-scores, #workspace-swarm-peer-timeline, #chat-viewport, #task-detail-drawer) {
+html[data-depth-effects="false"] .orbital-workspace :is(.studio-sidebar, .studio-sidebar-nav > [aria-current="page"], .studio-stage, .studio-toolbar, .studio-kanban-column, .studio-task-card, .studio-composer-frame, .studio-composer-surface, .orbital-empty-core, .research-panel, .orbital-panel-empty, #workspace-calendar-panel, #workspace-swarm-canvas-section, #workspace-swarm-roster-section, #workspace-swarm-consensus-heatmap, #workspace-swarm-dimensional-scores, #workspace-swarm-peer-timeline, #chat-viewport, #task-detail-drawer) {
   background-image: none !important;
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
@@ -1552,14 +1389,13 @@ html[data-depth-effects="false"] .orbital-workspace .studio-nav-group-label::aft
   display: none;
 }
 
-html[data-depth-effects="false"] .orbital-workspace :is(.studio-task-card, .studio-kanban-stage, .orbital-empty-core, .studio-primary-action) {
+html[data-depth-effects="false"] .orbital-workspace :is(.studio-task-card, .orbital-empty-core, .studio-primary-action) {
   transform: none !important;
   animation: none !important;
 }
 
 @media (prefers-reduced-motion: no-preference) and (hover: hover) {
   html:not([data-depth-effects="false"]) .orbital-workspace .studio-task-card:hover { transform: translateY(-2px); }
-  html:not([data-depth-effects="false"]) .orbital-workspace .studio-kanban-stage:hover { transform: translateY(-1px); }
   html:not([data-depth-effects="false"]) .orbital-workspace .studio-primary-action:active { transform: translateY(1px); }
 }
 
@@ -1568,7 +1404,6 @@ html[data-depth-effects="false"] .orbital-workspace :is(.studio-task-card, .stud
 .orbital-workspace[data-density="compact"] .studio-nav-group-label { margin-top: 12px; }
 .orbital-workspace[data-density="compact"] .studio-toolbar { height: 50px; min-height: 50px; }
 .orbital-workspace[data-density="compact"] .studio-board-pane { padding-top: 15px; }
-.orbital-workspace[data-density="compact"] .studio-kanban-stage { min-height: 70px; padding-block: 9px; }
 
 @media (min-width: 64rem) {
   .orbital-workspace .studio-sidebar { width: var(--workspace-sidebar-width, 16rem); min-width: 15rem; }
@@ -1606,12 +1441,7 @@ html[data-depth-effects="false"] .orbital-workspace :is(.studio-task-card, .stud
   .orbital-workspace .studio-filter-bar { width: auto; flex-wrap: wrap; gap: 2px; }
   .orbital-workspace #kanban-filter-form input[type="text"] { width: 114px; }
   .orbital-workspace .studio-filter-bar > div > button { gap: 4px; padding-inline: 5px; font-size: 10px; }
-  .orbital-workspace .studio-kanban-stage { min-height: 74px; min-width: 88px; padding: 10px; }
-  .orbital-workspace .studio-stage-count { font-size: 23px; }
   .orbital-workspace .studio-kanban-column { border-radius: 18px; }
-  .orbital-workspace .studio-board-drag-hint { display: none; }
-  .orbital-workspace .studio-task-grid { padding: 11px; }
-  .orbital-workspace .studio-stage-empty { min-height: 165px; padding: 16px; }
   .orbital-workspace .orbital-empty-mark { width: 98px; height: 82px; margin-bottom: 2px; }
   .orbital-workspace .studio-composer { padding: 0 9px 9px; }
   .orbital-workspace .studio-composer-frame { border-radius: 18px; }
@@ -1636,7 +1466,6 @@ html[data-depth-effects="false"] .orbital-workspace :is(.studio-task-card, .stud
   .orbital-workspace .studio-nav-group-label { margin-top: 11px; }
   .orbital-workspace .studio-sidebar-nav > :where(button, a) { min-height: 30px; padding-block: 5px; }
   .orbital-workspace .studio-sessions { margin-top: 11px; }
-  .orbital-workspace .studio-stage-empty { min-height: 150px; padding-block: 14px; }
   .orbital-workspace .orbital-empty-mark { width: 94px; height: 76px; margin-bottom: 1px; }
 }
 
@@ -1649,5 +1478,4 @@ html[data-depth-effects="false"] .orbital-workspace :is(.studio-task-card, .stud
     scroll-behavior: auto !important;
   }
 
-  .orbital-workspace :is(.studio-task-card, .studio-kanban-stage, .studio-primary-action) { transform: none !important; }
 }

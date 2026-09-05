@@ -39,7 +39,7 @@ defmodule IexCodeWeb.WorkbenchNavigationTest do
     [task] = Kanban.list_tasks(project.id)
 
     refute has_element?(view, "#new-task-modal")
-    assert has_element?(view, "#kanban-col-todo[aria-expanded='true']")
+    assert has_element?(view, "#kanban-collapse-todo[aria-expanded='true']")
     assert has_element?(view, "#kanban-cards-todo #task-card-#{task.id}")
     refute has_element?(view, "#task-detail-drawer")
   end
@@ -62,7 +62,7 @@ defmodule IexCodeWeb.WorkbenchNavigationTest do
     {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
 
     view |> element("#kanban-col-todo") |> render_click()
-    assert has_element?(view, "#kanban-col-todo[aria-expanded='true']")
+    assert has_element?(view, "#kanban-collapse-todo[aria-expanded='true']")
     assert has_element?(view, "#kanban-cards-todo #task-card-#{task.id}")
 
     view |> element("#task-card-#{task.id}") |> render_click()
@@ -71,7 +71,7 @@ defmodule IexCodeWeb.WorkbenchNavigationTest do
     render_click(view, "move_task", %{"id" => task.id, "status" => "ready"})
 
     assert Kanban.get_task!(task.id).status == "ready"
-    assert has_element?(view, "#kanban-col-ready[aria-expanded='true']")
+    assert has_element?(view, "#kanban-collapse-ready[aria-expanded='true']")
     assert has_element?(view, "#kanban-cards-ready #task-card-#{task.id}")
     refute has_element?(view, "#kanban-cards-todo")
     assert has_element?(view, "#task-detail-drawer")
