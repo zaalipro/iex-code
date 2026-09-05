@@ -71,6 +71,46 @@ defmodule IexCode.LLM.ContextCompactorTest do
     end
   end
 
+  for strategy <- ["sliding_window", "rolling_summary", "token_compaction"],
+      keys <- [:atoms, :strings] do
+    @strategy strategy
+    @keys keys
+    test "#{strategy} preserves a parallel tool exchange with #{keys} keys" do
+      messages = [
+        %{role: "user", content: "Root task"},
+        %{role: "assistant", content: String.duplicate("Old context ", 100)},
+        %{
+          role: "assistant",
+          content: "",
+          tool_calls: [
+            %{id: "first", name: "read_file", args: %{}},
+            %{id: "second", name: "read_file", args: %{}}
+          ]
+        },
+        %{role: "tool", content: "First result", tool_call_id: "first"},
+        %{role: "tool", content: "Second result", tool_call_id: "second"}
+      ]
+
+      messages =
+        if @keys == :strings,
+          do:
+            Enum.map(messages, &Map.new(&1, fn {key, value} -> {Atom.to_string(key), value} end)),
+          else: messages
+
+      compacted =
+        ContextCompactor.compact(messages, %{
+          context_window_tokens: 100,
+          context_prune_threshold_percent: 10,
+          context_compaction_strategy: @strategy,
+          keep_recent_turns: 1
+        })
+
+      assert hd(compacted) == hd(messages)
+      assert Enum.take(compacted, -3) == Enum.take(messages, -3)
+      refute Enum.at(messages, 1) in compacted
+    end
+  end
+
   describe "compact/3 rolling_summary strategy" do
     test "replaces older turns with a summary checkpoint while keeping root and recent turns" do
       settings = %AppSettings{
