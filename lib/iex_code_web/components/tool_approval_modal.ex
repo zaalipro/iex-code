@@ -18,23 +18,23 @@ defmodule IexCodeWeb.ToolApprovalModal do
     <div
       :if={@request}
       id={@id}
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-fade-in"
+      class="ui-scrim fixed inset-0 z-50 flex items-center justify-center backdrop-blur-sm p-4 animate-fade-in"
       role="dialog"
       aria-modal="true"
       aria-labelledby="tool-approval-title"
     >
-      <div class="relative w-full max-w-2xl overflow-hidden rounded-2xl border border-amber-500/30 bg-[#0d1117] shadow-2xl shadow-black/90 ring-1 ring-white/10">
+      <div class="ui-dialog relative w-full max-w-2xl overflow-hidden border border-amber-500/30 bg-surface ring-1 ring-line">
         <!-- Header -->
-        <div class="flex items-center justify-between border-b border-white/10 px-6 py-4 bg-[#161b22]">
+        <div class="flex items-center justify-between border-b border-line px-6 py-4 bg-raised">
           <div class="flex items-center gap-3">
             <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400">
               <.icon name="hero-shield-exclamation" class="h-6 w-6" />
             </div>
             <div>
-              <h3 id="tool-approval-title" class="text-sm font-semibold text-white">
+              <h3 id="tool-approval-title" class="text-sm font-semibold text-content">
                 Tool Execution Approval Required
               </h3>
-              <p class="text-xs text-gray-400">
+              <p class="text-xs text-muted">
                 An autonomous agent is requesting permission to execute a potentially risky tool
               </p>
             </div>
@@ -60,9 +60,9 @@ defmodule IexCodeWeb.ToolApprovalModal do
         <!-- Body -->
         <div class="space-y-4 px-6 py-5">
           <!-- Tool Name & Risk Reason -->
-          <div class="rounded-xl bg-white/[0.03] border border-white/5 p-4 space-y-2.5">
+          <div class="ui-inset p-4 space-y-2.5">
             <div class="flex items-center justify-between text-xs">
-              <span class="text-gray-400 font-medium">Requested Tool:</span>
+              <span class="text-muted font-medium">Requested Tool:</span>
               <span
                 id="tool-approval-name"
                 class="font-mono font-bold text-cyan-400 bg-cyan-950/40 px-2.5 py-1 rounded border border-cyan-800/40"
@@ -70,8 +70,8 @@ defmodule IexCodeWeb.ToolApprovalModal do
                 {request_field(@request, :tool_name) || "unknown_tool"}
               </span>
             </div>
-            <div class="text-xs text-gray-300">
-              <span class="text-gray-400 font-medium">Risk Justification:</span>
+            <div class="text-xs text-content">
+              <span class="text-muted font-medium">Risk Justification:</span>
               <p id="tool-approval-reason" class="mt-1 text-amber-200/90 font-sans leading-relaxed">
                 {request_field(@request, :reason) ||
                   "Tool modifies files or executes commands in the workspace"}
@@ -81,15 +81,15 @@ defmodule IexCodeWeb.ToolApprovalModal do
 
           <!-- Parameters / Command / Diff Preview -->
           <div>
-            <div class="flex items-center justify-between text-xs text-gray-400 font-medium mb-1.5">
+            <div class="flex items-center justify-between text-xs text-muted font-medium mb-1.5">
               <span>Tool Parameters / Command Preview</span>
-              <span class="text-[10px] font-mono text-gray-500">
+              <span class="text-[10px] font-mono text-subtle">
                 ID: {request_field(@request, :id)}
               </span>
             </div>
             <div
               id="tool-approval-preview-box"
-              class="rounded-xl border border-white/10 bg-[#090d13] p-3 text-xs font-mono text-gray-300 overflow-x-auto max-h-60"
+              class="ui-inset p-3 text-xs font-mono text-content overflow-x-auto max-h-60"
             >
               <pre><code phx-no-curly-interpolation><%= format_preview(preview_content(@request)) %></code></pre>
             </div>
@@ -97,7 +97,7 @@ defmodule IexCodeWeb.ToolApprovalModal do
         </div>
 
         <!-- Action Buttons -->
-        <div class="flex items-center justify-between border-t border-white/10 px-6 py-4 bg-[#161b22]">
+        <div class="flex items-center justify-between border-t border-line px-6 py-4 bg-raised">
           <!-- Deny Button -->
           <button
             id="deny-tool-btn"

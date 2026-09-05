@@ -92,6 +92,9 @@ defmodule IexCode.Settings.AppSettings do
     field :approval_prompt_chime, :string, default: "ping"
     field :theme_accent, :string, default: "cyan"
     field :layout_density, :string, default: "comfortable"
+    field :ui_theme, :string, default: "midnight"
+    field :shadows_3d, :boolean, default: true
+    field :effects_3d, :boolean, default: true
 
     timestamps(type: :utc_datetime)
   end
@@ -105,6 +108,7 @@ defmodule IexCode.Settings.AppSettings do
   @chimes ~w(hero sosumi basso ping glass bottle funk)
   @theme_accents ~w(cyan emerald violet amber rose carbon)
   @layout_densities ~w(comfortable compact)
+  @ui_themes ~w(midnight graphite aurora porcelain sandstone)
 
   @required_fields [
     :anthropic_base_url,
@@ -145,7 +149,10 @@ defmodule IexCode.Settings.AppSettings do
     :error_alert_chime,
     :approval_prompt_chime,
     :theme_accent,
-    :layout_density
+    :layout_density,
+    :ui_theme,
+    :shadows_3d,
+    :effects_3d
   ]
 
   def changeset(settings, attrs) do
@@ -202,7 +209,10 @@ defmodule IexCode.Settings.AppSettings do
       :error_alert_chime,
       :approval_prompt_chime,
       :theme_accent,
-      :layout_density
+      :layout_density,
+      :ui_theme,
+      :shadows_3d,
+      :effects_3d
     ])
     |> validate_required(@required_fields)
     |> validate_length(:anthropic_api_key, max: 4_096)
@@ -304,6 +314,8 @@ defmodule IexCode.Settings.AppSettings do
     |> validate_inclusion(:approval_prompt_chime, @chimes)
     |> validate_inclusion(:theme_accent, @theme_accents)
     |> validate_inclusion(:layout_density, @layout_densities)
+    |> validate_inclusion(:ui_theme, @ui_themes)
+    |> check_constraint(:ui_theme, name: :app_settings_ui_theme_check)
     |> optimistic_lock(:lock_version)
   end
 

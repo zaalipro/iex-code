@@ -283,7 +283,7 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:sidebar_collapsed, false)
       |> assign(:bottom_terminal_open, false)
       |> assign(:bottom_terminal_height, 280)
-      |> assign(:layout_density, "comfortable")
+      |> assign(:layout_density, settings.layout_density || "comfortable")
       # Goal & Steering assigns
       |> assign(:show_goal_modal, false)
       |> assign(:show_cancel_modal, false)
@@ -4455,6 +4455,7 @@ defmodule IexCodeWeb.WorkspaceLive do
     {:noreply,
      socket
      |> assign(:settings, settings)
+     |> assign(:layout_density, settings.layout_density || "comfortable")
      |> assign(:settings_form, Settings.change_settings(settings) |> to_form(as: :settings))
      |> refresh_run_setup_settings(settings)
      |> refresh_research_launch_settings(settings)}

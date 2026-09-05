@@ -7,24 +7,8 @@ import TerminalHook from "./hooks/terminal_hook"
 import SidebarResize from "./hooks/sidebar_resize"
 import ModelPicker from "./hooks/model_picker"
 
-// Theme behavior lives in the supported application bundle rather than an
-// inline layout script, so CSP can remain strict in desktop and release builds.
-const systemTheme = () => matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"
-const setTheme = (theme) => {
-  if (theme === "system") {
-    localStorage.removeItem("phx:theme")
-    document.documentElement.dataset.theme = systemTheme()
-    document.documentElement.dataset.themeSource = "system"
-  } else {
-    localStorage.setItem("phx:theme", theme)
-    document.documentElement.dataset.theme = theme
-    document.documentElement.dataset.themeSource = "user"
-  }
-}
+import "./appearance"
 
-setTheme(localStorage.getItem("phx:theme") || "system")
-window.addEventListener("storage", (event) => event.key === "phx:theme" && setTheme(event.newValue || "system"))
-window.addEventListener("phx:set-theme", (event) => setTheme(event.target.dataset.phxTheme))
 window.addEventListener("phx:reset_run_agent_guidance", (event) => {
   const agentId = event.detail?.agent_id
   if (!agentId) return
@@ -35,10 +19,6 @@ window.addEventListener("phx:reset_run_agent_guidance", (event) => {
     input.dispatchEvent(new Event("input", {bubbles: true}))
   }
 })
-matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
-  if (document.documentElement.dataset.themeSource === "system") setTheme("system")
-})
-
 // LiveView may replace the focused trigger before a conditionally rendered
 // dialog hook mounts. Capture the interaction target first so focus can still
 // return to the control that opened the dialog.

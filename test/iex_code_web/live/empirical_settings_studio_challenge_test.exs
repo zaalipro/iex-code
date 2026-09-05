@@ -105,13 +105,13 @@ defmodule IexCodeWeb.EmpiricalSettingsStudioChallengeTest do
         assert has_element?(view, "#tab-panel-#{tab}")
       end
 
-      # Providers tab should have active styling (cyan indicator) and its panel must NOT be hidden
-      assert has_element?(view, "#tab-link-providers[class*='text-cyan-300']")
+      # Providers tab exposes semantic selection and its panel must NOT be hidden
+      assert has_element?(view, "#tab-link-providers[aria-current='page']")
       assert has_element?(view, "#tab-panel-providers:not(.hidden)")
 
-      # All other 5 tabs must have inactive styling and their panels MUST be hidden
+      # All other 5 tabs are not current and their panels MUST be hidden
       for inactive <- ~w(reasoning safety context environment appearance) do
-        assert has_element?(view, "#tab-link-#{inactive}[class*='text-gray-400']")
+        refute has_element?(view, "#tab-link-#{inactive}[aria-current]")
         assert has_element?(view, "#tab-panel-#{inactive}.hidden")
       end
     end
@@ -131,13 +131,13 @@ defmodule IexCodeWeb.EmpiricalSettingsStudioChallengeTest do
 
         # Active panel is visible
         assert has_element?(view, "#tab-panel-#{tab_id}:not(.hidden)")
-        # Active tab link has highlighted cyan styling
-        assert has_element?(view, "#tab-link-#{tab_id}[class*='text-cyan-300']")
+        # Active tab link exposes the selected page to assistive technology
+        assert has_element?(view, "#tab-link-#{tab_id}[aria-current='page']")
 
         # All other panels are hidden
         for other <- @all_tabs, other != tab_id do
           assert has_element?(view, "#tab-panel-#{other}.hidden")
-          assert has_element?(view, "#tab-link-#{other}[class*='text-gray-400']")
+          refute has_element?(view, "#tab-link-#{other}[aria-current]")
         end
 
         # Page title reflects the active tab
@@ -158,37 +158,37 @@ defmodule IexCodeWeb.EmpiricalSettingsStudioChallengeTest do
       render_patch(view, ~p"/settings/reasoning")
       assert has_element?(view, "#tab-panel-reasoning:not(.hidden)")
       assert has_element?(view, "#tab-panel-providers.hidden")
-      assert has_element?(view, "#tab-link-reasoning[class*='text-cyan-300']")
+      assert has_element?(view, "#tab-link-reasoning[aria-current='page']")
 
       # Patch to safety
       render_patch(view, ~p"/settings/safety")
       assert has_element?(view, "#tab-panel-safety:not(.hidden)")
       assert has_element?(view, "#tab-panel-reasoning.hidden")
-      assert has_element?(view, "#tab-link-safety[class*='text-cyan-300']")
+      assert has_element?(view, "#tab-link-safety[aria-current='page']")
 
       # Patch to context
       render_patch(view, ~p"/settings/context")
       assert has_element?(view, "#tab-panel-context:not(.hidden)")
       assert has_element?(view, "#tab-panel-safety.hidden")
-      assert has_element?(view, "#tab-link-context[class*='text-cyan-300']")
+      assert has_element?(view, "#tab-link-context[aria-current='page']")
 
       # Patch to environment
       render_patch(view, ~p"/settings/environment")
       assert has_element?(view, "#tab-panel-environment:not(.hidden)")
       assert has_element?(view, "#tab-panel-context.hidden")
-      assert has_element?(view, "#tab-link-environment[class*='text-cyan-300']")
+      assert has_element?(view, "#tab-link-environment[aria-current='page']")
 
       # Patch to appearance
       render_patch(view, ~p"/settings/appearance")
       assert has_element?(view, "#tab-panel-appearance:not(.hidden)")
       assert has_element?(view, "#tab-panel-environment.hidden")
-      assert has_element?(view, "#tab-link-appearance[class*='text-cyan-300']")
+      assert has_element?(view, "#tab-link-appearance[aria-current='page']")
 
       # Patch back to providers
       render_patch(view, ~p"/settings/providers")
       assert has_element?(view, "#tab-panel-providers:not(.hidden)")
       assert has_element?(view, "#tab-panel-appearance.hidden")
-      assert has_element?(view, "#tab-link-providers[class*='text-cyan-300']")
+      assert has_element?(view, "#tab-link-providers[aria-current='page']")
     end
 
     test "session-scoped settings routes preserve session context, return link, and tab patch targets",
@@ -229,7 +229,7 @@ defmodule IexCodeWeb.EmpiricalSettingsStudioChallengeTest do
       {:ok, view, _html} = live(conn, "/settings/completely_bogus_tab_slug")
 
       assert has_element?(view, "#tab-panel-providers:not(.hidden)")
-      assert has_element?(view, "#tab-link-providers[class*='text-cyan-300']")
+      assert has_element?(view, "#tab-link-providers[aria-current='page']")
     end
   end
 
@@ -517,10 +517,10 @@ defmodule IexCodeWeb.EmpiricalSettingsStudioChallengeTest do
         settings = Settings.get_settings()
         assert settings.tool_approval_mode == mode
 
-        # UI highlights the active mode button
+        # UI exposes the active mode through stable pressed-state semantics
         assert has_element?(
                  view,
-                 "#quick-settings-drawer button[phx-value-value='#{mode}'][class*='border-emerald-500']"
+                 "#quick-settings-drawer button[phx-value-key='tool_approval_mode'][phx-value-value='#{mode}'][aria-pressed='true']"
                )
       end
     end

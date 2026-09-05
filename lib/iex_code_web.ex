@@ -51,6 +51,7 @@ defmodule IexCodeWeb do
   def live_view do
     quote do
       use Phoenix.LiveView
+      on_mount IexCodeWeb.Appearance
 
       unquote(html_helpers())
     end

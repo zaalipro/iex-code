@@ -4,7 +4,7 @@
     id="workspace-shell"
     phx-hook=".ResponsiveShell"
     data-density={@layout_density}
-    class="workspace-shell flex h-dvh min-h-0 w-full bg-[#0a0d12] text-[#f0f6fc] font-sans antialiased overflow-hidden"
+    class="workspace-studio-root workspace-shell studio-shell flex h-dvh min-h-0 w-full bg-canvas text-content font-sans antialiased overflow-hidden"
   >
     <!-- Sidebar: Sessions & Projects Navigation -->
     <aside
@@ -12,7 +12,7 @@
       aria-label="Workspace navigation"
       data-collapsed={to_string(@sidebar_collapsed)}
       class={[
-        "workspace-sidebar bg-[#11151c]/95 backdrop-blur-xl border-r border-[#21262d] flex flex-col justify-between shrink-0 transition-all duration-200 ease-out",
+        "workspace-sidebar studio-sidebar bg-surface border-r border-line flex flex-col justify-between shrink-0 transition-all duration-200 ease-out",
         @sidebar_collapsed &&
           "w-0 min-w-0 opacity-0 pointer-events-none overflow-hidden border-none lg:w-0",
         !@sidebar_collapsed && "min-w-0"
@@ -43,24 +43,22 @@
         title="Drag to resize. Arrow keys adjust width; double-click to reset."
       >
       </div>
-      <div class="workspace-sidebar-content flex flex-col h-full overflow-hidden">
+      <div class="workspace-sidebar-content studio-sidebar-content flex flex-col h-full overflow-hidden">
         <!-- Brand / Workspace Header -->
-        <div class="p-3.5 border-b border-[#21262d] relative">
+        <div class="studio-project-switcher p-3.5 border-b border-line relative">
           <button
             phx-click="toggle_workspace_menu"
-            class="w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl hover:bg-[#161b22] text-left transition-smooth group"
+            class="studio-project-button studio-control w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl text-left transition-smooth group"
           >
             <div class="flex items-center gap-2.5 min-w-0">
-              <div class="w-7 h-7 rounded-xl bg-gradient-to-tr from-[#ff5e3a] to-[#feb47b] flex items-center justify-center text-white font-bold shadow-md shadow-orange-500/20 text-xs shrink-0">
+              <div class="studio-brand-mark w-8 h-8 rounded-xl bg-gradient-to-tr from-[#ff5e3a] to-[#feb47b] flex items-center justify-center text-white font-bold text-xs shrink-0">
                 <.icon name="hero-cube-transparent" class="w-4 h-4 text-white" />
               </div>
               <div class="min-w-0">
-                <div class="text-xs font-bold text-white tracking-tight flex items-center gap-1.5 truncate">
-                  <span>IexCode</span>
-                  <span class="text-[9px] font-mono px-1.5 py-0.5 rounded bg-[#21262d] text-emerald-400 font-normal truncate">
-                    {@project.name}
-                  </span>
+                <div class="text-sm font-semibold text-content tracking-tight truncate">
+                  IexCode
                 </div>
+                <div class="mt-0.5 truncate text-[11px] text-muted">{@project.name}</div>
               </div>
             </div>
             <.icon
@@ -149,7 +147,11 @@
         </div>
 
         <!-- Primary Navigation Links (Including Chat) -->
-        <nav id="workspace-primary-nav" aria-label="Primary" class="px-3 py-2 space-y-0.5">
+        <nav
+          id="workspace-primary-nav"
+          aria-label="Primary"
+          class="studio-sidebar-nav px-3 py-2 space-y-0.5"
+        >
           <button
             id="sidebar-tab-kanban"
             phx-click="switch_tab"
@@ -173,7 +175,8 @@
             class={[
               "w-full flex items-center gap-2.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-smooth text-left",
               @active_tab == "workflows" && "bg-[#21262d] text-white shadow-sm font-semibold",
-              @active_tab != "workflows" && "text-gray-400 hover:text-gray-200 hover:bg-[#161b22]"
+              @active_tab != "workflows" &&
+                "text-gray-400 hover:text-gray-200 hover:bg-[#161b22]"
             ]}
           >
             <.icon name="hero-rectangle-stack" class="w-3.5 h-3.5 text-cyan-400" />
@@ -202,7 +205,8 @@
             class={[
               "w-full flex items-center gap-2.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-smooth text-left",
               @active_tab == "research" && "bg-[#21262d] text-white shadow-sm font-semibold",
-              @active_tab != "research" && "text-gray-400 hover:text-gray-200 hover:bg-[#161b22]"
+              @active_tab != "research" &&
+                "text-gray-400 hover:text-gray-200 hover:bg-[#161b22]"
             ]}
           >
             <.icon name="hero-globe-alt" class="w-3.5 h-3.5 text-violet-400" />
@@ -217,7 +221,8 @@
             class={[
               "w-full flex items-center gap-2.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-smooth text-left",
               @active_tab == "calendar" && "bg-[#21262d] text-white shadow-sm font-semibold",
-              @active_tab != "calendar" && "text-gray-400 hover:text-gray-200 hover:bg-[#161b22]"
+              @active_tab != "calendar" &&
+                "text-gray-400 hover:text-gray-200 hover:bg-[#161b22]"
             ]}
           >
             <.icon name="hero-calendar" class="w-3.5 h-3.5 text-indigo-400" />
@@ -277,7 +282,8 @@
             class={[
               "w-full flex items-center gap-2.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-smooth text-left",
               @active_tab == "consensus" && "bg-[#21262d] text-white shadow-sm font-semibold",
-              @active_tab != "consensus" && "text-gray-400 hover:text-gray-200 hover:bg-[#161b22]"
+              @active_tab != "consensus" &&
+                "text-gray-400 hover:text-gray-200 hover:bg-[#161b22]"
             ]}
           >
             <.icon name="hero-scale" class="w-3.5 h-3.5 text-amber-400" />
@@ -322,7 +328,8 @@
             class={[
               "w-full flex items-center gap-2.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-smooth text-left",
               @active_tab == "terminal" && "bg-[#21262d] text-white shadow-sm font-semibold",
-              @active_tab != "terminal" && "text-gray-400 hover:text-gray-200 hover:bg-[#161b22]"
+              @active_tab != "terminal" &&
+                "text-gray-400 hover:text-gray-200 hover:bg-[#161b22]"
             ]}
           >
             <.icon name="hero-command-line" class="w-3.5 h-3.5 text-gray-400" />
@@ -384,7 +391,7 @@
         </div>
 
         <!-- Sidebar Footer: Settings & User Profile Card -->
-        <div class="p-3 border-t border-[#21262d] bg-[#0d1117] space-y-1.5">
+        <div class="studio-sidebar-footer p-3 border-t border-line bg-inset space-y-1.5">
           <div class="px-2 pt-1 text-[10px] font-mono text-gray-500 uppercase tracking-wider font-semibold flex items-center justify-between">
             <span>Settings</span>
             <button
@@ -417,7 +424,7 @@
           <.link
             id="profile-settings-card"
             navigate={~p"/sessions/#{@session.id}/settings#runtime"}
-            class="mt-2 w-full p-2.5 rounded-2xl bg-[#161b22] border border-[#21262d] hover:border-[#38404a] flex items-center justify-between cursor-pointer transition-smooth group text-left"
+            class="ui-depth-effect mt-2 w-full p-2.5 rounded-2xl bg-[#161b22] border border-[#21262d] hover:border-[#38404a] flex items-center justify-between cursor-pointer transition-smooth group text-left"
           >
             <div class="flex items-center gap-2.5 min-w-0">
               <div class="w-7 h-7 rounded-xl bg-gradient-to-tr from-indigo-500 to-purple-500 flex items-center justify-center text-white font-bold text-xs shrink-0 shadow-sm">
@@ -455,13 +462,13 @@
     <main
       id="main-content"
       tabindex="-1"
-      class="flex-1 flex flex-col h-full min-w-0 bg-[#0a0d12] relative overflow-hidden"
+      class="studio-stage flex-1 flex flex-col h-full min-w-0 bg-canvas relative overflow-hidden"
     >
       <h1 class="sr-only">IexCode workspace: {@project.name}</h1>
       <!-- Top Navigation Bar & Tab Switchers -->
       <header
         id="workspace-header"
-        class="glass-header h-14 border-b border-[#21262d] flex items-center justify-between gap-2 px-3 md:px-4 xl:px-5 shrink-0"
+        class="glass-header studio-toolbar h-16 border-b border-line flex items-center justify-between gap-2 px-3 md:px-5 xl:px-6 shrink-0"
       >
         <div class="workspace-header-primary flex min-w-0 items-center gap-2">
           <button
@@ -500,7 +507,7 @@
           <nav
             id="workspace-desktop-tabs"
             aria-label="Workspace views"
-            class="workspace-desktop-tabs hidden xl:flex items-center bg-[#161b22] p-1 rounded-xl border border-[#21262d] gap-1"
+            class="workspace-desktop-tabs studio-segmented-nav hidden xl:flex items-center bg-inset p-1 rounded-full border border-line gap-1"
           >
             <button
               id="tab-btn-kanban"
@@ -702,7 +709,9 @@
               ]}
             >
               <.icon name="hero-sparkles" class="w-3.5 h-3.5" />
-              <span class="hidden md:inline">Swarm: {if @session.swarm_mode, do: "ON", else: "OFF"}</span>
+              <span class="hidden md:inline">Swarm: {if @session.swarm_mode,
+                do: "ON",
+                else: "OFF"}</span>
             </button>
             <div class="luxury-tooltip luxury-tooltip-bottom">
               <div class="text-xs font-semibold text-white tracking-tight mb-1">
@@ -733,7 +742,8 @@
                 "w-2 h-2 rounded-full",
                 @user_availability == "Available" &&
                   "bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.8)]",
-                @user_availability == "Busy" && "bg-red-400 shadow-[0_0_8px_rgba(239,68,68,0.8)]",
+                @user_availability == "Busy" &&
+                  "bg-red-400 shadow-[0_0_8px_rgba(239,68,68,0.8)]",
                 @user_availability == "In-meeting" &&
                   "bg-amber-400 shadow-[0_0_8px_rgba(245,158,11,0.8)]",
                 @user_availability == "Offline" && "bg-gray-400"
@@ -795,7 +805,7 @@
               id="header-new-task-btn"
               phx-click="toggle_new_task_modal"
               aria-label="Create new task"
-              class="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-[#ff5e3a] hover:bg-[#ff4e24] text-white text-xs font-medium font-mono shadow-md shadow-orange-500/20 transition-smooth"
+              class="studio-primary-action ui-depth-effect flex items-center gap-1.5 px-4 py-2 rounded-full bg-accent-strong text-accent-ink text-xs font-semibold transition-smooth"
             >
               <.icon name="hero-plus" class="w-3.5 h-3.5" />
               <span class="hidden sm:inline">New Task</span>
@@ -814,23 +824,32 @@
       </header>
 
       <!-- View Containers -->
-      <div id="workspace-views" class="relative flex-1 flex min-w-0 overflow-hidden">
+      <div
+        id="workspace-views"
+        class="studio-workspace-views relative flex-1 flex min-w-0 overflow-hidden"
+      >
         <!-- TAB 1: KANBAN BOARD -->
         <%= if @active_tab == "kanban" do %>
-          <div class="flex-1 flex flex-col h-full min-w-0 overflow-hidden p-3 md:p-5">
+          <div class="studio-board-pane flex-1 flex flex-col h-full min-w-0 overflow-hidden p-3 md:p-5 xl:p-6">
             <!-- Header & Filter Bar -->
-            <div class="flex flex-wrap items-center justify-between gap-3 mb-4 shrink-0">
-              <div class="flex items-center gap-3">
-                <h2 class="text-lg font-semibold text-white tracking-tight flex items-center gap-2">
-                  Today's tasks
-                  <span class="px-2 py-0.5 rounded-full bg-[#1c2128] text-xs font-mono text-gray-400 border border-[#30363d]">
-                    {length(@tasks)}
-                  </span>
-                </h2>
+            <div class="studio-board-header flex flex-wrap items-end justify-between gap-4 mb-5 shrink-0">
+              <div class="flex items-end gap-3">
+                <div>
+                  <p class="studio-eyebrow">Execution board</p>
+                  <h2 class="mt-1 text-xl font-semibold text-content tracking-tight flex items-center gap-2">
+                    Today
+                    <span class="px-2 py-0.5 rounded-full bg-[#1c2128] text-xs font-mono text-gray-400 border border-[#30363d]">
+                      {length(@tasks)}
+                    </span>
+                  </h2>
+                  <p class="mt-1 text-[13px] text-muted">
+                    Plan, dispatch, and review work across every stage.
+                  </p>
+                </div>
               </div>
 
               <!-- Filter Bar -->
-              <div class="flex max-w-full items-center gap-2.5 overflow-x-auto pb-1 text-xs font-mono text-gray-400">
+              <div class="studio-filter-bar flex max-w-full items-center gap-2 overflow-x-auto pb-1 text-xs text-muted">
                 <.form
                   for={to_form(@kanban_filter)}
                   id="kanban-filter-form"
@@ -1114,14 +1133,16 @@
             <div
               :if={@tasks == [] and kanban_filters_active?}
               id="kanban-filter-empty-state"
-              class="mb-4 flex flex-col items-start justify-between gap-4 rounded-2xl border border-dashed border-[#30363d] bg-[#11151c]/70 px-5 py-4 sm:flex-row sm:items-center"
+              class="studio-empty-state mb-4 flex flex-col items-start justify-between gap-4 rounded-[1.125rem] border border-dashed border-line bg-surface px-5 py-4 sm:flex-row sm:items-center"
             >
               <div class="flex items-start gap-3">
                 <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-[#30363d] bg-[#161b22] text-gray-400">
                   <.icon name="hero-funnel" class="h-4 w-4" />
                 </span>
                 <div>
-                  <p class="text-sm font-semibold text-gray-100">No tasks match these filters</p>
+                  <p class="text-sm font-semibold text-gray-100">
+                    No tasks match these filters
+                  </p>
                   <p class="mt-1 max-w-xl text-xs leading-5 text-gray-400">
                     Your tasks are still here. Clear the active search and filters to show the full board.
                   </p>
@@ -1140,7 +1161,7 @@
             <div
               :if={@tasks == [] and !kanban_filters_active?}
               id="kanban-empty-state"
-              class="mb-4 flex flex-col items-start justify-between gap-4 rounded-2xl border border-dashed border-[#30363d] bg-[#11151c]/70 px-5 py-4 sm:flex-row sm:items-center"
+              class="studio-empty-state mb-4 flex flex-col items-start justify-between gap-4 rounded-[1.125rem] border border-dashed border-line bg-surface px-5 py-4 sm:flex-row sm:items-center"
             >
               <div class="flex items-start gap-3">
                 <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-[#30363d] bg-[#161b22] text-gray-400">
@@ -1158,14 +1179,14 @@
                 id="kanban-empty-create-task"
                 type="button"
                 phx-click="toggle_new_task_modal"
-                class="inline-flex shrink-0 items-center gap-2 rounded-xl bg-[#ff5e3a] px-3.5 py-2 text-xs font-semibold text-white shadow-lg shadow-orange-950/20 transition-smooth hover:bg-[#ff4e24]"
+                class="studio-primary-action ui-depth-effect inline-flex shrink-0 items-center gap-2 rounded-full bg-accent-strong px-4 py-2 text-xs font-semibold text-accent-ink transition-smooth"
               >
                 <.icon name="hero-plus" class="h-3.5 w-3.5" /> Create first task
               </button>
             </div>
 
             <!-- Kanban 8-Column Accordion Board -->
-            <div class="flex-1 flex gap-3 overflow-x-auto pb-2 select-none">
+            <div class="studio-kanban-board flex-1 flex gap-3 overflow-x-auto pb-2 select-none">
               <%= for col_status <- Kanban.Task.statuses() do %>
                 <% col_tasks = Enum.filter(@tasks, &(&1.status == col_status))
                 is_expanded = @expanded_column == col_status %>
@@ -1174,7 +1195,7 @@
                   <!-- Expanded Column -->
                   <div
                     id={"kanban-col-#{col_status}"}
-                    class="w-80 flex-shrink-0 bg-[#11151c] border border-[#21262d] rounded-2xl flex flex-col h-full overflow-hidden transition-all duration-200"
+                    class="studio-kanban-column w-80 flex-shrink-0 bg-surface border border-line rounded-[1.125rem] flex flex-col h-full overflow-hidden transition-all duration-200"
                   >
                     <!-- Column Header -->
                     <div class="p-3.5 border-b border-[#21262d] flex items-center justify-between shrink-0">
@@ -1222,7 +1243,7 @@
                           phx-hook=".KanbanCard"
                           data-task-id={task.id}
                           class={[
-                            "w-full p-3.5 bg-[#161b22] border rounded-2xl transition-smooth cursor-pointer hover:border-gray-500 space-y-2.5 group shadow-sm text-left",
+                            "studio-task-card w-full p-3.5 bg-raised border rounded-2xl transition-smooth cursor-pointer space-y-2.5 group text-left",
                             @selected_task && @selected_task.id == task.id &&
                               "border-emerald-500/60 ring-1 ring-emerald-500/20",
                             !(@selected_task && @selected_task.id == task.id) &&
@@ -1287,7 +1308,7 @@
                     data-status={col_status}
                     aria-label={"Expand #{col_status} column"}
                     aria-expanded="false"
-                    class="w-24 flex-shrink-0 bg-[#11151c] border border-[#21262d] hover:border-gray-500 rounded-2xl flex flex-col items-center px-1 py-4 justify-between transition-smooth cursor-pointer group"
+                    class="studio-kanban-rail w-24 flex-shrink-0 bg-surface border border-line rounded-[1.125rem] flex flex-col items-center px-1 py-4 justify-between transition-smooth cursor-pointer group"
                     title={"Click to expand #{col_status} column"}
                   >
                     <div class="flex flex-col items-center gap-3">
@@ -1375,7 +1396,7 @@
               <div class="flex items-center gap-2">
                 <.link
                   navigate={~p"/sessions/#{@session.id}/workflows/new"}
-                  class="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 text-white font-mono text-xs font-bold hover:brightness-110 shadow-md shadow-cyan-500/20 transition-all"
+                  class="studio-primary-action ui-depth-effect inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold transition-all"
                 >
                   <.icon name="hero-plus" class="w-3.5 h-3.5" />
                   <span>Create Workflow</span>
@@ -2226,7 +2247,10 @@
                   class="flex items-center gap-1.5 px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] border border-[#21262d] hover:border-[#30363d] text-blue-300 hover:text-white rounded-lg transition-smooth"
                   title="Detach Git Diff into standalone window"
                 >
-                  <.icon name="hero-arrow-top-right-on-square" class="w-3.5 h-3.5 text-blue-400" />
+                  <.icon
+                    name="hero-arrow-top-right-on-square"
+                    class="w-3.5 h-3.5 text-blue-400"
+                  />
                   <span class="hidden sm:inline">Detach</span>
                 </button>
               </div>
@@ -2910,7 +2934,10 @@
                   <div class="space-y-2">
                     <% all_critiques =
                       Enum.flat_map(@consensus_assessments || [], fn a ->
-                        Enum.map(a.critique_points || [], &Map.put(&1, :reviewer, a.reviewer_id))
+                        Enum.map(
+                          a.critique_points || [],
+                          &Map.put(&1, :reviewer, a.reviewer_id)
+                        )
                       end) %>
                     <%= if all_critiques == [] do %>
                       <p class="text-gray-500 italic p-2">
@@ -3556,7 +3583,9 @@
                     class="border border-[#29313a] bg-[#0d1218] p-4 sm:p-5"
                   >
                     <div class="flex items-center justify-between gap-3">
-                      <h3 class="text-sm font-semibold text-white">Exact execution semantics</h3>
+                      <h3 class="text-sm font-semibold text-white">
+                        Exact execution semantics
+                      </h3>
                       <span class="border border-amber-400/25 bg-amber-400/[0.06] px-2 py-1 font-mono text-[9px] uppercase tracking-wider text-amber-200">
                         active
                       </span>
@@ -3602,7 +3631,10 @@
                       <h3 class="text-sm font-semibold text-white">Recent investigations</h3>
                       <span class="font-mono text-[10px] text-gray-600">{length(@research_runs)}</span>
                     </div>
-                    <div :if={@research_runs == []} class="py-8 text-center text-xs text-gray-600">
+                    <div
+                      :if={@research_runs == []}
+                      class="py-8 text-center text-xs text-gray-600"
+                    >
                       No research runs in this session.
                     </div>
                     <button
@@ -3655,7 +3687,10 @@
                       <div class="flex items-start justify-between gap-3">
                         <div class="min-w-0">
                           <p class="font-mono text-[9px] uppercase tracking-wider text-violet-300">
-                            Result #{research_result_public_id(result)} · {Map.get(result, :level)}
+                            Result #{research_result_public_id(result)} · {Map.get(
+                              result,
+                              :level
+                            )}
                           </p>
                           <p class="mt-1 line-clamp-2 text-xs leading-5 text-gray-300">
                             {research_result_label(result)}
@@ -3725,7 +3760,10 @@
                     preview_title =
                       if is_user,
                         do:
-                          msg.content |> String.split("\n") |> List.first() |> String.slice(0, 40),
+                          msg.content
+                          |> String.split("\n")
+                          |> List.first()
+                          |> String.slice(0, 40),
                         else: msg.agent_name || "Assistant Response"
 
                     preview_snippet = msg.content |> String.slice(0, 140) %>
@@ -4306,13 +4344,13 @@
       <footer
         id="prompt-composer"
         aria-label="Agent prompt composer"
-        class="max-h-[calc(100dvh-3.5rem)] shrink-0 overflow-y-auto overscroll-contain bg-gradient-to-t from-[#0a0d12] via-[#0a0d12]/95 to-transparent p-2 pt-0 sm:p-3 sm:pt-0 xl:p-5 xl:pt-0"
+        class="studio-composer max-h-[calc(100dvh-3.5rem)] shrink-0 overflow-y-auto overscroll-contain p-2 pt-0 sm:p-3 sm:pt-0 xl:px-6 xl:pb-5 xl:pt-0"
       >
-        <div class="max-w-4xl mx-auto">
+        <div class="studio-composer-inner max-w-4xl mx-auto">
           <!-- Announcement Pill -->
-          <div class="hidden sm:flex items-center gap-2 mb-2 px-2">
-            <span class="text-[#ff8a68] text-xs">◆</span>
-            <span class="text-xs font-mono text-gray-400">
+          <div class="studio-composer-note hidden sm:flex items-center gap-2 mb-2 px-2">
+            <span class="studio-live-glyph" aria-hidden="true"></span>
+            <span class="text-[11px] text-muted">
               <%= if @dispatch_mode == "background" do %>
                 Durable mode · queued work continues after you disconnect
               <% else %>
@@ -4325,7 +4363,7 @@
               phx-click="toggle_run_setup"
               aria-expanded={@run_setup_open?}
               aria-controls="run-setup-panel"
-              class="ml-auto inline-flex items-center gap-1.5 border border-[#30363d] bg-[#10151b] px-2.5 py-1 font-mono text-[10px] text-gray-300 transition-colors hover:border-[#ff7e5f]/50 hover:text-white"
+              class="studio-control ml-auto inline-flex items-center gap-1.5 rounded-full border border-line bg-inset px-3 py-1.5 text-[11px] font-medium text-muted transition-colors"
             >
               <.icon name="hero-adjustments-horizontal" class="h-3 w-3 text-[#ff8a68]" />
               Run setup
@@ -4333,8 +4371,8 @@
           </div>
 
           <!-- Rainbow Border Glow Container -->
-          <div class="rainbow-box-wrapper shadow-2xl">
-            <div class="bg-[#11151c] rounded-[1.2rem] p-3">
+          <div class="rainbow-box-wrapper studio-composer-frame">
+            <div class="studio-composer-surface bg-surface rounded-[1.2rem] p-3">
               <.form
                 :if={@run_setup_open?}
                 for={@run_setup_form}
@@ -4615,8 +4653,8 @@
                   required
                   aria-required="true"
                   phx-hook="KeyboardSubmit"
-                  placeholder="What's my next task or swarm instruction? (e.g. /swarm fix authentication)"
-                  class="w-full bg-transparent border-0 text-white placeholder-gray-500 font-sans text-sm focus:outline-none focus:ring-0 resize-none px-2 py-1"
+                  placeholder="Ask IexCode to build, investigate, or review…"
+                  class="studio-prompt-input w-full bg-transparent border-0 text-content placeholder:text-subtle font-sans text-sm focus:outline-none focus:ring-0 resize-none px-2 py-1"
                 ></textarea>
 
                 <!-- Bottom Action Toolbar -->
@@ -4867,7 +4905,7 @@
                     <button
                       type="submit"
                       phx-disable-with="Executing..."
-                      class="px-4 py-1.5 rounded-xl bg-gradient-to-r from-[#ff7e5f] to-[#feb47b] text-white font-semibold text-xs font-mono shadow-md shadow-orange-500/20 hover:opacity-90 transition-smooth"
+                      class="studio-primary-action ui-depth-effect px-4 py-2 rounded-full bg-accent-strong text-accent-ink font-semibold text-xs transition-smooth"
                     >
                       {if @dispatch_mode == "background", do: "Queue run", else: "Send"}
                     </button>
@@ -4894,7 +4932,7 @@
       <%= if @bottom_terminal_open do %>
         <div
           id="bottom-terminal-dock"
-          class="glass-surface-elevated h-64 sm:h-72 border-t border-white/10 flex flex-col shrink-0 overflow-hidden shadow-2xl z-30 transition-smooth animate-in slide-in-from-bottom-2 duration-150"
+          class="studio-terminal-dock glass-surface-elevated h-64 sm:h-72 border-t border-line flex flex-col shrink-0 overflow-hidden z-30 transition-smooth animate-in slide-in-from-bottom-2 duration-150"
         >
           <!-- Terminal Dock Header -->
           <div class="h-9 px-3 bg-[#11151c]/80 border-b border-white/5 flex items-center justify-between shrink-0 font-mono text-xs select-none">
@@ -4956,7 +4994,7 @@
       <!-- Persistent Workspace Footer Status Bar -->
       <footer
         id="workspace-status-footer"
-        class="glass-footer h-7 shrink-0 border-t border-[#21262d] px-3 flex items-center justify-between z-20 text-[11px] font-mono text-gray-400 select-none"
+        class="studio-status-bar glass-footer h-7 shrink-0 border-t border-line px-3 flex items-center justify-between z-20 text-[11px] font-mono text-muted select-none"
       >
         <div class="flex items-center gap-3">
           <.memory_telemetry_pill snapshot={@memory_snapshot} />
@@ -5755,7 +5793,8 @@
                           name={"settings[search_providers][#{provider}][enabled]"}
                           value="true"
                           checked={
-                            descriptor.lifecycle != :retired && Map.get(config, "enabled", false)
+                            descriptor.lifecycle != :retired &&
+                              Map.get(config, "enabled", false)
                           }
                           disabled={descriptor.lifecycle == :retired}
                           aria-describedby={"settings-provider-lifecycle-note-#{provider}"}
@@ -6068,7 +6107,9 @@
                   {Calendar.strftime(usage.date, "%b %d, %I:%M %p")}
                 </time>
                 <div class="col-span-5 min-w-0 sm:col-span-4">
-                  <div class="truncate font-semibold text-white">{usage.model || "Default"}</div>
+                  <div class="truncate font-semibold text-white">
+                    {usage.model || "Default"}
+                  </div>
                   <div class="truncate text-[10px] text-gray-500">
                     {usage.provider || "unknown"}
                   </div>
@@ -6229,7 +6270,10 @@
             </div>
             <div class="text-white font-medium">
               <%= if @selected_scheduled_task.scheduled_at do %>
-                {Calendar.strftime(@selected_scheduled_task.scheduled_at, "%b %d, %Y · %I:%M %p")}
+                {Calendar.strftime(
+                  @selected_scheduled_task.scheduled_at,
+                  "%b %d, %Y · %I:%M %p"
+                )}
               <% else %>
                 <%= if @selected_scheduled_task.cron_expression do %>
                   Recurring: {@selected_scheduled_task.cron_expression}
@@ -6399,7 +6443,9 @@
                 class="w-full bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-2 text-white text-xs"
               >
                 <%= for a <- ["default", "planner", "coder", "verifier"] do %>
-                  <option value={a} selected={@selected_scheduled_task.assignee == a}>{a}</option>
+                  <option value={a} selected={@selected_scheduled_task.assignee == a}>
+                    {a}
+                  </option>
                 <% end %>
               </select>
             </div>
@@ -6805,9 +6851,17 @@
                   }>
                     {format_date_display(@new_task_date)}
                   </span>
-                  <.icon name="hero-calendar" class="w-3.5 h-3.5 text-gray-400 hover:text-white" />
+                  <.icon
+                    name="hero-calendar"
+                    class="w-3.5 h-3.5 text-gray-400 hover:text-white"
+                  />
                 </button>
-                <input type="text" name="scheduled_at_date" value={@new_task_date} class="hidden" />
+                <input
+                  type="text"
+                  name="scheduled_at_date"
+                  value={@new_task_date}
+                  class="hidden"
+                />
 
                 <%!-- Popover Calendar Card --%>
                 <%= if @show_date_picker_popover do %>
@@ -7093,7 +7147,10 @@
             phx-change="update_custom_time"
             class="pt-2 border-t border-[#21262d] animate-in fade-in"
           >
-            <label for="custom-time-input" class="block text-[11px] font-mono text-gray-400 mb-1">
+            <label
+              for="custom-time-input"
+              class="block text-[11px] font-mono text-gray-400 mb-1"
+            >
               Enter Custom Time / Interval
             </label>
             <input

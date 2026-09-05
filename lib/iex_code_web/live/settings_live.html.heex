@@ -1,10 +1,10 @@
 <Layouts.app flash={@flash}>
   <main
     id="settings-page"
-    class="settings-page min-h-dvh overflow-x-hidden bg-[#0a0d12] text-gray-100"
+    class="settings-page min-h-dvh overflow-x-hidden bg-canvas text-content"
   >
-    <header class="border-b border-[#252c35] bg-[#0d1117]">
-      <div class="mx-auto flex max-w-[90rem] flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+    <header class="settings-masthead border-b border-line bg-surface">
+      <div class="mx-auto flex max-w-[90rem] flex-col gap-3 px-4 py-3 sm:px-6 lg:px-8 lg:py-4">
         <.link
           id="settings-return-workspace"
           navigate={@return_path}
@@ -13,20 +13,20 @@
             @settings_status in [:dirty, :error] &&
               "Discard your unsaved settings and return to the workspace?"
           }
-          class="inline-flex min-h-11 w-fit items-center gap-2 rounded-lg px-2 text-sm font-medium text-gray-400 transition-colors hover:bg-[#161b22] hover:text-white active:translate-y-px focus-visible:ring-2 focus-visible:ring-[#ff8a68]/70"
+          class="inline-flex min-h-9 w-fit items-center gap-2 rounded-xl px-2 text-xs font-semibold text-muted transition-colors hover:bg-raised hover:text-content active:translate-y-px focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         >
           <.icon name="hero-arrow-left" class="h-4 w-4" /> Return to workspace
         </.link>
 
-        <div class="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+        <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div class="max-w-3xl">
-            <p class="font-mono text-xs font-semibold uppercase tracking-[0.18em] text-[#ff8a68]">
+            <p class="font-mono text-[11px] font-semibold uppercase tracking-[0.18em] text-accent">
               Local application control
             </p>
-            <h1 class="mt-2 text-3xl font-semibold tracking-[-0.035em] text-white sm:text-4xl">
+            <h1 class="mt-1.5 text-2xl font-semibold tracking-[-0.04em] text-content sm:text-3xl">
               Settings
             </h1>
-            <p class="mt-3 max-w-[68ch] text-sm leading-6 text-gray-400">
+            <p class="mt-2 max-w-[72ch] text-xs leading-5 text-muted sm:text-sm">
               These global defaults seed run setup when a workspace loads and apply to newly
               launched work. Existing sessions retain only their session-level provider, model,
               and temperature overrides.
@@ -36,29 +36,29 @@
           <section
             id="settings-scope-summary"
             aria-labelledby="settings-scope-title"
-            class="w-full border border-[#303844] bg-[#11161d] p-4 lg:max-w-md"
+            class="w-full rounded-[20px] border border-line bg-inset px-4 py-3 lg:max-w-sm"
           >
             <div class="flex items-start gap-3">
-              <span class="mt-1 h-2 w-2 shrink-0 bg-[#ff8a68]"></span>
+              <span class="mt-1 h-2 w-2 shrink-0 rounded-full bg-accent"></span>
               <div class="min-w-0">
-                <h2 id="settings-scope-title" class="text-sm font-semibold text-white">
+                <h2 id="settings-scope-title" class="text-sm font-semibold text-content">
                   Global defaults
                 </h2>
-                <p class="mt-1 text-sm leading-5 text-gray-400">
+                <p class="mt-1 text-xs leading-5 text-muted">
                   Stored in local SQLite and shared by every workspace on this machine.
                 </p>
                 <div
                   :if={@context_session}
                   id="settings-session-context"
-                  class="mt-3 border-t border-[#252c35] pt-3"
+                  class="mt-3 border-t border-line pt-3"
                 >
-                  <p class="font-mono text-[11px] uppercase tracking-wider text-gray-500">
+                  <p class="font-mono text-[11px] uppercase tracking-wider text-subtle">
                     Current session context
                   </p>
-                  <p class="mt-1 truncate text-sm font-medium text-gray-200">
+                  <p class="mt-1 truncate text-sm font-medium text-content">
                     {@context_session.title}
                   </p>
-                  <p class="mt-1 truncate font-mono text-xs text-gray-500">
+                  <p class="mt-1 truncate font-mono text-xs text-subtle">
                     {@context_session.model_provider} · {@context_session.model_name}
                   </p>
                 </div>
@@ -70,25 +70,21 @@
     </header>
 
     <!-- Studio Tabs Navigation Bar -->
-    <div class="border-b border-[#252c35] bg-[#090d14]/95 backdrop-blur-xl sticky top-0 z-30 shadow-md">
+    <div class="settings-studio-tabs-shell sticky top-0 z-30 border-b border-line">
       <div class="mx-auto max-w-[90rem] px-4 sm:px-6 lg:px-8">
         <nav
           id="settings-studio-tabs"
           aria-label="Studio Tabs"
-          class="flex gap-2 overflow-x-auto py-3 no-scrollbar"
+          class="flex gap-2 overflow-x-auto py-2 no-scrollbar"
         >
           <.link
             :for={{id, label, icon} <- @studio_tabs}
             id={"tab-link-#{id}"}
             patch={tab_path(@context_session, id)}
+            aria-current={if(@active_tab == String.to_atom(id), do: "page", else: nil)}
             class={[
-              "inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-semibold tracking-wide transition-all whitespace-nowrap",
-              if(@active_tab == String.to_atom(id),
-                do:
-                  "bg-gradient-to-r from-cyan-500/20 to-blue-500/20 text-cyan-300 border border-cyan-500/40 shadow-[0_0_15px_rgba(6,182,212,0.15)]",
-                else:
-                  "text-gray-400 hover:text-gray-200 hover:bg-white/5 border border-transparent"
-              )
+              "settings-studio-tab",
+              @active_tab == String.to_atom(id) && "is-active"
             ]}
           >
             <.icon name={icon} class="h-4 w-4 shrink-0" />
@@ -114,7 +110,7 @@
       </nav>
     </div>
 
-    <div class="mx-auto grid max-w-[90rem] grid-cols-1 gap-8 px-4 py-8 sm:px-6 lg:grid-cols-[14rem_minmax(0,1fr)] lg:px-8 lg:py-10 xl:gap-12">
+    <div class="mx-auto grid max-w-[90rem] grid-cols-1 gap-8 px-4 py-6 sm:px-6 lg:grid-cols-[14rem_minmax(0,1fr)] lg:px-8 lg:py-7 xl:gap-12">
       <aside class="hidden lg:block">
         <nav
           id="settings-section-nav"
@@ -1605,9 +1601,12 @@
 
           <div
             id="tab-panel-appearance"
-            class={[@active_tab != :appearance && "hidden", "space-y-8"]}
+            class={[
+              @active_tab != :appearance && "hidden",
+              @active_tab == :appearance && "flex flex-col gap-8"
+            ]}
           >
-            <section id="audio-ergonomics-card" class="settings-section-card">
+            <section id="audio-ergonomics-card" class="settings-section-card order-2">
               <.settings_section_header
                 id="audio-ergonomics-title"
                 eyebrow="Ergonomics"
@@ -1724,51 +1723,263 @@
               </div>
             </section>
 
-            <section id="visual-appearance-card" class="settings-section-card">
-              <.settings_section_header
-                id="visual-appearance-title"
-                eyebrow="Theme & Styling"
-                title="Theme Accents & Layout Density"
-                description="Personalize the visual appearance and information density of the workspace."
-              />
+            <section
+              id="visual-appearance-card"
+              aria-labelledby="visual-appearance-title"
+              class="settings-section-card order-1 overflow-hidden rounded-[20px]"
+            >
+              <div id="settings-appearance-studio" class="appearance-studio">
+                <header class="appearance-studio-header">
+                  <div>
+                    <p class="appearance-eyebrow">Appearance studio</p>
+                    <h2 id="visual-appearance-title" class="appearance-title">
+                      Shape your workspace
+                    </h2>
+                    <p class="appearance-intro">
+                      Choose a complete color atmosphere, then tune visual depth and motion
+                      independently. Your draft is reflected in the miniature workspace before you
+                      save.
+                    </p>
+                  </div>
+                  <div class="appearance-status-mark" aria-label="Saved locally">
+                    <span class="appearance-status-dot"></span> Local preference
+                  </div>
+                </header>
 
-              <div class="grid gap-4 sm:grid-cols-2">
-                <.input
-                  field={@settings_form[:theme_accent]}
-                  id="settings-theme-accent"
-                  type="select"
-                  label="Theme accent color"
-                  options={[
-                    "Cyan (Default)": "cyan",
-                    Emerald: "emerald",
-                    Violet: "violet",
-                    Amber: "amber",
-                    Rose: "rose",
-                    Carbon: "carbon"
-                  ]}
-                  class="settings-control"
-                  error_class="settings-control-error"
-                />
+                <div class="appearance-studio-grid">
+                  <div class="min-w-0">
+                    <% theme_errors = appearance_theme_errors(@settings_form) %>
+                    <fieldset
+                      id="settings-theme-choices"
+                      class="appearance-theme-fieldset"
+                      aria-invalid={theme_errors != [] && "true"}
+                      aria-describedby={theme_errors != [] && "settings-ui-theme-error"}
+                    >
+                      <legend class="appearance-field-label">Color atmosphere</legend>
+                      <p class="appearance-field-help">
+                        Each palette updates canvas, surfaces, text, borders, and accents as one
+                        system.
+                      </p>
 
-                <.input
-                  field={@settings_form[:layout_density]}
-                  id="settings-layout-density"
-                  type="select"
-                  label="Layout density"
-                  options={[
-                    Comfortable: "comfortable",
-                    Compact: "compact"
-                  ]}
-                  class="settings-control"
-                  error_class="settings-control-error"
-                />
+                      <div class="appearance-theme-grid">
+                        <label
+                          :for={theme <- appearance_themes()}
+                          for={"settings-ui-theme-#{theme.id}"}
+                          class="appearance-theme-choice"
+                        >
+                          <input
+                            id={"settings-ui-theme-#{theme.id}"}
+                            type="radio"
+                            name="settings[ui_theme]"
+                            value={theme.id}
+                            checked={appearance_theme(@settings_form) == theme.id}
+                            class="peer sr-only"
+                          />
+                          <span
+                            class="appearance-theme-card"
+                            data-theme-swatch={theme.id}
+                          >
+                            <span class="appearance-theme-swatch" aria-hidden="true">
+                              <span></span><span></span><span></span><span></span>
+                            </span>
+                            <span class="appearance-theme-copy">
+                              <span class="appearance-theme-name">{theme.name}</span>
+                              <span class="appearance-theme-mood">{theme.mood}</span>
+                              <span class="appearance-theme-description">{theme.description}</span>
+                            </span>
+                            <span class="appearance-theme-check" aria-hidden="true">
+                              <.icon name="hero-check" class="h-3.5 w-3.5" />
+                            </span>
+                          </span>
+                        </label>
+                      </div>
+                      <p
+                        :if={theme_errors != []}
+                        id="settings-ui-theme-error"
+                        role="alert"
+                        class="mt-3 text-sm text-rose-300"
+                      >
+                        {Enum.join(theme_errors, ". ")}
+                      </p>
+                    </fieldset>
+
+                    <fieldset id="settings-depth-controls" class="appearance-depth-panel">
+                      <legend class="appearance-field-label">Dimensional character</legend>
+                      <p class="appearance-field-help">
+                        Elevation and movement are separate, so the interface can feel tactile
+                        without motion—or animated without pronounced shadows.
+                      </p>
+
+                      <div class="appearance-switch-list">
+                        <label for="settings-shadows-3d" class="appearance-switch-row">
+                          <span class="appearance-switch-icon">
+                            <.icon name="hero-square-3-stack-3d" class="h-5 w-5" />
+                          </span>
+                          <span class="min-w-0 flex-1">
+                            <span class="appearance-switch-title">3D shadows</span>
+                            <span
+                              id="settings-shadows-3d-description"
+                              class="appearance-switch-description"
+                            >
+                              Adds elevation and soft contact shadows to raised surfaces.
+                            </span>
+                          </span>
+                          <input type="hidden" name="settings[shadows_3d]" value="false" />
+                          <input
+                            id="settings-shadows-3d"
+                            type="checkbox"
+                            name="settings[shadows_3d]"
+                            value="true"
+                            checked={appearance_enabled?(@settings_form, :shadows_3d)}
+                            role="switch"
+                            aria-describedby="settings-shadows-3d-description"
+                            class="peer sr-only"
+                          />
+                          <span class="appearance-switch" aria-hidden="true"><span></span></span>
+                        </label>
+
+                        <label for="settings-effects-3d" class="appearance-switch-row">
+                          <span class="appearance-switch-icon">
+                            <.icon name="hero-cursor-arrow-rays" class="h-5 w-5" />
+                          </span>
+                          <span class="min-w-0 flex-1">
+                            <span class="appearance-switch-title">3D effects</span>
+                            <span
+                              id="settings-effects-3d-description"
+                              class="appearance-switch-description"
+                            >
+                              Enables perspective, hover lift, and spatial movement.
+                            </span>
+                          </span>
+                          <input type="hidden" name="settings[effects_3d]" value="false" />
+                          <input
+                            id="settings-effects-3d"
+                            type="checkbox"
+                            name="settings[effects_3d]"
+                            value="true"
+                            checked={appearance_enabled?(@settings_form, :effects_3d)}
+                            role="switch"
+                            aria-describedby="settings-effects-3d-description"
+                            class="peer sr-only"
+                          />
+                          <span class="appearance-switch" aria-hidden="true"><span></span></span>
+                        </label>
+                      </div>
+                    </fieldset>
+
+                    <details class="appearance-legacy-settings">
+                      <summary id="settings-appearance-more">
+                        <span>Layout preferences</span>
+                        <.icon name="hero-chevron-down" class="h-4 w-4" />
+                      </summary>
+                      <div class="grid gap-4 pt-4 sm:grid-cols-2">
+                        <.input
+                          field={@settings_form[:layout_density]}
+                          id="settings-layout-density"
+                          type="select"
+                          label="Layout density"
+                          options={[Comfortable: "comfortable", Compact: "compact"]}
+                          class="settings-control"
+                          error_class="settings-control-error"
+                        />
+                        <.input
+                          field={@settings_form[:theme_accent]}
+                          id="settings-theme-accent"
+                          type="select"
+                          label="Legacy accent compatibility"
+                          options={[
+                            Cyan: "cyan",
+                            Emerald: "emerald",
+                            Violet: "violet",
+                            Amber: "amber",
+                            Rose: "rose",
+                            Carbon: "carbon"
+                          ]}
+                          class="settings-control"
+                          error_class="settings-control-error"
+                        />
+                      </div>
+                      <p class="appearance-legacy-note">
+                        The named palette controls workspace color. Legacy accent is retained for
+                        older extensions and does not override the palette.
+                      </p>
+                    </details>
+                  </div>
+
+                  <aside class="appearance-preview-column" aria-label="Appearance preview">
+                    <div class="appearance-preview-label">
+                      <span>Live miniature</span>
+                      <span>{String.capitalize(appearance_theme(@settings_form))}</span>
+                    </div>
+                    <div
+                      id="settings-appearance-preview"
+                      class="appearance-preview"
+                      aria-hidden="true"
+                      data-ui-theme={appearance_theme(@settings_form)}
+                      data-depth-shadows={
+                        if(appearance_enabled?(@settings_form, :shadows_3d),
+                          do: "true",
+                          else: "false"
+                        )
+                      }
+                      data-depth-effects={
+                        if(appearance_enabled?(@settings_form, :effects_3d),
+                          do: "true",
+                          else: "false"
+                        )
+                      }
+                    >
+                      <div class="appearance-preview-window">
+                        <div class="appearance-preview-rail">
+                          <span class="appearance-preview-brand">IX</span>
+                          <span class="is-active"></span><span></span><span></span><span></span>
+                        </div>
+                        <div class="appearance-preview-body">
+                          <div class="appearance-preview-topbar">
+                            <span class="appearance-preview-crumb">workspace / iex-code</span>
+                            <span class="appearance-preview-avatar">ZA</span>
+                          </div>
+                          <div class="appearance-preview-canvas">
+                            <div class="appearance-preview-heading">
+                              <div>
+                                <span>Current mission</span>
+                                <strong>Polish the release</strong>
+                              </div>
+                              <button type="button" tabindex="-1">Run</button>
+                            </div>
+                            <div class="appearance-preview-columns">
+                              <div class="appearance-preview-editor">
+                                <span class="line is-short"></span>
+                                <span class="line is-accent"></span>
+                                <span class="line"></span>
+                                <span class="line is-mid"></span>
+                                <span class="line is-short"></span>
+                              </div>
+                              <div class="appearance-preview-stack">
+                                <article>
+                                  <span>Agent status</span><strong>Reviewing</strong>
+                                </article>
+                                <article>
+                                  <span>Changed files</span><strong>08</strong>
+                                </article>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    <p class="appearance-preview-caption">
+                      Colors use the same semantic surface and content tokens as the workspace.
+                    </p>
+                  </aside>
+                </div>
               </div>
             </section>
 
             <section
               id="editor"
               aria-labelledby="editor-title"
-              class="settings-section-card scroll-mt-24"
+              class="settings-section-card order-3 scroll-mt-24"
             >
               <.settings_section_header
                 id="editor-title"
@@ -1793,7 +2004,7 @@
             <section
               id="usage"
               aria-labelledby="usage-title"
-              class="settings-section-card scroll-mt-24"
+              class="settings-section-card order-4 scroll-mt-24"
             >
               <.settings_section_header
                 id="usage-title"

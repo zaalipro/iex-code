@@ -61,9 +61,9 @@ defmodule IexCodeWeb.SwarmConsensusComponents do
     ~H"""
     <div
       id={@id}
-      class={["overflow-x-auto rounded-xl border border-[#21262d] bg-[#0b0f14] p-4", @class]}
+      class={["overflow-x-auto rounded-xl border border-line bg-inset p-4", @class]}
     >
-      <div class="flex items-center justify-between border-b border-[#21262d] pb-3 mb-3">
+      <div class="flex items-center justify-between border-b border-line pb-3 mb-3">
         <div class="flex items-center gap-2">
           <.icon name="hero-table-cells" class="w-4 h-4 text-purple-400" />
           <span class="text-xs font-mono font-bold uppercase tracking-wider text-white">
@@ -76,16 +76,16 @@ defmodule IexCodeWeb.SwarmConsensusComponents do
       </div>
 
       <%= if @assessments == [] or @grid == [] do %>
-        <p class="text-xs font-mono text-zinc-500 italic text-center py-4">
+        <p class="text-xs font-mono text-subtle italic text-center py-4">
           No consensus matrix assessments recorded for this run.
         </p>
       <% else %>
         <table class="w-full text-center border-collapse">
           <thead>
             <tr>
-              <th class="p-2 text-left text-zinc-500 font-mono text-[11px]">Reviewer</th>
+              <th class="p-2 text-left text-subtle font-mono text-[11px]">Reviewer</th>
               <%= for rev <- @assessments do %>
-                <th class="p-2 text-zinc-400 font-mono text-[11px] font-bold">
+                <th class="p-2 text-muted font-mono text-[11px] font-bold">
                   {get_reviewer_id(rev)}
                 </th>
               <% end %>
@@ -93,8 +93,8 @@ defmodule IexCodeWeb.SwarmConsensusComponents do
           </thead>
           <tbody>
             <%= for {row_rev, i} <- Enum.with_index(@assessments) do %>
-              <tr class="border-t border-[#21262d]/50">
-                <td class="p-2 text-left font-mono font-bold text-zinc-300 text-[11px]">
+              <tr class="border-t border-line/50">
+                <td class="p-2 text-left font-mono font-bold text-muted text-[11px]">
                   {get_reviewer_id(row_rev)}
                 </td>
                 <%= for {col_rev, j} <- Enum.with_index(@assessments) do %>
@@ -146,22 +146,22 @@ defmodule IexCodeWeb.SwarmConsensusComponents do
       |> assign(:testability, testability)
 
     ~H"""
-    <div id={@id} class={["p-4 bg-[#11151c] border border-[#21262d] rounded-xl space-y-4", @class]}>
-      <div class="flex items-center justify-between border-b border-[#21262d] pb-2">
-        <span class="text-xs font-mono font-bold uppercase tracking-wider text-zinc-300 flex items-center gap-2">
+    <div id={@id} class={["p-4 bg-surface border border-line rounded-xl space-y-4", @class]}>
+      <div class="flex items-center justify-between border-b border-line pb-2">
+        <span class="text-xs font-mono font-bold uppercase tracking-wider text-muted flex items-center gap-2">
           <.icon name="hero-chart-bar" class="w-4 h-4 text-cyan-400" />
           <span>Dimensional Scores</span>
         </span>
-        <span class="text-[10px] font-mono text-zinc-500">5 Canonical Axes</span>
+        <span class="text-[10px] font-mono text-subtle">5 Canonical Axes</span>
       </div>
 
       <!-- Correctness -->
       <div id="score-bar-correctness" class="space-y-1">
         <div class="flex items-center justify-between text-[11px] font-mono">
-          <span class="text-zinc-300 font-semibold">Correctness</span>
+          <span class="text-muted font-semibold">Correctness</span>
           <span class="text-emerald-400 font-bold">{@correctness}%</span>
         </div>
-        <div class="w-full bg-[#0d1117] rounded-full h-2 overflow-hidden border border-white/5">
+        <div class="w-full bg-inset rounded-full h-2 overflow-hidden border border-white/5">
           <div
             id="score-bar-correctness-fill"
             class="bg-emerald-500 h-2 rounded-full transition-all duration-500"
@@ -174,10 +174,10 @@ defmodule IexCodeWeb.SwarmConsensusComponents do
       <!-- Security -->
       <div id="score-bar-security" class="space-y-1">
         <div class="flex items-center justify-between text-[11px] font-mono">
-          <span class="text-zinc-300 font-semibold">Security</span>
+          <span class="text-muted font-semibold">Security</span>
           <span class="text-cyan-400 font-bold">{@security}%</span>
         </div>
-        <div class="w-full bg-[#0d1117] rounded-full h-2 overflow-hidden border border-white/5">
+        <div class="w-full bg-inset rounded-full h-2 overflow-hidden border border-white/5">
           <div
             id="score-bar-security-fill"
             class="bg-cyan-500 h-2 rounded-full transition-all duration-500"
@@ -190,10 +190,10 @@ defmodule IexCodeWeb.SwarmConsensusComponents do
       <!-- Architecture -->
       <div id="score-bar-architecture" class="space-y-1">
         <div class="flex items-center justify-between text-[11px] font-mono">
-          <span class="text-zinc-300 font-semibold">Architecture</span>
+          <span class="text-muted font-semibold">Architecture</span>
           <span class="text-purple-400 font-bold">{@architecture}%</span>
         </div>
-        <div class="w-full bg-[#0d1117] rounded-full h-2 overflow-hidden border border-white/5">
+        <div class="w-full bg-inset rounded-full h-2 overflow-hidden border border-white/5">
           <div
             id="score-bar-architecture-fill"
             class="bg-purple-500 h-2 rounded-full transition-all duration-500"
@@ -206,10 +206,10 @@ defmodule IexCodeWeb.SwarmConsensusComponents do
       <!-- Maintainability -->
       <div id="score-bar-maintainability" class="space-y-1">
         <div class="flex items-center justify-between text-[11px] font-mono">
-          <span class="text-zinc-300 font-semibold">Maintainability</span>
+          <span class="text-muted font-semibold">Maintainability</span>
           <span class="text-indigo-400 font-bold">{@maintainability}%</span>
         </div>
-        <div class="w-full bg-[#0d1117] rounded-full h-2 overflow-hidden border border-white/5">
+        <div class="w-full bg-inset rounded-full h-2 overflow-hidden border border-white/5">
           <div
             id="score-bar-maintainability-fill"
             class="bg-indigo-500 h-2 rounded-full transition-all duration-500"
@@ -222,10 +222,10 @@ defmodule IexCodeWeb.SwarmConsensusComponents do
       <!-- Testability -->
       <div id="score-bar-testability" class="space-y-1">
         <div class="flex items-center justify-between text-[11px] font-mono">
-          <span class="text-zinc-300 font-semibold">Testability</span>
+          <span class="text-muted font-semibold">Testability</span>
           <span class="text-blue-400 font-bold">{@testability}%</span>
         </div>
-        <div class="w-full bg-[#0d1117] rounded-full h-2 overflow-hidden border border-white/5">
+        <div class="w-full bg-inset rounded-full h-2 overflow-hidden border border-white/5">
           <div
             id="score-bar-testability-fill"
             class="bg-blue-500 h-2 rounded-full transition-all duration-500"
@@ -273,8 +273,8 @@ defmodule IexCodeWeb.SwarmConsensusComponents do
     assigns = assign(assigns, :filtered_messages, filtered_messages)
 
     ~H"""
-    <div id={@id} class={["p-4 bg-[#0d1117] border border-[#21262d] rounded-2xl space-y-4", @class]}>
-      <div class="flex items-center justify-between border-b border-[#21262d] pb-3">
+    <div id={@id} class={["p-4 bg-inset border border-line rounded-2xl space-y-4", @class]}>
+      <div class="flex items-center justify-between border-b border-line pb-3">
         <div class="flex items-center gap-2">
           <span class="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></span>
           <h4 class="text-xs font-mono font-bold uppercase tracking-wider text-white">
@@ -287,8 +287,8 @@ defmodule IexCodeWeb.SwarmConsensusComponents do
       </div>
 
       <%= if @filtered_messages == [] do %>
-        <div class="py-8 text-center text-xs font-mono text-zinc-500 italic space-y-2">
-          <.icon name="hero-chat-bubble-left-right" class="w-8 h-8 text-zinc-700 mx-auto" />
+        <div class="py-8 text-center text-xs font-mono text-subtle italic space-y-2">
+          <.icon name="hero-chat-bubble-left-right" class="w-8 h-8 text-subtle mx-auto" />
           <p>Awaiting inter-agent communication pulses...</p>
         </div>
       <% else %>
@@ -303,7 +303,7 @@ defmodule IexCodeWeb.SwarmConsensusComponents do
 
             <div
               id={"peer-msg-#{idx}"}
-              class="rounded-xl border border-white/5 bg-[#11151c] p-3 space-y-2 text-xs font-mono transition hover:border-white/10"
+              class="rounded-xl border border-white/5 bg-surface p-3 space-y-2 text-xs font-mono transition hover:border-white/10"
             >
               <div class="flex items-center justify-between">
                 <div class="flex items-center gap-2">
@@ -314,17 +314,17 @@ defmodule IexCodeWeb.SwarmConsensusComponents do
                   ]}>
                     {role}
                   </span>
-                  <span class="text-zinc-300 font-semibold">{from_agent}</span>
-                  <span class="text-zinc-500">&rarr;</span>
-                  <span class="text-zinc-400">{to_agent}</span>
+                  <span class="text-muted font-semibold">{from_agent}</span>
+                  <span class="text-subtle">&rarr;</span>
+                  <span class="text-muted">{to_agent}</span>
                 </div>
 
                 <div class="flex items-center gap-2">
-                  <span class="px-1.5 py-0.5 rounded text-[9px] bg-white/5 text-zinc-400 font-mono">
+                  <span class="px-1.5 py-0.5 rounded text-[9px] bg-white/5 text-muted font-mono">
                     {type}
                   </span>
                   <%= if timestamp do %>
-                    <span class="text-[9px] text-zinc-500 font-mono">
+                    <span class="text-[9px] text-subtle font-mono">
                       {format_timestamp(timestamp)}
                     </span>
                   <% end %>
@@ -332,7 +332,7 @@ defmodule IexCodeWeb.SwarmConsensusComponents do
               </div>
 
               <%= if map_size(payload) > 0 do %>
-                <div class="rounded-lg bg-[#070a0e] border border-white/5 p-2 text-[11px] text-zinc-300 overflow-x-auto">
+                <div class="rounded-lg bg-inset border border-white/5 p-2 text-[11px] text-muted overflow-x-auto">
                   <pre class="whitespace-pre-wrap"><code phx-no-curly-interpolation><%= Jason.encode!(payload, pretty: true) %></code></pre>
                 </div>
               <% end %>
@@ -428,7 +428,7 @@ defmodule IexCodeWeb.SwarmConsensusComponents do
     end
   end
 
-  defp heatmap_cell_classes(_), do: "bg-zinc-900 text-zinc-400 border border-zinc-700"
+  defp heatmap_cell_classes(_), do: "bg-surface text-muted border border-line"
 
   defp role_avatar_classes(role) do
     case to_string(role) |> String.downcase() do
@@ -454,7 +454,7 @@ defmodule IexCodeWeb.SwarmConsensusComponents do
         "border-blue-400 bg-blue-950/40 text-blue-300"
 
       _ ->
-        "border-zinc-500 bg-zinc-900 text-zinc-300"
+        "border-zinc-500 bg-surface text-muted"
     end
   end
 

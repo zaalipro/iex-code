@@ -1,0 +1,268 @@
+/*
+ * IExCode semantic theme contract.
+ *
+ * Theme, shadow depth, and effect depth are independent document-level
+ * preferences. Component CSS should consume these semantic values instead of
+ * encoding palette colors directly.
+ */
+
+@theme inline {
+  --color-canvas: var(--ui-bg);
+  --color-surface: var(--ui-surface);
+  --color-raised: var(--ui-surface-raised);
+  --color-inset: var(--ui-surface-inset);
+  --color-line: var(--ui-border);
+  --color-content: var(--ui-text);
+  --color-muted: var(--ui-muted);
+  --color-subtle: var(--ui-subtle);
+  --color-accent: var(--ui-accent);
+  --color-accent-strong: var(--ui-accent-strong);
+  --color-accent-ink: var(--ui-accent-text);
+  --color-success: var(--ui-success);
+  --color-warning: var(--ui-warning);
+  --color-danger: var(--ui-danger);
+  --color-info: var(--ui-info);
+}
+
+:root,
+[data-ui-theme="midnight"] {
+  color-scheme: dark;
+  --ui-bg: #090b14;
+  --ui-surface: #10131f;
+  --ui-surface-raised: #181c2b;
+  --ui-surface-inset: #070912;
+  --ui-border: #2b3044;
+  --ui-border-strong: #414966;
+  --ui-text: #f1f2fb;
+  --ui-muted: #a9aec4;
+  --ui-subtle: #747b97;
+  --ui-accent: #a99cf7;
+  --ui-accent-strong: #c2b8ff;
+  --ui-accent-text: #17122f;
+  --ui-accent-soft: rgb(169 156 247 / 0.14);
+  --ui-accent-softer: rgb(169 156 247 / 0.08);
+  --ui-focus: #c2b8ff;
+  --ui-focus-soft: rgb(194 184 255 / 0.28);
+  --ui-overlay: rgb(3 4 10 / 0.76);
+  --ui-selection: rgb(169 156 247 / 0.3);
+  --ui-success: #6ed5a9;
+  --ui-success-soft: rgb(110 213 169 / 0.13);
+  --ui-warning: #efbd73;
+  --ui-warning-soft: rgb(239 189 115 / 0.14);
+  --ui-danger: #f18b9b;
+  --ui-danger-soft: rgb(241 139 155 / 0.13);
+  --ui-info: #7fc6f4;
+  --ui-info-soft: rgb(127 198 244 / 0.13);
+  --ui-shadow-card: 0 18px 44px rgb(2 4 12 / 0.38), 0 1px 0 rgb(255 255 255 / 0.045) inset;
+  --ui-shadow-control: 0 7px 18px rgb(2 4 12 / 0.24), 0 1px 0 rgb(255 255 255 / 0.05) inset;
+  --ui-shadow-modal: 0 28px 90px rgb(2 4 12 / 0.62), 0 1px 0 rgb(255 255 255 / 0.06) inset;
+  --ui-shadow-inset: inset 0 1px 4px rgb(1 3 10 / 0.42);
+  --ui-highlight: rgb(255 255 255 / 0.055);
+  --ui-grid: rgb(169 156 247 / 0.045);
+}
+
+[data-ui-theme="graphite"] {
+  color-scheme: dark;
+  --ui-bg: #0d0e10;
+  --ui-surface: #151619;
+  --ui-surface-raised: #1e2024;
+  --ui-surface-inset: #090a0c;
+  --ui-border: #33363d;
+  --ui-border-strong: #4b4f59;
+  --ui-text: #f2f1ef;
+  --ui-muted: #b1afb0;
+  --ui-subtle: #7f7e82;
+  --ui-accent: #ef806b;
+  --ui-accent-strong: #ff9b86;
+  --ui-accent-text: #27100b;
+  --ui-accent-soft: rgb(239 128 107 / 0.14);
+  --ui-accent-softer: rgb(239 128 107 / 0.075);
+  --ui-focus: #ff9b86;
+  --ui-focus-soft: rgb(255 155 134 / 0.27);
+  --ui-overlay: rgb(5 5 6 / 0.78);
+  --ui-selection: rgb(239 128 107 / 0.3);
+  --ui-success: #79ce9b;
+  --ui-success-soft: rgb(121 206 155 / 0.13);
+  --ui-warning: #e6b768;
+  --ui-warning-soft: rgb(230 183 104 / 0.14);
+  --ui-danger: #ee8490;
+  --ui-danger-soft: rgb(238 132 144 / 0.13);
+  --ui-info: #86bde1;
+  --ui-info-soft: rgb(134 189 225 / 0.13);
+  --ui-shadow-card: 0 18px 44px rgb(0 0 0 / 0.42), 0 1px 0 rgb(255 255 255 / 0.045) inset;
+  --ui-shadow-control: 0 7px 18px rgb(0 0 0 / 0.28), 0 1px 0 rgb(255 255 255 / 0.045) inset;
+  --ui-shadow-modal: 0 28px 90px rgb(0 0 0 / 0.66), 0 1px 0 rgb(255 255 255 / 0.055) inset;
+  --ui-shadow-inset: inset 0 1px 4px rgb(0 0 0 / 0.46);
+  --ui-highlight: rgb(255 255 255 / 0.05);
+  --ui-grid: rgb(239 128 107 / 0.035);
+}
+
+[data-ui-theme="aurora"] {
+  color-scheme: dark;
+  --ui-bg: #07110f;
+  --ui-surface: #0d1b18;
+  --ui-surface-raised: #142723;
+  --ui-surface-inset: #050c0a;
+  --ui-border: #28423b;
+  --ui-border-strong: #3d6257;
+  --ui-text: #edf7f2;
+  --ui-muted: #a3beb4;
+  --ui-subtle: #708f84;
+  --ui-accent: #79dab4;
+  --ui-accent-strong: #9deacb;
+  --ui-accent-text: #08261b;
+  --ui-accent-soft: rgb(121 218 180 / 0.14);
+  --ui-accent-softer: rgb(121 218 180 / 0.075);
+  --ui-focus: #9deacb;
+  --ui-focus-soft: rgb(157 234 203 / 0.27);
+  --ui-overlay: rgb(2 9 7 / 0.78);
+  --ui-selection: rgb(121 218 180 / 0.28);
+  --ui-success: #73d5a3;
+  --ui-success-soft: rgb(115 213 163 / 0.13);
+  --ui-warning: #e9bd72;
+  --ui-warning-soft: rgb(233 189 114 / 0.14);
+  --ui-danger: #ef8f96;
+  --ui-danger-soft: rgb(239 143 150 / 0.13);
+  --ui-info: #7acbd2;
+  --ui-info-soft: rgb(122 203 210 / 0.13);
+  --ui-shadow-card: 0 18px 44px rgb(1 9 7 / 0.48), 0 1px 0 rgb(220 255 242 / 0.05) inset;
+  --ui-shadow-control: 0 7px 18px rgb(1 9 7 / 0.3), 0 1px 0 rgb(220 255 242 / 0.05) inset;
+  --ui-shadow-modal: 0 28px 90px rgb(1 8 6 / 0.7), 0 1px 0 rgb(220 255 242 / 0.06) inset;
+  --ui-shadow-inset: inset 0 1px 4px rgb(1 8 6 / 0.52);
+  --ui-highlight: rgb(220 255 242 / 0.055);
+  --ui-grid: rgb(121 218 180 / 0.04);
+}
+
+[data-ui-theme="porcelain"] {
+  color-scheme: light;
+  --ui-bg: #f4f7fb;
+  --ui-surface: #ffffff;
+  --ui-surface-raised: #ffffff;
+  --ui-surface-inset: #e9eff7;
+  --ui-border: #cbd5e3;
+  --ui-border-strong: #9eacc0;
+  --ui-text: #182235;
+  --ui-muted: #52637b;
+  --ui-subtle: #718198;
+  --ui-accent: #356fd1;
+  --ui-accent-strong: #2358b3;
+  --ui-accent-text: #ffffff;
+  --ui-accent-soft: rgb(53 111 209 / 0.12);
+  --ui-accent-softer: rgb(53 111 209 / 0.065);
+  --ui-focus: #2358b3;
+  --ui-focus-soft: rgb(35 88 179 / 0.22);
+  --ui-overlay: rgb(25 35 52 / 0.48);
+  --ui-selection: rgb(53 111 209 / 0.2);
+  --ui-success: #187b50;
+  --ui-success-soft: rgb(24 123 80 / 0.11);
+  --ui-warning: #996315;
+  --ui-warning-soft: rgb(153 99 21 / 0.12);
+  --ui-danger: #b83b52;
+  --ui-danger-soft: rgb(184 59 82 / 0.1);
+  --ui-info: #176e9a;
+  --ui-info-soft: rgb(23 110 154 / 0.1);
+  --ui-shadow-card: 0 18px 42px rgb(42 62 92 / 0.11), 0 1px 2px rgb(42 62 92 / 0.08);
+  --ui-shadow-control: 0 6px 16px rgb(42 62 92 / 0.1), 0 1px 2px rgb(42 62 92 / 0.08);
+  --ui-shadow-modal: 0 28px 80px rgb(31 49 76 / 0.22), 0 2px 5px rgb(31 49 76 / 0.1);
+  --ui-shadow-inset: inset 0 1px 3px rgb(42 62 92 / 0.11);
+  --ui-highlight: rgb(255 255 255 / 0.85);
+  --ui-grid: rgb(53 111 209 / 0.045);
+}
+
+[data-ui-theme="sandstone"] {
+  color-scheme: light;
+  --ui-bg: #f7f2ea;
+  --ui-surface: #fffdf9;
+  --ui-surface-raised: #ffffff;
+  --ui-surface-inset: #eee5d9;
+  --ui-border: #d5c8b8;
+  --ui-border-strong: #ad9b88;
+  --ui-text: #302820;
+  --ui-muted: #6e5d4f;
+  --ui-subtle: #8a796a;
+  --ui-accent: #b55439;
+  --ui-accent-strong: #94402b;
+  --ui-accent-text: #ffffff;
+  --ui-accent-soft: rgb(181 84 57 / 0.12);
+  --ui-accent-softer: rgb(181 84 57 / 0.065);
+  --ui-focus: #94402b;
+  --ui-focus-soft: rgb(148 64 43 / 0.22);
+  --ui-overlay: rgb(49 38 29 / 0.46);
+  --ui-selection: rgb(181 84 57 / 0.2);
+  --ui-success: #32734d;
+  --ui-success-soft: rgb(50 115 77 / 0.11);
+  --ui-warning: #8d641d;
+  --ui-warning-soft: rgb(141 100 29 / 0.12);
+  --ui-danger: #ad4052;
+  --ui-danger-soft: rgb(173 64 82 / 0.1);
+  --ui-info: #326d8d;
+  --ui-info-soft: rgb(50 109 141 / 0.1);
+  --ui-shadow-card: 0 18px 42px rgb(77 56 36 / 0.12), 0 1px 2px rgb(77 56 36 / 0.08);
+  --ui-shadow-control: 0 6px 16px rgb(77 56 36 / 0.1), 0 1px 2px rgb(77 56 36 / 0.08);
+  --ui-shadow-modal: 0 28px 80px rgb(64 45 29 / 0.22), 0 2px 5px rgb(64 45 29 / 0.1);
+  --ui-shadow-inset: inset 0 1px 3px rgb(77 56 36 / 0.11);
+  --ui-highlight: rgb(255 255 255 / 0.78);
+  --ui-grid: rgb(181 84 57 / 0.04);
+}
+
+html {
+  --ui-radius-control: 0.75rem;
+  --ui-radius-card: 1.25rem;
+  --ui-radius-dialog: 1.5rem;
+  --ui-transition-fast: 140ms cubic-bezier(0.16, 1, 0.3, 1);
+  --ui-transition: 220ms cubic-bezier(0.16, 1, 0.3, 1);
+  background: var(--ui-bg);
+  color: var(--ui-text);
+  accent-color: var(--ui-accent);
+}
+
+[data-depth-shadows="false"] {
+  --ui-shadow-card: none;
+  --ui-shadow-control: none;
+  --ui-shadow-modal: none;
+  --ui-shadow-inset: none;
+}
+
+[data-depth-shadows="false"] :where(*):not(:focus-visible),
+[data-depth-shadows="false"] :where(*):not(:focus-visible)::before,
+[data-depth-shadows="false"] :where(*):not(:focus-visible)::after {
+  box-shadow: none !important;
+  text-shadow: none !important;
+  --tw-shadow: 0 0 #0000 !important;
+  --tw-shadow-colored: 0 0 #0000 !important;
+  --tw-drop-shadow: drop-shadow(0 0 #0000) !important;
+}
+
+[data-depth-shadows="false"] :where([class*="drop-shadow"]) {
+  filter: none !important;
+}
+
+[data-depth-shadows="false"] :focus-visible {
+  outline: 2px solid var(--ui-focus) !important;
+  outline-offset: 2px !important;
+  box-shadow: 0 0 0 4px var(--ui-focus-soft) !important;
+}
+
+[data-depth-effects="false"] :where(.ui-depth-effect, [data-ui-depth-effect]) {
+  transform: none !important;
+  perspective: none !important;
+}
+
+html ::selection {
+  color: var(--ui-text);
+  background: var(--ui-selection);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    --ui-transition-fast: 0ms;
+    --ui-transition: 0ms;
+    scroll-behavior: auto;
+  }
+
+  html :where(.ui-depth-effect, [data-ui-depth-effect]) {
+    animation: none !important;
+    transition-duration: 0.01ms !important;
+    transform: none !important;
+  }
+}

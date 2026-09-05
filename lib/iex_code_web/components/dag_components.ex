@@ -38,9 +38,9 @@ defmodule IexCodeWeb.DagComponents do
       aria-labelledby="dag-execution-heading"
       data-engine={@engine}
       data-scheduler-state={if(@available?, do: "available", else: "unavailable")}
-      class="overflow-hidden border border-[#29313a] bg-[#0b0f14]"
+      class="overflow-hidden border border-line bg-inset"
     >
-      <header class="border-b border-[#252c35] px-4 py-4 sm:px-5">
+      <header class="border-b border-line px-4 py-4 sm:px-5">
         <div class="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
           <div class="max-w-2xl">
             <div class="mb-1.5 flex items-center gap-2 font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-300">
@@ -49,14 +49,14 @@ defmodule IexCodeWeb.DagComponents do
             <h4 id="dag-execution-heading" class="text-base font-semibold tracking-tight text-white">
               DAG execution map
             </h4>
-            <p class="mt-1 max-w-[65ch] text-xs leading-5 text-gray-500">
+            <p class="mt-1 max-w-[65ch] text-xs leading-5 text-subtle">
               A durable topological projection of runnable, leased, blocked, retrying, and
               checkpointed work. Scheduler decisions remain server-authoritative.
             </p>
           </div>
 
           <div class="flex flex-wrap items-center gap-2 font-mono text-[10px] uppercase tracking-wider">
-            <span class="border border-[#303844] bg-[#11161d] px-2.5 py-1.5 text-gray-400">
+            <span class="border border-line bg-surface px-2.5 py-1.5 text-muted">
               {@engine}
             </span>
             <span class={[
@@ -72,9 +72,9 @@ defmodule IexCodeWeb.DagComponents do
         <div
           id="dag-execution-summary"
           role="status"
-          class="mt-4 grid grid-cols-2 gap-px bg-[#252c35] sm:grid-cols-4 xl:grid-cols-8"
+          class="mt-4 grid grid-cols-2 gap-px bg-raised sm:grid-cols-4 xl:grid-cols-8"
         >
-          <.summary_fact label="Nodes" value={@node_count} tone="text-gray-100" />
+          <.summary_fact label="Nodes" value={@node_count} tone="text-content" />
           <.summary_fact label="Ready" value={summary_count(@summary, :ready)} tone="text-blue-300" />
           <.summary_fact
             label="Running"
@@ -133,23 +133,23 @@ defmodule IexCodeWeb.DagComponents do
         id="dag-execution-empty"
         class="px-5 py-12 text-center"
       >
-        <span class="mx-auto flex h-10 w-10 items-center justify-center border border-dashed border-[#3a4450] text-gray-600">
+        <span class="mx-auto flex h-10 w-10 items-center justify-center border border-dashed border-line text-subtle">
           <.icon name="hero-share" class="h-4 w-4" />
         </span>
-        <p class="mt-3 text-sm font-medium text-gray-300">No DAG nodes persisted</p>
-        <p class="mx-auto mt-1 max-w-md text-xs leading-5 text-gray-600">
+        <p class="mt-3 text-sm font-medium text-muted">No DAG nodes persisted</p>
+        <p class="mx-auto mt-1 max-w-md text-xs leading-5 text-subtle">
           The execution map appears after a validated immutable manifest is committed.
         </p>
       </div>
 
       <div :if={@node_count > 0} id="dag-execution-map">
-        <div id="dag-projection-canvas-wrapper" class="p-4 border-b border-[#252c35] bg-[#07090d]">
+        <div id="dag-projection-canvas-wrapper" class="p-4 border-b border-line bg-inset">
           <div class="mb-2.5 flex items-center justify-between">
             <div class="flex items-center gap-2 font-mono text-[10px] uppercase tracking-wider text-cyan-300">
               <span class="h-2 w-2 rounded-full bg-cyan-400 animate-pulse"></span>
               Interactive Topology Canvas
             </div>
-            <span class="text-[10px] font-mono text-gray-500">
+            <span class="text-[10px] font-mono text-subtle">
               Cubic Bézier Edges · Flow Pulses · 5 Normalized States
             </span>
           </div>
@@ -173,7 +173,7 @@ defmodule IexCodeWeb.DagComponents do
               aria-labelledby={"dag-layer-heading-#{layer_index}"}
               class="w-72 shrink-0"
             >
-              <div class="mb-2 flex items-center justify-between border-b border-[#28313a] pb-2 font-mono text-[10px] uppercase tracking-wider text-gray-600">
+              <div class="mb-2 flex items-center justify-between border-b border-line pb-2 font-mono text-[10px] uppercase tracking-wider text-subtle">
                 <h5 id={"dag-layer-heading-#{layer_index}"}>Stage {layer_index + 1}</h5>
                 <span>{length(layer)} {pluralize(length(layer), "node", "nodes")}</span>
               </div>
@@ -190,12 +190,12 @@ defmodule IexCodeWeb.DagComponents do
             id={"dag-mobile-layer-#{layer_index}"}
             aria-labelledby={"dag-mobile-layer-heading-#{layer_index}"}
           >
-            <div class="mb-2 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.14em] text-gray-600">
-              <span class="flex h-5 w-5 items-center justify-center border border-[#303844] text-gray-400">
+            <div class="mb-2 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.14em] text-subtle">
+              <span class="flex h-5 w-5 items-center justify-center border border-line text-muted">
                 {layer_index + 1}
               </span>
               <h5 id={"dag-mobile-layer-heading-#{layer_index}"}>Execution stage</h5>
-              <span class="h-px flex-1 bg-[#28313a]"></span>
+              <span class="h-px flex-1 bg-raised"></span>
             </div>
             <div class="space-y-2">
               <.dag_node :for={node <- layer} node={node} layout="mobile" />
@@ -243,7 +243,7 @@ defmodule IexCodeWeb.DagComponents do
       data-node-readiness={@readiness}
       data-critical-path={to_string(node_value(@node, :critical_path?, false))}
       class={[
-        "relative min-w-0 border bg-[#10151b] p-3.5 transition-colors",
+        "relative min-w-0 border bg-surface p-3.5 transition-colors",
         dag_node_border(@status, node_value(@node, :critical_path?, false))
       ]}
     >
@@ -251,11 +251,11 @@ defmodule IexCodeWeb.DagComponents do
         <div class="min-w-0">
           <div class="flex min-w-0 items-center gap-2">
             <span class={["h-2 w-2 shrink-0 rounded-full", dag_status_dot(@status)]}></span>
-            <h6 class="truncate text-sm font-semibold tracking-tight text-gray-100">
+            <h6 class="truncate text-sm font-semibold tracking-tight text-content">
               {node_value(@node, :title, @key)}
             </h6>
           </div>
-          <p class="mt-1 truncate pl-4 font-mono text-[10px] text-gray-600" title={@key}>
+          <p class="mt-1 truncate pl-4 font-mono text-[10px] text-subtle" title={@key}>
             {@key} · {normalized_label(node_value(@node, :kind, "task"))}
           </p>
         </div>
@@ -268,13 +268,13 @@ defmodule IexCodeWeb.DagComponents do
       </div>
 
       <div class="mt-3 flex flex-wrap items-center gap-1.5">
-        <span class="border border-[#303844] bg-[#0c1117] px-2 py-1 font-mono text-[9px] uppercase tracking-wider text-gray-500">
+        <span class="border border-line bg-surface px-2 py-1 font-mono text-[9px] uppercase tracking-wider text-subtle">
           {readiness_label(@readiness)}
         </span>
       </div>
 
-      <div :if={@dependencies != []} class="mt-3 border-l border-[#303844] pl-3">
-        <p class="font-mono text-[9px] uppercase tracking-wider text-gray-600">
+      <div :if={@dependencies != []} class="mt-3 border-l border-line pl-3">
+        <p class="font-mono text-[9px] uppercase tracking-wider text-subtle">
           {if @blocked_by == [], do: "After", else: "Blocked by"}
         </p>
         <div class="mt-1.5 flex flex-wrap gap-1">
@@ -284,7 +284,7 @@ defmodule IexCodeWeb.DagComponents do
               "max-w-full truncate border px-1.5 py-0.5 font-mono text-[9px]",
               dependency in @blocked_by &&
                 "border-amber-500/20 bg-amber-500/[0.04] text-amber-300",
-              dependency not in @blocked_by && "border-[#303844] bg-[#0c1117] text-gray-500"
+              dependency not in @blocked_by && "border-line bg-surface text-subtle"
             ]}
             title={dependency}
           >
@@ -294,9 +294,9 @@ defmodule IexCodeWeb.DagComponents do
       </div>
 
       <div class="mt-3">
-        <div class="mb-1.5 flex items-center justify-between font-mono text-[10px] text-gray-600">
+        <div class="mb-1.5 flex items-center justify-between font-mono text-[10px] text-subtle">
           <span>Attempt {node_attempt(@node)}</span>
-          <span class="tabular-nums text-gray-400">{node_progress(@node)}%</span>
+          <span class="tabular-nums text-muted">{node_progress(@node)}%</span>
         </div>
         <div
           role="progressbar"
@@ -304,7 +304,7 @@ defmodule IexCodeWeb.DagComponents do
           aria-valuemin="0"
           aria-valuemax="100"
           aria-valuenow={node_progress(@node)}
-          class="h-1 overflow-hidden bg-[#29313a]"
+          class="h-1 overflow-hidden bg-raised"
         >
           <div
             class={[
@@ -317,7 +317,7 @@ defmodule IexCodeWeb.DagComponents do
         </div>
       </div>
 
-      <div class="mt-3 grid grid-cols-1 gap-px bg-[#252c35] sm:grid-cols-2 lg:grid-cols-1">
+      <div class="mt-3 grid grid-cols-1 gap-px bg-raised sm:grid-cols-2 lg:grid-cols-1">
         <.node_fact
           :if={attempt_value(@latest_attempt, :retry_not_before, nil)}
           label="Next retry"
@@ -339,15 +339,15 @@ defmodule IexCodeWeb.DagComponents do
         {safe_error_code(node_value(@node, :error_code, nil))}
       </p>
 
-      <details class="group mt-3 border-t border-[#28313a] pt-2">
-        <summary class="flex min-h-9 cursor-pointer list-none items-center justify-between font-mono text-[10px] uppercase tracking-wider text-gray-500 hover:text-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/60 [&::-webkit-details-marker]:hidden">
+      <details class="group mt-3 border-t border-line pt-2">
+        <summary class="flex min-h-9 cursor-pointer list-none items-center justify-between font-mono text-[10px] uppercase tracking-wider text-subtle hover:text-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/60 [&::-webkit-details-marker]:hidden">
           Node details
           <.icon
             name="hero-chevron-down"
             class="h-3 w-3 transition-transform group-open:rotate-180 motion-reduce:transition-none"
           />
         </summary>
-        <dl class="grid grid-cols-2 gap-px bg-[#252c35]">
+        <dl class="grid grid-cols-2 gap-px bg-raised">
           <.detail_fact label="Readiness" value={readiness_label(@readiness)} />
           <.detail_fact
             label="Heartbeat"
@@ -373,9 +373,9 @@ defmodule IexCodeWeb.DagComponents do
 
   defp summary_fact(assigns) do
     ~H"""
-    <div class="bg-[#10151b] px-2.5 py-2.5 text-center">
+    <div class="bg-surface px-2.5 py-2.5 text-center">
       <span class={[@tone, "block font-mono text-sm font-semibold tabular-nums"]}>{@value}</span>
-      <span class="mt-0.5 block text-[9px] uppercase tracking-wider text-gray-600">{@label}</span>
+      <span class="mt-0.5 block text-[9px] uppercase tracking-wider text-subtle">{@label}</span>
     </div>
     """
   end
@@ -385,9 +385,9 @@ defmodule IexCodeWeb.DagComponents do
 
   defp node_fact(assigns) do
     ~H"""
-    <div class="min-w-0 bg-[#0d1218] px-2.5 py-2">
-      <p class="font-mono text-[9px] uppercase tracking-wider text-gray-600">{@label}</p>
-      <p class="mt-0.5 truncate text-[11px] text-gray-300" title={@value}>{@value}</p>
+    <div class="min-w-0 bg-surface px-2.5 py-2">
+      <p class="font-mono text-[9px] uppercase tracking-wider text-subtle">{@label}</p>
+      <p class="mt-0.5 truncate text-[11px] text-muted" title={@value}>{@value}</p>
     </div>
     """
   end
@@ -397,9 +397,9 @@ defmodule IexCodeWeb.DagComponents do
 
   defp detail_fact(assigns) do
     ~H"""
-    <div class="min-w-0 bg-[#0d1218] px-2.5 py-2">
-      <dt class="font-mono text-[9px] uppercase tracking-wider text-gray-600">{@label}</dt>
-      <dd class="mt-0.5 truncate font-mono text-[10px] text-gray-400" title={@value}>{@value}</dd>
+    <div class="min-w-0 bg-surface px-2.5 py-2">
+      <dt class="font-mono text-[9px] uppercase tracking-wider text-subtle">{@label}</dt>
+      <dd class="mt-0.5 truncate font-mono text-[10px] text-muted" title={@value}>{@value}</dd>
     </div>
     """
   end
@@ -521,11 +521,11 @@ defmodule IexCodeWeb.DagComponents do
     do: "border-amber-500/20 bg-amber-500/[0.05] text-amber-300"
 
   defp dag_status_tone(_status),
-    do: "border-[#303844] bg-[#151b22] text-gray-400"
+    do: "border-line bg-raised text-muted"
 
   defp dag_node_border("failed", _critical), do: "border-rose-500/30"
   defp dag_node_border(_status, true), do: "border-cyan-400/40 shadow-[inset_2px_0_0_#22d3ee]"
-  defp dag_node_border(_status, _critical), do: "border-[#29313a]"
+  defp dag_node_border(_status, _critical), do: "border-line"
 
   defp dag_progress_tone("failed"), do: "bg-rose-400"
   defp dag_progress_tone("blocked"), do: "bg-amber-400"

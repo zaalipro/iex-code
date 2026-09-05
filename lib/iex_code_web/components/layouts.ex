@@ -6,6 +6,10 @@ defmodule IexCodeWeb.Layouts do
 
   embed_templates "layouts/*"
 
+  def appearance_preferences do
+    IexCode.Settings.get_settings() |> IexCodeWeb.Appearance.from_settings()
+  end
+
   @doc """
   Renders the desktop application layout.
   """
@@ -15,7 +19,7 @@ defmodule IexCodeWeb.Layouts do
 
   def app(assigns) do
     ~H"""
-    <div class="min-h-screen w-full bg-[#0d1117] text-[#f0f6fc] font-sans antialiased overflow-hidden flex flex-col">
+    <div class="studio-application min-h-dvh w-full bg-canvas text-content font-sans antialiased overflow-hidden flex flex-col">
       {render_slot(@inner_block)}
       <.flash_group flash={@flash} />
     </div>

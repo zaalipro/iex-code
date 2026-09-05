@@ -22,6 +22,7 @@ defmodule IexCode.Settings do
   @tool_atoms %{"ast_search" => :ast_search, "web_search" => :web_search}
   @previous_search_provider_order ~w(tavily brave exa serper google bing searxng duckduckgo)
   @search_provider_order ~w(tavily brave exa perplexity firecrawl linkup serper serpapi google bing searxng duckduckgo)
+  @ui_themes ~w(midnight graphite aurora porcelain sandstone)
   @doc """
   Returns the active application settings.
   Safely fetches the most recently updated or created settings record.
@@ -51,6 +52,18 @@ defmodule IexCode.Settings do
   Persists updates to the database; relies on `busy_timeout` for lock contention.
   """
   def update_settings(attrs), do: update_latest_settings(attrs, @stale_update_attempts)
+
+  @doc "Returns safe, normalized appearance preferences for runtime consumers."
+  def appearance(%AppSettings{} = settings) do
+    %{
+      ui_theme: normalize_ui_theme(settings.ui_theme),
+      shadows_3d: boolean_or_default(settings.shadows_3d, true),
+      effects_3d: boolean_or_default(settings.effects_3d, true)
+    }
+  end
+
+  def appearance(_settings),
+    do: %{ui_theme: "midnight", shadows_3d: true, effects_3d: true}
 
   defp update_latest_settings(attrs, stale_attempts) do
     case settings_for_update() do
@@ -286,7 +299,10 @@ defmodule IexCode.Settings do
       error_alert_chime: "basso",
       approval_prompt_chime: "ping",
       theme_accent: "cyan",
-      layout_density: "comfortable"
+      layout_density: "comfortable",
+      ui_theme: "midnight",
+      shadows_3d: true,
+      effects_3d: true
     }
   end
 
@@ -512,7 +528,10 @@ defmodule IexCode.Settings do
         error_alert_chime: settings.error_alert_chime || "basso",
         approval_prompt_chime: settings.approval_prompt_chime || "ping",
         theme_accent: settings.theme_accent || "cyan",
-        layout_density: settings.layout_density || "comfortable"
+        layout_density: settings.layout_density || "comfortable",
+        ui_theme: normalize_ui_theme(settings.ui_theme),
+        shadows_3d: boolean_or_default(settings.shadows_3d, true),
+        effects_3d: boolean_or_default(settings.effects_3d, true)
     }
   end
 
@@ -544,6 +563,13 @@ defmodule IexCode.Settings do
 
   defp broadcast_update(settings) do
     Phoenix.PubSub.broadcast(IexCode.PubSub, @settings_topic, {:settings_updated, settings})
+
+    Phoenix.PubSub.broadcast(
+      IexCode.PubSub,
+      "appearance:settings",
+      {:appearance_updated,
+       Map.take(settings, [:ui_theme, :shadows_3d, :effects_3d, :layout_density])}
+    )
   rescue
     _error -> :ok
   catch
@@ -620,7 +646,7 @@ defmodule IexCode.Settings do
 
   defp normalize_booleans(params) do
     Enum.reduce(
-      ~w(auto_save research_require_conflict_audit goal_auto_start sound_enabled),
+      ~w(auto_save research_require_conflict_audit goal_auto_start sound_enabled shadows_3d effects_3d),
       params,
       fn field, current ->
         case parse_boolean(Map.get(current, field)) do
@@ -772,6 +798,12 @@ defmodule IexCode.Settings do
   defp parse_boolean(value) when value in [true, "true", "1", "on", 1], do: {:ok, true}
   defp parse_boolean(value) when value in [false, "false", "0", "off", 0], do: {:ok, false}
   defp parse_boolean(_value), do: :error
+
+  defp normalize_ui_theme(theme) when theme in @ui_themes, do: theme
+  defp normalize_ui_theme(_theme), do: "midnight"
+
+  defp boolean_or_default(value, _default) when is_boolean(value), do: value
+  defp boolean_or_default(_value, default), do: default
 
   defp settings_for_credential_update(%AppSettings{} = settings), do: {:ok, settings}
   defp settings_for_credential_update(nil), do: {:ok, get_settings()}

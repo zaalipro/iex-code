@@ -1,0 +1,397 @@
+/* Shared studio primitives and legacy compatibility bridge. */
+
+:where(body) {
+  background: var(--ui-bg);
+  color: var(--ui-text);
+}
+
+:where(.ui-card, .settings-section-card) {
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-card);
+  background: var(--ui-surface);
+  color: var(--ui-text);
+  box-shadow: var(--ui-shadow-card);
+}
+
+:where(.ui-card-raised) {
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-card);
+  background: var(--ui-surface-raised);
+  color: var(--ui-text);
+  box-shadow: var(--ui-shadow-card);
+}
+
+[data-depth-shadows="true"] :where(.ui-card, .ui-card-raised, .settings-section-card) {
+  box-shadow: var(--ui-shadow-card) !important;
+}
+
+[data-depth-shadows="true"] :where(.ui-dialog, [role="dialog"] > .ui-card, dialog) {
+  box-shadow: var(--ui-shadow-modal) !important;
+}
+
+[data-depth-shadows="true"] :where(.ui-button) {
+  box-shadow: var(--ui-shadow-control) !important;
+}
+
+[data-depth-shadows="true"] :where(.ui-inset, .ui-control) {
+  box-shadow: var(--ui-shadow-inset) !important;
+}
+
+/* Nested settings previews must be able to demonstrate depth independently. */
+[data-depth-shadows="false"] .appearance-preview[data-depth-shadows="true"] .appearance-preview-window {
+  box-shadow: var(--ui-shadow-card) !important;
+}
+
+:where(.ui-inset) {
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-control);
+  background: var(--ui-surface-inset);
+  color: var(--ui-text);
+  box-shadow: var(--ui-shadow-inset);
+}
+
+:where(.ui-dialog, [role="dialog"] > .ui-card, dialog) {
+  border-radius: var(--ui-radius-dialog);
+  box-shadow: var(--ui-shadow-modal);
+}
+
+:where(.ui-button) {
+  display: inline-flex;
+  min-height: 2.5rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border: 1px solid var(--ui-border-strong);
+  border-radius: var(--ui-radius-control);
+  background: var(--ui-surface-raised);
+  color: var(--ui-text);
+  box-shadow: var(--ui-shadow-control);
+  transition:
+    color var(--ui-transition-fast),
+    background-color var(--ui-transition-fast),
+    border-color var(--ui-transition-fast),
+    box-shadow var(--ui-transition-fast),
+    transform var(--ui-transition-fast);
+}
+
+:where(.ui-button):hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--ui-accent) 52%, var(--ui-border));
+  background: color-mix(in srgb, var(--ui-surface-raised) 90%, var(--ui-accent));
+}
+
+:where(.ui-button-primary) {
+  border-color: color-mix(in srgb, var(--ui-accent-strong) 78%, transparent);
+  background: var(--ui-accent);
+  color: var(--ui-accent-text);
+}
+
+:where(.ui-button-primary):hover:not(:disabled) {
+  border-color: var(--ui-accent-strong);
+  background: var(--ui-accent-strong);
+}
+
+:where(.ui-button, .ui-control):focus-visible {
+  outline: 2px solid var(--ui-focus);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px var(--ui-focus-soft);
+}
+
+:where(.ui-button):disabled,
+:where(.ui-control):disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+:where(.ui-control) {
+  width: 100%;
+  border: 1px solid var(--ui-border-strong);
+  border-radius: var(--ui-radius-control);
+  background: var(--ui-surface-inset);
+  color: var(--ui-text);
+  box-shadow: var(--ui-shadow-inset);
+  transition:
+    color var(--ui-transition-fast),
+    background-color var(--ui-transition-fast),
+    border-color var(--ui-transition-fast),
+    box-shadow var(--ui-transition-fast);
+}
+
+:where(.ui-control)::placeholder {
+  color: var(--ui-subtle);
+  opacity: 1;
+}
+
+:where(.ui-control):hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--ui-accent) 34%, var(--ui-border-strong));
+}
+
+:where(.ui-control):focus {
+  border-color: var(--ui-focus);
+  outline: none;
+}
+
+:where(.ui-divider) {
+  border-color: var(--ui-border);
+}
+
+:where(.ui-muted) {
+  color: var(--ui-muted);
+}
+
+:where(.ui-subtle) {
+  color: var(--ui-subtle);
+}
+
+:where(.ui-accent) {
+  color: var(--ui-accent);
+}
+
+:where(.ui-scrim) {
+  background: var(--ui-overlay);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  [data-depth-effects="false"] .appearance-preview[data-depth-effects="true"] .appearance-preview-window {
+    transform: perspective(55rem) rotateX(1.5deg) rotateY(-2.5deg) translateY(-0.25rem) !important;
+  }
+
+  [data-depth-effects="false"] .appearance-preview[data-depth-effects="true"]:hover .appearance-preview-window {
+    transform: perspective(55rem) rotateX(0) rotateY(0) translateY(-0.75rem) !important;
+  }
+}
+
+/* Depth effects are opt-in so drag, resize, centering, and scroll transforms stay untouched. */
+@media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
+  :where(html:not([data-depth-effects="false"]), [data-depth-effects="true"]) :where(.ui-depth-effect, [data-ui-depth-effect]):hover {
+    transform: perspective(900px) translate3d(0, -2px, 8px);
+  }
+
+  :where(html:not([data-depth-effects="false"]), [data-depth-effects="true"]) :where(.ui-depth-effect, [data-ui-depth-effect]):active {
+    transform: perspective(900px) translate3d(0, 0, 2px) scale(0.992);
+  }
+
+  [data-depth-effects="true"] :where(.ui-depth-effect, [data-ui-depth-effect]):hover {
+    transform: perspective(900px) translate3d(0, -2px, 8px) !important;
+  }
+
+  [data-depth-effects="true"] :where(.ui-depth-effect, [data-ui-depth-effect]):active {
+    transform: perspective(900px) translate3d(0, 0, 2px) scale(0.992) !important;
+  }
+}
+
+/* Normalize legacy controls without changing switches and round icon controls. */
+:where(button:not([class*="rounded-full"]), [role="button"]:not([class*="rounded-full"]), input:not([type="checkbox"]):not([type="radio"]), select, textarea) {
+  border-radius: var(--ui-radius-control);
+}
+
+/*
+ * Compatibility bridge for older HEEx surfaces. Exact class-token selectors
+ * let light themes remain readable while templates migrate to semantic names.
+ */
+:where(
+  [class~="bg-[#07090d]"],
+  [class~="bg-[#07090d]/80"],
+  [class~="bg-[#0a0d12]"],
+  [class~="bg-[#0a0d12]/40"],
+  [class~="bg-[#0d1117]"],
+  [class~="bg-[#0d1117]/85"],
+  [class~="bg-[#0d1117]/90"],
+  [class~="bg-[#0d1117]/95"],
+  [class~="bg-[#0d1117]/98"],
+  [class~="bg-[#090d13]"],
+  [class~="bg-[#07090e]"],
+  [class~="bg-[#070a0f]"],
+  [class~="bg-[#070a0e]"],
+  [class~="bg-[#05070a]"],
+  [class~="bg-[#0b0f14]"]
+) {
+  background-color: var(--ui-surface-inset) !important;
+}
+
+:where(
+  [class~="bg-[#11151c]"],
+  [class~="bg-[#11151c]/40"],
+  [class~="bg-[#11151c]/80"],
+  [class~="bg-[#11151c]/90"],
+  [class~="bg-[#11151c]/95"],
+  [class~="bg-[#111827]"],
+  [class~="bg-[#0a0e14]"],
+  [class~="bg-[#0a0e14]/95"],
+  [class~="bg-[#0d1218]"],
+  [class~="bg-[#0d1218]/90"],
+  [class~="bg-[#0e131b]"],
+  [class~="bg-[#0e131b]/90"],
+  [class~="bg-[#0d1017]"],
+  [class~="bg-[#0f141a]"],
+  [class~="bg-[#10151b]"],
+  [class~="bg-[#11161d]"],
+  [class~="bg-[#0c1117]"],
+  [class~="bg-gray-900"],
+  [class~="bg-slate-900"],
+  [class~="bg-zinc-900"]
+) {
+  background-color: var(--ui-surface) !important;
+}
+
+:where(
+  [class~="bg-[#161b22]"],
+  [class~="bg-[#161b22]/30"],
+  [class~="bg-[#161b22]/50"],
+  [class~="bg-[#161b22]/70"],
+  [class~="bg-[#161b22]/80"],
+  [class~="bg-[#161b22]/90"],
+  [class~="bg-[#161b22]/95"],
+  [class~="bg-[#1c2128]"],
+  [class~="bg-[#1c2128]/50"],
+  [class~="bg-[#1c2128]/60"],
+  [class~="bg-[#1c222b]"],
+  [class~="bg-[#121820]"],
+  [class~="bg-[#12161f]"],
+  [class~="bg-[#131920]"],
+  [class~="bg-[#141920]"],
+  [class~="bg-[#151b22]"],
+  [class~="bg-[#1a2029]"],
+  [class~="bg-[#20262e]"],
+  [class~="bg-gray-800"],
+  [class~="bg-slate-800"],
+  [class~="bg-zinc-800"]
+) {
+  background-color: var(--ui-surface-raised) !important;
+}
+
+:where(
+  [class~="bg-[#21262d]"],
+  [class~="bg-[#252d38]"],
+  [class~="bg-[#30363d]"],
+  [class~="bg-gray-700"],
+  [class~="bg-slate-700"],
+  [class~="bg-zinc-700"]
+) {
+  background-color: color-mix(in srgb, var(--ui-surface-raised) 78%, var(--ui-border)) !important;
+}
+
+:where(
+  [class~="bg-white/5"],
+  [class~="bg-white/[0.02]"],
+  [class~="bg-white/[0.03]"],
+  [class~="bg-white/[0.04]"],
+  [class~="bg-white/[0.06]"],
+  [class~="bg-white/[0.08]"],
+  [class~="bg-black/10"],
+  [class~="bg-black/20"],
+  [class~="bg-black/30"]
+) {
+  background-color: var(--ui-accent-softer) !important;
+}
+
+:where([class~="bg-black/50"], [class~="bg-black/60"], [class~="bg-black/70"], [class~="bg-black/80"], [class~="bg-black/90"]) {
+  background-color: var(--ui-overlay) !important;
+}
+
+:where(
+  [class~="border-[#21262d]"],
+  [class~="border-[#21262d]/50"],
+  [class~="border-[#21262d]/70"],
+  [class~="border-[#252d38]"],
+  [class~="border-[#2a313c]"],
+  [class~="border-[#30363d]"],
+  [class~="border-[#30363d]/70"],
+  [class~="border-[#303844]"],
+  [class~="border-[#303943]"],
+  [class~="border-[#29313a]"],
+  [class~="border-[#252c35]"],
+  [class~="border-[#28313a]"],
+  [class~="border-[#1e2530]"],
+  [class~="border-[#26313d]"],
+  [class~="border-[#26313a]"],
+  [class~="border-[#2c3540]"],
+  [class~="border-gray-700"],
+  [class~="border-gray-800"],
+  [class~="border-slate-700"],
+  [class~="border-zinc-700"],
+  [class~="border-white/5"],
+  [class~="border-white/10"]
+) {
+  border-color: var(--ui-border) !important;
+}
+
+:where([class~="border-[#38404a]"], [class~="border-[#484f58]"], [class~="border-white/20"]) {
+  border-color: var(--ui-border-strong) !important;
+}
+
+:where(
+  [class~="text-white"],
+  [class~="text-gray-50"],
+  [class~="text-gray-100"],
+  [class~="text-slate-50"],
+  [class~="text-slate-100"],
+  [class~="text-zinc-50"],
+  [class~="text-zinc-100"]
+) {
+  color: var(--ui-text) !important;
+}
+
+:where(
+  [class~="text-gray-200"],
+  [class~="text-gray-300"],
+  [class~="text-slate-200"],
+  [class~="text-slate-300"],
+  [class~="text-zinc-200"],
+  [class~="text-zinc-300"]
+) {
+  color: color-mix(in srgb, var(--ui-text) 84%, var(--ui-muted)) !important;
+}
+
+:where(
+  [class~="text-gray-400"],
+  [class~="text-slate-400"],
+  [class~="text-zinc-400"]
+) {
+  color: var(--ui-muted) !important;
+}
+
+:where(
+  [class~="text-gray-500"],
+  [class~="text-gray-600"],
+  [class~="text-slate-500"],
+  [class~="text-slate-600"],
+  [class~="text-zinc-500"],
+  [class~="text-zinc-600"]
+) {
+  color: var(--ui-subtle) !important;
+}
+
+:where([class~="placeholder-gray-500"], [class~="placeholder-gray-600"], [class~="placeholder-slate-500"])::placeholder {
+  color: var(--ui-subtle) !important;
+  opacity: 1;
+}
+
+:where([class~="hover:text-white"], [class~="hover:text-gray-50"], [class~="hover:text-gray-100"], [class~="hover:text-zinc-50"], [class~="hover:text-zinc-100"]):hover,
+:where(.group:hover) :where([class~="group-hover:text-white"], [class~="group-hover:text-gray-50"], [class~="group-hover:text-gray-100"]) {
+  color: var(--ui-text) !important;
+}
+
+:where([class~="hover:text-gray-200"], [class~="hover:text-gray-300"], [class~="hover:text-gray-400"], [class~="hover:text-zinc-200"], [class~="hover:text-zinc-300"], [class~="hover:text-zinc-400"]):hover,
+:where(.group:hover) :where([class~="group-hover:text-gray-200"], [class~="group-hover:text-gray-300"], [class~="group-hover:text-gray-400"]) {
+  color: var(--ui-muted) !important;
+}
+
+:where([class~="hover:bg-white/5"], [class~="hover:bg-white/10"]):hover {
+  background-color: var(--ui-accent-soft) !important;
+}
+
+/* Preserve contrast where legacy markup intentionally places white ink on semantic status fills. */
+:where(.bg-red-500, .bg-red-600, .bg-rose-500, .bg-rose-600, .bg-emerald-500, .bg-emerald-600, .bg-blue-500, .bg-blue-600, .bg-purple-500, .bg-purple-600)[class~="text-white"] {
+  color: #fff !important;
+}
+
+:where([class*="bg-red-"], [class*="bg-rose-"], [class*="bg-amber-"], [class*="bg-emerald-"], [class*="bg-blue-"], [class*="bg-cyan-"], [class*="bg-purple-"], [class*="bg-orange-"], [class*="from-"])[class~="text-white"],
+:where([class*="bg-red-"], [class*="bg-rose-"], [class*="bg-amber-"], [class*="bg-emerald-"], [class*="bg-blue-"], [class*="bg-cyan-"], [class*="bg-purple-"], [class*="bg-orange-"]) :where([class~="text-white"]) {
+  color: #fff !important;
+}
+
+@supports not (color: color-mix(in srgb, white, black)) {
+  :where(.ui-button):hover:not(:disabled) {
+    border-color: var(--ui-accent);
+  }
+}

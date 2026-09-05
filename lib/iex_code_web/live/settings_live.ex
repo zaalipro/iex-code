@@ -24,6 +24,41 @@ defmodule IexCodeWeb.SettingsLive do
 
   @valid_tabs ~w(providers reasoning safety context environment appearance)
 
+  @appearance_themes [
+    %{
+      id: "midnight",
+      name: "Midnight",
+      description: "Deep navy with a quiet lavender signal.",
+      mood: "Focused after dark"
+    },
+    %{
+      id: "graphite",
+      name: "Graphite",
+      description: "Neutral charcoal sharpened by warm coral.",
+      mood: "Studio neutral"
+    },
+    %{
+      id: "aurora",
+      name: "Aurora",
+      description: "Forest layers with a crisp mint current.",
+      mood: "Calm and alive"
+    },
+    %{
+      id: "porcelain",
+      name: "Porcelain",
+      description: "Cool white surfaces with precise blue ink.",
+      mood: "Bright and exact"
+    },
+    %{
+      id: "sandstone",
+      name: "Sandstone",
+      description: "Warm paper grounded by terracotta.",
+      mood: "Soft daylight"
+    }
+  ]
+
+  @appearance_theme_ids Enum.map(@appearance_themes, & &1.id)
+
   @settings_sections [
     {"models", "Models"},
     {"execution", "Execution"},
@@ -456,6 +491,23 @@ defmodule IexCodeWeb.SettingsLive do
   def provider_id(descriptor), do: descriptor.id |> Atom.to_string()
 
   def settings_sections, do: @settings_sections
+
+  def appearance_themes, do: @appearance_themes
+
+  def appearance_theme(form) do
+    case form[:ui_theme].value do
+      theme when theme in @appearance_theme_ids -> theme
+      _theme -> "midnight"
+    end
+  end
+
+  def appearance_enabled?(form, field) when field in [:shadows_3d, :effects_3d] do
+    form[field].value in [true, "true", "1", "on", 1]
+  end
+
+  def appearance_theme_errors(form) do
+    Enum.map(form[:ui_theme].errors, &translate_error/1)
+  end
 
   attr :id, :string, required: true
   attr :eyebrow, :string, required: true

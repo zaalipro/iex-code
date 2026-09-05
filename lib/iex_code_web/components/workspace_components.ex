@@ -125,9 +125,9 @@ defmodule IexCodeWeb.WorkspaceComponents do
         <div
           id={"subagent-card-#{agent.key}"}
           class={[
-            "bg-[#11151c] border rounded-2xl p-4 flex flex-col justify-between transition-smooth relative overflow-hidden",
+            "bg-surface border rounded-2xl p-4 flex flex-col justify-between transition-smooth relative overflow-hidden",
             normalized_status == "running" && "#{agent.border_color} shadow-lg #{agent.shadow_tint}",
-            normalized_status != "running" && "border-[#21262d] hover:border-[#30363d]",
+            normalized_status != "running" && "border-line hover:border-line",
             is_active && "ring-1 ring-cyan-500/40"
           ]}
         >
@@ -172,7 +172,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
                   normalized_status == "completed" &&
                     "text-emerald-400 bg-emerald-500/10 border-emerald-500/30",
                   normalized_status == "failed" && "text-rose-400 bg-rose-500/10 border-rose-500/30",
-                  normalized_status == "idle" && "text-gray-400 bg-[#161b22] border-[#21262d]"
+                  normalized_status == "idle" && "text-muted bg-raised border-line"
                 ]}>
                   {String.upcase(normalized_status)}
                 </span>
@@ -180,7 +180,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
             </div>
 
             <!-- Role & Activity -->
-            <p class="text-[11px] text-gray-400 font-mono mb-2 line-clamp-2">
+            <p class="text-[11px] text-muted font-mono mb-2 line-clamp-2">
               {current_msg}
             </p>
 
@@ -194,24 +194,24 @@ defmodule IexCodeWeb.WorkspaceComponents do
                 ]}>
                   Stage: {stage_label}
                 </span>
-                <span class="text-[10px] font-mono text-gray-500">Active Agent</span>
+                <span class="text-[10px] font-mono text-subtle">Active Agent</span>
               </div>
             <% end %>
           </div>
 
           <!-- Progress & Latency Footer -->
-          <div class="pt-3 border-t border-[#21262d] space-y-1.5">
-            <div class="flex justify-between items-center text-[11px] font-mono text-gray-400">
-              <span class="text-[10px] text-gray-500">Latency:
-              <strong class="text-gray-300">{duration}</strong></span>
+          <div class="pt-3 border-t border-line space-y-1.5">
+            <div class="flex justify-between items-center text-[11px] font-mono text-muted">
+              <span class="text-[10px] text-subtle">Latency:
+              <strong class="text-muted">{duration}</strong></span>
               <span class={[
                 "font-semibold",
-                if(normalized_status == "completed", do: "text-emerald-400", else: "text-gray-300")
+                if(normalized_status == "completed", do: "text-emerald-400", else: "text-muted")
               ]}>
                 {progress}%
               </span>
             </div>
-            <div class="w-full bg-[#1c2128] h-1.5 rounded-full overflow-hidden">
+            <div class="w-full bg-raised h-1.5 rounded-full overflow-hidden">
               <div
                 class={[
                   "h-full rounded-full transition-all duration-300 ease-out",
@@ -257,18 +257,18 @@ defmodule IexCodeWeb.WorkspaceComponents do
     ~H"""
     <div
       id="operation-tree-root"
-      class="bg-[#11151c] border border-[#21262d] rounded-2xl p-5 space-y-4"
+      class="bg-surface border border-line rounded-2xl p-5 space-y-4"
     >
       <!-- Tree Header -->
-      <div class="flex items-center justify-between pb-3 border-b border-[#21262d]">
+      <div class="flex items-center justify-between pb-3 border-b border-line">
         <div class="flex items-center gap-3">
           <h3 class="text-sm font-semibold text-white font-mono flex items-center gap-2">
             <.icon name="hero-list-bullet" class="w-4 h-4 text-emerald-400" /> Execution Hierarchy
-            <span class="px-2 py-0.5 rounded-full bg-[#1c2128] text-xs text-gray-400 border border-[#30363d]">
+            <span class="px-2 py-0.5 rounded-full bg-raised text-xs text-muted border border-line">
               {@stats.total} ops
             </span>
           </h3>
-          <div class="hidden sm:flex items-center gap-2 text-[11px] font-mono text-gray-400">
+          <div class="hidden sm:flex items-center gap-2 text-[11px] font-mono text-muted">
             <span class="flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span> {@stats.completed} done</span>
             <span class="flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span> {@stats.running} running</span>
             <%= if @stats.failed > 0 do %>
@@ -279,7 +279,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
 
         <button
           phx-click="clear_operations"
-          class="text-xs font-mono text-gray-500 hover:text-rose-400 transition-smooth flex items-center gap-1"
+          class="text-xs font-mono text-subtle hover:text-rose-400 transition-smooth flex items-center gap-1"
         >
           <.icon name="hero-trash" class="w-3.5 h-3.5" /> Clear Operations
         </button>
@@ -287,7 +287,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
 
       <!-- Tree Nodes List -->
       <%= if @tree == [] do %>
-        <div class="p-8 text-center text-gray-500 font-mono text-xs border border-dashed border-[#21262d] rounded-xl">
+        <div class="p-8 text-center text-subtle font-mono text-xs border border-dashed border-line rounded-xl">
           No operations recorded in this session.
         </div>
       <% else %>
@@ -317,10 +317,10 @@ defmodule IexCodeWeb.WorkspaceComponents do
     <div class={["relative", @depth > 0 && "pl-6 tree-node-connector"]}>
       <div class={[
         "p-3 rounded-xl border transition-smooth",
-        @op.status == "running" && "bg-[#161b22] border-amber-500/40 shadow-sm",
+        @op.status == "running" && "bg-raised border-amber-500/40 shadow-sm",
         @op.status == "failed" && "bg-[#1a1215] border-rose-500/40",
         @op.status != "running" && @op.status != "failed" &&
-          "bg-[#161b22] border-[#21262d] hover:border-[#38404a]"
+          "bg-raised border-line hover:border-[#38404a]"
       ]}>
         <!-- Top Row: Status, Agent, Title, Metrics, Chevron -->
         <div class="flex items-center justify-between gap-2">
@@ -330,7 +330,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
               <button
                 phx-click="toggle_op_detail"
                 phx-value-id={@op.id}
-                class="text-gray-400 hover:text-white transition-smooth"
+                class="text-muted hover:text-white transition-smooth"
               >
                 <.icon
                   name={if(@is_expanded, do: "hero-chevron-down", else: "hero-chevron-right")}
@@ -357,20 +357,20 @@ defmodule IexCodeWeb.WorkspaceComponents do
             </span>
 
             <!-- Operation Type Badge -->
-            <span class="text-[10px] text-gray-400 bg-[#0d1117] border border-[#21262d] px-1.5 py-0.5 rounded shrink-0">
+            <span class="text-[10px] text-muted bg-inset border border-line px-1.5 py-0.5 rounded shrink-0">
               {@op.op_type}
             </span>
 
             <!-- Title -->
-            <span class="text-gray-300 truncate text-xs">
+            <span class="text-muted truncate text-xs">
               {@op.title}
             </span>
           </div>
 
           <!-- Right side metrics -->
-          <div class="flex items-center gap-3 text-[11px] text-gray-400 shrink-0">
+          <div class="flex items-center gap-3 text-[11px] text-muted shrink-0">
             <%= if @op.duration_ms do %>
-              <span class="text-gray-400">{@op.duration_ms}ms</span>
+              <span class="text-muted">{@op.duration_ms}ms</span>
             <% end %>
             <%= if @op.pid_str do %>
               <span class="text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20 text-[10px]">
@@ -380,7 +380,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
             <button
               phx-click="toggle_op_detail"
               phx-value-id={@op.id}
-              class="text-gray-400 hover:text-white p-1 rounded transition-smooth"
+              class="text-muted hover:text-white p-1 rounded transition-smooth"
               title="Inspect Details"
             >
               <.icon name="hero-ellipsis-horizontal" class="w-3.5 h-3.5" />
@@ -390,7 +390,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
 
         <!-- Detail Drawer (Parameters, Error, Result) -->
         <%= if @is_expanded do %>
-          <div class="mt-3 pt-3 border-t border-[#21262d] space-y-2 text-[11px] font-mono animate-in fade-in">
+          <div class="mt-3 pt-3 border-t border-line space-y-2 text-[11px] font-mono animate-in fade-in">
             <%= if @op.error_message do %>
               <div class="p-2.5 rounded-lg bg-rose-950/40 border border-rose-500/30 text-rose-300 whitespace-pre-wrap">
                 <strong class="text-rose-400">Error:</strong> {@op.error_message}
@@ -398,15 +398,15 @@ defmodule IexCodeWeb.WorkspaceComponents do
             <% end %>
 
             <%= if @op.result do %>
-              <div class="p-2.5 rounded-lg bg-[#0d1117] border border-[#21262d] text-gray-300 whitespace-pre-wrap max-h-48 overflow-y-auto">
-                <strong class="text-gray-400 block mb-1">Result:</strong>
+              <div class="p-2.5 rounded-lg bg-inset border border-line text-muted whitespace-pre-wrap max-h-48 overflow-y-auto">
+                <strong class="text-muted block mb-1">Result:</strong>
                 {@op.result}
               </div>
             <% end %>
 
             <%= if @op.params && @op.params != %{} do %>
-              <div class="p-2 rounded bg-[#0d1117] border border-[#21262d] text-gray-400">
-                <span class="text-gray-500">Params:</span> {inspect(@op.params)}
+              <div class="p-2 rounded bg-inset border border-line text-muted">
+                <span class="text-subtle">Params:</span> {inspect(@op.params)}
               </div>
             <% end %>
           </div>
@@ -494,12 +494,12 @@ defmodule IexCodeWeb.WorkspaceComponents do
     <div
       id={@id}
       class={[
-        "min-h-0 min-w-0 bg-[#11151c] border border-[#21262d] rounded-2xl flex flex-col overflow-hidden",
+        "min-h-0 min-w-0 bg-surface border border-line rounded-2xl flex flex-col overflow-hidden",
         @class
       ]}
     >
       <!-- Toolbar Header -->
-      <div class="diff-viewer-header p-3 border-b border-[#21262d] bg-[#161b22] flex flex-wrap items-center justify-between gap-2 shrink-0 font-mono text-xs">
+      <div class="diff-viewer-header p-3 border-b border-line bg-raised flex flex-wrap items-center justify-between gap-2 shrink-0 font-mono text-xs">
         <div class="flex min-w-0 flex-1 items-center gap-2">
           <.icon name="hero-code-bracket-square" class="w-4 h-4 text-cyan-400 shrink-0" />
           <span class="min-w-0 truncate font-semibold text-white">
@@ -557,15 +557,15 @@ defmodule IexCodeWeb.WorkspaceComponents do
           <% end %>
 
           <!-- View Mode Toggle -->
-          <div class="flex items-center bg-[#0d1117] p-1 rounded-lg border border-[#21262d]">
+          <div class="flex items-center bg-inset p-1 rounded-lg border border-line">
             <button
               type="button"
               phx-click="set_diff_mode"
               phx-value-mode="inline"
               class={[
                 "px-2.5 py-1 rounded text-xs transition-smooth",
-                @diff_mode == "inline" && "bg-[#21262d] text-white font-semibold",
-                @diff_mode != "inline" && "text-gray-400 hover:text-gray-200"
+                @diff_mode == "inline" && "bg-raised text-white font-semibold",
+                @diff_mode != "inline" && "text-muted hover:text-content"
               ]}
             >
               Inline
@@ -576,8 +576,8 @@ defmodule IexCodeWeb.WorkspaceComponents do
               phx-value-mode="split"
               class={[
                 "px-2.5 py-1 rounded text-xs transition-smooth",
-                @diff_mode == "split" && "bg-[#21262d] text-white font-semibold",
-                @diff_mode != "split" && "text-gray-400 hover:text-gray-200"
+                @diff_mode == "split" && "bg-raised text-white font-semibold",
+                @diff_mode != "split" && "text-muted hover:text-content"
               ]}
             >
               Side-by-Side
@@ -590,7 +590,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
             id={"#{@id}-copy-btn"}
             phx-hook="CodeCopy"
             data-code={@diff_text}
-            class="px-2.5 py-1 bg-[#21262d] hover:bg-[#30363d] text-gray-200 rounded-lg text-xs font-mono transition-smooth flex items-center gap-1.5"
+            class="px-2.5 py-1 bg-raised hover:bg-raised text-muted rounded-lg text-xs font-mono transition-smooth flex items-center gap-1.5"
           >
             <.icon name="hero-clipboard-document" class="w-3.5 h-3.5" />
             <span class="hidden md:inline">Copy Diff</span>
@@ -599,9 +599,9 @@ defmodule IexCodeWeb.WorkspaceComponents do
       </div>
 
       <!-- Diff Body with Granular Hunks -->
-      <div class="flex-1 min-h-0 min-w-0 overflow-auto font-mono text-xs leading-relaxed p-2 sm:p-3 bg-[#0a0d12] space-y-4">
+      <div class="flex-1 min-h-0 min-w-0 overflow-auto font-mono text-xs leading-relaxed p-2 sm:p-3 bg-inset space-y-4">
         <%= if is_nil(@diff_text) or String.trim(@diff_text) == "" do %>
-          <div class="p-8 text-center text-gray-500">
+          <div class="p-8 text-center text-subtle">
             No patch or diff selected.
           </div>
         <% else %>
@@ -646,16 +646,16 @@ defmodule IexCodeWeb.WorkspaceComponents do
     ~H"""
     <div
       id={"#{@parent_id}-hunk-card-#{@hunk.id}"}
-      class="border border-[#21262d] rounded-xl overflow-hidden bg-[#11151c] shadow-md"
+      class="border border-line rounded-xl overflow-hidden bg-surface shadow-md"
     >
       <!-- Hunk Control Header -->
-      <div class="bg-[#161b22] px-3 py-2 border-b border-[#21262d] flex items-center justify-between font-mono text-xs">
+      <div class="bg-raised px-3 py-2 border-b border-line flex items-center justify-between font-mono text-xs">
         <div class="flex items-center gap-2 truncate">
           <span class="px-2 py-0.5 rounded bg-indigo-950/60 text-indigo-300 font-semibold text-[11px] border border-indigo-500/30">
             {@hunk.header ||
               "@@ -#{@hunk.old_start},#{@hunk.old_count || @hunk.old_lines} +#{@hunk.new_start},#{@hunk.new_count || @hunk.new_lines} @@"}
           </span>
-          <span class="text-[10px] text-gray-400">
+          <span class="text-[10px] text-muted">
             Hunk {@hunk.id}
           </span>
         </div>
@@ -717,7 +717,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
                 phx-value-file={@file_path}
                 phx-value-hunk_id={@hunk.id}
                 data-confirm="Revert this hunk?"
-                class="px-2 py-1 bg-gray-700/40 hover:bg-gray-700/60 text-gray-300 border border-gray-600/30 rounded text-[11px] transition-smooth flex items-center gap-1"
+                class="px-2 py-1 bg-raised/40 hover:bg-raised/60 text-muted border border-gray-600/30 rounded text-[11px] transition-smooth flex items-center gap-1"
                 title="Revert this hunk"
               >
                 <.icon name="hero-arrow-uturn-left" class="w-3 h-3" />
@@ -729,7 +729,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
       </div>
 
       <!-- Hunk Body Lines -->
-      <div class="p-2 bg-[#0d1117] overflow-x-auto">
+      <div class="p-2 bg-inset overflow-x-auto">
         <%= if @diff_mode == "inline" do %>
           <.hunk_inline_lines lines={@hunk.lines} />
         <% else %>
@@ -760,12 +760,12 @@ defmodule IexCodeWeb.WorkspaceComponents do
                "text-indigo-300", "@"}
 
             _ ->
-              {"hover:bg-[#161b22]", "text-gray-300", " "}
+              {"hover:bg-raised", "text-muted", " "}
           end %>
         <div class={["flex items-center px-2 py-0.5 rounded", bg]}>
-          <span class="w-8 text-right text-gray-600 select-none pr-2 text-[10px]">{line.old_num || " "}</span>
-          <span class="w-8 text-right text-gray-600 select-none pr-3 text-[10px]">{line.new_num || " "}</span>
-          <span class="w-4 text-center select-none font-bold text-[11px] text-gray-500">{sign}</span>
+          <span class="w-8 text-right text-subtle select-none pr-2 text-[10px]">{line.old_num || " "}</span>
+          <span class="w-8 text-right text-subtle select-none pr-3 text-[10px]">{line.new_num || " "}</span>
+          <span class="w-4 text-center select-none font-bold text-[11px] text-subtle">{sign}</span>
           <div class={["flex-1 overflow-x-auto", text_color]}>
             <IexCodeWeb.DiffHighlighter.diff_line_content
               segments={segments}
@@ -785,8 +785,8 @@ defmodule IexCodeWeb.WorkspaceComponents do
     ~H"""
     <div class="space-y-0.5 font-mono text-xs">
       <!-- Header -->
-      <div class="grid grid-cols-2 gap-2 text-gray-500 text-[10px] uppercase font-bold px-2 py-1 bg-[#11151c] rounded mb-1">
-        <div class="pr-2 border-r border-[#21262d]">Original</div>
+      <div class="grid grid-cols-2 gap-2 text-subtle text-[10px] uppercase font-bold px-2 py-1 bg-surface rounded mb-1">
+        <div class="pr-2 border-r border-line">Original</div>
         <div class="pl-2">Modified</div>
       </div>
 
@@ -812,11 +812,11 @@ defmodule IexCodeWeb.WorkspaceComponents do
             _ ->
               {[], []}
           end %>
-        <div class="grid grid-cols-2 gap-2 group hover:bg-[#161b22]/30">
+        <div class="grid grid-cols-2 gap-2 group hover:bg-raised/30">
           <!-- Left (Original / Deletion) Column -->
-          <div class="border-r border-[#21262d] pr-2">
+          <div class="border-r border-line pr-2">
             <%= if is_nil(left) or left == :empty do %>
-              <div class="px-2 py-0.5 rounded flex items-center min-h-[1.5rem] bg-[#0a0d12]/40 select-none text-transparent border-l-2 border-transparent">
+              <div class="px-2 py-0.5 rounded flex items-center min-h-[1.5rem] bg-inset/40 select-none text-transparent border-l-2 border-transparent">
                 <span class="w-8 text-right pr-2 text-[10px] select-none text-transparent">·</span>
                 <span class="flex-1 select-none text-transparent">&nbsp;</span>
               </div>
@@ -824,10 +824,10 @@ defmodule IexCodeWeb.WorkspaceComponents do
               <div class={[
                 "px-2 py-0.5 rounded flex items-center min-h-[1.5rem]",
                 left.type == :deletion && "bg-rose-950/40 text-rose-300 border-l-2 border-rose-500",
-                left.type == :context && "text-gray-300 hover:bg-[#161b22]",
-                left.type == :eof_newline && "text-gray-500 italic text-[10px]"
+                left.type == :context && "text-muted hover:bg-raised",
+                left.type == :eof_newline && "text-subtle italic text-[10px]"
               ]}>
-                <span class="w-8 text-right text-gray-600 select-none pr-2 text-[10px]">
+                <span class="w-8 text-right text-subtle select-none pr-2 text-[10px]">
                   {left.old_num || " "}
                 </span>
                 <div class="flex-1 overflow-x-auto">
@@ -843,7 +843,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
           <!-- Right (Modified / Addition) Column -->
           <div class="pl-2">
             <%= if is_nil(right) or right == :empty do %>
-              <div class="px-2 py-0.5 rounded flex items-center min-h-[1.5rem] bg-[#0a0d12]/40 select-none text-transparent border-l-2 border-transparent">
+              <div class="px-2 py-0.5 rounded flex items-center min-h-[1.5rem] bg-inset/40 select-none text-transparent border-l-2 border-transparent">
                 <span class="w-8 text-right pr-2 text-[10px] select-none text-transparent">·</span>
                 <span class="flex-1 select-none text-transparent">&nbsp;</span>
               </div>
@@ -852,10 +852,10 @@ defmodule IexCodeWeb.WorkspaceComponents do
                 "px-2 py-0.5 rounded flex items-center min-h-[1.5rem]",
                 right.type == :addition &&
                   "bg-emerald-950/40 text-emerald-300 border-l-2 border-emerald-500",
-                right.type == :context && "text-gray-300 hover:bg-[#161b22]",
-                right.type == :eof_newline && "text-gray-500 italic text-[10px]"
+                right.type == :context && "text-muted hover:bg-raised",
+                right.type == :eof_newline && "text-subtle italic text-[10px]"
               ]}>
-                <span class="w-8 text-right text-gray-600 select-none pr-2 text-[10px]">
+                <span class="w-8 text-right text-subtle select-none pr-2 text-[10px]">
                   {right.new_num || " "}
                 </span>
                 <div class="flex-1 overflow-x-auto">
@@ -893,14 +893,14 @@ defmodule IexCodeWeb.WorkspaceComponents do
                "text-indigo-300", "@"}
 
             String.starts_with?(line, "---") || String.starts_with?(line, "+++") ->
-              {"bg-[#161b22] text-gray-400 font-semibold py-1 px-2", "text-gray-400", "#"}
+              {"bg-raised text-muted font-semibold py-1 px-2", "text-muted", "#"}
 
             true ->
-              {"hover:bg-[#11151c]", "text-gray-300", " "}
+              {"hover:bg-surface", "text-muted", " "}
           end %>
         <div class={["flex items-center px-2 py-0.5 rounded font-mono", bg]}>
-          <span class="w-10 text-right text-gray-600 select-none pr-3 text-[10px]">{idx}</span>
-          <span class="w-4 text-center select-none font-bold text-[11px] text-gray-500">{sign}</span>
+          <span class="w-10 text-right text-subtle select-none pr-3 text-[10px]">{idx}</span>
+          <span class="w-4 text-center select-none font-bold text-[11px] text-subtle">{sign}</span>
           <span class={["flex-1 whitespace-pre-wrap", text_color]}>{line}</span>
         </div>
       <% end %>
@@ -914,8 +914,8 @@ defmodule IexCodeWeb.WorkspaceComponents do
 
     ~H"""
     <div class="grid min-w-[42rem] grid-cols-2 gap-2">
-      <div class="space-y-0.5 border-r border-[#21262d] pr-2">
-        <div class="text-gray-500 text-[10px] uppercase font-bold px-2 py-1 bg-[#11151c] rounded mb-1">
+      <div class="space-y-0.5 border-r border-line pr-2">
+        <div class="text-subtle text-[10px] uppercase font-bold px-2 py-1 bg-surface rounded mb-1">
           Original
         </div>
         <%= for {line, idx} <- Enum.with_index(@lines, 1) do %>
@@ -925,14 +925,14 @@ defmodule IexCodeWeb.WorkspaceComponents do
               String.starts_with?(line, "-") &&
                 "bg-rose-950/40 text-rose-300 border-l-2 border-rose-500"
             ]}>
-              <span class="w-8 text-right text-gray-600 select-none pr-2 text-[10px]">{idx}</span>
+              <span class="w-8 text-right text-subtle select-none pr-2 text-[10px]">{idx}</span>
               <span class="flex-1 whitespace-pre-wrap">{line}</span>
             </div>
           <% end %>
         <% end %>
       </div>
       <div class="space-y-0.5 pl-2">
-        <div class="text-gray-500 text-[10px] uppercase font-bold px-2 py-1 bg-[#11151c] rounded mb-1">
+        <div class="text-subtle text-[10px] uppercase font-bold px-2 py-1 bg-surface rounded mb-1">
           Modified
         </div>
         <%= for {line, idx} <- Enum.with_index(@lines, 1) do %>
@@ -942,7 +942,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
               String.starts_with?(line, "+") &&
                 "bg-emerald-950/40 text-emerald-300 border-l-2 border-emerald-500"
             ]}>
-              <span class="w-8 text-right text-gray-600 select-none pr-2 text-[10px]">{idx}</span>
+              <span class="w-8 text-right text-subtle select-none pr-2 text-[10px]">{idx}</span>
               <span class="flex-1 whitespace-pre-wrap">{line}</span>
             </div>
           <% end %>
@@ -1008,16 +1008,16 @@ defmodule IexCodeWeb.WorkspaceComponents do
     ~H"""
     <div
       id="file-explorer-container"
-      class="flex-1 flex min-h-0 min-w-0 flex-col overflow-hidden bg-[#0a0d12] md:flex-row"
+      class="flex-1 flex min-h-0 min-w-0 flex-col overflow-hidden bg-inset md:flex-row"
     >
       <!-- Left Tree / List Navigation -->
       <aside
         id="file-tree-panel"
         aria-label="Project files"
-        class="flex h-[min(38%,20rem)] w-full shrink-0 flex-col overflow-hidden border-b border-[#21262d] bg-[#11151c] md:h-full md:w-64 md:border-r md:border-b-0 xl:w-72"
+        class="flex h-[min(38%,20rem)] w-full shrink-0 flex-col overflow-hidden border-b border-line bg-surface md:h-full md:w-64 md:border-r md:border-b-0 xl:w-72"
       >
         <!-- Search Header -->
-        <div class="p-3 border-b border-[#21262d]">
+        <div class="p-3 border-b border-line">
           <.form
             for={@filter_form}
             id="file-filter-form"
@@ -1029,11 +1029,11 @@ defmodule IexCodeWeb.WorkspaceComponents do
               name="filter"
               value={@filter}
               placeholder="Search files (e.g. .ex)..."
-              class="w-full bg-[#0d1117] border border-[#30363d] rounded-xl px-3 py-1.5 pl-8 text-xs text-white placeholder-gray-500 font-mono focus:border-cyan-500 focus:outline-none"
+              class="w-full bg-inset border border-line rounded-xl px-3 py-1.5 pl-8 text-xs text-white placeholder:text-subtle font-mono focus:border-cyan-500 focus:outline-none"
             />
-            <.icon name="hero-magnifying-glass" class="w-4 h-4 text-gray-400 absolute left-2.5 top-2" />
+            <.icon name="hero-magnifying-glass" class="w-4 h-4 text-muted absolute left-2.5 top-2" />
           </.form>
-          <div class="flex items-center justify-between mt-2 px-1 text-[11px] font-mono text-gray-400">
+          <div class="flex items-center justify-between mt-2 px-1 text-[11px] font-mono text-muted">
             <span>{if @has_filter, do: length(@tree_items), else: length(@files)} files</span>
             <button
               phx-click="refresh_files"
@@ -1053,17 +1053,17 @@ defmodule IexCodeWeb.WorkspaceComponents do
                 phx-click="toggle_folder"
                 phx-value-path={item.path}
                 style={"padding-left: #{item.depth * 12 + 6}px"}
-                class="w-full text-left py-1 pr-2 rounded-lg truncate transition-smooth flex items-center gap-1.5 text-gray-400 hover:text-white hover:bg-[#161b22] group"
+                class="w-full text-left py-1 pr-2 rounded-lg truncate transition-smooth flex items-center gap-1.5 text-muted hover:text-white hover:bg-raised group"
               >
                 <.icon
                   name={if item.expanded, do: "hero-chevron-down", else: "hero-chevron-right"}
-                  class="w-3 h-3 text-gray-500 group-hover:text-gray-300 shrink-0"
+                  class="w-3 h-3 text-subtle group-hover:text-content shrink-0"
                 />
                 <.icon
                   name={if item.expanded, do: "hero-folder-open", else: "hero-folder"}
                   class="w-3.5 h-3.5 text-amber-400 shrink-0"
                 />
-                <span class="truncate font-medium text-gray-300 group-hover:text-white">{item.name}</span>
+                <span class="truncate font-medium text-muted group-hover:text-white">{item.name}</span>
               </button>
             <% else %>
               <% is_open = Enum.any?(@open_buffers, &(&1.path == item.path))
@@ -1077,9 +1077,9 @@ defmodule IexCodeWeb.WorkspaceComponents do
                 class={[
                   "w-full text-left py-1.5 pr-2.5 rounded-lg truncate transition-smooth flex items-center justify-between gap-2 group",
                   @selected_file == item.path &&
-                    "bg-[#21262d] text-cyan-300 font-medium shadow-sm border border-[#30363d]",
+                    "bg-raised text-cyan-300 font-medium shadow-sm border border-line",
                   @selected_file != item.path &&
-                    "text-gray-400 hover:text-gray-200 hover:bg-[#161b22]"
+                    "text-muted hover:text-content hover:bg-raised"
                 ]}
               >
                 <div class="flex items-center gap-2 truncate">
@@ -1110,17 +1110,17 @@ defmodule IexCodeWeb.WorkspaceComponents do
       <!-- Right Interactive Code Editor Viewport -->
       <div
         id="file-editor-panel"
-        class="flex min-h-0 min-w-0 flex-1 flex-col bg-[#0a0d12] overflow-hidden"
+        class="flex min-h-0 min-w-0 flex-1 flex-col bg-inset overflow-hidden"
       >
         <%= if @selected_file do %>
           <!-- Open Buffer Tabs Bar -->
-          <div class="flex items-center bg-[#11151c] border-b border-[#21262d] overflow-x-auto px-2 pt-1.5 gap-1 shrink-0">
+          <div class="flex items-center bg-surface border-b border-line overflow-x-auto px-2 pt-1.5 gap-1 shrink-0">
             <%= for tab <- @open_buffers do %>
               <% is_active = tab.path == @selected_file %>
               <div class={[
-                "flex items-center gap-2 px-3 py-1.5 rounded-t-xl text-xs font-mono transition-smooth border-t border-x border-[#21262d] group shrink-0",
-                is_active && "bg-[#0a0d12] text-cyan-300 font-medium border-b-0",
-                !is_active && "bg-[#161b22] text-gray-400 hover:text-gray-200 hover:bg-[#1c2128]"
+                "flex items-center gap-2 px-3 py-1.5 rounded-t-xl text-xs font-mono transition-smooth border-t border-x border-line group shrink-0",
+                is_active && "bg-inset text-cyan-300 font-medium border-b-0",
+                !is_active && "bg-raised text-muted hover:text-content hover:bg-raised"
               ]}>
                 <button
                   type="button"
@@ -1141,7 +1141,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
                   phx-click="close_file_buffer"
                   phx-value-path={tab.path}
                   aria-label={"Close #{Path.basename(tab.path)} buffer"}
-                  class="text-gray-500 hover:text-rose-400 p-0.5 rounded transition-smooth ml-1 shrink-0"
+                  class="text-subtle hover:text-rose-400 p-0.5 rounded transition-smooth ml-1 shrink-0"
                   title="Close buffer"
                 >
                   <.icon name="hero-x-mark" class="w-3 h-3" />
@@ -1151,7 +1151,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
           </div>
 
           <!-- Active File Toolbar -->
-          <div class="file-editor-toolbar p-2.5 border-b border-[#21262d] bg-[#161b22] flex flex-wrap items-center justify-between gap-2 shrink-0 font-mono text-xs">
+          <div class="file-editor-toolbar p-2.5 border-b border-line bg-raised flex flex-wrap items-center justify-between gap-2 shrink-0 font-mono text-xs">
             <div class="flex items-center gap-2 min-w-0">
               <.icon name={file_icon(@selected_file)} class="w-4 h-4 text-cyan-400 shrink-0" />
               <span class="text-white font-semibold truncate">{@selected_file}</span>
@@ -1167,7 +1167,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
               <%= if @is_dirty do %>
                 <button
                   phx-click="revert_file_buffer"
-                  class="px-2.5 py-1 bg-gray-700/40 hover:bg-gray-700/60 text-gray-300 border border-gray-600/30 rounded-lg text-xs font-mono transition-smooth flex items-center gap-1"
+                  class="px-2.5 py-1 bg-raised/40 hover:bg-raised/60 text-muted border border-gray-600/30 rounded-lg text-xs font-mono transition-smooth flex items-center gap-1"
                   title="Discard unsaved buffer edits"
                 >
                   <.icon name="hero-arrow-uturn-left" class="w-3.5 h-3.5" />
@@ -1187,7 +1187,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
                     !@editor_locked? &&
                     "bg-emerald-600 hover:bg-emerald-500 text-white shadow-md shadow-emerald-600/20",
                   !@is_dirty && !@editor_locked? &&
-                    "bg-[#21262d] text-gray-400 hover:text-gray-200"
+                    "bg-raised text-muted hover:text-content"
                 ]}
                 title={
                   if(@editor_locked?,
@@ -1205,7 +1205,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
                 id="copy-file-btn"
                 phx-hook="CodeCopy"
                 data-code={@current_text}
-                class="px-2.5 py-1 bg-[#21262d] hover:bg-[#30363d] text-gray-200 rounded-lg text-xs font-mono transition-smooth flex items-center gap-1.5"
+                class="px-2.5 py-1 bg-raised hover:bg-raised text-muted rounded-lg text-xs font-mono transition-smooth flex items-center gap-1.5"
               >
                 <.icon name="hero-clipboard-document" class="w-3.5 h-3.5" />
                 <span class="hidden sm:inline">Copy</span>
@@ -1245,10 +1245,10 @@ defmodule IexCodeWeb.WorkspaceComponents do
             id="code-editor-viewport"
             phx-hook=".CodeEditor"
             data-auto-save={to_string(@auto_save)}
-            class="flex-1 flex overflow-hidden bg-[#0a0d12] relative font-mono text-xs"
+            class="flex-1 flex overflow-hidden bg-inset relative font-mono text-xs"
           >
             <!-- Line Numbers Gutter -->
-            <div class="editor-gutter w-12 bg-[#0d1117] border-r border-[#21262d] py-3 pr-2 text-right text-gray-600 select-none overflow-hidden shrink-0 font-mono text-[11px] leading-relaxed">
+            <div class="editor-gutter w-12 bg-inset border-r border-line py-3 pr-2 text-right text-subtle select-none overflow-hidden shrink-0 font-mono text-[11px] leading-relaxed">
             </div>
 
             <!-- Code Input Textarea -->
@@ -1262,8 +1262,8 @@ defmodule IexCodeWeb.WorkspaceComponents do
               readonly={@editor_locked?}
               aria-readonly={to_string(@editor_locked?)}
               class={[
-                "flex-1 bg-transparent border-0 p-3 text-gray-200 font-mono text-xs leading-relaxed focus:outline-none focus:ring-0 resize-none overflow-auto whitespace-pre tab-2",
-                @editor_locked? && "cursor-not-allowed bg-rose-950/5 text-gray-400"
+                "flex-1 bg-transparent border-0 p-3 text-muted font-mono text-xs leading-relaxed focus:outline-none focus:ring-0 resize-none overflow-auto whitespace-pre tab-2",
+                @editor_locked? && "cursor-not-allowed bg-rose-950/5 text-muted"
               ]}
             ><%= @current_text %></textarea>
           </div>
@@ -1354,8 +1354,8 @@ defmodule IexCodeWeb.WorkspaceComponents do
             }
           </script>
         <% else %>
-          <div class="flex-1 flex flex-col items-center justify-center text-gray-500 font-mono text-xs space-y-2">
-            <.icon name="hero-folder-open" class="w-8 h-8 text-gray-600" />
+          <div class="flex-1 flex flex-col items-center justify-center text-subtle font-mono text-xs space-y-2">
+            <.icon name="hero-folder-open" class="w-8 h-8 text-subtle" />
             <p>Select a workspace file on the left to preview contents</p>
           </div>
         <% end %>
@@ -1486,7 +1486,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
     ~H"""
     <div
       id="terminal-session-container"
-      class="flex-1 flex flex-col h-full bg-[#0a0d12] p-4 gap-3 select-none overflow-hidden"
+      class="flex-1 flex flex-col h-full bg-inset p-4 gap-3 select-none overflow-hidden"
     >
       <!-- Top Toolbar: Badges, Quick Actions, Controls -->
       <div class="flex items-center justify-between shrink-0 font-mono text-xs flex-wrap gap-2">
@@ -1495,7 +1495,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
           <!-- Shell Info Badge -->
           <div
             id="terminal-shell-badge"
-            class="flex items-center gap-1.5 px-2.5 py-1 bg-[#161b22] border border-[#30363d] rounded-lg text-gray-300 font-mono text-xs shadow-sm"
+            class="flex items-center gap-1.5 px-2.5 py-1 bg-raised border border-line rounded-lg text-muted font-mono text-xs shadow-sm"
           >
             <span class={[
               "w-2 h-2 rounded-full",
@@ -1505,19 +1505,19 @@ defmodule IexCodeWeb.WorkspaceComponents do
                 "bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.6)] animate-spin",
               @status in [:stopped, :idle] && "bg-gray-500"
             ]}></span>
-            <span class="font-semibold text-gray-200">{@shell || "zsh"}</span>
-            <span class="text-gray-500 text-[10px]">PTY</span>
+            <span class="font-semibold text-muted">{@shell || "zsh"}</span>
+            <span class="text-subtle text-[10px]">PTY</span>
           </div>
 
           <!-- Dimensions Badge -->
           <div
             id="terminal-dimensions-badge"
-            class="px-2 py-1 bg-[#161b22]/70 border border-[#30363d]/70 rounded-lg text-gray-400 font-mono text-[11px] shadow-sm"
+            class="px-2 py-1 bg-raised/70 border border-line/70 rounded-lg text-muted font-mono text-[11px] shadow-sm"
           >
             {@cols}x{@rows}
           </div>
 
-          <div class="h-4 w-px bg-[#30363d] mx-1"></div>
+          <div class="h-4 w-px bg-raised mx-1"></div>
 
           <!-- Quick Action Buttons -->
           <button
@@ -1525,7 +1525,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
             phx-click="run_terminal_quick_action"
             phx-value-cmd="iex -S mix"
             disabled={!@running or @monitor_only}
-            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] active:bg-[#30363d] border border-[#30363d] rounded-lg text-purple-300 hover:text-purple-200 transition-smooth font-mono text-xs flex items-center gap-1.5 disabled:opacity-50 disabled:pointer-events-none group shadow-sm"
+            class="px-2.5 py-1 bg-raised hover:bg-raised active:bg-raised border border-line rounded-lg text-purple-300 hover:text-purple-200 transition-smooth font-mono text-xs flex items-center gap-1.5 disabled:opacity-50 disabled:pointer-events-none group shadow-sm"
             title="Start Interactive Elixir Shell"
           >
             <.icon
@@ -1540,7 +1540,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
             phx-click="run_terminal_quick_action"
             phx-value-cmd="mix test"
             disabled={!@running or @monitor_only}
-            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] active:bg-[#30363d] border border-[#30363d] rounded-lg text-emerald-300 hover:text-emerald-200 transition-smooth font-mono text-xs flex items-center gap-1.5 disabled:opacity-50 disabled:pointer-events-none group shadow-sm"
+            class="px-2.5 py-1 bg-raised hover:bg-raised active:bg-raised border border-line rounded-lg text-emerald-300 hover:text-emerald-200 transition-smooth font-mono text-xs flex items-center gap-1.5 disabled:opacity-50 disabled:pointer-events-none group shadow-sm"
             title="Run Mix Test Suite"
           >
             <.icon
@@ -1555,7 +1555,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
             phx-click="run_terminal_quick_action"
             phx-value-cmd="mix precommit"
             disabled={!@running or @monitor_only}
-            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] active:bg-[#30363d] border border-[#30363d] rounded-lg text-cyan-300 hover:text-cyan-200 transition-smooth font-mono text-xs flex items-center gap-1.5 disabled:opacity-50 disabled:pointer-events-none group shadow-sm"
+            class="px-2.5 py-1 bg-raised hover:bg-raised active:bg-raised border border-line rounded-lg text-cyan-300 hover:text-cyan-200 transition-smooth font-mono text-xs flex items-center gap-1.5 disabled:opacity-50 disabled:pointer-events-none group shadow-sm"
             title="Run Precommit Quality Checks"
           >
             <.icon
@@ -1570,7 +1570,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
             phx-click="run_terminal_quick_action"
             phx-value-cmd="git status"
             disabled={!@running or @monitor_only}
-            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] active:bg-[#30363d] border border-[#30363d] rounded-lg text-amber-300 hover:text-amber-200 transition-smooth font-mono text-xs flex items-center gap-1.5 disabled:opacity-50 disabled:pointer-events-none group shadow-sm"
+            class="px-2.5 py-1 bg-raised hover:bg-raised active:bg-raised border border-line rounded-lg text-amber-300 hover:text-amber-200 transition-smooth font-mono text-xs flex items-center gap-1.5 disabled:opacity-50 disabled:pointer-events-none group shadow-sm"
             title="Check Git Working Directory Status"
           >
             <.icon
@@ -1585,7 +1585,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
             phx-click="run_terminal_quick_action"
             phx-value-cmd="git diff"
             disabled={!@running or @monitor_only}
-            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] active:bg-[#30363d] border border-[#30363d] rounded-lg text-amber-300 hover:text-amber-200 transition-smooth font-mono text-xs flex items-center gap-1.5 disabled:opacity-50 disabled:pointer-events-none group shadow-sm"
+            class="px-2.5 py-1 bg-raised hover:bg-raised active:bg-raised border border-line rounded-lg text-amber-300 hover:text-amber-200 transition-smooth font-mono text-xs flex items-center gap-1.5 disabled:opacity-50 disabled:pointer-events-none group shadow-sm"
             title="Show Git Diff of Unstaged Changes"
           >
             <.icon
@@ -1601,7 +1601,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
           <button
             id="btn-terminal-clear"
             phx-click="clear_terminal"
-            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] active:bg-[#30363d] border border-[#30363d] rounded-lg text-gray-400 hover:text-gray-200 transition-smooth font-mono text-xs flex items-center gap-1.5 shadow-sm"
+            class="px-2.5 py-1 bg-raised hover:bg-raised active:bg-raised border border-line rounded-lg text-muted hover:text-content transition-smooth font-mono text-xs flex items-center gap-1.5 shadow-sm"
             title="Clear Terminal Screen & Buffer"
           >
             <.icon name="hero-trash" class="w-3.5 h-3.5" />
@@ -1612,7 +1612,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
             id="btn-terminal-restart"
             phx-click="restart_terminal_session"
             disabled={@monitor_only}
-            class="px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] active:bg-[#30363d] border border-[#30363d] rounded-lg text-sky-400 hover:text-sky-300 transition-smooth font-mono text-xs flex items-center gap-1.5 shadow-sm"
+            class="px-2.5 py-1 bg-raised hover:bg-raised active:bg-raised border border-line rounded-lg text-sky-400 hover:text-sky-300 transition-smooth font-mono text-xs flex items-center gap-1.5 shadow-sm"
             title="Restart PTY Shell Process"
           >
             <.icon name="hero-arrow-path" class="w-3.5 h-3.5" />
@@ -1674,13 +1674,13 @@ defmodule IexCodeWeb.WorkspaceComponents do
               {agent_name}
             </span>
             <%= if @active_cmd do %>
-              <span class="text-gray-400 text-[11px]">Executing:</span>
+              <span class="text-muted text-[11px]">Executing:</span>
               <code class="px-2 py-0.5 bg-black/40 text-emerald-300 rounded font-mono text-[11px] border border-emerald-500/20">
                 {@active_cmd}
               </code>
             <% end %>
             <%= if op_id do %>
-              <span class="text-gray-500 text-[10px]">({op_id})</span>
+              <span class="text-subtle text-[10px]">({op_id})</span>
             <% end %>
           </div>
 
@@ -1703,7 +1703,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
       <!-- xterm Container Viewport -->
       <div
         id="terminal-xterm-wrapper"
-        class="flex-1 min-h-0 bg-[#0d1117] border border-[#21262d] rounded-2xl overflow-hidden shadow-2xl relative flex flex-col"
+        class="flex-1 min-h-0 bg-inset border border-line rounded-2xl overflow-hidden shadow-2xl relative flex flex-col"
       >
         <div
           id="terminal-xterm-container"
@@ -1712,7 +1712,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
           data-session-id={@session_id}
           data-monitor-only={to_string(@monitor_only)}
           aria-disabled={to_string(@monitor_only)}
-          class="flex-1 w-full h-full p-2 bg-[#0d1117]"
+          class="flex-1 w-full h-full p-2 bg-inset"
         >
         </div>
         <div id="terminal-rendered-output" class="hidden">
@@ -1736,7 +1736,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
               value={Phoenix.HTML.Form.input_value(@form, :command)}
               placeholder="Enter shell command..."
               disabled={!@running or @monitor_only}
-              class="w-full bg-[#11151c] border border-[#21262d] rounded-xl pl-7 pr-4 py-2 text-xs font-mono text-white focus:outline-none focus:border-emerald-500 disabled:opacity-50"
+              class="w-full bg-surface border border-line rounded-xl pl-7 pr-4 py-2 text-xs font-mono text-white focus:outline-none focus:border-emerald-500 disabled:opacity-50"
             />
             <%= if @active_cmd do %>
               <span id="terminal-active-cmd" class="hidden">{@active_cmd}</span>
@@ -1819,7 +1819,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
           reasoning={@reasoning}
         />
       <% end %>
-      <div class="space-y-2.5 font-sans text-sm leading-relaxed text-gray-200">
+      <div class="space-y-2.5 font-sans text-sm leading-relaxed text-muted">
         <%= for chunk <- @chunks do %>
           <%= case chunk do %>
             <% {:text, text} -> %>
@@ -1827,8 +1827,8 @@ defmodule IexCodeWeb.WorkspaceComponents do
                 {text}
               </div>
             <% {:code, lang, code} -> %>
-              <div class="rounded-xl border border-[#30363d] bg-[#0d1117] overflow-hidden my-2.5 shadow-sm">
-                <div class="flex items-center justify-between px-3 py-1.5 bg-[#161b22] border-b border-[#21262d] text-xs font-mono text-gray-400">
+              <div class="rounded-xl border border-line bg-inset overflow-hidden my-2.5 shadow-sm">
+                <div class="flex items-center justify-between px-3 py-1.5 bg-raised border-b border-line text-xs font-mono text-muted">
                   <span class="text-cyan-400 font-bold uppercase tracking-wider text-[11px]">{lang}</span>
                   <div class="flex items-center gap-1.5">
                     <button
@@ -1846,7 +1846,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
                       phx-hook="CodeCopy"
                       data-code={code}
                       id={"copy-code-" <> to_string(:erlang.phash2({lang, code}))}
-                      class="flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded bg-[#21262d] hover:bg-gray-700 text-gray-300 transition-smooth"
+                      class="flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded bg-raised hover:bg-raised text-muted transition-smooth"
                       title="Copy code"
                     >
                       <.icon name="hero-clipboard" class="w-3.5 h-3.5" />
@@ -1854,7 +1854,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
                     </button>
                   </div>
                 </div>
-                <pre class="p-3 font-mono text-xs text-gray-200 overflow-x-auto selection:bg-cyan-900/60 leading-normal"><code>{code}</code></pre>
+                <pre class="p-3 font-mono text-xs text-muted overflow-x-auto selection:bg-cyan-900/60 leading-normal"><code>{code}</code></pre>
               </div>
           <% end %>
         <% end %>
@@ -1974,8 +1974,8 @@ defmodule IexCodeWeb.WorkspaceComponents do
     |> String.replace("\e[34m", "<span class=\"text-sky-400 font-medium\">")
     |> String.replace("\e[35m", "<span class=\"text-purple-400 font-medium\">")
     |> String.replace("\e[36m", "<span class=\"text-cyan-400 font-medium\">")
-    |> String.replace("\e[37m", "<span class=\"text-gray-200 font-medium\">")
-    |> String.replace("\e[90m", "<span class=\"text-gray-500 font-medium\">")
+    |> String.replace("\e[37m", "<span class=\"text-muted font-medium\">")
+    |> String.replace("\e[90m", "<span class=\"text-subtle font-medium\">")
     |> String.replace("\e[1m", "<span class=\"font-bold text-white\">")
     |> String.replace("\e[0m", "</span>")
     |> String.replace("\e[m", "</span>")
@@ -2023,7 +2023,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
             aria-labelledby="command-palette-title"
             aria-describedby="command-palette-description"
             tabindex="-1"
-            class="relative w-full max-w-5xl bg-[#11151c] border border-[#30363d] rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[82vh] z-10 animate-scale-in"
+            class="relative w-full max-w-5xl bg-surface border border-line rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[82vh] z-10 animate-scale-in"
             phx-click-away="close_command_palette"
           >
             <h2 id="command-palette-title" class="sr-only">Command palette</h2>
@@ -2032,7 +2032,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
             </p>
 
             <%!-- Search Header Input --%>
-            <div class="flex items-center px-4 py-3 border-b border-[#21262d] bg-[#161b22]/90 gap-3">
+            <div class="flex items-center px-4 py-3 border-b border-line bg-raised/90 gap-3">
               <.icon name="hero-magnifying-glass" class="w-5 h-5 text-cyan-400 shrink-0" />
               <form
                 id="command-palette-form"
@@ -2057,7 +2057,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
                   autocomplete="off"
                   spellcheck="false"
                   placeholder="Type a command or prefix: > actions, # files, @ swarms, $ models, / branches, ! terminal... (Cmd+K)"
-                  class="w-full bg-transparent border-0 text-gray-100 placeholder-gray-500 font-sans text-sm focus:outline-none focus:ring-0 p-0"
+                  class="w-full bg-transparent border-0 text-content placeholder:text-subtle font-sans text-sm focus:outline-none focus:ring-0 p-0"
                 />
               </form>
               <button
@@ -2065,14 +2065,14 @@ defmodule IexCodeWeb.WorkspaceComponents do
                 type="button"
                 phx-click="close_command_palette"
                 aria-label="Close command palette"
-                class="px-2 py-0.5 text-[11px] font-mono font-medium text-gray-400 bg-[#21262d] border border-[#30363d] rounded-md hover:text-white hover:border-gray-500 transition-smooth"
+                class="px-2 py-0.5 text-[11px] font-mono font-medium text-muted bg-raised border border-line rounded-md hover:text-white hover:border-gray-500 transition-smooth"
               >
                 ESC
               </button>
             </div>
 
             <%!-- Category Filter Pills (All 9 categories) --%>
-            <div class="flex items-center gap-1.5 px-4 py-2 border-b border-[#21262d] bg-[#0d1117] overflow-x-auto font-mono text-xs scrollbar-none">
+            <div class="flex items-center gap-1.5 px-4 py-2 border-b border-line bg-inset overflow-x-auto font-mono text-xs scrollbar-none">
               <%= for {cat, label} <- [
                 {"all", "All"},
                 {"actions", "Actions"},
@@ -2094,7 +2094,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
                     @category == cat &&
                       "bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 font-semibold shadow-sm",
                     @category != cat &&
-                      "text-gray-400 hover:text-gray-200 hover:bg-[#161b22] border border-transparent"
+                      "text-muted hover:text-content hover:bg-raised border border-transparent"
                   ]}
                 >
                   <span>{label}</span>
@@ -2112,10 +2112,10 @@ defmodule IexCodeWeb.WorkspaceComponents do
                 class="w-7/12 flex flex-col min-w-0 overflow-y-auto p-2 space-y-1 font-sans text-sm"
               >
                 <%= if @results == [] do %>
-                  <div class="py-16 text-center text-gray-500 font-mono text-xs">
-                    <.icon name="hero-magnifying-glass" class="w-10 h-10 text-gray-600 mx-auto mb-3" />
-                    <p class="text-gray-300 font-medium text-sm">No results found for "{@query}"</p>
-                    <p class="text-[11px] text-gray-500 mt-1">
+                  <div class="py-16 text-center text-subtle font-mono text-xs">
+                    <.icon name="hero-magnifying-glass" class="w-10 h-10 text-subtle mx-auto mb-3" />
+                    <p class="text-muted font-medium text-sm">No results found for "{@query}"</p>
+                    <p class="text-[11px] text-subtle mt-1">
                       Try searching with prefixes: <span class="text-cyan-400">&gt;</span>
                       actions, <span class="text-amber-400">#</span>
                       files, <span class="text-fuchsia-400">@</span>
@@ -2140,7 +2140,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
                         "w-full flex items-center justify-between p-2.5 rounded-xl text-left transition-smooth group",
                         is_selected &&
                           "bg-cyan-950/40 text-cyan-200 border border-cyan-500/40 font-medium shadow-sm",
-                        !is_selected && "hover:bg-[#161b22] text-gray-300 border border-transparent"
+                        !is_selected && "hover:bg-raised text-muted border border-transparent"
                       ]}
                     >
                       <div class="flex items-center gap-3 truncate min-w-0">
@@ -2164,7 +2164,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
                           <.icon name={item.icon || "hero-cube"} class="w-4 h-4" />
                         </div>
                         <div class="truncate min-w-0">
-                          <div class="font-medium text-gray-200 group-hover:text-white truncate flex items-center gap-2">
+                          <div class="font-medium text-muted group-hover:text-white truncate flex items-center gap-2">
                             <span class="truncate">{item.title}</span>
                             <span class={[
                               "text-[10px] uppercase font-mono px-1.5 py-0.5 rounded border shrink-0",
@@ -2188,14 +2188,14 @@ defmodule IexCodeWeb.WorkspaceComponents do
                               {to_string(item.category)}
                             </span>
                           </div>
-                          <div class="text-[11px] text-gray-500 font-mono truncate">
+                          <div class="text-[11px] text-subtle font-mono truncate">
                             {item.subtitle}
                           </div>
                         </div>
                       </div>
 
                       <%= if Map.get(item, :shortcut) && item.shortcut != "" do %>
-                        <span class="px-2 py-0.5 text-[10px] font-mono text-gray-400 bg-[#161b22] border border-[#21262d] rounded shrink-0 ml-2">
+                        <span class="px-2 py-0.5 text-[10px] font-mono text-muted bg-raised border border-line rounded shrink-0 ml-2">
                           {item.shortcut}
                         </span>
                       <% end %>
@@ -2207,7 +2207,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
               <%!-- Right Pane: Dynamic Rich Preview Card (w-5/12) --%>
               <div
                 id="command-palette-preview"
-                class="w-5/12 flex flex-col min-w-0 overflow-y-auto p-4 bg-[#0d1117]/90 font-sans"
+                class="w-5/12 flex flex-col min-w-0 overflow-y-auto p-4 bg-inset/90 font-sans"
               >
                 <%= if @selected_item do %>
                   <% preview = Map.get(@selected_item, :preview, %{}) %>
@@ -2219,46 +2219,46 @@ defmodule IexCodeWeb.WorkspaceComponents do
                             <.icon name={@selected_item.icon || "hero-document"} class="w-5 h-5" />
                           </div>
                           <div class="min-w-0">
-                            <h3 class="font-semibold text-gray-100 text-sm truncate">
+                            <h3 class="font-semibold text-content text-sm truncate">
                               {Map.get(preview, :filename, @selected_item.title)}
                             </h3>
-                            <p class="text-[11px] font-mono text-gray-400 truncate">
+                            <p class="text-[11px] font-mono text-muted truncate">
                               {Map.get(preview, :path, @selected_item.subtitle)}
                             </p>
                           </div>
                         </div>
 
                         <div class="flex flex-wrap gap-2 font-mono text-xs">
-                          <span class="px-2 py-1 rounded-lg bg-[#161b22] border border-[#21262d] text-amber-300">
+                          <span class="px-2 py-1 rounded-lg bg-raised border border-line text-amber-300">
                             {Map.get(preview, :syntax, "Plain Text")}
                           </span>
-                          <span class="px-2 py-1 rounded-lg bg-[#161b22] border border-[#21262d] text-gray-300">
+                          <span class="px-2 py-1 rounded-lg bg-raised border border-line text-muted">
                             {format_palette_bytes(Map.get(preview, :size, 0))}
                           </span>
-                          <span class="px-2 py-1 rounded-lg bg-[#161b22] border border-[#21262d] text-gray-300">
+                          <span class="px-2 py-1 rounded-lg bg-raised border border-line text-muted">
                             {Map.get(preview, :lines, 0)} lines
                           </span>
                         </div>
 
-                        <div class="rounded-xl border border-[#21262d] bg-[#161b22] overflow-hidden">
-                          <div class="px-3 py-1.5 border-b border-[#21262d] text-[10px] font-mono text-gray-400 flex items-center justify-between">
+                        <div class="rounded-xl border border-line bg-raised overflow-hidden">
+                          <div class="px-3 py-1.5 border-b border-line text-[10px] font-mono text-muted flex items-center justify-between">
                             <span>Syntax Preview</span>
                             <span>{Map.get(preview, :ext, "")}</span>
                           </div>
-                          <div class="p-3 font-mono text-[11px] text-gray-300 overflow-x-auto max-h-[220px]">
+                          <div class="p-3 font-mono text-[11px] text-muted overflow-x-auto max-h-[220px]">
                             <%= if Map.get(preview, :preview_lines, []) != [] do %>
-                              <pre phx-no-curly-interpolation class="space-y-0.5 leading-relaxed"><%= for {num, line} <- preview.preview_lines do %><div class="flex gap-3"><span class="text-gray-600 select-none text-right w-6 shrink-0"><%= num %></span><span class="text-gray-200"><%= line %></span></div><% end %></pre>
+                              <pre phx-no-curly-interpolation class="space-y-0.5 leading-relaxed"><%= for {num, line} <- preview.preview_lines do %><div class="flex gap-3"><span class="text-subtle select-none text-right w-6 shrink-0"><%= num %></span><span class="text-muted"><%= line %></span></div><% end %></pre>
                             <% else %>
-                              <div class="py-6 text-center text-gray-500 text-xs italic">
+                              <div class="py-6 text-center text-subtle text-xs italic">
                                 File content preview unavailable or empty
                               </div>
                             <% end %>
                           </div>
                         </div>
 
-                        <div class="text-[11px] text-gray-500 font-mono">
+                        <div class="text-[11px] text-subtle font-mono">
                           Press
-                          <kbd class="px-1.5 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-gray-300">↵</kbd>
+                          <kbd class="px-1.5 py-0.5 bg-raised border border-line rounded text-muted">↵</kbd>
                           to open buffer in editor
                         </div>
                       </div>
@@ -2269,7 +2269,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
                             <.icon name="hero-sparkles" class="w-5 h-5" />
                           </div>
                           <div class="min-w-0">
-                            <h3 class="font-semibold text-gray-100 text-sm truncate">
+                            <h3 class="font-semibold text-content text-sm truncate">
                               {Map.get(preview, :objective, @selected_item.title)}
                             </h3>
                             <div class="flex items-center gap-2 mt-1">
@@ -2283,7 +2283,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
                                 Map.get(preview, :status) == "completed" &&
                                   "bg-sky-950/60 text-sky-300 border-sky-800/40",
                                 Map.get(preview, :status) not in ["running", "completed"] &&
-                                  "bg-gray-800/60 text-gray-300 border-gray-700/40"
+                                  "bg-surface/60 text-muted border-line/40"
                               ]}>
                                 {Map.get(preview, :status, "queued")}
                               </span>
@@ -2292,30 +2292,30 @@ defmodule IexCodeWeb.WorkspaceComponents do
                         </div>
 
                         <div class="grid grid-cols-2 gap-2 font-mono text-xs">
-                          <div class="p-2.5 rounded-xl bg-[#161b22] border border-[#21262d]">
-                            <div class="text-[10px] text-gray-500 uppercase">Active Agents</div>
+                          <div class="p-2.5 rounded-xl bg-raised border border-line">
+                            <div class="text-[10px] text-subtle uppercase">Active Agents</div>
                             <div class="text-sm font-semibold text-fuchsia-300 mt-0.5">
                               {Map.get(preview, :active_agents, 4)} Workers
                             </div>
                           </div>
-                          <div class="p-2.5 rounded-xl bg-[#161b22] border border-[#21262d]">
-                            <div class="text-[10px] text-gray-500 uppercase">Tokens Consumed</div>
-                            <div class="text-sm font-semibold text-gray-200 mt-0.5">
+                          <div class="p-2.5 rounded-xl bg-raised border border-line">
+                            <div class="text-[10px] text-subtle uppercase">Tokens Consumed</div>
+                            <div class="text-sm font-semibold text-muted mt-0.5">
                               {Map.get(preview, :tokens, 0)}
                             </div>
                           </div>
                         </div>
 
-                        <div class="p-3 rounded-xl bg-[#161b22] border border-[#21262d] space-y-1.5">
+                        <div class="p-3 rounded-xl bg-raised border border-line space-y-1.5">
                           <div class="flex justify-between text-xs font-mono">
-                            <span class="text-gray-400">Run Progress</span>
+                            <span class="text-muted">Run Progress</span>
                             <span class="text-fuchsia-300 font-semibold">{Map.get(
                               preview,
                               :progress,
                               0
                             )}%</span>
                           </div>
-                          <div class="w-full h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                          <div class="w-full h-1.5 bg-surface rounded-full overflow-hidden">
                             <div
                               class="h-full bg-gradient-to-r from-fuchsia-500 to-cyan-500 rounded-full transition-all duration-300"
                               style={"width: #{Map.get(preview, :progress, 0)}%;"}
@@ -2324,9 +2324,9 @@ defmodule IexCodeWeb.WorkspaceComponents do
                           </div>
                         </div>
 
-                        <div class="text-[11px] text-gray-500 font-mono">
+                        <div class="text-[11px] text-subtle font-mono">
                           Press
-                          <kbd class="px-1.5 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-gray-300">↵</kbd>
+                          <kbd class="px-1.5 py-0.5 bg-raised border border-line rounded text-muted">↵</kbd>
                           to jump to Swarm Telemetry canvas
                         </div>
                       </div>
@@ -2337,10 +2337,10 @@ defmodule IexCodeWeb.WorkspaceComponents do
                             <.icon name="hero-cpu-chip" class="w-5 h-5" />
                           </div>
                           <div class="min-w-0">
-                            <h3 class="font-semibold text-gray-100 text-sm truncate">
+                            <h3 class="font-semibold text-content text-sm truncate">
                               {Map.get(preview, :name, @selected_item.title)}
                             </h3>
-                            <p class="text-[11px] font-mono text-gray-400 truncate">
+                            <p class="text-[11px] font-mono text-muted truncate">
                               Provider: {Map.get(preview, :provider, "anthropic")}
                             </p>
                           </div>
@@ -2356,24 +2356,24 @@ defmodule IexCodeWeb.WorkspaceComponents do
                           ]}>
                             {if Map.get(preview, :local?), do: "Local Offline", else: "Cloud Endpoint"}
                           </span>
-                          <span class="px-2 py-1 rounded-lg bg-[#161b22] border border-[#21262d] text-emerald-400 flex items-center gap-1.5">
+                          <span class="px-2 py-1 rounded-lg bg-raised border border-line text-emerald-400 flex items-center gap-1.5">
                             <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
                             Online
                           </span>
                         </div>
 
-                        <div class="p-3 rounded-xl bg-[#161b22] border border-[#21262d] space-y-1">
-                          <div class="text-[10px] font-mono text-gray-500 uppercase">
+                        <div class="p-3 rounded-xl bg-raised border border-line space-y-1">
+                          <div class="text-[10px] font-mono text-subtle uppercase">
                             API Gateway / Endpoint
                           </div>
-                          <div class="text-xs font-mono text-gray-200 truncate">
+                          <div class="text-xs font-mono text-muted truncate">
                             {Map.get(preview, :endpoint, "api.anthropic.com")}
                           </div>
                         </div>
 
-                        <div class="text-[11px] text-gray-500 font-mono">
+                        <div class="text-[11px] text-subtle font-mono">
                           Press
-                          <kbd class="px-1.5 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-gray-300">↵</kbd>
+                          <kbd class="px-1.5 py-0.5 bg-raised border border-line rounded text-muted">↵</kbd>
                           to set as active session model
                         </div>
                       </div>
@@ -2384,10 +2384,10 @@ defmodule IexCodeWeb.WorkspaceComponents do
                             <.icon name="hero-code-bracket" class="w-5 h-5" />
                           </div>
                           <div class="min-w-0">
-                            <h3 class="font-semibold text-gray-100 text-sm truncate">
+                            <h3 class="font-semibold text-content text-sm truncate">
                               {Map.get(preview, :name, @selected_item.title)}
                             </h3>
-                            <p class="text-[11px] font-mono text-gray-400">
+                            <p class="text-[11px] font-mono text-muted">
                               Git Working Branch
                             </p>
                           </div>
@@ -2400,17 +2400,17 @@ defmodule IexCodeWeb.WorkspaceComponents do
                               Current HEAD
                             </span>
                           <% else %>
-                            <span class="px-2 py-1 rounded-lg bg-[#161b22] border border-[#21262d] text-gray-400">
+                            <span class="px-2 py-1 rounded-lg bg-raised border border-line text-muted">
                               Available Branch
                             </span>
                           <% end %>
-                          <span class="px-2 py-1 rounded-lg bg-[#161b22] border border-[#21262d] text-gray-300">
+                          <span class="px-2 py-1 rounded-lg bg-raised border border-line text-muted">
                             Upstream: {Map.get(preview, :upstream) || "local only"}
                           </span>
                         </div>
 
-                        <div class="p-3 rounded-xl bg-[#161b22] border border-[#21262d] space-y-1">
-                          <div class="text-[10px] font-mono text-gray-500 uppercase">
+                        <div class="p-3 rounded-xl bg-raised border border-line space-y-1">
+                          <div class="text-[10px] font-mono text-subtle uppercase">
                             Head Pointer
                           </div>
                           <div class="text-xs font-mono text-cyan-300">
@@ -2418,9 +2418,9 @@ defmodule IexCodeWeb.WorkspaceComponents do
                           </div>
                         </div>
 
-                        <div class="text-[11px] text-gray-500 font-mono">
+                        <div class="text-[11px] text-subtle font-mono">
                           Press
-                          <kbd class="px-1.5 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-gray-300">↵</kbd>
+                          <kbd class="px-1.5 py-0.5 bg-raised border border-line rounded text-muted">↵</kbd>
                           to checkout and switch to this branch
                         </div>
                       </div>
@@ -2431,17 +2431,17 @@ defmodule IexCodeWeb.WorkspaceComponents do
                             <.icon name="hero-command-line" class="w-5 h-5" />
                           </div>
                           <div class="min-w-0">
-                            <h3 class="font-semibold text-gray-100 text-sm truncate font-mono">
+                            <h3 class="font-semibold text-content text-sm truncate font-mono">
                               {Map.get(preview, :command, @selected_item.title)}
                             </h3>
-                            <p class="text-[11px] text-gray-400">
+                            <p class="text-[11px] text-muted">
                               {Map.get(preview, :description, @selected_item.subtitle)}
                             </p>
                           </div>
                         </div>
 
-                        <div class="p-3 rounded-xl bg-[#161b22] border border-[#21262d] space-y-1 font-mono">
-                          <div class="text-[10px] text-gray-500 uppercase">
+                        <div class="p-3 rounded-xl bg-raised border border-line space-y-1 font-mono">
+                          <div class="text-[10px] text-subtle uppercase">
                             Target Directory (CWD)
                           </div>
                           <div class="text-xs text-orange-300 truncate">
@@ -2449,9 +2449,9 @@ defmodule IexCodeWeb.WorkspaceComponents do
                           </div>
                         </div>
 
-                        <div class="p-3 rounded-xl bg-[#161b22] border border-[#21262d] space-y-1 font-mono">
-                          <div class="text-[10px] text-gray-500 uppercase">Command Execution</div>
-                          <div class="text-xs text-gray-300">
+                        <div class="p-3 rounded-xl bg-raised border border-line space-y-1 font-mono">
+                          <div class="text-[10px] text-subtle uppercase">Command Execution</div>
+                          <div class="text-xs text-muted">
                             $
                             <span class="text-white font-semibold">{Map.get(
                               preview,
@@ -2461,9 +2461,9 @@ defmodule IexCodeWeb.WorkspaceComponents do
                           </div>
                         </div>
 
-                        <div class="text-[11px] text-gray-500 font-mono">
+                        <div class="text-[11px] text-subtle font-mono">
                           Press
-                          <kbd class="px-1.5 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-gray-300">↵</kbd>
+                          <kbd class="px-1.5 py-0.5 bg-raised border border-line rounded text-muted">↵</kbd>
                           to execute command in terminal shell
                         </div>
                       </div>
@@ -2474,10 +2474,10 @@ defmodule IexCodeWeb.WorkspaceComponents do
                             <.icon name={@selected_item.icon || "hero-bolt"} class="w-5 h-5" />
                           </div>
                           <div class="min-w-0">
-                            <h3 class="font-semibold text-gray-100 text-sm truncate">
+                            <h3 class="font-semibold text-content text-sm truncate">
                               {@selected_item.title}
                             </h3>
-                            <p class="text-[11px] text-gray-400">
+                            <p class="text-[11px] text-muted">
                               {Map.get(preview, :description, @selected_item.subtitle)}
                             </p>
                           </div>
@@ -2490,22 +2490,22 @@ defmodule IexCodeWeb.WorkspaceComponents do
                             </span>
                           <% end %>
                           <%= if Map.get(preview, :target_tab) && preview.target_tab != "" do %>
-                            <span class="px-2 py-1 rounded-lg bg-[#161b22] border border-[#21262d] text-cyan-300">
+                            <span class="px-2 py-1 rounded-lg bg-raised border border-line text-cyan-300">
                               Target: {preview.target_tab}
                             </span>
                           <% end %>
                         </div>
 
-                        <div class="p-3 rounded-xl bg-[#161b22] border border-[#21262d] space-y-1 font-mono">
-                          <div class="text-[10px] text-gray-500 uppercase">Action Trigger</div>
+                        <div class="p-3 rounded-xl bg-raised border border-line space-y-1 font-mono">
+                          <div class="text-[10px] text-subtle uppercase">Action Trigger</div>
                           <div class="text-xs text-purple-300">
                             handle_event("{Map.get(preview, :event, @selected_item.id)}")
                           </div>
                         </div>
 
-                        <div class="text-[11px] text-gray-500 font-mono">
+                        <div class="text-[11px] text-subtle font-mono">
                           Press
-                          <kbd class="px-1.5 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-gray-300">↵</kbd>
+                          <kbd class="px-1.5 py-0.5 bg-raised border border-line rounded text-muted">↵</kbd>
                           to execute this action
                         </div>
                       </div>
@@ -2516,17 +2516,17 @@ defmodule IexCodeWeb.WorkspaceComponents do
                             <.icon name={@selected_item.icon || "hero-squares-2x2"} class="w-5 h-5" />
                           </div>
                           <div class="min-w-0">
-                            <h3 class="font-semibold text-gray-100 text-sm truncate">
+                            <h3 class="font-semibold text-content text-sm truncate">
                               {@selected_item.title}
                             </h3>
-                            <p class="text-[11px] text-gray-400">
+                            <p class="text-[11px] text-muted">
                               {Map.get(preview, :description, @selected_item.subtitle)}
                             </p>
                           </div>
                         </div>
 
-                        <div class="p-3 rounded-xl bg-[#161b22] border border-[#21262d] space-y-1 font-mono">
-                          <div class="text-[10px] text-gray-500 uppercase">
+                        <div class="p-3 rounded-xl bg-raised border border-line space-y-1 font-mono">
+                          <div class="text-[10px] text-subtle uppercase">
                             Workspace Tab Destination
                           </div>
                           <div class="text-xs text-cyan-300">
@@ -2534,9 +2534,9 @@ defmodule IexCodeWeb.WorkspaceComponents do
                           </div>
                         </div>
 
-                        <div class="text-[11px] text-gray-500 font-mono">
+                        <div class="text-[11px] text-subtle font-mono">
                           Press
-                          <kbd class="px-1.5 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-gray-300">↵</kbd>
+                          <kbd class="px-1.5 py-0.5 bg-raised border border-line rounded text-muted">↵</kbd>
                           to switch directly to this workspace view
                         </div>
                       </div>
@@ -2547,58 +2547,58 @@ defmodule IexCodeWeb.WorkspaceComponents do
                             <.icon name="hero-document-text" class="w-5 h-5" />
                           </div>
                           <div class="min-w-0">
-                            <h3 class="font-semibold text-gray-100 text-sm truncate">
+                            <h3 class="font-semibold text-content text-sm truncate">
                               {Map.get(preview, :title, @selected_item.title)}
                             </h3>
-                            <p class="text-[11px] font-mono text-gray-400">
+                            <p class="text-[11px] font-mono text-muted">
                               Session ID: {Map.get(preview, :session_id, @selected_item[:session_id])}
                             </p>
                           </div>
                         </div>
 
                         <div class="grid grid-cols-2 gap-2 font-mono text-xs">
-                          <div class="p-2.5 rounded-xl bg-[#161b22] border border-[#21262d]">
-                            <div class="text-[10px] text-gray-500 uppercase">Assigned Model</div>
+                          <div class="p-2.5 rounded-xl bg-raised border border-line">
+                            <div class="text-[10px] text-subtle uppercase">Assigned Model</div>
                             <div class="text-xs font-semibold text-emerald-300 mt-0.5 truncate">
                               {Map.get(preview, :model, "default")}
                             </div>
                           </div>
-                          <div class="p-2.5 rounded-xl bg-[#161b22] border border-[#21262d]">
-                            <div class="text-[10px] text-gray-500 uppercase">Messages</div>
-                            <div class="text-xs font-semibold text-gray-200 mt-0.5">
+                          <div class="p-2.5 rounded-xl bg-raised border border-line">
+                            <div class="text-[10px] text-subtle uppercase">Messages</div>
+                            <div class="text-xs font-semibold text-muted mt-0.5">
                               {Map.get(preview, :message_count, 0)} items
                             </div>
                           </div>
                         </div>
 
-                        <div class="p-3 rounded-xl bg-[#161b22] border border-[#21262d] space-y-1 font-mono">
-                          <div class="text-[10px] text-gray-500 uppercase">Last Activity</div>
-                          <div class="text-xs text-gray-400">
+                        <div class="p-3 rounded-xl bg-raised border border-line space-y-1 font-mono">
+                          <div class="text-[10px] text-subtle uppercase">Last Activity</div>
+                          <div class="text-xs text-muted">
                             {Map.get(preview, :updated_at, @selected_item.subtitle)}
                           </div>
                         </div>
 
-                        <div class="text-[11px] text-gray-500 font-mono">
+                        <div class="text-[11px] text-subtle font-mono">
                           Press
-                          <kbd class="px-1.5 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-gray-300">↵</kbd>
+                          <kbd class="px-1.5 py-0.5 bg-raised border border-line rounded text-muted">↵</kbd>
                           to load session dialogue
                         </div>
                       </div>
                     <% _ -> %>
                       <div
                         id="palette-preview-empty"
-                        class="py-20 text-center text-gray-500 font-mono text-xs"
+                        class="py-20 text-center text-subtle font-mono text-xs"
                       >
-                        <.icon name="hero-sparkles" class="w-8 h-8 text-gray-600 mx-auto mb-2" />
+                        <.icon name="hero-sparkles" class="w-8 h-8 text-subtle mx-auto mb-2" />
                         <p>No preview metadata available for this item</p>
                       </div>
                   <% end %>
                 <% else %>
                   <div
                     id="palette-preview-empty"
-                    class="py-20 text-center text-gray-500 font-mono text-xs"
+                    class="py-20 text-center text-subtle font-mono text-xs"
                   >
-                    <.icon name="hero-cursor-arrow-rays" class="w-8 h-8 text-gray-600 mx-auto mb-2" />
+                    <.icon name="hero-cursor-arrow-rays" class="w-8 h-8 text-subtle mx-auto mb-2" />
                     <p>Select an item to view preview card</p>
                   </div>
                 <% end %>
@@ -2606,22 +2606,22 @@ defmodule IexCodeWeb.WorkspaceComponents do
             </div>
 
             <%!-- Footer Keyboard Navigation Helper --%>
-            <div class="px-4 py-2 border-t border-[#21262d] bg-[#0d1117] flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono text-gray-500">
+            <div class="px-4 py-2 border-t border-line bg-inset flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono text-subtle">
               <div class="flex items-center gap-2.5">
-                <span><kbd class="px-1.5 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-gray-300">↑↓</kbd>
+                <span><kbd class="px-1.5 py-0.5 bg-raised border border-line rounded text-muted">↑↓</kbd>
                 Navigate</span>
-                <span><kbd class="px-1.5 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-gray-300">↵</kbd>
+                <span><kbd class="px-1.5 py-0.5 bg-raised border border-line rounded text-muted">↵</kbd>
                 Select</span>
-                <span><kbd class="px-1.5 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-gray-300">esc</kbd>
+                <span><kbd class="px-1.5 py-0.5 bg-raised border border-line rounded text-muted">esc</kbd>
                 Close</span>
-                <span><kbd class="px-1.5 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-gray-300">Cmd+K</kbd>
+                <span><kbd class="px-1.5 py-0.5 bg-raised border border-line rounded text-muted">Cmd+K</kbd>
                 Toggle</span>
-                <span><kbd class="px-1.5 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-gray-300">Cmd+B</kbd>
+                <span><kbd class="px-1.5 py-0.5 bg-raised border border-line rounded text-muted">Cmd+B</kbd>
                 Sidebar</span>
-                <span><kbd class="px-1.5 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-gray-300">Cmd+J</kbd>
+                <span><kbd class="px-1.5 py-0.5 bg-raised border border-line rounded text-muted">Cmd+J</kbd>
                 Terminal</span>
               </div>
-              <div class="text-[10px] text-gray-500 flex items-center gap-1.5">
+              <div class="text-[10px] text-subtle flex items-center gap-1.5">
                 <span>Prefixes:</span>
                 <span class="text-cyan-400">&gt; actions</span>
                 <span class="text-amber-400"># files</span>
@@ -2668,15 +2668,15 @@ defmodule IexCodeWeb.WorkspaceComponents do
 
   def test_runner_panel(assigns) do
     ~H"""
-    <div id="test-runner-panel" class="flex-1 flex flex-col h-full bg-[#0d1117] overflow-hidden">
+    <div id="test-runner-panel" class="flex-1 flex flex-col h-full bg-inset overflow-hidden">
       <!-- Toolbar Header -->
-      <div class="p-4 border-b border-[#21262d] bg-[#11151c] flex flex-wrap items-center justify-between gap-3">
+      <div class="p-4 border-b border-line bg-surface flex flex-wrap items-center justify-between gap-3">
         <div class="flex items-center gap-3">
           <div class="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
             <.icon name="hero-beaker" class="w-5 h-5" />
           </div>
           <div>
-            <h2 class="text-sm font-bold text-gray-100 flex items-center gap-2">
+            <h2 class="text-sm font-bold text-content flex items-center gap-2">
               <span>Visual Test Studio</span>
               <span class={[
                 "px-2 py-0.5 rounded-full text-[10px] font-mono uppercase font-bold border",
@@ -2686,12 +2686,12 @@ defmodule IexCodeWeb.WorkspaceComponents do
                 @test_runner_status == :running &&
                   "bg-cyan-500/10 text-cyan-400 border-cyan-500/30 animate-pulse",
                 @test_runner_status == :error && "bg-amber-500/10 text-amber-400 border-amber-500/30",
-                @test_runner_status == :idle && "bg-gray-800 text-gray-400 border-gray-700"
+                @test_runner_status == :idle && "bg-surface text-muted border-line"
               ]}>
                 {to_string(@test_runner_status)}
               </span>
             </h2>
-            <p class="text-[11px] text-gray-400 font-mono">
+            <p class="text-[11px] text-muted font-mono">
               Interactive ExUnit harness with 1-click AutoFix repairs
             </p>
           </div>
@@ -2733,12 +2733,12 @@ defmodule IexCodeWeb.WorkspaceComponents do
 
       <!-- Real-Time Progress Bar -->
       <%= if @test_runner_status == :running or (@test_runner_progress_pct > 0 and @test_runner_progress_pct < 100) do %>
-        <div class="px-4 py-2 bg-[#161b22] border-b border-[#21262d] flex flex-col gap-1.5">
-          <div class="flex items-center justify-between text-xs font-mono text-gray-300">
+        <div class="px-4 py-2 bg-raised border-b border-line flex flex-col gap-1.5">
+          <div class="flex items-center justify-between text-xs font-mono text-muted">
             <span class="truncate">{@test_runner_progress_msg}</span>
             <span class="text-cyan-400 font-bold">{@test_runner_progress_pct}%</span>
           </div>
-          <div class="w-full bg-[#21262d] rounded-full h-1.5 overflow-hidden">
+          <div class="w-full bg-raised rounded-full h-1.5 overflow-hidden">
             <div
               class="bg-gradient-to-r from-cyan-500 to-emerald-500 h-full rounded-full transition-all duration-300"
               style={"width: #{@test_runner_progress_pct}%"}
@@ -2753,28 +2753,28 @@ defmodule IexCodeWeb.WorkspaceComponents do
         <%= if @test_runner_result do %>
           <!-- Metrics Strip -->
           <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3">
-            <div class="bg-[#161b22] border border-[#21262d] rounded-xl p-3 flex flex-col">
-              <span class="text-gray-500 text-[10px] uppercase font-bold">Total Tests</span>
-              <span class="text-lg font-bold text-gray-100 mt-1">{@test_runner_result.total}</span>
+            <div class="bg-raised border border-line rounded-xl p-3 flex flex-col">
+              <span class="text-subtle text-[10px] uppercase font-bold">Total Tests</span>
+              <span class="text-lg font-bold text-content mt-1">{@test_runner_result.total}</span>
             </div>
-            <div class="bg-[#161b22] border border-[#21262d] rounded-xl p-3 flex flex-col">
+            <div class="bg-raised border border-line rounded-xl p-3 flex flex-col">
               <span class="text-emerald-400 text-[10px] uppercase font-bold">Passed</span>
               <span class="text-lg font-bold text-emerald-400 mt-1">{@test_runner_result.passed}</span>
             </div>
-            <div class="bg-[#161b22] border border-[#21262d] rounded-xl p-3 flex flex-col">
+            <div class="bg-raised border border-line rounded-xl p-3 flex flex-col">
               <span class="text-rose-400 text-[10px] uppercase font-bold">Failed</span>
               <span class="text-lg font-bold text-rose-400 mt-1">{@test_runner_result.failures_count ||
                 length(@test_runner_result.failures)}</span>
             </div>
-            <div class="bg-[#161b22] border border-[#21262d] rounded-xl p-3 flex flex-col">
+            <div class="bg-raised border border-line rounded-xl p-3 flex flex-col">
               <span class="text-amber-400 text-[10px] uppercase font-bold">Skipped</span>
               <span class="text-lg font-bold text-amber-400 mt-1">{@test_runner_result.skipped || 0}</span>
             </div>
-            <div class="bg-[#161b22] border border-[#21262d] rounded-xl p-3 flex flex-col">
+            <div class="bg-raised border border-line rounded-xl p-3 flex flex-col">
               <span class="text-cyan-400 text-[10px] uppercase font-bold">Duration</span>
               <span class="text-lg font-bold text-cyan-400 mt-1">{@test_runner_result.duration_s || 0}s</span>
             </div>
-            <div class="bg-[#161b22] border border-[#21262d] rounded-xl p-3 flex flex-col">
+            <div class="bg-raised border border-line rounded-xl p-3 flex flex-col">
               <span class="text-purple-400 text-[10px] uppercase font-bold">Seed</span>
               <span class="text-lg font-bold text-purple-400 mt-1">{@test_runner_result.seed || 0}</span>
             </div>
@@ -2788,14 +2788,14 @@ defmodule IexCodeWeb.WorkspaceComponents do
                 <span>Compilation Errors ({length(@test_runner_result.compilation_errors)})</span>
               </h3>
               <%= for ce <- @test_runner_result.compilation_errors do %>
-                <div class="bg-[#161b22] border border-rose-500/40 rounded-xl p-4 space-y-3">
+                <div class="bg-raised border border-rose-500/40 rounded-xl p-4 space-y-3">
                   <div class="flex items-center justify-between">
                     <div class="flex items-center gap-2">
                       <span class="px-2 py-0.5 bg-rose-500/20 text-rose-300 rounded font-bold">COMPILE ERROR</span>
-                      <span class="text-gray-200 font-semibold">{ce.file}:{ce.line}</span>
+                      <span class="text-muted font-semibold">{ce.file}:{ce.line}</span>
                     </div>
                   </div>
-                  <pre class="bg-[#0d1117] p-3 rounded-lg text-rose-300 overflow-x-auto whitespace-pre-wrap">{ce.raw || ce.message}</pre>
+                  <pre class="bg-inset p-3 rounded-lg text-rose-300 overflow-x-auto whitespace-pre-wrap">{ce.raw || ce.message}</pre>
                 </div>
               <% end %>
             </div>
@@ -2810,19 +2810,19 @@ defmodule IexCodeWeb.WorkspaceComponents do
               </h3>
 
               <%= for failure <- @test_runner_result.failures do %>
-                <div class="bg-[#161b22] border border-rose-500/30 rounded-xl p-4 space-y-3 shadow-lg">
+                <div class="bg-raised border border-rose-500/30 rounded-xl p-4 space-y-3 shadow-lg">
                   <!-- Header -->
-                  <div class="flex flex-wrap items-start justify-between gap-2 border-b border-[#21262d] pb-3">
+                  <div class="flex flex-wrap items-start justify-between gap-2 border-b border-line pb-3">
                     <div>
                       <div class="flex items-center gap-2">
                         <span class="px-2 py-0.5 rounded bg-rose-500/20 text-rose-400 font-bold text-[11px]">
                           FAILURE #{failure.index}
                         </span>
-                        <span class="font-bold text-gray-100">{failure.test_name}</span>
+                        <span class="font-bold text-content">{failure.test_name}</span>
                       </div>
-                      <div class="text-gray-400 mt-1 text-[11px]">
+                      <div class="text-muted mt-1 text-[11px]">
                         <span class="text-cyan-400">{failure.module}</span>
-                        · <span class="text-gray-300">{failure.file}:{failure.line}</span>
+                        · <span class="text-muted">{failure.file}:{failure.line}</span>
                       </div>
                     </div>
 
@@ -2841,7 +2841,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
                         phx-click="jump_to_symbol"
                         phx-value-path={failure.file}
                         phx-value-line={to_string(failure.line)}
-                        class="px-2.5 py-1 bg-[#21262d] hover:bg-[#30363d] text-gray-300 rounded-lg transition-smooth flex items-center gap-1"
+                        class="px-2.5 py-1 bg-raised hover:bg-raised text-muted rounded-lg transition-smooth flex items-center gap-1"
                         title="Open in editor"
                       >
                         <.icon name="hero-arrow-top-right-on-square" class="w-3.5 h-3.5" />
@@ -2852,8 +2852,8 @@ defmodule IexCodeWeb.WorkspaceComponents do
 
                   <!-- Failure Message -->
                   <%= if failure.message && failure.message != "" do %>
-                    <div class="p-2.5 bg-[#0d1117] rounded-lg border border-[#21262d] text-rose-300">
-                      <span class="text-gray-400 font-bold">Message: </span>
+                    <div class="p-2.5 bg-inset rounded-lg border border-line text-rose-300">
+                      <span class="text-muted font-bold">Message: </span>
                       <span>{failure.message}</span>
                     </div>
                   <% end %>
@@ -2878,20 +2878,20 @@ defmodule IexCodeWeb.WorkspaceComponents do
 
                   <!-- Code Snippet -->
                   <%= if failure.code_snippet && failure.code_snippet != "" do %>
-                    <div class="p-3 bg-[#0d1117] border border-[#21262d] rounded-lg">
-                      <div class="text-gray-400 font-bold text-[10px] uppercase mb-1.5">
+                    <div class="p-3 bg-inset border border-line rounded-lg">
+                      <div class="text-muted font-bold text-[10px] uppercase mb-1.5">
                         Code Snippet
                       </div>
-                      <pre class="text-gray-300 overflow-x-auto whitespace-pre-wrap">{failure.code_snippet}</pre>
+                      <pre class="text-muted overflow-x-auto whitespace-pre-wrap">{failure.code_snippet}</pre>
                     </div>
                   <% end %>
 
                   <!-- Stacktrace -->
                   <%= if failure.stacktrace && failure.stacktrace != [] do %>
-                    <div class="p-3 bg-[#0d1117] border border-[#21262d] rounded-lg space-y-1">
-                      <div class="text-gray-400 font-bold text-[10px] uppercase mb-1">Stacktrace</div>
+                    <div class="p-3 bg-inset border border-line rounded-lg space-y-1">
+                      <div class="text-muted font-bold text-[10px] uppercase mb-1">Stacktrace</div>
                       <%= for frame <- failure.stacktrace do %>
-                        <div class="text-gray-400 text-[11px] truncate">
+                        <div class="text-muted text-[11px] truncate">
                           • {if is_binary(frame),
                             do: frame,
                             else: frame.raw || "#{frame.file}:#{frame.line}"}
@@ -2911,16 +2911,16 @@ defmodule IexCodeWeb.WorkspaceComponents do
               <p class="text-base font-bold">
                 All {@test_runner_result.passed} tests passed successfully!
               </p>
-              <p class="text-xs text-gray-400 mt-1">
+              <p class="text-xs text-muted mt-1">
                 Ran with seed {@test_runner_result.seed} in {@test_runner_result.duration_s}s
               </p>
             </div>
           <% end %>
         <% else %>
-          <div class="py-16 text-center text-gray-500 font-mono">
-            <.icon name="hero-beaker" class="w-12 h-12 text-gray-600 mx-auto mb-3" />
-            <p class="text-sm font-semibold text-gray-400">Ready to execute tests</p>
-            <p class="text-xs text-gray-600 mt-1">
+          <div class="py-16 text-center text-subtle font-mono">
+            <.icon name="hero-beaker" class="w-12 h-12 text-subtle mx-auto mb-3" />
+            <p class="text-sm font-semibold text-muted">Ready to execute tests</p>
+            <p class="text-xs text-subtle mt-1">
               Click "Run All Tests", "Run Failed", or "Run Stale" above
             </p>
           </div>
@@ -2952,14 +2952,14 @@ defmodule IexCodeWeb.WorkspaceComponents do
     ~H"""
     <%= if @show do %>
       <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
-        <div class="relative w-full max-w-3xl bg-[#11151c] border border-cyan-500/40 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh] font-mono text-xs animate-scale-in">
+        <div class="relative w-full max-w-3xl bg-surface border border-cyan-500/40 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh] font-mono text-xs animate-scale-in">
           <!-- Header -->
-          <div class="px-5 py-4 border-b border-[#21262d] bg-[#161b22] flex items-center justify-between">
+          <div class="px-5 py-4 border-b border-line bg-raised flex items-center justify-between">
             <div class="flex items-center gap-2.5">
               <.icon name="hero-sparkles" class="w-5 h-5 text-amber-300" />
               <div>
-                <h3 class="text-sm font-bold text-gray-100">AutoFix Studio · Patch Proposal</h3>
-                <p class="text-[11px] text-gray-400 font-normal">
+                <h3 class="text-sm font-bold text-content">AutoFix Studio · Patch Proposal</h3>
+                <p class="text-[11px] text-muted font-normal">
                   Atomic heuristic repair with automatic verification re-run
                 </p>
               </div>
@@ -2967,7 +2967,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
             <button
               type="button"
               phx-click="close_autofix_modal"
-              class="p-1 rounded-lg text-gray-400 hover:text-white hover:bg-[#21262d] transition-smooth"
+              class="p-1 rounded-lg text-muted hover:text-white hover:bg-raised transition-smooth"
             >
               <.icon name="hero-x-mark" class="w-5 h-5" />
             </button>
@@ -2976,26 +2976,26 @@ defmodule IexCodeWeb.WorkspaceComponents do
           <!-- Body -->
           <div class="flex-1 overflow-y-auto p-5 space-y-4">
             <%= if @failure do %>
-              <div class="p-3 bg-[#0d1117] border border-[#21262d] rounded-xl text-gray-300">
+              <div class="p-3 bg-inset border border-line rounded-xl text-muted">
                 <span class="text-cyan-400 font-bold">Target: </span>
                 <span>{Map.get(@failure, :file)}:{Map.get(@failure, :line)}</span>
-                <span class="text-gray-500 mx-2">·</span>
-                <span class="text-gray-400">{Map.get(@failure, :message) ||
+                <span class="text-subtle mx-2">·</span>
+                <span class="text-muted">{Map.get(@failure, :message) ||
                   Map.get(@failure, :test_name)}</span>
               </div>
             <% end %>
 
             <div>
-              <div class="text-gray-400 font-bold text-[11px] uppercase mb-1.5 flex items-center gap-2">
+              <div class="text-muted font-bold text-[11px] uppercase mb-1.5 flex items-center gap-2">
                 <.icon name="hero-code-bracket" class="w-4 h-4 text-cyan-400" />
                 <span>Unified Diff Proposal</span>
               </div>
-              <pre class="p-4 bg-[#0d1117] border border-[#21262d] rounded-xl text-gray-200 overflow-x-auto whitespace-pre-wrap font-mono text-xs leading-relaxed max-h-64">{@diff || "No diff generated"}</pre>
+              <pre class="p-4 bg-inset border border-line rounded-xl text-muted overflow-x-auto whitespace-pre-wrap font-mono text-xs leading-relaxed max-h-64">{@diff || "No diff generated"}</pre>
             </div>
           </div>
 
           <!-- Footer Actions -->
-          <div class="px-5 py-3 border-t border-[#21262d] bg-[#161b22] flex items-center justify-between">
+          <div class="px-5 py-3 border-t border-line bg-raised flex items-center justify-between">
             <div>
               <%= if @tx_id do %>
                 <button
@@ -3014,7 +3014,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
               <button
                 type="button"
                 phx-click="close_autofix_modal"
-                class="px-3 py-1.5 bg-[#21262d] hover:bg-[#30363d] text-gray-300 rounded-lg transition-smooth"
+                class="px-3 py-1.5 bg-raised hover:bg-raised text-muted rounded-lg transition-smooth"
               >
                 Dismiss
               </button>
@@ -3052,24 +3052,24 @@ defmodule IexCodeWeb.WorkspaceComponents do
     ~H"""
     <div
       id="ast-explorer-panel"
-      class="flex-1 flex flex-col h-full bg-[#0d1117] overflow-hidden font-mono text-xs"
+      class="flex-1 flex flex-col h-full bg-inset overflow-hidden font-mono text-xs"
     >
       <!-- Search & Filters Toolbar -->
-      <div class="p-4 border-b border-[#21262d] bg-[#11151c] flex flex-col gap-3">
+      <div class="p-4 border-b border-line bg-surface flex flex-col gap-3">
         <div class="flex items-center justify-between">
           <div class="flex items-center gap-2.5">
             <div class="w-8 h-8 rounded-lg bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400">
               <.icon name="hero-cube-transparent" class="w-5 h-5" />
             </div>
             <div>
-              <h2 class="text-sm font-bold text-gray-100">AST Query Explorer</h2>
-              <p class="text-[11px] text-gray-400">
+              <h2 class="text-sm font-bold text-content">AST Query Explorer</h2>
+              <p class="text-[11px] text-muted">
                 Semantic symbol discovery, functions, macros & contracts
               </p>
             </div>
           </div>
 
-          <div class="text-[11px] text-gray-400">
+          <div class="text-[11px] text-muted">
             <span>Showing {@ast_total_count} matching symbols</span>
           </div>
         </div>
@@ -3081,14 +3081,14 @@ defmodule IexCodeWeb.WorkspaceComponents do
           phx-submit="search_ast_symbols"
           class="relative"
         >
-          <.icon name="hero-magnifying-glass" class="w-4 h-4 text-gray-400 absolute left-3 top-2.5" />
+          <.icon name="hero-magnifying-glass" class="w-4 h-4 text-muted absolute left-3 top-2.5" />
           <input
             type="text"
             name="query"
             value={@ast_query}
             phx-debounce="150"
             placeholder="Search functions, macros, modules, specs (e.g. 'def add', 'Math.add', '@spec')..."
-            class="w-full bg-[#161b22] border border-[#21262d] rounded-xl pl-9 pr-4 py-2 text-gray-100 placeholder-gray-500 font-mono text-xs focus:outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/50"
+            class="w-full bg-raised border border-line rounded-xl pl-9 pr-4 py-2 text-content placeholder:text-subtle font-mono text-xs focus:outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/50"
           />
         </form>
 
@@ -3106,7 +3106,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
                   @ast_type_filter == t &&
                     "bg-cyan-500/20 text-cyan-300 border-cyan-500/40 font-bold",
                   @ast_type_filter != t &&
-                    "bg-[#161b22] text-gray-400 hover:text-gray-200 border-[#21262d]"
+                    "bg-raised text-muted hover:text-content border-line"
                 ]}
               >
                 {label}
@@ -3115,7 +3115,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
           </div>
 
           <!-- Visibility Pills -->
-          <div class="flex items-center bg-[#161b22] p-0.5 rounded-lg border border-[#21262d] text-[11px]">
+          <div class="flex items-center bg-raised p-0.5 rounded-lg border border-line text-[11px]">
             <%= for {v, label} <- [{"all", "All"}, {"public", "Public"}, {"private", "Private"}] do %>
               <button
                 type="button"
@@ -3123,8 +3123,8 @@ defmodule IexCodeWeb.WorkspaceComponents do
                 phx-value-visibility={v}
                 class={[
                   "px-2 py-0.5 rounded font-medium transition-smooth",
-                  @ast_visibility == v && "bg-[#21262d] text-white font-bold",
-                  @ast_visibility != v && "text-gray-400 hover:text-gray-200"
+                  @ast_visibility == v && "bg-raised text-white font-bold",
+                  @ast_visibility != v && "text-muted hover:text-content"
                 ]}
               >
                 {label}
@@ -3137,16 +3137,16 @@ defmodule IexCodeWeb.WorkspaceComponents do
       <!-- Symbols Results List -->
       <div class="flex-1 overflow-y-auto p-4 space-y-3">
         <%= if @ast_results == [] do %>
-          <div class="py-16 text-center text-gray-500">
-            <.icon name="hero-cube-transparent" class="w-12 h-12 text-gray-600 mx-auto mb-3" />
-            <p class="text-sm font-semibold text-gray-400">No symbols found matching query</p>
-            <p class="text-xs text-gray-600 mt-1">
+          <div class="py-16 text-center text-subtle">
+            <.icon name="hero-cube-transparent" class="w-12 h-12 text-subtle mx-auto mb-3" />
+            <p class="text-sm font-semibold text-muted">No symbols found matching query</p>
+            <p class="text-xs text-subtle mt-1">
               Try broadening your search term or adjusting category filters
             </p>
           </div>
         <% else %>
           <%= for symbol <- @ast_results do %>
-            <div class="bg-[#161b22] border border-[#21262d] hover:border-[#30363d] rounded-xl p-3.5 space-y-2.5 transition-smooth shadow-sm group">
+            <div class="ui-depth-effect bg-raised border border-line hover:border-accent/40 rounded-xl p-3.5 space-y-2.5 transition-smooth shadow-sm group">
               <!-- Card Header -->
               <div class="flex flex-wrap items-center justify-between gap-2">
                 <div class="flex items-center gap-2 truncate">
@@ -3166,29 +3166,29 @@ defmodule IexCodeWeb.WorkspaceComponents do
                       "bg-indigo-500/10 text-indigo-400 border-indigo-500/30",
                     symbol.type == :type && "bg-violet-500/10 text-violet-400 border-violet-500/30",
                     symbol.type in [:doc, :moduledoc] &&
-                      "bg-gray-500/10 text-gray-400 border-gray-500/30"
+                      "bg-gray-500/10 text-muted border-gray-500/30"
                   ]}>
                     {to_string(symbol.type)}
                   </span>
 
                   <!-- Symbol Name & Module -->
-                  <span class="font-bold text-gray-100 text-xs truncate">
+                  <span class="font-bold text-content text-xs truncate">
                     {symbol.name}{if symbol.arity, do: "/#{symbol.arity}", else: ""}
                   </span>
 
                   <%= if symbol.module do %>
-                    <span class="text-gray-500 text-[11px] truncate">({symbol.module})</span>
+                    <span class="text-subtle text-[11px] truncate">({symbol.module})</span>
                   <% end %>
                 </div>
 
                 <div class="flex items-center gap-2 shrink-0">
-                  <span class="text-[11px] text-gray-400">{symbol.file}:{symbol.line}</span>
+                  <span class="text-[11px] text-muted">{symbol.file}:{symbol.line}</span>
                   <button
                     type="button"
                     phx-click="jump_to_symbol"
                     phx-value-path={symbol.file}
                     phx-value-line={to_string(symbol.line)}
-                    class="px-2.5 py-1 bg-[#21262d] hover:bg-cyan-950 hover:text-cyan-300 hover:border-cyan-500/40 text-gray-300 border border-[#30363d] rounded-lg text-[11px] font-semibold transition-smooth flex items-center gap-1"
+                    class="px-2.5 py-1 bg-raised hover:bg-cyan-950 hover:text-cyan-300 hover:border-cyan-500/40 text-muted border border-line rounded-lg text-[11px] font-semibold transition-smooth flex items-center gap-1"
                   >
                     <.icon name="hero-arrow-top-right-on-square" class="w-3 h-3" />
                     <span>Jump to Editor</span>
@@ -3198,8 +3198,8 @@ defmodule IexCodeWeb.WorkspaceComponents do
 
               <!-- Code Snippet -->
               <%= if symbol.code && symbol.code != "" do %>
-                <div class="p-2.5 bg-[#0d1117] border border-[#21262d] rounded-lg overflow-x-auto">
-                  <pre class="text-gray-300 font-mono text-[11px] leading-relaxed whitespace-pre-wrap">{symbol.code}</pre>
+                <div class="p-2.5 bg-inset border border-line rounded-lg overflow-x-auto">
+                  <pre class="text-muted font-mono text-[11px] leading-relaxed whitespace-pre-wrap">{symbol.code}</pre>
                 </div>
               <% end %>
             </div>
@@ -3235,7 +3235,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
     ~H"""
     <div
       id="memory-telemetry-pill"
-      class="tooltip-trigger relative inline-flex items-center gap-2 px-2.5 py-1 rounded-md bg-[#11151c]/90 hover:bg-[#161b22] border border-[#21262d] hover:border-[#30363d] text-[11px] font-mono transition-smooth cursor-pointer select-none group"
+      class="tooltip-trigger relative inline-flex items-center gap-2 px-2.5 py-1 rounded-md bg-surface/90 hover:bg-raised border border-line hover:border-line text-[11px] font-mono transition-smooth cursor-pointer select-none group"
     >
       <!-- Health Status Indicator Dot -->
       <span class={[
@@ -3244,32 +3244,32 @@ defmodule IexCodeWeb.WorkspaceComponents do
       ]} />
 
       <!-- OS Physical RSS Metric -->
-      <span id="memory-rss-stat" class="text-gray-300 group-hover:text-white flex items-center gap-1">
-        <span class="text-gray-500 font-semibold">RSS</span>
+      <span id="memory-rss-stat" class="text-muted group-hover:text-white flex items-center gap-1">
+        <span class="text-subtle font-semibold">RSS</span>
         <span class="font-medium text-emerald-400">
           {MemorySnapshot.format_bytes(@snapshot.rss_bytes)}
         </span>
       </span>
 
-      <span class="text-gray-600 font-thin">·</span>
+      <span class="text-subtle font-thin">·</span>
 
       <!-- BEAM Total Allocator Metric -->
-      <span id="memory-beam-stat" class="text-gray-300 group-hover:text-white flex items-center gap-1">
-        <span class="text-gray-500 font-semibold">BEAM</span>
+      <span id="memory-beam-stat" class="text-muted group-hover:text-white flex items-center gap-1">
+        <span class="text-subtle font-semibold">BEAM</span>
         <span class="font-medium text-cyan-400">
           {MemorySnapshot.format_bytes(@snapshot.beam_total_bytes)}
         </span>
       </span>
 
-      <span class="text-gray-600 font-thin">·</span>
+      <span class="text-subtle font-thin">·</span>
 
       <!-- Process Count Metric -->
       <span
         id="memory-procs-stat"
-        class="text-gray-400 group-hover:text-gray-200 flex items-center gap-1"
+        class="text-muted group-hover:text-content flex items-center gap-1"
       >
         <span class="font-medium text-purple-300">{@snapshot.process_count}</span>
-        <span class="text-gray-500">procs</span>
+        <span class="text-subtle">procs</span>
       </span>
 
       <!-- Micro-GC Delta Indicator (shown when reclamation occurred) -->
@@ -3285,7 +3285,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
       <!-- Luxury Floating Popover / Tooltip -->
       <div
         id="memory-popover-card"
-        class="luxury-tooltip min-w-[340px] max-w-[400px] p-4 bg-[#0d1117]/98 border border-[#30363d] rounded-2xl shadow-2xl backdrop-blur-xl"
+        class="luxury-tooltip min-w-[340px] max-w-[400px] p-4 bg-inset/98 border border-line rounded-2xl shadow-2xl backdrop-blur-xl"
       >
         <!-- Card Header -->
         <div class="flex items-center justify-between pb-2.5 mb-2.5 border-b border-white/10">
@@ -3293,26 +3293,26 @@ defmodule IexCodeWeb.WorkspaceComponents do
             <.icon name="hero-cpu-chip" class="w-4 h-4 text-cyan-400" />
             <span class="text-xs font-semibold text-white tracking-tight">BEAM & OS Memory Telemetry</span>
           </div>
-          <span class="text-[10px] font-mono text-gray-400 bg-[#161b22] px-2 py-0.5 rounded border border-[#21262d]">
+          <span class="text-[10px] font-mono text-muted bg-raised px-2 py-0.5 rounded border border-line">
             OTP {:erlang.system_info(:otp_release)}
           </span>
         </div>
 
         <!-- Memory Breakdown Grid -->
         <div class="space-y-1.5 font-mono text-[11px] mb-3">
-          <div class="text-[10px] uppercase tracking-wider text-gray-500 font-semibold mb-1">
+          <div class="text-[10px] uppercase tracking-wider text-subtle font-semibold mb-1">
             Memory Allocator Breakdown
           </div>
 
-          <div class="flex items-center justify-between text-gray-300 py-0.5">
-            <span class="text-gray-400 flex items-center gap-1.5">
+          <div class="flex items-center justify-between text-muted py-0.5">
+            <span class="text-muted flex items-center gap-1.5">
               <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span> OS Physical RSS
             </span>
             <span class="font-semibold text-white">{MemorySnapshot.format_bytes(@snapshot.rss_bytes)}</span>
           </div>
 
-          <div class="flex items-center justify-between text-gray-300 py-0.5">
-            <span class="text-gray-400 flex items-center gap-1.5">
+          <div class="flex items-center justify-between text-muted py-0.5">
+            <span class="text-muted flex items-center gap-1.5">
               <span class="w-1.5 h-1.5 rounded-full bg-cyan-400"></span> BEAM Total Allocator
             </span>
             <span class="font-semibold text-white">{MemorySnapshot.format_bytes(
@@ -3320,58 +3320,58 @@ defmodule IexCodeWeb.WorkspaceComponents do
             )}</span>
           </div>
 
-          <div class="flex items-center justify-between text-gray-300 py-0.5 pl-3 border-l border-white/5">
-            <span class="text-gray-400">Processes (Heap & Stack)</span>
-            <span id="memory-breakdown-processes" class="text-gray-200">
+          <div class="flex items-center justify-between text-muted py-0.5 pl-3 border-l border-white/5">
+            <span class="text-muted">Processes (Heap & Stack)</span>
+            <span id="memory-breakdown-processes" class="text-muted">
               {MemorySnapshot.format_bytes(@snapshot.beam_processes_bytes)}
             </span>
           </div>
 
-          <div class="flex items-center justify-between text-gray-300 py-0.5 pl-3 border-l border-white/5">
-            <span class="text-gray-400">System (Overhead & Runtime)</span>
-            <span id="memory-breakdown-system" class="text-gray-200">
+          <div class="flex items-center justify-between text-muted py-0.5 pl-3 border-l border-white/5">
+            <span class="text-muted">System (Overhead & Runtime)</span>
+            <span id="memory-breakdown-system" class="text-muted">
               {MemorySnapshot.format_bytes(@snapshot.beam_system_bytes)}
             </span>
           </div>
 
-          <div class="flex items-center justify-between text-gray-300 py-0.5 pl-3 border-l border-white/5">
-            <span class="text-gray-400">Atom Table</span>
-            <span id="memory-breakdown-atom" class="text-gray-200">
+          <div class="flex items-center justify-between text-muted py-0.5 pl-3 border-l border-white/5">
+            <span class="text-muted">Atom Table</span>
+            <span id="memory-breakdown-atom" class="text-muted">
               {MemorySnapshot.format_bytes(@snapshot.beam_atom_bytes)}
             </span>
           </div>
 
-          <div class="flex items-center justify-between text-gray-300 py-0.5 pl-3 border-l border-white/5">
-            <span class="text-gray-400">Binary (Off-Heap)</span>
-            <span id="memory-breakdown-binary" class="text-gray-200">
+          <div class="flex items-center justify-between text-muted py-0.5 pl-3 border-l border-white/5">
+            <span class="text-muted">Binary (Off-Heap)</span>
+            <span id="memory-breakdown-binary" class="text-muted">
               {MemorySnapshot.format_bytes(@snapshot.beam_binary_bytes)}
             </span>
           </div>
 
-          <div class="flex items-center justify-between text-gray-300 py-0.5 pl-3 border-l border-white/5">
-            <span class="text-gray-400">ETS Tables</span>
-            <span id="memory-breakdown-ets" class="text-gray-200">
+          <div class="flex items-center justify-between text-muted py-0.5 pl-3 border-l border-white/5">
+            <span class="text-muted">ETS Tables</span>
+            <span id="memory-breakdown-ets" class="text-muted">
               {MemorySnapshot.format_bytes(@snapshot.beam_ets_bytes)}
             </span>
           </div>
         </div>
 
         <!-- Micro-GC Telemetry Panel -->
-        <div class="p-2.5 rounded-xl bg-[#161b22]/80 border border-white/5 space-y-1.5 font-mono text-[11px] mb-3">
-          <div class="flex items-center justify-between text-[10px] uppercase tracking-wider text-gray-400 font-semibold">
+        <div class="p-2.5 rounded-xl bg-raised/80 border border-white/5 space-y-1.5 font-mono text-[11px] mb-3">
+          <div class="flex items-center justify-between text-[10px] uppercase tracking-wider text-muted font-semibold">
             <span class="flex items-center gap-1.5">
               <.icon name="hero-arrow-path" class="w-3.5 h-3.5 text-amber-400" /> Micro-GC Telemetry
             </span>
             <%= if @snapshot.delta_gc_runs > 0 do %>
               <span class="text-amber-400 font-normal">Active reclamation</span>
             <% else %>
-              <span class="text-gray-500 font-normal">Idle</span>
+              <span class="text-subtle font-normal">Idle</span>
             <% end %>
           </div>
 
-          <div class="flex items-center justify-between text-gray-300 pt-1 border-t border-white/5">
-            <span class="text-gray-400">Total GC Runs</span>
-            <span id="memory-gc-runs" class="text-gray-200 font-medium">
+          <div class="flex items-center justify-between text-muted pt-1 border-t border-white/5">
+            <span class="text-muted">Total GC Runs</span>
+            <span id="memory-gc-runs" class="text-muted font-medium">
               {@snapshot.gc_runs}
               <%= if @snapshot.delta_gc_runs > 0 do %>
                 <span class="text-amber-400 text-[10px] ml-1">(+{@snapshot.delta_gc_runs} tick)</span>
@@ -3379,15 +3379,15 @@ defmodule IexCodeWeb.WorkspaceComponents do
             </span>
           </div>
 
-          <div class="flex items-center justify-between text-gray-300">
-            <span class="text-gray-400">Words Reclaimed</span>
-            <span id="memory-gc-words" class="text-gray-200 font-medium">
+          <div class="flex items-center justify-between text-muted">
+            <span class="text-muted">Words Reclaimed</span>
+            <span id="memory-gc-words" class="text-muted font-medium">
               {@snapshot.gc_words_reclaimed}
             </span>
           </div>
 
-          <div class="flex items-center justify-between text-gray-300">
-            <span class="text-gray-400">Bytes Reclaimed</span>
+          <div class="flex items-center justify-between text-muted">
+            <span class="text-muted">Bytes Reclaimed</span>
             <span id="memory-gc-reclaimed" class="text-emerald-400 font-medium">
               {MemorySnapshot.format_bytes(@snapshot.gc_words_reclaimed * 8)}
               <%= if @snapshot.delta_reclaimed_bytes > 0 do %>
@@ -3401,7 +3401,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
 
         <!-- Force GC Action Button -->
         <div class="pt-2 border-t border-white/10 flex items-center justify-between">
-          <span class="text-[10px] font-mono text-gray-400">
+          <span class="text-[10px] font-mono text-muted">
             Active Procs: <strong class="text-white">{@snapshot.process_count}</strong>
           </span>
           <button

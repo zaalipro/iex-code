@@ -143,10 +143,10 @@ defmodule IexCodeWeb.Components.SwarmCanvas do
       state: :idle,
       label: "IDLE",
       border: "border-zinc-500/40",
-      bg: "bg-[#12161f]/90",
-      text: "text-zinc-400",
+      bg: "bg-raised/90",
+      text: "text-muted",
       dot: "bg-zinc-500",
-      badge_class: "border border-zinc-500/30 bg-zinc-800/60 text-zinc-400",
+      badge_class: "border border-zinc-500/30 bg-surface/60 text-muted",
       halo_class: "",
       icon: "hero-clock",
       pulse?: false
@@ -426,7 +426,7 @@ defmodule IexCodeWeb.Components.SwarmCanvas do
       data-zoom={@zoom}
       phx-hook={if @interactive, do: ".SwarmCanvas", else: nil}
       class={[
-        "relative w-full h-full min-h-[380px] overflow-hidden select-none bg-[#07090d] border border-[#21262d] rounded-2xl",
+        "relative w-full h-full min-h-[380px] overflow-hidden select-none bg-inset border border-line rounded-2xl",
         @class
       ]}
     >
@@ -601,7 +601,7 @@ defmodule IexCodeWeb.Components.SwarmCanvas do
                           {node.title}
                         </h6>
                       </div>
-                      <p class="font-mono text-[9px] text-zinc-500 truncate mt-0.5">
+                      <p class="font-mono text-[9px] text-subtle truncate mt-0.5">
                         {node.subtitle || node.key}
                       </p>
                     </div>
@@ -620,13 +620,13 @@ defmodule IexCodeWeb.Components.SwarmCanvas do
                   <div class="mt-2 flex items-center justify-between gap-1 pt-1.5 border-t border-white/5">
                     <div
                       id={"#{@id}-telemetry-pill-#{node.id}"}
-                      class="telemetry-pill flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-[#07090d]/80 border border-white/10 text-[9px] font-mono text-zinc-400"
+                      class="telemetry-pill flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-inset/80 border border-white/10 text-[9px] font-mono text-muted"
                     >
                       <span class="flex items-center gap-1 text-cyan-300 font-medium">
                         <.icon name="hero-cpu-chip" class="w-3 h-3 text-cyan-400" />
                         {node.telemetry.tokens_label}
                       </span>
-                      <span class="text-zinc-600">·</span>
+                      <span class="text-subtle">·</span>
                       <span class="flex items-center gap-1 text-emerald-300 font-medium">
                         <.icon name="hero-circle-stack" class="w-3 h-3 text-emerald-400" />
                         {node.telemetry.memory_label}
@@ -634,7 +634,7 @@ defmodule IexCodeWeb.Components.SwarmCanvas do
                     </div>
 
                     <%= if node.progress > 0 do %>
-                      <span class="font-mono text-[9px] text-zinc-400 tabular-nums">
+                      <span class="font-mono text-[9px] text-muted tabular-nums">
                         {node.progress}%
                       </span>
                     <% end %>
@@ -652,11 +652,11 @@ defmodule IexCodeWeb.Components.SwarmCanvas do
           id={"#{@id}-empty"}
           class="absolute inset-0 flex flex-col items-center justify-center p-6 text-center pointer-events-none"
         >
-          <div class="w-12 h-12 rounded-2xl bg-zinc-900 border border-zinc-800 flex items-center justify-center text-zinc-500 mb-3 shadow-inner">
+          <div class="w-12 h-12 rounded-2xl bg-surface border border-line flex items-center justify-center text-subtle mb-3 shadow-inner">
             <.icon name="hero-share" class="w-6 h-6" />
           </div>
-          <h4 class="text-sm font-semibold text-zinc-300 tracking-tight">No Active Swarm Topology</h4>
-          <p class="mt-1 text-xs text-zinc-500 max-w-sm">
+          <h4 class="text-sm font-semibold text-muted tracking-tight">No Active Swarm Topology</h4>
+          <p class="mt-1 text-xs text-subtle max-w-sm">
             Launch a swarm task or DAG execution to render the multi-agent graph with real-time connector curves and flow pulses.
           </p>
         </div>
@@ -666,7 +666,7 @@ defmodule IexCodeWeb.Components.SwarmCanvas do
       <%= if @show_controls do %>
         <div
           id={"#{@id}-controls"}
-          class="absolute top-3 right-3 z-10 flex items-center gap-1 p-1 rounded-xl bg-[#0d1117]/90 backdrop-blur-md border border-[#30363d] shadow-xl text-xs font-mono"
+          class="absolute top-3 right-3 z-10 flex items-center gap-1 p-1 rounded-xl bg-inset/90 backdrop-blur-md border border-line shadow-xl text-xs font-mono"
         >
           <button
             type="button"
@@ -675,14 +675,14 @@ defmodule IexCodeWeb.Components.SwarmCanvas do
             phx-value-direction="out"
             aria-label="Zoom Out"
             title="Zoom Out (-)"
-            class="p-1.5 rounded-lg hover:bg-white/10 text-zinc-300 hover:text-white transition-colors"
+            class="p-1.5 rounded-lg hover:bg-white/10 text-muted hover:text-white transition-colors"
           >
             <.icon name="hero-minus" class="w-3.5 h-3.5" />
           </button>
 
           <span
             id={"#{@id}-zoom-level"}
-            class="px-2 py-0.5 text-[11px] font-semibold text-zinc-300 min-w-[3.5rem] text-center tabular-nums"
+            class="px-2 py-0.5 text-[11px] font-semibold text-muted min-w-[3.5rem] text-center tabular-nums"
           >
             {round(@zoom * 100)}%
           </span>
@@ -694,12 +694,12 @@ defmodule IexCodeWeb.Components.SwarmCanvas do
             phx-value-direction="in"
             aria-label="Zoom In"
             title="Zoom In (+)"
-            class="p-1.5 rounded-lg hover:bg-white/10 text-zinc-300 hover:text-white transition-colors"
+            class="p-1.5 rounded-lg hover:bg-white/10 text-muted hover:text-white transition-colors"
           >
             <.icon name="hero-plus" class="w-3.5 h-3.5" />
           </button>
 
-          <span class="w-px h-4 bg-[#30363d] mx-0.5"></span>
+          <span class="w-px h-4 bg-raised mx-0.5"></span>
 
           <button
             type="button"
@@ -707,7 +707,7 @@ defmodule IexCodeWeb.Components.SwarmCanvas do
             phx-click={@on_reset}
             aria-label="Reset Zoom (1:1)"
             title="Reset Zoom (1:1)"
-            class="px-2 py-1 rounded-lg hover:bg-white/10 text-zinc-300 hover:text-white transition-colors text-[10px] font-bold"
+            class="px-2 py-1 rounded-lg hover:bg-white/10 text-muted hover:text-white transition-colors text-[10px] font-bold"
           >
             1:1
           </button>
@@ -718,20 +718,20 @@ defmodule IexCodeWeb.Components.SwarmCanvas do
             phx-click={@on_fit}
             aria-label="Fit to View"
             title="Fit to View"
-            class="px-2 py-1 rounded-lg hover:bg-white/10 text-zinc-300 hover:text-white transition-colors text-[10px] font-bold"
+            class="px-2 py-1 rounded-lg hover:bg-white/10 text-muted hover:text-white transition-colors text-[10px] font-bold"
           >
             Fit
           </button>
         </div>
 
         <!-- Node Count & Mode Pill (Bottom Left) -->
-        <div class="absolute bottom-3 left-3 z-10 flex items-center gap-2 px-2.5 py-1 rounded-lg bg-[#0d1117]/85 backdrop-blur-md border border-[#30363d] text-[10px] font-mono text-zinc-400">
+        <div class="absolute bottom-3 left-3 z-10 flex items-center gap-2 px-2.5 py-1 rounded-lg bg-inset/85 backdrop-blur-md border border-line text-[10px] font-mono text-muted">
           <span class="flex items-center gap-1 text-cyan-300">
             <span class="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse"></span> SWARM CANVAS
           </span>
-          <span class="text-zinc-600">·</span>
+          <span class="text-subtle">·</span>
           <span>{length(@rendered_nodes)} nodes</span>
-          <span class="text-zinc-600">·</span>
+          <span class="text-subtle">·</span>
           <span>{length(@rendered_edges)} edges</span>
         </div>
       <% end %>

@@ -1,5 +1,13 @@
-<!DOCTYPE html>
-<html lang="en" data-theme="dark" style="color-scheme: dark;">
+<% appearance = appearance_preferences() %> <!DOCTYPE html>
+<html
+  lang="en"
+  data-ui-theme={appearance.ui_theme}
+  data-theme={IexCodeWeb.Appearance.color_scheme(appearance)}
+  data-depth-shadows={to_string(appearance.shadows_3d)}
+  data-depth-effects={to_string(appearance.effects_3d)}
+  data-density={appearance.layout_density}
+  style={"color-scheme: #{IexCodeWeb.Appearance.color_scheme(appearance)};"}
+>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />

@@ -69,7 +69,7 @@ defmodule IexCodeWeb.CoreComponents do
       }
       {@rest}
     >
-      <div class="bg-[#11151c]/95 border border-[#21262d] rounded-2xl p-4 shadow-2xl backdrop-blur-xl relative group hover:border-[#38404a] transition-smooth">
+      <div class="ui-card ui-depth-effect bg-surface/95 border-line rounded-[var(--ui-radius-card)] p-4 backdrop-blur-xl relative group hover:border-accent/40 transition-smooth">
         <!-- Top Header Row (Matching Reference Image) -->
         <div class="flex items-center gap-3 mb-2">
           <div class={[
@@ -90,14 +90,14 @@ defmodule IexCodeWeb.CoreComponents do
           </div>
 
           <div class="flex-1 min-w-0">
-            <h4 class="text-xs font-bold text-white tracking-tight truncate">
+            <h4 class="text-xs font-bold text-content tracking-tight truncate">
               {@title || if(@kind == :info, do: "System Notification", else: "Action Required")}
             </h4>
           </div>
 
           <button
             type="button"
-            class="text-gray-500 hover:text-white p-1 rounded-lg transition-smooth"
+            class="text-subtle hover:text-content p-1 rounded-xl transition-smooth"
             aria-label={gettext("close")}
           >
             <.icon name="hero-x-mark" class="w-3.5 h-3.5" />
@@ -105,7 +105,7 @@ defmodule IexCodeWeb.CoreComponents do
         </div>
 
         <!-- Description Body -->
-        <p class="text-xs text-gray-300 leading-relaxed font-sans mb-3">
+        <p class="text-xs text-muted leading-relaxed font-sans mb-3">
           {msg}
         </p>
       </div>
@@ -126,7 +126,7 @@ defmodule IexCodeWeb.CoreComponents do
   def important_message(assigns) do
     ~H"""
     <div class={[
-      "bg-[#11151c] border border-[#21262d] rounded-2xl p-4 shadow-xl font-sans text-xs transition-smooth",
+      "ui-card ui-depth-effect bg-surface border-line rounded-[var(--ui-radius-card)] p-4 font-sans text-xs transition-smooth",
       @class
     ]}>
       <!-- Top Header Row -->
@@ -140,26 +140,26 @@ defmodule IexCodeWeb.CoreComponents do
         ]}>
           <.icon name="hero-squares-2x2" class="w-4 h-4 text-white" />
         </div>
-        <h4 class="text-sm font-bold text-white tracking-tight">
+        <h4 class="text-sm font-bold text-content tracking-tight">
           {@title}
         </h4>
       </div>
 
       <!-- Description Body -->
-      <p class="text-xs text-gray-300 leading-relaxed mb-3">
+      <p class="text-xs text-muted leading-relaxed mb-3">
         {render_slot(@inner_block)}
       </p>
 
       <!-- Metadata Key-Value Footer -->
-      <div class="border-t border-dashed border-[#21262d] pt-2.5 space-y-1 font-mono text-[11px]">
-        <div class="flex items-center justify-between text-gray-400">
+      <div class="border-t border-dashed border-line pt-2.5 space-y-1 font-mono text-[11px]">
+        <div class="flex items-center justify-between text-muted">
           <span>Source</span>
-          <span class="text-gray-200">{@source}</span>
+          <span class="text-content">{@source}</span>
         </div>
         <%= if @hash do %>
-          <div class="flex items-center justify-between text-gray-400">
+          <div class="flex items-center justify-between text-muted">
             <span>Hash</span>
-            <span class="text-gray-300 truncate max-w-[200px]">{@hash}</span>
+            <span class="text-muted truncate max-w-[200px]">{@hash}</span>
           </div>
         <% end %>
       </div>
@@ -184,9 +184,9 @@ defmodule IexCodeWeb.CoreComponents do
   def button(%{rest: rest} = assigns) do
     variants = %{
       "primary" =>
-        "inline-flex items-center justify-center rounded-xl bg-[#ff7e5f] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#ff6b48] active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50",
+        "ui-button ui-button-primary px-4 py-2 text-sm font-semibold active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50",
       nil =>
-        "inline-flex items-center justify-center rounded-xl border border-[#30363d] bg-[#161b22] px-4 py-2 text-sm font-semibold text-gray-100 transition-colors hover:border-[#484f58] hover:bg-[#1c222b] active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50"
+        "ui-button px-4 py-2 text-sm font-semibold active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50"
     }
 
     assigns =
@@ -307,7 +307,7 @@ defmodule IexCodeWeb.CoreComponents do
           disabled={@rest[:disabled]}
           form={@rest[:form]}
         />
-        <span class="flex items-center gap-2 text-sm text-gray-300">
+        <span class="flex items-center gap-2 text-sm text-muted">
           <input
             type="checkbox"
             id={@id}
@@ -318,7 +318,7 @@ defmodule IexCodeWeb.CoreComponents do
             aria-describedby={describe_errors(@errors, @id)}
             class={
               @class ||
-                "h-4 w-4 rounded border-[#484f58] bg-[#0d1117] text-[#ff7e5f] accent-[#ff7e5f] focus:ring-2 focus:ring-[#79c0ff]"
+                "h-4 w-4 rounded border-line bg-inset text-accent accent-accent focus:ring-2 focus:ring-accent/30"
             }
             {@rest}
           />{@label}
@@ -333,7 +333,7 @@ defmodule IexCodeWeb.CoreComponents do
     ~H"""
     <div class="mb-2">
       <label for={@id}>
-        <span :if={@label} class="mb-1 block text-xs font-medium text-gray-300">{@label}</span>
+        <span :if={@label} class="mb-1 block text-xs font-medium text-muted">{@label}</span>
         <select
           id={@id}
           name={@name}
@@ -341,7 +341,7 @@ defmodule IexCodeWeb.CoreComponents do
           aria-describedby={describe_errors(@errors, @id)}
           class={[
             @class ||
-              "w-full bg-[#0d1117] border border-[#30363d] focus:border-[#ff5e3a] text-white rounded-xl px-3 py-2 text-xs font-sans focus:outline-hidden",
+              "ui-control w-full px-3 py-2 text-xs font-sans focus:outline-hidden",
             @errors != [] && (@error_class || "border-red-500 text-red-300")
           ]}
           multiple={@multiple}
@@ -360,7 +360,7 @@ defmodule IexCodeWeb.CoreComponents do
     ~H"""
     <div class="mb-2">
       <label for={@id}>
-        <span :if={@label} class="mb-1 block text-xs font-medium text-gray-300">{@label}</span>
+        <span :if={@label} class="mb-1 block text-xs font-medium text-muted">{@label}</span>
         <textarea
           id={@id}
           name={@name}
@@ -368,7 +368,7 @@ defmodule IexCodeWeb.CoreComponents do
           aria-describedby={describe_errors(@errors, @id)}
           class={[
             @class ||
-              "w-full rounded-xl border border-[#30363d] bg-[#0d1117] px-3 py-2 text-sm text-white placeholder-gray-600 outline-none transition-colors focus:border-[#79c0ff]",
+              "ui-control w-full px-3 py-2 text-sm outline-none",
             @errors != [] && (@error_class || "border-rose-500 text-rose-200")
           ]}
           {@rest}
@@ -384,7 +384,7 @@ defmodule IexCodeWeb.CoreComponents do
     ~H"""
     <div class="mb-2">
       <label for={@id}>
-        <span :if={@label} class="mb-1 block text-xs font-medium text-gray-300">{@label}</span>
+        <span :if={@label} class="mb-1 block text-xs font-medium text-muted">{@label}</span>
         <input
           type={@type}
           name={@name}
@@ -394,7 +394,7 @@ defmodule IexCodeWeb.CoreComponents do
           aria-describedby={describe_errors(@errors, @id)}
           class={[
             @class ||
-              "w-full rounded-xl border border-[#30363d] bg-[#0d1117] px-3 py-2 text-sm text-white placeholder-gray-600 outline-none transition-colors focus:border-[#79c0ff]",
+              "ui-control w-full px-3 py-2 text-sm outline-none",
             @errors != [] && (@error_class || "border-rose-500 text-rose-200")
           ]}
           {@rest}

@@ -32,7 +32,7 @@ defmodule IexCodeWeb.ThinkingTrace do
     <%= if @reasoning && String.trim(@reasoning) != "" do %>
       <details
         id={@dom_id}
-        class="mb-3 rounded-2xl bg-[#161b22] border border-[#21262d] p-3 text-xs font-mono group transition-all shadow-inner"
+        class="ui-inset mb-3 rounded-[var(--ui-radius-card)] p-3 text-xs font-mono group transition-all"
       >
         <summary class="font-semibold text-amber-400 cursor-pointer flex items-center gap-2 select-none hover:text-amber-300 transition-colors">
           <div class="flex items-center gap-2">
@@ -47,24 +47,24 @@ defmodule IexCodeWeb.ThinkingTrace do
             <span class="text-amber-300">Thought Process (Reasoning Trace)</span>
           </div>
 
-          <div class="ml-auto flex items-center gap-2 text-[10px] font-mono text-gray-400">
+          <div class="ml-auto flex items-center gap-2 text-[10px] font-mono text-muted">
             <%= if @duration_ms do %>
-              <span class="px-1.5 py-0.5 rounded bg-white/5 border border-white/10 text-gray-300">
+              <span class="px-1.5 py-0.5 rounded-lg bg-raised border border-line text-muted">
                 {@duration_ms}ms
               </span>
             <% end %>
             <!-- Token/byte count badge -->
-            <span class="px-1.5 py-0.5 rounded bg-white/5 border border-white/10 text-amber-400/90 font-medium">
+            <span class="px-1.5 py-0.5 rounded-lg bg-raised border border-line text-amber-400/90 font-medium">
               {metric_badge(@tokens, @reasoning)}
             </span>
             <.icon
               name="hero-chevron-down"
-              class="w-3.5 h-3.5 text-gray-400 group-open:rotate-180 transition-transform"
+              class="w-3.5 h-3.5 text-muted group-open:rotate-180 transition-transform"
             />
           </div>
         </summary>
 
-        <div class="mt-2.5 pt-2.5 border-t border-[#21262d] text-[11px] text-gray-300 leading-relaxed font-mono overflow-x-auto max-h-96">
+        <div class="mt-2.5 pt-2.5 border-t border-line text-[11px] text-muted leading-relaxed font-mono overflow-x-auto max-h-96">
           <pre><code phx-no-curly-interpolation><%= @reasoning %></code></pre>
         </div>
       </details>

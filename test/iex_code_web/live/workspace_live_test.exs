@@ -10,12 +10,12 @@ defmodule IexCodeWeb.WorkspaceLiveTest do
   } do
     project = create_project_fixture(%{root_path: path})
     session = create_session_fixture(project)
-    {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}")
+    {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
 
-    assert html =~ "Today&#39;s tasks" or html =~ "Today's tasks"
-    assert html =~ "Kanban"
-    assert has_element?(view, "button[phx-value-tab='kanban']")
-    assert has_element?(view, "button[phx-value-tab='swarm']")
+    assert has_element?(view, "#kanban-filter-form")
+    assert has_element?(view, "#kanban-col-running")
+    assert has_element?(view, "#tab-btn-kanban")
+    assert has_element?(view, "#tab-btn-swarm")
   end
 
   test "switches tabs between kanban, swarm, calendar, changes, chat, files, and terminal", %{
@@ -825,7 +825,9 @@ defmodule IexCodeWeb.WorkspaceLiveTest do
     |> render_hook("set_task_schedule_type", %{"type" => "scheduled"})
 
     # Check that LiveView state remains responsive
-    assert render(view) =~ "Today's tasks" or render(view) =~ "Today&#39;s tasks"
+    assert has_element?(view, "#kanban-filter-form")
+    view |> element("#tab-btn-swarm") |> render_click()
+    refute has_element?(view, "#kanban-filter-form")
   end
 
   test "handles saving complete settings fields and rendering usage history", %{

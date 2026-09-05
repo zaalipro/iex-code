@@ -1,3 +1,4 @@
+import {terminalTheme} from "../appearance"
 import { Terminal } from "@xterm/xterm"
 import { FitAddon } from "@xterm/addon-fit"
 import { WebLinksAddon } from "@xterm/addon-web-links"
@@ -21,36 +22,9 @@ export const TerminalHook = {
   },
 
   initTerminal() {
-    // 1. Dark Aesthetic Palette (Obsidian Base #0a0d12 + Vibrant ANSI Accent Colors)
-    const terminalTheme = {
-      background: "#0a0d12",
-      foreground: "#e6edf3",
-      cursor: "#ff5e3a",
-      cursorAccent: "#0a0d12",
-      selectionBackground: "rgba(255, 94, 58, 0.35)",
-      selectionForeground: "#ffffff",
-      selectionInactiveBackground: "rgba(255, 255, 255, 0.1)",
-      black: "#0a0d12",
-      red: "#ff7b72",
-      green: "#3fb950",
-      yellow: "#d29922",
-      blue: "#58a6ff",
-      magenta: "#bc8cff",
-      cyan: "#39c5cf",
-      white: "#d0d7de",
-      brightBlack: "#484f58",
-      brightRed: "#ffa198",
-      brightGreen: "#56d364",
-      brightYellow: "#e3b341",
-      brightBlue: "#79c0ff",
-      brightMagenta: "#d2a8ff",
-      brightCyan: "#56d4dd",
-      brightWhite: "#ffffff"
-    }
-
     // 2. Initialize xterm.js Terminal Instance
     this.term = new Terminal({
-      theme: terminalTheme,
+      theme: terminalTheme(),
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
       fontSize: 13,
       lineHeight: 1.3,
@@ -199,6 +173,11 @@ export const TerminalHook = {
       })
     })
 
+    this.onAppearance = () => {
+      if (this.term) this.term.options.theme = terminalTheme()
+    }
+    window.addEventListener("iex:appearance-applied", this.onAppearance)
+
     // 9. Resize Handling & ResizeObserver
     this.prevCols = null
     this.prevRows = null
@@ -252,6 +231,7 @@ export const TerminalHook = {
   },
 
   destroyed() {
+    window.removeEventListener("iex:appearance-applied", this.onAppearance)
     // 11. Cleanup & Teardown
     if (this.resizeRaf) {
       cancelAnimationFrame(this.resizeRaf)

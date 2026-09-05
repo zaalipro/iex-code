@@ -66,7 +66,7 @@ defmodule IexCodeWeb.WorkflowComponents do
       data-zoom={@zoom_level}
       phx-hook=".WorkflowCanvasHook"
       class={[
-        "relative w-full h-[620px] overflow-hidden select-none bg-[#07090e] border border-[#21262d] rounded-2xl shadow-2xl",
+        "relative w-full h-[620px] overflow-hidden select-none bg-inset border border-line rounded-2xl shadow-2xl",
         @class
       ]}
     >
@@ -256,7 +256,7 @@ defmodule IexCodeWeb.WorkflowComponents do
                           {node.title}
                         </h4>
                       </div>
-                      <p class="font-mono text-[10px] text-zinc-400 truncate mt-0.5">
+                      <p class="font-mono text-[10px] text-muted truncate mt-0.5">
                         {node.key} · {node.kind}
                       </p>
                     </div>
@@ -268,7 +268,7 @@ defmodule IexCodeWeb.WorkflowComponents do
                   </div>
 
                   <!-- Card Footer -->
-                  <div class="mt-2 pt-2 border-t border-white/5 flex items-center justify-between text-[9px] font-mono text-zinc-400">
+                  <div class="mt-2 pt-2 border-t border-white/5 flex items-center justify-between text-[9px] font-mono text-muted">
                     <span class="flex items-center gap-1 text-cyan-300 truncate max-w-[120px]">
                       <.icon name="hero-cpu-chip" class="w-3 h-3 text-cyan-400 shrink-0" />
                       {node.model_label}
@@ -285,29 +285,29 @@ defmodule IexCodeWeb.WorkflowComponents do
       </svg>
 
       <!-- Bottom Status Pill -->
-      <div class="absolute bottom-3 left-3 z-10 flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[#0d1117]/90 backdrop-blur-md border border-[#30363d] text-[10px] font-mono text-zinc-400">
+      <div class="absolute bottom-3 left-3 z-10 flex items-center gap-2 px-3 py-1.5 rounded-xl bg-inset/90 backdrop-blur-md border border-line text-[10px] font-mono text-muted">
         <span class="flex items-center gap-1.5 text-cyan-300 font-bold">
           <span class="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></span> WORKFLOW CANVAS
         </span>
-        <span class="text-zinc-600">·</span>
+        <span class="text-subtle">·</span>
         <span>{length(@nodes)} steps</span>
-        <span class="text-zinc-600">·</span>
+        <span class="text-subtle">·</span>
         <span>{length(@edges)} dependencies</span>
       </div>
 
       <!-- Canvas Pan/Zoom Controls -->
-      <div class="absolute top-3 right-3 z-10 flex items-center gap-1 p-1 rounded-xl bg-[#0d1117]/90 backdrop-blur-md border border-[#30363d] shadow-xl text-xs font-mono">
+      <div class="absolute top-3 right-3 z-10 flex items-center gap-1 p-1 rounded-xl bg-inset/90 backdrop-blur-md border border-line shadow-xl text-xs font-mono">
         <button
           type="button"
           id={"#{@id}-zoom-out-btn"}
           phx-click={@on_zoom}
           phx-value-direction="out"
-          class="p-1.5 rounded-lg hover:bg-white/10 text-zinc-300 hover:text-white transition-colors"
+          class="p-1.5 rounded-lg hover:bg-white/10 text-muted hover:text-white transition-colors"
           title="Zoom Out (-)"
         >
           <.icon name="hero-minus" class="w-3.5 h-3.5" />
         </button>
-        <span class="px-2 py-0.5 text-[11px] font-semibold text-zinc-300 min-w-[3.2rem] text-center tabular-nums">
+        <span class="px-2 py-0.5 text-[11px] font-semibold text-muted min-w-[3.2rem] text-center tabular-nums">
           {round(@zoom_level * 100)}%
         </span>
         <button
@@ -315,7 +315,7 @@ defmodule IexCodeWeb.WorkflowComponents do
           id={"#{@id}-zoom-in-btn"}
           phx-click={@on_zoom}
           phx-value-direction="in"
-          class="p-1.5 rounded-lg hover:bg-white/10 text-zinc-300 hover:text-white transition-colors"
+          class="p-1.5 rounded-lg hover:bg-white/10 text-muted hover:text-white transition-colors"
           title="Zoom In (+)"
         >
           <.icon name="hero-plus" class="w-3.5 h-3.5" />
@@ -515,7 +515,7 @@ defmodule IexCodeWeb.WorkflowComponents do
       <aside
         id="workflow-step-inspector"
         onclick="event.stopPropagation();"
-        class="fixed inset-y-0 right-0 z-50 flex w-full max-w-2xl flex-col border-l border-white/10 bg-[#0a0e14]/95 backdrop-blur-2xl shadow-2xl font-sans text-gray-100"
+        class="fixed inset-y-0 right-0 z-50 flex w-full max-w-2xl flex-col border-l border-white/10 bg-surface/95 backdrop-blur-2xl shadow-2xl font-sans text-content"
       >
         <!-- Header -->
         <header class="flex items-center justify-between border-b border-white/10 px-6 py-4">
@@ -533,7 +533,7 @@ defmodule IexCodeWeb.WorkflowComponents do
                   {@status}
                 </span>
               </div>
-              <p class="font-mono text-[11px] text-zinc-500 mt-0.5">
+              <p class="font-mono text-[11px] text-subtle mt-0.5">
                 {@step_key} · {Map.get(@step, "kind") || Map.get(@step, :kind)}
               </p>
             </div>
@@ -558,7 +558,7 @@ defmodule IexCodeWeb.WorkflowComponents do
               type="button"
               id="btn-close-step-inspector"
               phx-click={@on_close}
-              class="p-2 rounded-lg text-zinc-400 hover:text-white hover:bg-white/10 transition-colors"
+              class="p-2 rounded-lg text-muted hover:text-white hover:bg-white/10 transition-colors"
             >
               <.icon name="hero-x-mark" class="w-5 h-5" />
             </button>
@@ -566,7 +566,7 @@ defmodule IexCodeWeb.WorkflowComponents do
         </header>
 
         <!-- 4-Tab Navigation Bar -->
-        <nav class="flex border-b border-white/10 bg-[#070a0f] px-6">
+        <nav class="flex border-b border-white/10 bg-inset px-6">
           <button
             :for={
               {tab, label, icon} <- [
@@ -584,7 +584,7 @@ defmodule IexCodeWeb.WorkflowComponents do
               "flex items-center gap-2 px-4 py-3 font-mono text-xs font-medium border-b-2 transition-colors",
               @active_tab == tab && "border-cyan-400 text-cyan-300 bg-cyan-950/20",
               @active_tab != tab &&
-                "border-transparent text-zinc-400 hover:text-zinc-200 hover:border-zinc-700"
+                "border-transparent text-muted hover:text-content hover:border-line"
             ]}
           >
             <.icon name={icon} class="w-4 h-4" />
@@ -603,7 +603,7 @@ defmodule IexCodeWeb.WorkflowComponents do
           <%= if @active_tab == :logs do %>
             <div id="inspector-panel-logs" class="space-y-3">
               <div class="flex items-center justify-between">
-                <span class="font-mono text-xs text-zinc-400">Execution Output and Terminal Stream</span>
+                <span class="font-mono text-xs text-muted">Execution Output and Terminal Stream</span>
                 <%= if @error do %>
                   <span class="text-xs font-mono text-rose-400 bg-rose-500/10 px-2 py-0.5 rounded border border-rose-500/30">
                     Failed with Error
@@ -621,12 +621,12 @@ defmodule IexCodeWeb.WorkflowComponents do
                 </div>
               <% end %>
 
-              <div class="relative rounded-xl border border-[#1e2530] bg-[#05070a] p-4 font-mono text-xs text-zinc-300 min-h-[260px] max-h-[500px] overflow-y-auto">
+              <div class="relative rounded-xl border border-line bg-inset p-4 font-mono text-xs text-muted min-h-[260px] max-h-[500px] overflow-y-auto">
                 <% raw_output = extract_log_content(@output, @step_state) %>
                 <%= if raw_output != "" do %>
                   <pre class="whitespace-pre-wrap"><code phx-no-curly-interpolation><%= raw_output %></code></pre>
                 <% else %>
-                  <div class="flex flex-col items-center justify-center h-48 text-zinc-500">
+                  <div class="flex flex-col items-center justify-center h-48 text-subtle">
                     <.icon name="hero-command-line" class="w-8 h-8 mb-2 opacity-40" />
                     <span>No execution logs streamed yet</span>
                   </div>
@@ -640,7 +640,7 @@ defmodule IexCodeWeb.WorkflowComponents do
             <div id="inspector-panel-thinking" class="space-y-4">
               <div class="flex items-center justify-between">
                 <div class="flex items-center gap-2">
-                  <span class="font-mono text-xs text-zinc-400">Model Reasoning & Chain-of-Thought</span>
+                  <span class="font-mono text-xs text-muted">Model Reasoning & Chain-of-Thought</span>
                   <%= if @status == "running" do %>
                     <span class="flex items-center gap-1 text-[10px] font-mono text-amber-300 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/30">
                       <span class="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span>
@@ -653,7 +653,7 @@ defmodule IexCodeWeb.WorkflowComponents do
                   <span class="px-2 py-0.5 rounded bg-white/5 border border-white/10 text-cyan-300">
                     Effort: {@reasoning_effort}
                   </span>
-                  <span class="px-2 py-0.5 rounded bg-white/5 border border-white/10 text-zinc-400">
+                  <span class="px-2 py-0.5 rounded bg-white/5 border border-white/10 text-muted">
                     Provider: {@provider}
                   </span>
                 </div>
@@ -661,14 +661,14 @@ defmodule IexCodeWeb.WorkflowComponents do
 
               <% thoughts = extract_thinking_traces(@output, @step_state) %>
               <%= if thoughts != "" do %>
-                <div class="rounded-xl border border-amber-500/20 bg-[#0d1017] p-4 font-mono text-xs text-amber-100/90 max-h-[480px] overflow-y-auto">
+                <div class="rounded-xl border border-amber-500/20 bg-surface p-4 font-mono text-xs text-amber-100/90 max-h-[480px] overflow-y-auto">
                   <pre class="whitespace-pre-wrap"><code phx-no-curly-interpolation><%= thoughts %></code></pre>
                 </div>
               <% else %>
-                <div class="rounded-xl border border-dashed border-zinc-800 p-8 text-center text-zinc-500 font-mono text-xs">
+                <div class="rounded-xl border border-dashed border-line p-8 text-center text-subtle font-mono text-xs">
                   <.icon name="hero-sparkles" class="w-8 h-8 mx-auto mb-2 opacity-30 text-amber-400" />
                   <p>No chain-of-thought traces recorded for this step.</p>
-                  <p class="text-[11px] text-zinc-600 mt-1">
+                  <p class="text-[11px] text-subtle mt-1">
                     Configured reasoning effort: {@reasoning_effort}
                   </p>
                 </div>
@@ -679,51 +679,51 @@ defmodule IexCodeWeb.WorkflowComponents do
           <!-- TAB 3: TELEMETRY & COST -->
           <%= if @active_tab == :metrics do %>
             <div id="inspector-panel-metrics" class="space-y-4 font-mono">
-              <span class="text-xs text-zinc-400">Step Telemetry, Token Footprint & Safety Tier</span>
+              <span class="text-xs text-muted">Step Telemetry, Token Footprint & Safety Tier</span>
 
               <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                <div class="p-3 rounded-xl bg-[#0e131b] border border-white/5">
-                  <p class="text-[10px] text-zinc-500 uppercase">Input Tokens</p>
+                <div class="p-3 rounded-xl bg-surface border border-white/5">
+                  <p class="text-[10px] text-subtle uppercase">Input Tokens</p>
                   <p class="text-lg font-bold text-white mt-1 tabular-nums">{@input_tokens}</p>
                 </div>
-                <div class="p-3 rounded-xl bg-[#0e131b] border border-white/5">
-                  <p class="text-[10px] text-zinc-500 uppercase">Output Tokens</p>
+                <div class="p-3 rounded-xl bg-surface border border-white/5">
+                  <p class="text-[10px] text-subtle uppercase">Output Tokens</p>
                   <p class="text-lg font-bold text-white mt-1 tabular-nums">{@output_tokens}</p>
                 </div>
-                <div class="p-3 rounded-xl bg-[#0e131b] border border-white/5">
-                  <p class="text-[10px] text-zinc-500 uppercase">Total Tokens</p>
+                <div class="p-3 rounded-xl bg-surface border border-white/5">
+                  <p class="text-[10px] text-subtle uppercase">Total Tokens</p>
                   <p class="text-lg font-bold text-cyan-300 mt-1 tabular-nums">{@total_tokens}</p>
                 </div>
 
-                <div class="p-3 rounded-xl bg-[#0e131b] border border-white/5">
-                  <p class="text-[10px] text-zinc-500 uppercase">Execution Duration</p>
+                <div class="p-3 rounded-xl bg-surface border border-white/5">
+                  <p class="text-[10px] text-subtle uppercase">Execution Duration</p>
                   <p class="text-lg font-bold text-white mt-1 tabular-nums">
                     {if @duration_ms > 0, do: "#{@duration_ms}ms", else: "—"}
                   </p>
                 </div>
-                <div class="p-3 rounded-xl bg-[#0e131b] border border-white/5">
-                  <p class="text-[10px] text-zinc-500 uppercase">Estimated Cost</p>
+                <div class="p-3 rounded-xl bg-surface border border-white/5">
+                  <p class="text-[10px] text-subtle uppercase">Estimated Cost</p>
                   <p class="text-lg font-bold text-emerald-300 mt-1 tabular-nums">
                     {if @cost_cents > 0, do: "$#{Float.round(@cost_cents / 100.0, 4)}", else: "$0.00"}
                   </p>
                 </div>
-                <div class="p-3 rounded-xl bg-[#0e131b] border border-white/5">
-                  <p class="text-[10px] text-zinc-500 uppercase">Safety Policy</p>
+                <div class="p-3 rounded-xl bg-surface border border-white/5">
+                  <p class="text-[10px] text-subtle uppercase">Safety Policy</p>
                   <p class="text-sm font-bold text-purple-300 mt-1.5 uppercase">{@safety_policy}</p>
                 </div>
               </div>
 
               <!-- Model Configuration Summary -->
-              <div class="p-4 rounded-xl bg-[#0e131b] border border-white/5 space-y-2 text-xs">
-                <div class="flex items-center justify-between text-zinc-400">
+              <div class="p-4 rounded-xl bg-surface border border-white/5 space-y-2 text-xs">
+                <div class="flex items-center justify-between text-muted">
                   <span>Model ID:</span>
                   <span class="text-white font-semibold">{@model_id}</span>
                 </div>
-                <div class="flex items-center justify-between text-zinc-400">
+                <div class="flex items-center justify-between text-muted">
                   <span>Provider:</span>
                   <span class="text-white uppercase font-semibold">{@provider}</span>
                 </div>
-                <div class="flex items-center justify-between text-zinc-400">
+                <div class="flex items-center justify-between text-muted">
                   <span>Reasoning Effort:</span>
                   <span class="text-cyan-300 uppercase font-semibold">{@reasoning_effort}</span>
                 </div>
@@ -734,23 +734,23 @@ defmodule IexCodeWeb.WorkflowComponents do
           <!-- TAB 4: GENERATED ARTIFACTS & DIFFS -->
           <%= if @active_tab == :artifacts do %>
             <div id="inspector-panel-artifacts" class="space-y-4">
-              <span class="font-mono text-xs text-zinc-400">Generated Artifacts, Patches, Reports & Commits</span>
+              <span class="font-mono text-xs text-muted">Generated Artifacts, Patches, Reports & Commits</span>
 
               <%= if length(@artifacts) > 0 do %>
                 <%= for artifact <- @artifacts do %>
-                  <div class="rounded-xl border border-white/10 bg-[#0d1117] p-4 space-y-2">
+                  <div class="rounded-xl border border-white/10 bg-inset p-4 space-y-2">
                     <div class="flex items-center justify-between">
                       <div class="flex items-center gap-2">
                         <.icon name={artifact.icon} class="w-4 h-4 text-cyan-400" />
                         <span class="font-mono text-xs font-bold text-white">{artifact.title}</span>
                       </div>
-                      <span class="px-2 py-0.5 rounded bg-white/5 text-[10px] font-mono text-zinc-400">
+                      <span class="px-2 py-0.5 rounded bg-white/5 text-[10px] font-mono text-muted">
                         {artifact.type}
                       </span>
                     </div>
 
                     <%= if artifact.content do %>
-                      <div class="rounded-lg bg-[#05070a] border border-[#1e2530] p-3 font-mono text-xs text-zinc-300 max-h-[320px] overflow-y-auto">
+                      <div class="rounded-lg bg-inset border border-line p-3 font-mono text-xs text-muted max-h-[320px] overflow-y-auto">
                         <pre class="whitespace-pre-wrap"><code phx-no-curly-interpolation><%= artifact.content %></code></pre>
                       </div>
                     <% end %>
@@ -759,7 +759,7 @@ defmodule IexCodeWeb.WorkflowComponents do
                     <%= if Map.get(artifact, :consensus_matrix) do %>
                       <div class="space-y-4 pt-3 border-t border-white/5">
                         <div class="flex items-center justify-between">
-                          <span class="font-mono text-xs font-bold text-zinc-200 flex items-center gap-2">
+                          <span class="font-mono text-xs font-bold text-muted flex items-center gap-2">
                             <.icon name="hero-cpu-chip" class="w-4 h-4 text-cyan-400" />
                             <span>Swarm Consensus & Merge Gating</span>
                           </span>
@@ -814,7 +814,7 @@ defmodule IexCodeWeb.WorkflowComponents do
                     <%= if Map.get(artifact, :conflicts) && length(Map.get(artifact, :conflicts)) > 0 do %>
                       <div class="space-y-2 pt-3 border-t border-white/5">
                         <div class="flex items-center justify-between">
-                          <span class="font-mono text-[11px] text-zinc-300 font-semibold flex items-center gap-1.5">
+                          <span class="font-mono text-[11px] text-muted font-semibold flex items-center gap-1.5">
                             <.icon name="hero-scale" class="w-3.5 h-3.5 text-amber-400" />
                             Evidence Audit & Conflict Resolution:
                           </span>
@@ -833,9 +833,9 @@ defmodule IexCodeWeb.WorkflowComponents do
 
                         <div class="space-y-2">
                           <%= for conflict <- Map.get(artifact, :conflicts) do %>
-                            <div class="rounded-lg border border-white/5 bg-[#05070a] p-2.5 space-y-1.5 text-xs font-mono">
+                            <div class="rounded-lg border border-white/5 bg-inset p-2.5 space-y-1.5 text-xs font-mono">
                               <div class="flex items-center justify-between">
-                                <span class="font-bold text-zinc-200">
+                                <span class="font-bold text-muted">
                                   {Map.get(conflict, :topic) || Map.get(conflict, "topic")}
                                 </span>
                                 <span class={[
@@ -847,7 +847,7 @@ defmodule IexCodeWeb.WorkflowComponents do
                               </div>
                               <div class="grid grid-cols-2 gap-2 text-[11px] pt-1">
                                 <div class="p-1.5 rounded bg-white/[0.02] border border-white/5">
-                                  <span class="text-zinc-500 text-[9px] block uppercase font-semibold">
+                                  <span class="text-subtle text-[9px] block uppercase font-semibold">
                                     {get_claim_field(
                                       Map.get(conflict, :claim_a) || Map.get(conflict, "claim_a") ||
                                         %{},
@@ -855,7 +855,7 @@ defmodule IexCodeWeb.WorkflowComponents do
                                       "Source A"
                                     )}
                                   </span>
-                                  <span class="text-zinc-300 line-clamp-3">
+                                  <span class="text-muted line-clamp-3">
                                     {get_claim_field(
                                       Map.get(conflict, :claim_a) || Map.get(conflict, "claim_a") ||
                                         %{},
@@ -864,7 +864,7 @@ defmodule IexCodeWeb.WorkflowComponents do
                                   </span>
                                 </div>
                                 <div class="p-1.5 rounded bg-white/[0.02] border border-white/5">
-                                  <span class="text-zinc-500 text-[9px] block uppercase font-semibold">
+                                  <span class="text-subtle text-[9px] block uppercase font-semibold">
                                     {get_claim_field(
                                       Map.get(conflict, :claim_b) || Map.get(conflict, "claim_b") ||
                                         %{},
@@ -872,7 +872,7 @@ defmodule IexCodeWeb.WorkflowComponents do
                                       "Source B"
                                     )}
                                   </span>
-                                  <span class="text-zinc-300 line-clamp-3">
+                                  <span class="text-muted line-clamp-3">
                                     {get_claim_field(
                                       Map.get(conflict, :claim_b) || Map.get(conflict, "claim_b") ||
                                         %{},
@@ -881,7 +881,7 @@ defmodule IexCodeWeb.WorkflowComponents do
                                   </span>
                                 </div>
                               </div>
-                              <div class="text-[10px] text-zinc-400 pt-1 border-t border-white/5">
+                              <div class="text-[10px] text-muted pt-1 border-t border-white/5">
                                 <span class="text-cyan-400 font-semibold">Resolution:</span> {Map.get(
                                   conflict,
                                   :rationale
@@ -897,18 +897,18 @@ defmodule IexCodeWeb.WorkflowComponents do
                     <%= if artifact.citations && length(artifact.citations) > 0 do %>
                       <div class="space-y-2 pt-3 border-t border-white/5">
                         <div class="flex items-center justify-between">
-                          <p class="font-mono text-[11px] text-zinc-300 font-semibold flex items-center gap-1.5">
+                          <p class="font-mono text-[11px] text-muted font-semibold flex items-center gap-1.5">
                             <.icon name="hero-share" class="w-3.5 h-3.5 text-cyan-400" />
                             Visual Citations & Source Graph:
                           </p>
-                          <span class="font-mono text-[10px] text-zinc-500">
+                          <span class="font-mono text-[10px] text-subtle">
                             {length(artifact.citations)} sources evaluated
                           </span>
                         </div>
 
                         <div class="grid grid-cols-1 gap-2">
                           <%= for cit <- artifact.citations do %>
-                            <div class="rounded-lg border border-white/5 bg-[#05070a] p-2.5 space-y-2">
+                            <div class="rounded-lg border border-white/5 bg-inset p-2.5 space-y-2">
                               <div class="flex items-start justify-between gap-2">
                                 <div class="flex items-center gap-2 min-w-0">
                                   <div class="p-1 rounded bg-white/5 text-cyan-400 shrink-0">
@@ -935,14 +935,14 @@ defmodule IexCodeWeb.WorkflowComponents do
                                         class="w-3 h-3 shrink-0 opacity-70"
                                       />
                                     </a>
-                                    <div class="flex items-center gap-1.5 text-[9px] font-mono text-zinc-500">
-                                      <span class="text-zinc-400 font-semibold">{cit["domain"] ||
+                                    <div class="flex items-center gap-1.5 text-[9px] font-mono text-subtle">
+                                      <span class="text-muted font-semibold">{cit["domain"] ||
                                         cit[:domain] || "docs"}</span>
                                       <span
                                         :if={Map.get(cit, "ssl", true) || Map.get(cit, :ssl, true)}
                                         class="text-emerald-400"
                                       >· HTTPS</span>
-                                      <span class="text-zinc-600">· {to_string(
+                                      <span class="text-subtle">· {to_string(
                                         cit["authority_category"] || cit[:authority_category] ||
                                           "general"
                                       )}</span>
@@ -951,7 +951,7 @@ defmodule IexCodeWeb.WorkflowComponents do
                                 </div>
 
                                 <div class="flex items-center gap-1.5 shrink-0">
-                                  <span class="px-1.5 py-0.5 rounded bg-white/5 text-[9px] font-mono text-zinc-300 border border-white/10">
+                                  <span class="px-1.5 py-0.5 rounded bg-white/5 text-[9px] font-mono text-muted border border-white/10">
                                     {citation_relevance_percent(cit)}% Rel
                                   </span>
                                   <span
@@ -969,7 +969,7 @@ defmodule IexCodeWeb.WorkflowComponents do
                               <!-- Trust Meter Bar -->
                               <div class="flex items-center justify-between gap-3 pt-1 border-t border-white/[0.03]">
                                 <div class="flex items-center gap-2 flex-1">
-                                  <div class="h-1.5 flex-1 max-w-[120px] bg-zinc-800 rounded-full overflow-hidden">
+                                  <div class="h-1.5 flex-1 max-w-[120px] bg-surface rounded-full overflow-hidden">
                                     <div
                                       class={[
                                         "h-full rounded-full",
@@ -979,12 +979,12 @@ defmodule IexCodeWeb.WorkflowComponents do
                                     >
                                     </div>
                                   </div>
-                                  <span class="font-mono text-[9px] text-zinc-400">{citation_trust_percent(
+                                  <span class="font-mono text-[9px] text-muted">{citation_trust_percent(
                                     cit
                                   )}% Trust</span>
                                 </div>
                                 <%= if cit["snippet"] do %>
-                                  <p class="text-[10px] font-mono text-zinc-500 truncate max-w-[240px]">
+                                  <p class="text-[10px] font-mono text-subtle truncate max-w-[240px]">
                                     {cit["snippet"]}
                                   </p>
                                 <% end %>
@@ -997,10 +997,10 @@ defmodule IexCodeWeb.WorkflowComponents do
                   </div>
                 <% end %>
               <% else %>
-                <div class="rounded-xl border border-dashed border-zinc-800 p-8 text-center text-zinc-500 font-mono text-xs">
+                <div class="rounded-xl border border-dashed border-line p-8 text-center text-subtle font-mono text-xs">
                   <.icon
                     name="hero-document-duplicate"
-                    class="w-8 h-8 mx-auto mb-2 opacity-30 text-zinc-400"
+                    class="w-8 h-8 mx-auto mb-2 opacity-30 text-muted"
                   />
                   <p>No artifacts produced yet for this step.</p>
                 </div>
@@ -1028,7 +1028,7 @@ defmodule IexCodeWeb.WorkflowComponents do
     ~H"""
     <section
       id="workflow-execution-toolbar"
-      class="flex flex-wrap items-center justify-between gap-4 p-4 rounded-2xl border border-white/10 bg-[#0d1218]/90 backdrop-blur-xl shadow-2xl"
+      class="flex flex-wrap items-center justify-between gap-4 p-4 rounded-2xl border border-white/10 bg-surface/90 backdrop-blur-xl shadow-2xl"
     >
       <!-- Left: Workflow Info & Status -->
       <div class="flex items-center gap-4 min-w-0">
@@ -1038,18 +1038,18 @@ defmodule IexCodeWeb.WorkflowComponents do
             <h2 class="text-base font-bold text-white tracking-tight truncate">
               {@workflow.name}
             </h2>
-            <span class="font-mono text-xs text-zinc-500 truncate max-w-[120px]">
+            <span class="font-mono text-xs text-subtle truncate max-w-[120px]">
               #{String.slice(to_string(@run.id), 0, 8)}
             </span>
           </div>
-          <div class="flex items-center gap-3 font-mono text-[11px] text-zinc-400 mt-0.5">
+          <div class="flex items-center gap-3 font-mono text-[11px] text-muted mt-0.5">
             <span class="flex items-center gap-1.5">
               <span class={["w-2 h-2 rounded-full", status_dot_class(@run.status)]}></span>
               <strong class="uppercase text-white">{@run.status}</strong>
             </span>
-            <span class="text-zinc-600">·</span>
+            <span class="text-subtle">·</span>
             <span>{@run.progress}% completed</span>
-            <span class="text-zinc-600">·</span>
+            <span class="text-subtle">·</span>
             <span class="tabular-nums">{format_duration(@run.duration_ms)}</span>
           </div>
         </div>
@@ -1139,7 +1139,7 @@ defmodule IexCodeWeb.WorkflowComponents do
     ~H"""
     <div
       id={"workflow-card-#{@workflow.id}"}
-      class="group rounded-2xl border border-[#21262d] bg-[#0e131b]/90 p-5 hover:border-cyan-500/40 hover:shadow-[0_0_24px_rgba(34,211,238,0.15)] transition-all flex flex-col justify-between"
+      class="ui-depth-effect group rounded-2xl border border-line bg-surface/90 p-5 hover:border-cyan-500/40 hover:shadow-[var(--ui-shadow-card)] transition-all flex flex-col justify-between"
     >
       <div>
         <div class="flex items-start justify-between gap-3">
@@ -1150,7 +1150,7 @@ defmodule IexCodeWeb.WorkflowComponents do
             >
               {@workflow.name}
             </.link>
-            <p class="font-mono text-xs text-zinc-400 mt-0.5">
+            <p class="font-mono text-xs text-muted mt-0.5">
               {@workflow.slug}
             </p>
           </div>
@@ -1164,18 +1164,18 @@ defmodule IexCodeWeb.WorkflowComponents do
           </div>
         </div>
 
-        <p class="text-xs text-zinc-300 mt-3 line-clamp-2 leading-relaxed">
+        <p class="text-xs text-muted mt-3 line-clamp-2 leading-relaxed">
           {@workflow.description || "No description provided."}
         </p>
 
         <!-- Step Pipeline Preview Pills -->
         <div class="mt-4 pt-3 border-t border-white/5 space-y-2">
-          <p class="font-mono text-[10px] text-zinc-500 uppercase tracking-wider">
+          <p class="font-mono text-[10px] text-subtle uppercase tracking-wider">
             Pipeline Steps ({@step_count})
           </p>
           <div class="flex flex-wrap gap-1.5">
             <%= for step <- Enum.take(@steps, 4) do %>
-              <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-white/5 text-[10px] font-mono text-zinc-300 border border-white/5">
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-white/5 text-[10px] font-mono text-muted border border-white/5">
                 <.icon
                   name={step_kind_icon(Map.get(step, "kind") || Map.get(step, :kind))}
                   class="w-3 h-3 text-cyan-400"
@@ -1184,7 +1184,7 @@ defmodule IexCodeWeb.WorkflowComponents do
               </span>
             <% end %>
             <%= if @step_count > 4 do %>
-              <span class="px-1.5 py-0.5 rounded bg-white/5 text-[10px] font-mono text-zinc-500">
+              <span class="px-1.5 py-0.5 rounded bg-white/5 text-[10px] font-mono text-subtle">
                 +{@step_count - 4} more
               </span>
             <% end %>
@@ -1195,7 +1195,7 @@ defmodule IexCodeWeb.WorkflowComponents do
         <%= if @workflow.tags && length(@workflow.tags) > 0 do %>
           <div class="mt-3 flex flex-wrap gap-1">
             <%= for tag <- @workflow.tags do %>
-              <span class="px-1.5 py-0.5 rounded text-[9px] font-mono bg-zinc-800/60 text-zinc-400">
+              <span class="px-1.5 py-0.5 rounded text-[9px] font-mono bg-surface/60 text-muted">
                 #{tag}
               </span>
             <% end %>
@@ -1207,7 +1207,7 @@ defmodule IexCodeWeb.WorkflowComponents do
       <div class="mt-5 pt-3 border-t border-white/5 flex items-center justify-between gap-3">
         <.link
           navigate={~p"/workflows/#{@workflow.id}"}
-          class="text-xs font-mono text-zinc-400 hover:text-white transition-colors"
+          class="text-xs font-mono text-muted hover:text-white transition-colors"
         >
           View Details →
         </.link>
@@ -1481,8 +1481,8 @@ defmodule IexCodeWeb.WorkflowComponents do
 
   def canonical_meta(_pending) do
     %{
-      border: "border-[#26313d]",
-      bg: "bg-[#0d1218]/90",
+      border: "border-line",
+      bg: "bg-surface/90",
       dot: "bg-zinc-600",
       halo: "shadow-none"
     }
@@ -1499,8 +1499,8 @@ defmodule IexCodeWeb.WorkflowComponents do
   def status_icon_color("completed"), do: "text-emerald-400"
   def status_icon_color("failed"), do: "text-rose-400"
   def status_icon_color("paused"), do: "text-amber-400"
-  def status_icon_color("cancelled"), do: "text-zinc-400"
-  def status_icon_color(_), do: "text-zinc-500"
+  def status_icon_color("cancelled"), do: "text-muted"
+  def status_icon_color(_), do: "text-subtle"
 
   def status_badge_class("running"), do: "bg-cyan-500/10 text-cyan-300 border border-cyan-500/30"
 
@@ -1513,9 +1513,9 @@ defmodule IexCodeWeb.WorkflowComponents do
     do: "bg-amber-500/10 text-amber-300 border border-amber-500/30"
 
   def status_badge_class("cancelled"),
-    do: "bg-zinc-800 text-zinc-400 border border-zinc-700"
+    do: "bg-surface text-muted border border-line"
 
-  def status_badge_class(_), do: "bg-zinc-800 text-zinc-400 border border-zinc-700"
+  def status_badge_class(_), do: "bg-surface text-muted border border-line"
 
   def status_dot_class("running"), do: "bg-cyan-400 animate-pulse"
   def status_dot_class("completed"), do: "bg-emerald-400"
