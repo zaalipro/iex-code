@@ -87,6 +87,7 @@ defmodule IexCodeWeb do
       import Phoenix.HTML
       # Core UI components
       import IexCodeWeb.CoreComponents
+      import IexCodeWeb.PageHeaderComponents
       import IexCodeWeb.SwarmConsensusComponents
 
       # Common modules used in templates

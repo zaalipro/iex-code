@@ -155,8 +155,7 @@ defmodule IexCodeWeb.WorkflowsLiveTest do
 
       {:ok, view, html} = live(conn, ~p"/workflows")
 
-      assert html =~ "Project Workflows"
-      assert html =~ "Grok-Like Autonomous Execution Engine"
+      assert has_element?(view, "#workflows-gallery-header h1", "Workflows")
       assert has_element?(view, "#workflows-gallery")
       assert has_element?(view, "#workflow-card-#{workflow.id}")
       assert html =~ workflow.name
@@ -212,9 +211,9 @@ defmodule IexCodeWeb.WorkflowsLiveTest do
 
   describe "WorkflowsLive :new & :session_new builder" do
     test "mounts /workflows/new and renders assistant and form", %{conn: conn} do
-      {:ok, view, html} = live(conn, ~p"/workflows/new")
+      {:ok, view, _html} = live(conn, ~p"/workflows/new")
 
-      assert html =~ "Create New Workflow"
+      assert has_element?(view, "#workflows-builder-header h1", "Create workflow")
       assert has_element?(view, "#blueprint-prompt-form")
       assert has_element?(view, "#blueprint-prompt-input")
       assert has_element?(view, "#workflow-config-form")
@@ -223,9 +222,9 @@ defmodule IexCodeWeb.WorkflowsLiveTest do
     end
 
     test "mounts alternative route /create-workflow", %{conn: conn} do
-      {:ok, view, html} = live(conn, ~p"/create-workflow")
+      {:ok, view, _html} = live(conn, ~p"/create-workflow")
 
-      assert html =~ "Create New Workflow"
+      assert has_element?(view, "#workflows-builder-header h1", "Create workflow")
       assert has_element?(view, "#blueprint-prompt-form")
     end
 

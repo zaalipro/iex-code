@@ -15,7 +15,7 @@ defmodule IexCodeWeb.WorkspaceLiveUIControlsTest do
       session = create_session_fixture(project)
       {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
 
-      today_month = Calendar.strftime(Date.utc_today(), "%B, %Y")
+      today_month = Calendar.strftime(Date.utc_today(), "%B %Y")
 
       tabs = [
         {"#sidebar-tab-kanban", "kanban", "Kanban"},

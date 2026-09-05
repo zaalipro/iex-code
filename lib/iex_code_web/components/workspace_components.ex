@@ -12,6 +12,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
   """
   use Phoenix.Component
   import IexCodeWeb.CoreComponents
+  import IexCodeWeb.PageHeaderComponents
   import Phoenix.HTML
   alias IexCode.Engine.OperationManager
   alias IexCode.Tools.Git.DiffParser
@@ -2669,67 +2670,62 @@ defmodule IexCodeWeb.WorkspaceComponents do
   def test_runner_panel(assigns) do
     ~H"""
     <div id="test-runner-panel" class="flex-1 flex flex-col h-full bg-inset overflow-hidden">
-      <!-- Toolbar Header -->
-      <div class="p-4 border-b border-line bg-surface flex flex-wrap items-center justify-between gap-3">
-        <div class="flex items-center gap-3">
-          <div class="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
-            <.icon name="hero-beaker" class="w-5 h-5" />
-          </div>
-          <div>
-            <h2 class="text-sm font-bold text-content flex items-center gap-2">
-              <span>Visual Test Studio</span>
-              <span class={[
-                "px-2 py-0.5 rounded-full text-[10px] font-mono uppercase font-bold border",
-                @test_runner_status == :passed &&
-                  "bg-emerald-500/10 text-emerald-400 border-emerald-500/30",
-                @test_runner_status == :failed && "bg-rose-500/10 text-rose-400 border-rose-500/30",
-                @test_runner_status == :running &&
-                  "bg-cyan-500/10 text-cyan-400 border-cyan-500/30 animate-pulse",
-                @test_runner_status == :error && "bg-amber-500/10 text-amber-400 border-amber-500/30",
-                @test_runner_status == :idle && "bg-surface text-muted border-line"
-              ]}>
-                {to_string(@test_runner_status)}
-              </span>
-            </h2>
-            <p class="text-[11px] text-muted font-mono">
-              Interactive ExUnit harness with 1-click AutoFix repairs
-            </p>
-          </div>
-        </div>
-
-        <div class="flex items-center gap-2 font-mono text-xs">
+      <.page_header
+        id="test-studio-header"
+        title="Visual Test Studio"
+        description="Interactive ExUnit harness with 1-click AutoFix repairs"
+        icon="hero-beaker"
+      >
+        <:meta>
+          <span class={[
+            "px-2 py-0.5 rounded-full text-[10px] font-mono uppercase font-bold border",
+            @test_runner_status == :passed &&
+              "bg-emerald-500/10 text-emerald-400 border-emerald-500/30",
+            @test_runner_status == :failed && "bg-rose-500/10 text-rose-400 border-rose-500/30",
+            @test_runner_status == :running &&
+              "bg-cyan-500/10 text-cyan-400 border-cyan-500/30 animate-pulse",
+            @test_runner_status == :error && "bg-amber-500/10 text-amber-400 border-amber-500/30",
+            @test_runner_status == :idle && "bg-surface text-muted border-line"
+          ]}>
+            {to_string(@test_runner_status)}
+          </span>
+        </:meta>
+        <:actions>
           <button
+            id="test-studio-run-all"
             type="button"
             phx-click="run_tests"
             phx-value-mode="all"
             disabled={@test_runner_status == :running}
-            class="px-3 py-1.5 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 rounded-lg font-semibold transition-smooth flex items-center gap-1.5 disabled:opacity-50"
+            class="header-control header-control--primary"
           >
             <.icon name="hero-play" class="w-3.5 h-3.5" />
             <span>Run All Tests</span>
           </button>
           <button
+            id="test-studio-run-failed"
             type="button"
             phx-click="run_tests"
             phx-value-mode="failed"
             disabled={@test_runner_status == :running}
-            class="px-3 py-1.5 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/40 rounded-lg font-semibold transition-smooth flex items-center gap-1.5 disabled:opacity-50"
+            class="header-control"
           >
             <.icon name="hero-arrow-path" class="w-3.5 h-3.5" />
             <span>Run Failed</span>
           </button>
           <button
+            id="test-studio-run-stale"
             type="button"
             phx-click="run_tests"
             phx-value-mode="stale"
             disabled={@test_runner_status == :running}
-            class="px-3 py-1.5 bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/40 rounded-lg font-semibold transition-smooth flex items-center gap-1.5 disabled:opacity-50"
+            class="header-control"
           >
             <.icon name="hero-bolt" class="w-3.5 h-3.5" />
             <span>Run Stale</span>
           </button>
-        </div>
-      </div>
+        </:actions>
+      </.page_header>
 
       <!-- Real-Time Progress Bar -->
       <%= if @test_runner_status == :running or (@test_runner_progress_pct > 0 and @test_runner_progress_pct < 100) do %>
@@ -3054,85 +3050,80 @@ defmodule IexCodeWeb.WorkspaceComponents do
       id="ast-explorer-panel"
       class="flex-1 flex flex-col h-full bg-inset overflow-hidden font-mono text-xs"
     >
-      <!-- Search & Filters Toolbar -->
-      <div class="p-4 border-b border-line bg-surface flex flex-col gap-3">
-        <div class="flex items-center justify-between">
-          <div class="flex items-center gap-2.5">
-            <div class="w-8 h-8 rounded-lg bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400">
-              <.icon name="hero-cube-transparent" class="w-5 h-5" />
-            </div>
-            <div>
-              <h2 class="text-sm font-bold text-content">AST Query Explorer</h2>
-              <p class="text-[11px] text-muted">
-                Semantic symbol discovery, functions, macros & contracts
-              </p>
-            </div>
-          </div>
-
+      <.page_header
+        id="ast-explorer-header"
+        title="AST Query Explorer"
+        description="Semantic symbol discovery, functions, macros & contracts"
+        icon="hero-cube-transparent"
+      >
+        <:actions>
           <div class="text-[11px] text-muted">
             <span>Showing {@ast_total_count} matching symbols</span>
           </div>
-        </div>
+        </:actions>
+      </.page_header>
+      <.page_toolbar id="ast-explorer-toolbar" class="[&_.page-toolbar__controls]:w-full">
+        <div class="flex w-full min-w-0 flex-col gap-3">
+          <%!-- Search Bar --%>
+          <form
+            id="ast-search-form"
+            phx-change="search_ast_symbols"
+            phx-submit="search_ast_symbols"
+            class="relative"
+          >
+            <.icon name="hero-magnifying-glass" class="w-4 h-4 text-muted absolute left-3 top-2.5" />
+            <input
+              type="text"
+              name="query"
+              value={@ast_query}
+              phx-debounce="150"
+              placeholder="Search functions, macros, modules, specs (e.g. 'def add', 'Math.add', '@spec')..."
+              class="w-full bg-raised border border-line rounded-xl pl-9 pr-4 py-2 text-content placeholder:text-subtle font-mono text-xs focus:outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/50"
+            />
+          </form>
 
-        <!-- Search Bar -->
-        <form
-          id="ast-search-form"
-          phx-change="search_ast_symbols"
-          phx-submit="search_ast_symbols"
-          class="relative"
-        >
-          <.icon name="hero-magnifying-glass" class="w-4 h-4 text-muted absolute left-3 top-2.5" />
-          <input
-            type="text"
-            name="query"
-            value={@ast_query}
-            phx-debounce="150"
-            placeholder="Search functions, macros, modules, specs (e.g. 'def add', 'Math.add', '@spec')..."
-            class="w-full bg-raised border border-line rounded-xl pl-9 pr-4 py-2 text-content placeholder:text-subtle font-mono text-xs focus:outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/50"
-          />
-        </form>
+          <%!-- Filter Chips (Type & Visibility) --%>
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <%!-- Type Filter Pills --%>
+            <div class="flex items-center gap-1.5 overflow-x-auto">
+              <%= for {t, label} <- [{"all", "All"}, {"function", "def / defp"}, {"module", "defmodule"}, {"macro", "defmacro"}, {"spec", "@spec"}, {"callback", "@callback"}, {"type", "@type"}, {"doc", "@doc"}] do %>
+                <button
+                  type="button"
+                  phx-click="set_ast_type_filter"
+                  phx-value-type={t}
+                  class={[
+                    "px-2.5 py-1 rounded-lg transition-smooth text-[11px] font-medium shrink-0 border",
+                    @ast_type_filter == t &&
+                      "bg-cyan-500/20 text-cyan-300 border-cyan-500/40 font-bold",
+                    @ast_type_filter != t &&
+                      "bg-raised text-muted hover:text-content border-line"
+                  ]}
+                >
+                  {label}
+                </button>
+              <% end %>
+            </div>
 
-        <!-- Filter Chips (Type & Visibility) -->
-        <div class="flex flex-wrap items-center justify-between gap-2">
-          <!-- Type Filter Pills -->
-          <div class="flex items-center gap-1.5 overflow-x-auto">
-            <%= for {t, label} <- [{"all", "All"}, {"function", "def / defp"}, {"module", "defmodule"}, {"macro", "defmacro"}, {"spec", "@spec"}, {"callback", "@callback"}, {"type", "@type"}, {"doc", "@doc"}] do %>
-              <button
-                type="button"
-                phx-click="set_ast_type_filter"
-                phx-value-type={t}
-                class={[
-                  "px-2.5 py-1 rounded-lg transition-smooth text-[11px] font-medium shrink-0 border",
-                  @ast_type_filter == t &&
-                    "bg-cyan-500/20 text-cyan-300 border-cyan-500/40 font-bold",
-                  @ast_type_filter != t &&
-                    "bg-raised text-muted hover:text-content border-line"
-                ]}
-              >
-                {label}
-              </button>
-            <% end %>
+            <%!-- Visibility Pills --%>
+            <div class="flex items-center bg-raised p-0.5 rounded-lg border border-line text-[11px]">
+              <%= for {v, label} <- [{"all", "All"}, {"public", "Public"}, {"private", "Private"}] do %>
+                <button
+                  type="button"
+                  phx-click="set_ast_visibility"
+                  phx-value-visibility={v}
+                  class={[
+                    "px-2 py-0.5 rounded font-medium transition-smooth",
+                    @ast_visibility == v && "bg-raised text-white font-bold",
+                    @ast_visibility != v && "text-muted hover:text-content"
+                  ]}
+                >
+                  {label}
+                </button>
+              <% end %>
+            </div>
           </div>
-
-          <!-- Visibility Pills -->
-          <div class="flex items-center bg-raised p-0.5 rounded-lg border border-line text-[11px]">
-            <%= for {v, label} <- [{"all", "All"}, {"public", "Public"}, {"private", "Private"}] do %>
-              <button
-                type="button"
-                phx-click="set_ast_visibility"
-                phx-value-visibility={v}
-                class={[
-                  "px-2 py-0.5 rounded font-medium transition-smooth",
-                  @ast_visibility == v && "bg-raised text-white font-bold",
-                  @ast_visibility != v && "text-muted hover:text-content"
-                ]}
-              >
-                {label}
-              </button>
-            <% end %>
-          </div>
         </div>
-      </div>
+      </.page_toolbar>
 
       <!-- Symbols Results List -->
       <div class="flex-1 overflow-y-auto p-4 space-y-3">

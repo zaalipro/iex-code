@@ -76,10 +76,12 @@
       </aside>
 
       <div class="settings-main">
-        <header id="settings-category-header" class="settings-category-header">
-          <h2>{tab_title(@active_tab)}</h2>
-          <p>{tab_description(@active_tab)}</p>
-        </header>
+        <.page_header
+          id="settings-category-header"
+          class="settings-category-header page-header--flush"
+          title={tab_title(@active_tab)}
+          description={tab_description(@active_tab)}
+        />
         <.form
           for={@settings_form}
           id="settings-form"

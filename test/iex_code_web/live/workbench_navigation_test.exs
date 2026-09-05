@@ -3,6 +3,27 @@ defmodule IexCodeWeb.WorkbenchNavigationTest do
 
   alias IexCode.Kanban
 
+  test "compact header tabs expose their selected view", %{conn: conn, workspace_path: path} do
+    project = create_project_fixture(%{root_path: path})
+    session = create_session_fixture(project)
+    {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+    view |> element("#sidebar-tab-changes") |> render_click()
+    assert has_element?(view, "#changes-staging-tab[aria-pressed='true']")
+    assert has_element?(view, "#changes-checkpoints-tab[aria-pressed='false']")
+    view |> element("#changes-checkpoints-tab") |> render_click()
+    assert has_element?(view, "#changes-checkpoints-tab[aria-pressed='true']")
+    assert has_element?(view, "#changes-staging-tab[aria-pressed='false']")
+
+    view |> element("#sidebar-tab-ast") |> render_click()
+    assert has_element?(view, "#symbol-explorer-ast-mode[aria-pressed='true']")
+    view |> element("#symbol-explorer-semantic-mode") |> render_click()
+    assert has_element?(view, "#symbol-explorer-semantic-mode[aria-pressed='true']")
+    assert has_element?(view, "#symbol-explorer-ast-mode[aria-pressed='false']")
+    assert has_element?(view, "#semantic-search-form")
+    refute has_element?(view, "#ast-explorer-panel")
+  end
+
   test "creating a task reveals its stage and card", %{
     conn: conn,
     workspace_path: path

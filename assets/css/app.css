@@ -8,6 +8,7 @@
 @import "./workspace_studio.css";
 @import "./mission_control.css";
 @import "./appearance_settings.css";
+@import "./page_headers.css";
 
 @source "../css";
 @source "../js";

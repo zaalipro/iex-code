@@ -1,68 +1,62 @@
 <Layouts.app flash={@flash}>
   <div id="workflows-live-container" class="min-h-screen bg-canvas text-content flex flex-col">
-    <!-- Studio Header Navigation Bar -->
-    <header class="border-b border-line bg-surface/90 backdrop-blur-md px-6 py-4 shrink-0">
-      <div class="flex flex-wrap items-center justify-between gap-4 max-w-[100rem] mx-auto">
-        <!-- Left: Return Link & Breadcrumb -->
-        <div class="flex items-center gap-3">
-          <.link
-            navigate={@return_path}
-            class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-raised border border-line text-xs font-mono text-muted hover:text-content hover:bg-accent/10 transition-colors"
-          >
-            <.icon name="hero-arrow-left" class="w-3.5 h-3.5" />
-            <span>Workspace</span>
-          </.link>
+    <.page_toolbar id="workflows-navigation">
+      <:leading>
+        <.link
+          navigate={@return_path}
+          class="header-control"
+        >
+          <.icon name="hero-arrow-left" class="w-3.5 h-3.5" />
+          <span>Workspace</span>
+        </.link>
 
+        <span class="text-subtle font-mono">/</span>
+
+        <.link
+          navigate={IexCodeWeb.WorkflowsLive.workflows_index_path(@context_session)}
+          class="text-xs font-mono text-accent hover:text-accent-strong hover:underline font-bold"
+        >
+          Workflows
+        </.link>
+
+        <%= if @workflow do %>
           <span class="text-subtle font-mono">/</span>
+          <span class="text-xs font-mono text-muted truncate max-w-[200px]">
+            {@workflow.name}
+          </span>
+        <% end %>
 
+        <%= if @run do %>
+          <span class="text-subtle font-mono">/</span>
+          <span class="text-xs font-mono text-accent">
+            Cockpit #{String.slice(to_string(@run.id), 0, 8)}
+          </span>
+        <% end %>
+      </:leading>
+      <:actions>
+        <%= if @live_action not in [:new, :session_new] do %>
           <.link
-            navigate={IexCodeWeb.WorkflowsLive.workflows_index_path(@context_session)}
-            class="text-xs font-mono text-accent hover:text-accent-strong hover:underline font-bold"
+            id="header-btn-new-workflow"
+            navigate={IexCodeWeb.WorkflowsLive.workflows_new_path(@context_session)}
+            class="header-control header-control--primary"
           >
-            Workflows
+            <.icon name="hero-plus" class="w-3.5 h-3.5" />
+            <span>New Workflow</span>
           </.link>
+        <% end %>
 
-          <%= if @workflow do %>
-            <span class="text-subtle font-mono">/</span>
-            <span class="text-xs font-mono text-muted truncate max-w-[200px]">
-              {@workflow.name}
-            </span>
-          <% end %>
-
-          <%= if @run do %>
-            <span class="text-subtle font-mono">/</span>
-            <span class="text-xs font-mono text-accent">
-              Cockpit #{String.slice(to_string(@run.id), 0, 8)}
-            </span>
-          <% end %>
-        </div>
-
-        <!-- Right: Action Buttons -->
-        <div class="flex items-center gap-2">
-          <%= if @live_action not in [:new, :session_new] do %>
-            <.link
-              id="header-btn-new-workflow"
-              navigate={IexCodeWeb.WorkflowsLive.workflows_new_path(@context_session)}
-              class="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl border border-accent bg-accent text-accent-ink font-mono text-xs font-bold hover:bg-accent-strong shadow-[var(--ui-shadow-control)] transition-all"
-            >
-              <.icon name="hero-plus" class="w-3.5 h-3.5" />
-              <span>New Workflow</span>
-            </.link>
-          <% end %>
-
-          <%= if @live_action not in [:index, :session_index] do %>
-            <.link
-              id="header-btn-gallery"
-              navigate={IexCodeWeb.WorkflowsLive.workflows_index_path(@context_session)}
-              class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-raised border border-line text-xs font-mono text-muted hover:text-content hover:bg-accent/10 transition-colors"
-            >
-              <.icon name="hero-rectangle-stack" class="w-3.5 h-3.5" />
-              <span>All Workflows</span>
-            </.link>
-          <% end %>
-        </div>
-      </div>
-    </header>
+        <%= if @live_action not in [:index, :session_index] do %>
+          <.link
+            id="header-btn-gallery"
+            navigate={IexCodeWeb.WorkflowsLive.workflows_index_path(@context_session)}
+            class="header-control"
+          >
+            <.icon name="hero-rectangle-stack" class="w-3.5 h-3.5" />
+            <span>All Workflows</span>
+          </.link>
+        <% end %>
+      </:actions>
+    </.page_toolbar>
 
     <!-- Main Content Area -->
     <main class="flex-1 overflow-y-auto p-6 max-w-[100rem] mx-auto w-full">
@@ -71,41 +65,23 @@
       <!-- =================================================================== -->
       <%= if @live_action in [:index, :session_index] do %>
         <div id="workflows-gallery" class="space-y-6">
-          <!-- Gallery Banner & Metrics -->
-          <div class="rounded-3xl border border-line bg-gradient-to-br from-surface via-raised to-inset p-8 shadow-2xl relative overflow-hidden">
-            <div class="relative z-10 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
-              <div class="max-w-2xl">
-                <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-accent/10 border border-accent/30 text-accent font-mono text-xs mb-3">
-                  <.icon name="hero-sparkles" class="w-3.5 h-3.5 text-accent" />
-                  <span>Grok-Like Autonomous Execution Engine</span>
-                </div>
-                <h1 class="text-3xl font-extrabold text-content tracking-tight sm:text-4xl">
-                  Project Workflows
-                </h1>
-                <p class="mt-2 text-sm text-muted leading-relaxed">
-                  Chain Deep Research, Swarm Code Generation, Automated Test Verification, Security Audits, and Git Commits into autonomous, model-aware directed graphs.
-                </p>
-              </div>
-
-              <!-- Quick Metrics Grid -->
-              <div class="grid grid-cols-2 sm:grid-cols-3 gap-3 shrink-0">
-                <div class="p-4 rounded-2xl bg-raised border border-line text-center">
-                  <p class="text-[10px] font-mono text-muted uppercase">Workflows</p>
-                  <p class="text-2xl font-bold text-content mt-1">{length(@workflows)}</p>
-                </div>
-                <div class="p-4 rounded-2xl bg-raised border border-line text-center">
-                  <p class="text-[10px] font-mono text-muted uppercase">Active Runs</p>
-                  <p class="text-2xl font-bold text-accent mt-1">
-                    {Enum.count(@active_runs, &(&1.status == "running"))}
-                  </p>
-                </div>
-                <div class="p-4 rounded-2xl bg-raised border border-line text-center col-span-2 sm:col-span-1">
-                  <p class="text-[10px] font-mono text-muted uppercase">Total Runs</p>
-                  <p class="text-2xl font-bold text-content mt-1">{length(@active_runs)}</p>
-                </div>
-              </div>
-            </div>
-          </div>
+          <.page_header
+            id="workflows-gallery-header"
+            class="page-header--flush"
+            title="Workflows"
+            heading_tag="h1"
+            description="Build and run multi-step research, coding, and verification workflows."
+            icon="hero-rectangle-stack"
+            count={length(@workflows)}
+          >
+            <:actions>
+              <span class="text-xs text-muted">
+                {Enum.count(@active_runs, &(&1.status == "running"))} active · {length(
+                  @active_runs
+                )} total runs
+              </span>
+            </:actions>
+          </.page_header>
 
           <!-- Controls: Search & Tag Filters -->
           <div class="flex flex-col sm:flex-row items-center justify-between gap-4">
@@ -272,15 +248,14 @@
       <!-- =================================================================== -->
       <%= if @live_action in [:new, :session_new] do %>
         <div id="workflows-builder" class="space-y-8 max-w-4xl mx-auto">
-          <!-- Header -->
-          <div class="border-b border-line pb-6">
-            <h1 class="text-2xl font-bold text-content tracking-tight">
-              Create New Workflow
-            </h1>
-            <p class="text-xs text-muted mt-1">
-              Synthesize a multi-step blueprint from natural language or customize the DAG parameters.
-            </p>
-          </div>
+          <.page_header
+            id="workflows-builder-header"
+            class="page-header--flush"
+            title="Create workflow"
+            heading_tag="h1"
+            description="Describe a workflow or configure its steps below."
+            icon="hero-rectangle-stack"
+          />
 
           <!-- Natural Language Synthesis Assistant -->
           <div class="rounded-2xl border border-accent/30 bg-surface p-6 space-y-4 shadow-xl">
@@ -400,30 +375,30 @@
       <!-- =================================================================== -->
       <%= if @live_action in [:show, :session_show] && @workflow do %>
         <div id="workflows-details" class="space-y-6">
-          <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-line pb-6">
-            <div>
-              <h1 class="text-2xl font-bold text-content tracking-tight">{@workflow.name}</h1>
-              <p class="text-xs font-mono text-muted mt-0.5">
-                {@workflow.slug} · Version {@workflow.version}
-              </p>
-              <p class="text-xs text-muted mt-2 max-w-2xl leading-relaxed">
-                {@workflow.description}
-              </p>
-            </div>
-
-            <div class="flex items-center gap-2 shrink-0">
+          <.page_header
+            id="workflows-detail-header"
+            class="page-header--flush"
+            title={@workflow.name}
+            heading_tag="h1"
+            description={@workflow.description}
+            icon="hero-rectangle-stack"
+          >
+            <:meta>
+              <span class="text-xs text-subtle">Version {@workflow.version} · {@workflow.slug}</span>
+            </:meta>
+            <:actions>
               <button
                 type="button"
                 id="btn-launch-details"
                 phx-click="launch_workflow"
                 phx-value-id={@workflow.id}
-                class="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-accent bg-accent text-accent-ink font-mono text-xs font-bold hover:bg-accent-strong shadow-[var(--ui-shadow-control)] transition-colors"
+                class="header-control header-control--primary"
               >
                 <.icon name="hero-play" class="w-4 h-4" />
                 <span>Launch Workflow</span>
               </button>
-            </div>
-          </div>
+            </:actions>
+          </.page_header>
 
           <!-- Static Preview of DAG Canvas -->
           <div class="space-y-2">

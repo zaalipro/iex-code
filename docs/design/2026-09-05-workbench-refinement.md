@@ -57,3 +57,21 @@ navigation, and vetoes it in the native callback before requesting quit. It
 exposes no HTTP shutdown route. The listener is reinstalled after page loads.
 Cleanup is bounded; the coordinator and seven-second watchdog outlive application
 group-leader shutdown.
+
+## Shared page headers
+
+`PageHeaderComponents` defines two reusable structures: `page_header` for a title,
+optional description/count/status, and actions; `page_toolbar` for branch controls,
+mode tabs, filters, and other compact actions. Both use the same title typography,
+control sizes, focus styles, and responsive wrapping. Spacing modifiers accommodate
+an already padded page without creating a separate visual design.
+
+Workspace tabs, Mission Control, Test Studio, Symbol Explorer, standalone Workflow
+pages, and Settings category headings use these components. Native screenshots of
+the five requested views were inspected. The 124-test focused run had one stale
+calendar-label expectation; the corrected navigation file passed 20 tests. A
+four-test navigation check also verifies selected states on the compact toolbars.
+
+Research panels, level/provider labels, report actions, and nested summaries now
+have explicit radii. The Research build was visually checked before integrating
+the shared headers; its focused precommit passed 43 tests.

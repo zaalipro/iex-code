@@ -897,304 +897,313 @@
         <%= if @active_tab == "kanban" do %>
           <div class="studio-board-pane flex-1 flex flex-col h-full min-w-0 overflow-hidden p-3 md:p-5 xl:p-6">
             <%!-- Header & Filter Bar --%>
-            <div class="studio-board-header flex flex-wrap items-center justify-between gap-3 mb-4 shrink-0">
-              <div class="studio-board-title">
-                <h2 class="text-base font-semibold text-content tracking-tight">Tasks</h2>
-                <span class="studio-board-total">{length(@tasks)}</span>
-              </div>
-
-              <div
-                id="kanban-header-actions"
-                class="studio-board-actions flex max-w-full items-center gap-3"
-              >
-                <%!-- Filter Bar --%>
-                <div class="studio-filter-bar flex min-w-0 items-center gap-2 text-xs text-muted">
-                  <.form
-                    for={to_form(@kanban_filter)}
-                    id="kanban-filter-form"
-                    phx-change="filter_kanban"
-                    class="flex items-center gap-2"
-                  >
-                    <div class="relative">
-                      <input
-                        type="text"
-                        name="search"
-                        value={@kanban_filter["search"]}
-                        placeholder="Find a task…"
-                        class="bg-[#11151c] border border-[#21262d] rounded-xl px-3 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-gray-400 transition-smooth"
-                      />
-                    </div>
-
-                    <input type="hidden" name="priority" value={@kanban_filter["priority"]} />
-                    <input type="hidden" name="status" value={@kanban_filter["status"]} />
-                    <input type="hidden" name="assignee" value={@kanban_filter["assignee"]} />
-                  </.form>
-
-                  <%!-- PRIORITY Custom Dropdown --%>
-                  <div
-                    class="relative"
-                    phx-click-away={@open_dropdown == "priority" && "close_dropdowns"}
-                  >
-                    <button
-                      type="button"
-                      phx-click="toggle_dropdown"
-                      phx-value-name="priority"
-                      aria-haspopup="listbox"
-                      aria-expanded={@open_dropdown == "priority"}
-                      aria-controls={
-                        if(@open_dropdown == "priority", do: "priority-filter-listbox", else: nil)
-                      }
-                      class={[
-                        "flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-mono transition-smooth",
-                        @kanban_filter["priority"] != "" &&
-                          "bg-amber-500/10 text-amber-300 border-amber-500/30",
-                        @kanban_filter["priority"] == "" &&
-                          "bg-[#11151c] hover:bg-[#161b22] text-gray-300 border-[#21262d]"
-                      ]}
+            <.page_header
+              id="kanban-page-header"
+              title="Tasks"
+              count={length(@tasks)}
+              icon="hero-squares-2x2"
+              class="studio-board-header page-header--embedded"
+            >
+              <:actions>
+                <div
+                  id="kanban-header-actions"
+                  class="studio-board-actions flex max-w-full items-center gap-3"
+                >
+                  <%!-- Filter Bar --%>
+                  <div class="studio-filter-bar flex min-w-0 items-center gap-2 text-xs text-muted">
+                    <.form
+                      for={to_form(@kanban_filter)}
+                      id="kanban-filter-form"
+                      phx-change="filter_kanban"
+                      class="flex items-center gap-2"
                     >
-                      <div class="flex items-end gap-0.5">
-                        <span class="w-1 h-1.5 rounded-xs bg-current"></span>
-                        <span class="w-1 h-2.5 rounded-xs bg-current"></span>
-                        <span class="w-1 h-3.5 rounded-xs bg-current"></span>
+                      <div class="relative">
+                        <input
+                          type="text"
+                          name="search"
+                          value={@kanban_filter["search"]}
+                          placeholder="Find a task…"
+                          class="bg-[#11151c] border border-[#21262d] rounded-xl px-3 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-gray-400 transition-smooth"
+                        />
                       </div>
-                      <span>
-                        <%= if @kanban_filter["priority"] != "" do %>
-                          {String.capitalize(@kanban_filter["priority"])}
-                        <% else %>
-                          Priority
-                        <% end %>
-                      </span>
-                      <.icon name="hero-chevron-down" class="w-3 h-3 text-gray-400" />
-                    </button>
 
-                    <%= if @open_dropdown == "priority" do %>
-                      <div
-                        id="priority-filter-listbox"
-                        role="listbox"
-                        aria-label="Filter by priority"
-                        class="absolute right-0 top-full mt-2 w-48 bg-[#11151c]/95 border border-[#21262d] rounded-2xl p-1.5 shadow-2xl backdrop-blur-xl z-50 animate-in fade-in zoom-in-95"
+                      <input type="hidden" name="priority" value={@kanban_filter["priority"]} />
+                      <input type="hidden" name="status" value={@kanban_filter["status"]} />
+                      <input type="hidden" name="assignee" value={@kanban_filter["assignee"]} />
+                    </.form>
+
+                    <%!-- PRIORITY Custom Dropdown --%>
+                    <div
+                      class="relative"
+                      phx-click-away={@open_dropdown == "priority" && "close_dropdowns"}
+                    >
+                      <button
+                        type="button"
+                        phx-click="toggle_dropdown"
+                        phx-value-name="priority"
+                        aria-haspopup="listbox"
+                        aria-expanded={@open_dropdown == "priority"}
+                        aria-controls={
+                          if(@open_dropdown == "priority",
+                            do: "priority-filter-listbox",
+                            else: nil
+                          )
+                        }
+                        class={[
+                          "flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-mono transition-smooth",
+                          @kanban_filter["priority"] != "" &&
+                            "bg-amber-500/10 text-amber-300 border-amber-500/30",
+                          @kanban_filter["priority"] == "" &&
+                            "bg-[#11151c] hover:bg-[#161b22] text-gray-300 border-[#21262d]"
+                        ]}
                       >
-                        <button
-                          type="button"
-                          role="option"
-                          aria-selected={@kanban_filter["priority"] == ""}
-                          phx-click="select_kanban_filter"
-                          phx-value-key="priority"
-                          phx-value-value=""
-                          class="w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs hover:bg-[#1c2128] text-gray-300 transition-smooth"
-                        >
-                          <span>All Priorities</span>
-                          <%= if @kanban_filter["priority"] == "" do %>
-                            <.icon name="hero-check" class="w-3.5 h-3.5 text-emerald-400" />
+                        <div class="flex items-end gap-0.5">
+                          <span class="w-1 h-1.5 rounded-xs bg-current"></span>
+                          <span class="w-1 h-2.5 rounded-xs bg-current"></span>
+                          <span class="w-1 h-3.5 rounded-xs bg-current"></span>
+                        </div>
+                        <span>
+                          <%= if @kanban_filter["priority"] != "" do %>
+                            {String.capitalize(@kanban_filter["priority"])}
+                          <% else %>
+                            Priority
                           <% end %>
-                        </button>
-                        <%= for p <- ["critical", "high", "medium", "low"] do %>
+                        </span>
+                        <.icon name="hero-chevron-down" class="w-3 h-3 text-gray-400" />
+                      </button>
+
+                      <%= if @open_dropdown == "priority" do %>
+                        <div
+                          id="priority-filter-listbox"
+                          role="listbox"
+                          aria-label="Filter by priority"
+                          class="absolute right-0 top-full mt-2 w-48 bg-[#11151c]/95 border border-[#21262d] rounded-2xl p-1.5 shadow-2xl backdrop-blur-xl z-50 animate-in fade-in zoom-in-95"
+                        >
                           <button
                             type="button"
                             role="option"
-                            aria-selected={@kanban_filter["priority"] == p}
+                            aria-selected={@kanban_filter["priority"] == ""}
                             phx-click="select_kanban_filter"
                             phx-value-key="priority"
-                            phx-value-value={p}
+                            phx-value-value=""
                             class="w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs hover:bg-[#1c2128] text-gray-300 transition-smooth"
                           >
-                            <div class="flex items-center gap-2">
-                              <span class={[
-                                "w-2 h-2 rounded-full",
-                                p == "critical" && "bg-red-400",
-                                p == "high" && "bg-orange-400",
-                                p == "medium" && "bg-blue-400",
-                                p == "low" && "bg-gray-400"
-                              ]}></span>
-                              <span class="capitalize">{p}</span>
-                            </div>
-                            <%= if @kanban_filter["priority"] == p do %>
+                            <span>All Priorities</span>
+                            <%= if @kanban_filter["priority"] == "" do %>
                               <.icon name="hero-check" class="w-3.5 h-3.5 text-emerald-400" />
                             <% end %>
                           </button>
-                        <% end %>
-                      </div>
-                    <% end %>
-                  </div>
-
-                  <%!-- STATUS Custom Dropdown --%>
-                  <div
-                    class="relative"
-                    phx-click-away={@open_dropdown == "status" && "close_dropdowns"}
-                  >
-                    <button
-                      type="button"
-                      phx-click="toggle_dropdown"
-                      phx-value-name="status"
-                      aria-haspopup="listbox"
-                      aria-expanded={@open_dropdown == "status"}
-                      aria-controls={
-                        if(@open_dropdown == "status", do: "status-filter-listbox", else: nil)
-                      }
-                      class={[
-                        "flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-mono transition-smooth",
-                        @kanban_filter["status"] != "" &&
-                          "bg-blue-500/10 text-blue-300 border-blue-500/30",
-                        @kanban_filter["status"] == "" &&
-                          "bg-[#11151c] hover:bg-[#161b22] text-gray-300 border-[#21262d]"
-                      ]}
-                    >
-                      <span class="text-xs">◌</span>
-                      <span>
-                        <%= if @kanban_filter["status"] != "" do %>
-                          {String.capitalize(@kanban_filter["status"])}
-                        <% else %>
-                          Status
-                        <% end %>
-                      </span>
-                      <.icon name="hero-chevron-down" class="w-3 h-3 text-gray-400" />
-                    </button>
-
-                    <%= if @open_dropdown == "status" do %>
-                      <div
-                        id="status-filter-listbox"
-                        role="listbox"
-                        aria-label="Filter by status"
-                        class="absolute right-0 top-full mt-2 w-52 bg-[#11151c]/95 border border-[#21262d] rounded-2xl p-1.5 shadow-2xl backdrop-blur-xl z-50 animate-in fade-in zoom-in-95 max-h-72 overflow-y-auto"
-                      >
-                        <button
-                          type="button"
-                          role="option"
-                          aria-selected={@kanban_filter["status"] == ""}
-                          phx-click="select_kanban_filter"
-                          phx-value-key="status"
-                          phx-value-value=""
-                          class="w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs hover:bg-[#1c2128] text-gray-300 transition-smooth"
-                        >
-                          <span>All Statuses</span>
-                          <%= if @kanban_filter["status"] == "" do %>
-                            <.icon name="hero-check" class="w-3.5 h-3.5 text-emerald-400" />
+                          <%= for p <- ["critical", "high", "medium", "low"] do %>
+                            <button
+                              type="button"
+                              role="option"
+                              aria-selected={@kanban_filter["priority"] == p}
+                              phx-click="select_kanban_filter"
+                              phx-value-key="priority"
+                              phx-value-value={p}
+                              class="w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs hover:bg-[#1c2128] text-gray-300 transition-smooth"
+                            >
+                              <div class="flex items-center gap-2">
+                                <span class={[
+                                  "w-2 h-2 rounded-full",
+                                  p == "critical" && "bg-red-400",
+                                  p == "high" && "bg-orange-400",
+                                  p == "medium" && "bg-blue-400",
+                                  p == "low" && "bg-gray-400"
+                                ]}></span>
+                                <span class="capitalize">{p}</span>
+                              </div>
+                              <%= if @kanban_filter["priority"] == p do %>
+                                <.icon name="hero-check" class="w-3.5 h-3.5 text-emerald-400" />
+                              <% end %>
+                            </button>
                           <% end %>
-                        </button>
-                        <%= for s <- Kanban.Task.statuses() do %>
+                        </div>
+                      <% end %>
+                    </div>
+
+                    <%!-- STATUS Custom Dropdown --%>
+                    <div
+                      class="relative"
+                      phx-click-away={@open_dropdown == "status" && "close_dropdowns"}
+                    >
+                      <button
+                        type="button"
+                        phx-click="toggle_dropdown"
+                        phx-value-name="status"
+                        aria-haspopup="listbox"
+                        aria-expanded={@open_dropdown == "status"}
+                        aria-controls={
+                          if(@open_dropdown == "status", do: "status-filter-listbox", else: nil)
+                        }
+                        class={[
+                          "flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-mono transition-smooth",
+                          @kanban_filter["status"] != "" &&
+                            "bg-blue-500/10 text-blue-300 border-blue-500/30",
+                          @kanban_filter["status"] == "" &&
+                            "bg-[#11151c] hover:bg-[#161b22] text-gray-300 border-[#21262d]"
+                        ]}
+                      >
+                        <span class="text-xs">◌</span>
+                        <span>
+                          <%= if @kanban_filter["status"] != "" do %>
+                            {String.capitalize(@kanban_filter["status"])}
+                          <% else %>
+                            Status
+                          <% end %>
+                        </span>
+                        <.icon name="hero-chevron-down" class="w-3 h-3 text-gray-400" />
+                      </button>
+
+                      <%= if @open_dropdown == "status" do %>
+                        <div
+                          id="status-filter-listbox"
+                          role="listbox"
+                          aria-label="Filter by status"
+                          class="absolute right-0 top-full mt-2 w-52 bg-[#11151c]/95 border border-[#21262d] rounded-2xl p-1.5 shadow-2xl backdrop-blur-xl z-50 animate-in fade-in zoom-in-95 max-h-72 overflow-y-auto"
+                        >
                           <button
                             type="button"
                             role="option"
-                            aria-selected={@kanban_filter["status"] == s}
+                            aria-selected={@kanban_filter["status"] == ""}
                             phx-click="select_kanban_filter"
                             phx-value-key="status"
-                            phx-value-value={s}
+                            phx-value-value=""
                             class="w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs hover:bg-[#1c2128] text-gray-300 transition-smooth"
                           >
-                            <div class="flex items-center gap-2">
-                              <span class={[
-                                "w-2 h-2 rounded-full",
-                                s == "triage" && "bg-gray-400",
-                                s == "todo" && "bg-purple-400",
-                                s == "scheduled" && "bg-indigo-400",
-                                s == "ready" && "bg-blue-400",
-                                s == "running" &&
-                                  "bg-emerald-400 shadow-[0_0_6px_rgba(34,197,94,0.8)]",
-                                s == "blocked" && "bg-red-400",
-                                s == "review" && "bg-amber-400",
-                                s == "done" && "bg-gray-500"
-                              ]}></span>
-                              <span class="uppercase tracking-wider">{s}</span>
-                            </div>
-                            <%= if @kanban_filter["status"] == s do %>
+                            <span>All Statuses</span>
+                            <%= if @kanban_filter["status"] == "" do %>
                               <.icon name="hero-check" class="w-3.5 h-3.5 text-emerald-400" />
                             <% end %>
                           </button>
-                        <% end %>
-                      </div>
-                    <% end %>
-                  </div>
-
-                  <%!-- ASSIGNEE Custom Dropdown --%>
-                  <div
-                    class="relative"
-                    phx-click-away={@open_dropdown == "assignee" && "close_dropdowns"}
-                  >
-                    <button
-                      type="button"
-                      phx-click="toggle_dropdown"
-                      phx-value-name="assignee"
-                      aria-haspopup="listbox"
-                      aria-expanded={@open_dropdown == "assignee"}
-                      aria-controls={
-                        if(@open_dropdown == "assignee", do: "assignee-filter-listbox", else: nil)
-                      }
-                      class={[
-                        "flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-mono transition-smooth",
-                        @kanban_filter["assignee"] != "" &&
-                          "bg-purple-500/10 text-purple-300 border-purple-500/30",
-                        @kanban_filter["assignee"] == "" &&
-                          "bg-[#11151c] hover:bg-[#161b22] text-gray-300 border-[#21262d]"
-                      ]}
-                    >
-                      <.icon name="hero-user" class="w-3.5 h-3.5 text-gray-400" />
-                      <span>
-                        <%= if @kanban_filter["assignee"] != "" do %>
-                          {String.capitalize(@kanban_filter["assignee"])}
-                        <% else %>
-                          Assignee
-                        <% end %>
-                      </span>
-                      <.icon name="hero-chevron-down" class="w-3 h-3 text-gray-400" />
-                    </button>
-
-                    <%= if @open_dropdown == "assignee" do %>
-                      <div
-                        id="assignee-filter-listbox"
-                        role="listbox"
-                        aria-label="Filter by assignee"
-                        class="absolute right-0 top-full mt-2 w-48 bg-[#11151c]/95 border border-[#21262d] rounded-2xl p-1.5 shadow-2xl backdrop-blur-xl z-50 animate-in fade-in zoom-in-95"
-                      >
-                        <button
-                          type="button"
-                          role="option"
-                          aria-selected={@kanban_filter["assignee"] == ""}
-                          phx-click="select_kanban_filter"
-                          phx-value-key="assignee"
-                          phx-value-value=""
-                          class="w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs hover:bg-[#1c2128] text-gray-300 transition-smooth"
-                        >
-                          <span>All Assignees</span>
-                          <%= if @kanban_filter["assignee"] == "" do %>
-                            <.icon name="hero-check" class="w-3.5 h-3.5 text-emerald-400" />
+                          <%= for s <- Kanban.Task.statuses() do %>
+                            <button
+                              type="button"
+                              role="option"
+                              aria-selected={@kanban_filter["status"] == s}
+                              phx-click="select_kanban_filter"
+                              phx-value-key="status"
+                              phx-value-value={s}
+                              class="w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs hover:bg-[#1c2128] text-gray-300 transition-smooth"
+                            >
+                              <div class="flex items-center gap-2">
+                                <span class={[
+                                  "w-2 h-2 rounded-full",
+                                  s == "triage" && "bg-gray-400",
+                                  s == "todo" && "bg-purple-400",
+                                  s == "scheduled" && "bg-indigo-400",
+                                  s == "ready" && "bg-blue-400",
+                                  s == "running" &&
+                                    "bg-emerald-400 shadow-[0_0_6px_rgba(34,197,94,0.8)]",
+                                  s == "blocked" && "bg-red-400",
+                                  s == "review" && "bg-amber-400",
+                                  s == "done" && "bg-gray-500"
+                                ]}></span>
+                                <span class="uppercase tracking-wider">{s}</span>
+                              </div>
+                              <%= if @kanban_filter["status"] == s do %>
+                                <.icon name="hero-check" class="w-3.5 h-3.5 text-emerald-400" />
+                              <% end %>
+                            </button>
                           <% end %>
-                        </button>
-                        <%= for a <- ["default", "planner", "coder", "verifier"] do %>
+                        </div>
+                      <% end %>
+                    </div>
+
+                    <%!-- ASSIGNEE Custom Dropdown --%>
+                    <div
+                      class="relative"
+                      phx-click-away={@open_dropdown == "assignee" && "close_dropdowns"}
+                    >
+                      <button
+                        type="button"
+                        phx-click="toggle_dropdown"
+                        phx-value-name="assignee"
+                        aria-haspopup="listbox"
+                        aria-expanded={@open_dropdown == "assignee"}
+                        aria-controls={
+                          if(@open_dropdown == "assignee",
+                            do: "assignee-filter-listbox",
+                            else: nil
+                          )
+                        }
+                        class={[
+                          "flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-mono transition-smooth",
+                          @kanban_filter["assignee"] != "" &&
+                            "bg-purple-500/10 text-purple-300 border-purple-500/30",
+                          @kanban_filter["assignee"] == "" &&
+                            "bg-[#11151c] hover:bg-[#161b22] text-gray-300 border-[#21262d]"
+                        ]}
+                      >
+                        <.icon name="hero-user" class="w-3.5 h-3.5 text-gray-400" />
+                        <span>
+                          <%= if @kanban_filter["assignee"] != "" do %>
+                            {String.capitalize(@kanban_filter["assignee"])}
+                          <% else %>
+                            Assignee
+                          <% end %>
+                        </span>
+                        <.icon name="hero-chevron-down" class="w-3 h-3 text-gray-400" />
+                      </button>
+
+                      <%= if @open_dropdown == "assignee" do %>
+                        <div
+                          id="assignee-filter-listbox"
+                          role="listbox"
+                          aria-label="Filter by assignee"
+                          class="absolute right-0 top-full mt-2 w-48 bg-[#11151c]/95 border border-[#21262d] rounded-2xl p-1.5 shadow-2xl backdrop-blur-xl z-50 animate-in fade-in zoom-in-95"
+                        >
                           <button
                             type="button"
                             role="option"
-                            aria-selected={@kanban_filter["assignee"] == a}
+                            aria-selected={@kanban_filter["assignee"] == ""}
                             phx-click="select_kanban_filter"
                             phx-value-key="assignee"
-                            phx-value-value={a}
+                            phx-value-value=""
                             class="w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs hover:bg-[#1c2128] text-gray-300 transition-smooth"
                           >
-                            <div class="flex items-center gap-2">
-                              <span class="w-4 h-4 rounded-full bg-[#21262d] text-center font-bold text-[8px] flex items-center justify-center text-white">
-                                {String.first(a) |> String.upcase()}
-                              </span>
-                              <span class="capitalize">{a}</span>
-                            </div>
-                            <%= if @kanban_filter["assignee"] == a do %>
+                            <span>All Assignees</span>
+                            <%= if @kanban_filter["assignee"] == "" do %>
                               <.icon name="hero-check" class="w-3.5 h-3.5 text-emerald-400" />
                             <% end %>
                           </button>
-                        <% end %>
-                      </div>
-                    <% end %>
+                          <%= for a <- ["default", "planner", "coder", "verifier"] do %>
+                            <button
+                              type="button"
+                              role="option"
+                              aria-selected={@kanban_filter["assignee"] == a}
+                              phx-click="select_kanban_filter"
+                              phx-value-key="assignee"
+                              phx-value-value={a}
+                              class="w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs hover:bg-[#1c2128] text-gray-300 transition-smooth"
+                            >
+                              <div class="flex items-center gap-2">
+                                <span class="w-4 h-4 rounded-full bg-[#21262d] text-center font-bold text-[8px] flex items-center justify-center text-white">
+                                  {String.first(a) |> String.upcase()}
+                                </span>
+                                <span class="capitalize">{a}</span>
+                              </div>
+                              <%= if @kanban_filter["assignee"] == a do %>
+                                <.icon name="hero-check" class="w-3.5 h-3.5 text-emerald-400" />
+                              <% end %>
+                            </button>
+                          <% end %>
+                        </div>
+                      <% end %>
+                    </div>
                   </div>
-                </div>
 
-                <button
-                  id="kanban-empty-create-task"
-                  type="button"
-                  phx-click="toggle_new_task_modal"
-                  class="studio-primary-action ui-depth-effect inline-flex min-h-9 shrink-0 items-center gap-2 rounded-full bg-accent-strong px-4 py-2 text-xs font-semibold text-accent-ink transition-smooth"
-                >
-                  <.icon name="hero-plus" class="h-3.5 w-3.5" /> Create task
-                </button>
-              </div>
-            </div>
+                  <button
+                    id="kanban-empty-create-task"
+                    type="button"
+                    phx-click="toggle_new_task_modal"
+                    class="header-control header-control--primary"
+                  >
+                    <.icon name="hero-plus" class="h-3.5 w-3.5" /> Create task
+                  </button>
+                </div>
+              </:actions>
+            </.page_header>
 
             <% kanban_filters_active? =
               Enum.any?(@kanban_filter, fn {_key, value} -> value != "" end) %>
@@ -1415,40 +1424,36 @@
         <%= if @active_tab == "workflows" do %>
           <div
             id="workflows-tab-pane"
-            class="flex-1 flex flex-col h-full min-w-0 overflow-y-auto p-4 md:p-6 space-y-6"
+            class="flex-1 flex flex-col h-full min-w-0 overflow-y-auto p-5 space-y-5"
           >
-            <div class="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-[#21262d]">
-              <div>
-                <h2 class="text-xl font-bold text-white tracking-tight flex items-center gap-2">
-                  <.icon name="hero-rectangle-stack" class="w-5 h-5 text-cyan-400" />
-                  Workflows Library & Launcher
-                  <span class="px-2 py-0.5 rounded-full bg-[#1c2128] text-xs font-mono text-cyan-400 border border-cyan-500/30">
-                    {length(@workflows || [])}
-                  </span>
-                </h2>
-                <p class="text-xs text-zinc-400 mt-1">
-                  Launch autonomous multi-step pipelines or track active executions.
-                </p>
-              </div>
-
-              <div class="flex items-center gap-2">
+            <.page_header
+              id="workflows-page-header"
+              title="Workflows"
+              description="Launch multi-step workflows and track their progress."
+              count={length(@workflows || [])}
+              icon="hero-rectangle-stack"
+              class="page-header--embedded"
+            >
+              <:actions>
                 <.link
+                  id="workspace-create-workflow"
                   navigate={~p"/sessions/#{@session.id}/workflows/new"}
-                  class="studio-primary-action ui-depth-effect inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold transition-all"
+                  class="header-control header-control--primary"
                 >
                   <.icon name="hero-plus" class="w-3.5 h-3.5" />
-                  <span>Create Workflow</span>
+                  <span>Create workflow</span>
                 </.link>
 
                 <.link
+                  id="workspace-open-workflow-studio"
                   navigate={~p"/sessions/#{@session.id}/workflows"}
-                  class="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-white/5 border border-white/10 text-xs font-mono text-zinc-300 hover:text-white hover:bg-white/10 transition-colors"
+                  class="header-control"
                 >
                   <.icon name="hero-arrow-top-right-on-square" class="w-3.5 h-3.5" />
-                  <span>Open Full Studio</span>
+                  <span>Open studio</span>
                 </.link>
-              </div>
-            </div>
+              </:actions>
+            </.page_header>
 
             <%!-- Workflow Cards Grid in Workspace --%>
             <%= if length(@workflows || []) > 0 do %>
@@ -1963,61 +1968,62 @@
             <%!-- Centered Dark Calendar Container --%>
             <div class="bg-[#11151c] border border-[#21262d] rounded-3xl p-6 shadow-2xl max-w-4xl w-full mx-auto">
               <%!-- Calendar Header Row --%>
-              <div class="flex items-center justify-between mb-6">
-                <div class="flex items-center gap-3">
-                  <h2 class="text-xl font-bold text-white tracking-tight font-sans">
-                    {month_name(@calendar_month)}, {@calendar_year}
-                  </h2>
+              <.page_header
+                id="calendar-page-header"
+                title={"#{month_name(@calendar_month)} #{@calendar_year}"}
+                icon="hero-calendar-days"
+                class="page-header--embedded mb-5"
+              >
+                <:actions>
                   <% today = Date.utc_today() %>
                   <button
+                    id="calendar-today-btn"
                     phx-click="select_calendar_day"
                     phx-value-day={today.day}
                     phx-value-date={Date.to_iso8601(today)}
-                    class="px-3 py-1 rounded-full bg-[#1c2128] border border-[#30363d] text-xs font-mono text-gray-300 hover:text-white transition-smooth"
+                    class="header-control"
                   >
                     Today
                   </button>
                   <div class="flex items-center gap-1 text-gray-400">
                     <button
+                      id="calendar-prev-month-btn"
                       phx-click="calendar_prev_month"
                       aria-label="Previous month"
-                      class="p-1 rounded-lg hover:bg-[#1c2128] text-gray-400 hover:text-white transition-smooth"
+                      class="header-control header-control--icon"
                     >
                       <.icon name="hero-chevron-left" class="w-4 h-4" />
                     </button>
                     <button
+                      id="calendar-next-month-btn"
                       phx-click="calendar_next_month"
                       aria-label="Next month"
-                      class="p-1 rounded-lg hover:bg-[#1c2128] text-gray-400 hover:text-white transition-smooth"
+                      class="header-control header-control--icon"
                     >
                       <.icon name="hero-chevron-right" class="w-4 h-4" />
                     </button>
                   </div>
-                </div>
-
-                <%!-- Header Actions --%>
-                <div class="flex items-center gap-2">
                   <button
                     id="calendar-focus-time-btn"
                     phx-click="open_time_picker"
-                    class="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#1c2128] hover:bg-[#21262d] border border-[#30363d] text-xs font-mono text-gray-300 hover:text-white transition-smooth"
+                    class="header-control"
                     title="Set focus time and availability window"
                   >
-                    <.icon name="hero-clock" class="w-3.5 h-3.5 text-blue-400" />
-                    <span>Set Focus Time</span>
+                    <.icon name="hero-clock" class="w-3.5 h-3.5" />
+                    <span>Set focus time</span>
                   </button>
 
-                  <%!-- Primary Coral Plus Trigger --%>
                   <button
+                    id="calendar-create-task-btn"
                     phx-click="toggle_new_task_modal"
                     aria-label="Create a task for the selected day"
-                    class="w-9 h-9 rounded-full bg-[#ff5e3a] hover:bg-[#ff4e24] text-white flex items-center justify-center shadow-lg shadow-orange-500/25 transition-smooth"
+                    class="header-control header-control--primary header-control--icon"
                     title="Schedule New Task"
                   >
                     <.icon name="hero-plus" class="w-5 h-5" />
                   </button>
-                </div>
-              </div>
+                </:actions>
+              </.page_header>
 
               <%!-- Day of Week Headers --%>
               <div id="calendar-weekdays" class="grid grid-cols-7 gap-2 mb-2 text-center">
@@ -2155,9 +2161,9 @@
         <%= if @active_tab == "changes" do %>
           <div class="changes-workspace flex-1 flex flex-col h-full overflow-hidden">
             <%!-- Top Git Branch & Sync Toolbar --%>
-            <div
+            <.page_toolbar
               id="changes-toolbar"
-              class="px-3 sm:px-4 py-2.5 border-b border-[#21262d] bg-[#11151c] flex flex-wrap items-center justify-between gap-2 shrink-0 font-mono text-xs"
+              title="Changes"
             >
               <div class="flex min-w-0 items-center gap-2 sm:gap-3 relative">
                 <%!-- Branch Selector Button --%>
@@ -2166,11 +2172,12 @@
                   phx-click-away={@show_branch_menu && "close_branch_menu"}
                 >
                   <button
+                    id="changes-branch-selector"
                     type="button"
                     phx-click="toggle_branch_menu"
-                    class="flex items-center gap-2 px-3 py-1.5 bg-[#161b22] hover:bg-[#21262d] border border-[#30363d] rounded-lg text-white font-medium transition-smooth"
+                    class="header-control"
                   >
-                    <.icon name="hero-code-bracket-square" class="w-4 h-4 text-emerald-400" />
+                    <.icon name="hero-code-bracket-square" class="w-4 h-4" />
                     <span class="max-w-28 truncate sm:max-w-48">{@current_branch}</span>
                     <.icon name="hero-chevron-down" class="w-3.5 h-3.5 text-gray-400" />
                   </button>
@@ -2229,70 +2236,67 @@
                   <strong class="text-white">{(@git_status && @git_status.behind) || 0}</strong></span>
                 </div>
               </div>
-
-              <div class="flex items-center gap-1.5 sm:gap-2">
+              <:actions>
                 <button
+                  id="changes-fetch-btn"
                   type="button"
                   phx-click="git_fetch"
-                  class="flex items-center gap-1.5 px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] border border-[#21262d] hover:border-[#30363d] text-gray-300 hover:text-white rounded-lg transition-smooth"
+                  class="header-control"
                   title="Fetch latest remote commits"
                 >
-                  <.icon name="hero-arrow-down-tray" class="w-3.5 h-3.5 text-cyan-400" />
+                  <.icon name="hero-arrow-down-tray" class="w-3.5 h-3.5" />
                   <span class="hidden sm:inline">Fetch</span>
                 </button>
                 <button
+                  id="changes-pull-btn"
                   type="button"
                   phx-click="git_pull"
-                  class="flex items-center gap-1.5 px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] border border-[#21262d] hover:border-[#30363d] text-gray-300 hover:text-white rounded-lg transition-smooth"
+                  class="header-control"
                   title="Pull remote changes into local branch"
                 >
-                  <.icon name="hero-arrow-path" class="w-3.5 h-3.5 text-emerald-400" />
+                  <.icon name="hero-arrow-path" class="w-3.5 h-3.5" />
                   <span class="hidden sm:inline">Pull</span>
                 </button>
                 <%!-- Subtab Switcher: Staging vs Time-Travel --%>
                 <div class="flex items-center bg-[#0d1117] p-0.5 rounded-lg border border-[#21262d]">
                   <button
+                    id="changes-staging-tab"
                     type="button"
                     phx-click="switch_changes_subtab"
                     phx-value-tab="changes"
-                    class={[
-                      "px-2.5 py-1 rounded text-xs transition-smooth",
-                      @changes_subtab != "checkpoints" && "bg-[#21262d] text-white font-bold",
-                      @changes_subtab == "checkpoints" && "text-gray-400 hover:text-gray-200"
-                    ]}
+                    aria-pressed={to_string(@changes_subtab != "checkpoints")}
+                    class="header-control"
                   >
-                    Staging & Diff
+                    Staging & diff
                   </button>
                   <button
+                    id="changes-checkpoints-tab"
                     type="button"
                     phx-click="switch_changes_subtab"
                     phx-value-tab="checkpoints"
-                    class={[
-                      "px-2.5 py-1 rounded text-xs transition-smooth flex items-center gap-1",
-                      @changes_subtab == "checkpoints" &&
-                        "bg-purple-900/40 text-purple-300 border border-purple-700/50 font-bold",
-                      @changes_subtab != "checkpoints" && "text-gray-400 hover:text-gray-200"
-                    ]}
+                    aria-pressed={to_string(@changes_subtab == "checkpoints")}
+                    class="header-control"
                   >
-                    <.icon name="hero-clock" class="w-3.5 h-3.5 text-purple-400" />
-                    <span>Time-Travel ({length(@checkpoints || [])})</span>
+                    <.icon name="hero-clock" class="w-3.5 h-3.5" />
+                    <span>Time travel ({length(@checkpoints || [])})</span>
                   </button>
                 </div>
                 <button
+                  id="changes-detach-btn"
                   type="button"
                   phx-click="detach_window"
                   phx-value-tool="diff"
-                  class="flex items-center gap-1.5 px-2.5 py-1 bg-[#161b22] hover:bg-[#21262d] border border-[#21262d] hover:border-[#30363d] text-blue-300 hover:text-white rounded-lg transition-smooth"
+                  class="header-control"
                   title="Detach Git Diff into standalone window"
                 >
                   <.icon
                     name="hero-arrow-top-right-on-square"
-                    class="w-3.5 h-3.5 text-blue-400"
+                    class="w-3.5 h-3.5"
                   />
                   <span class="hidden sm:inline">Detach</span>
                 </button>
-              </div>
-            </div>
+              </:actions>
+            </.page_toolbar>
 
             <%= if @changes_subtab == "checkpoints" do %>
               <%!-- Time-Travel Scrubber & 1-Click Rollback View --%>
@@ -2785,27 +2789,16 @@
             class="flex-1 flex flex-col h-full bg-[#0a0d12] overflow-hidden text-gray-200 font-mono text-xs"
           >
             <%!-- Header Toolbar --%>
-            <div
+            <.page_header
               id="consensus-panel"
-              class="px-4 py-3 bg-[#11151c] border-b border-[#21262d] flex flex-wrap items-center justify-between gap-3 shrink-0"
+              title="Consensus"
+              description="Compare model reviews and approve or reject the proposal."
+              icon="hero-scale"
             >
-              <div class="flex items-center gap-3">
-                <.icon name="hero-scale" class="w-5 h-5 text-amber-400" />
-                <div>
-                  <h1 class="text-sm font-bold text-white flex items-center gap-2">
-                    <span>Multi-Model Adversarial Consensus</span>
-                    <span class="px-2 py-0.5 rounded text-[10px] bg-amber-900/40 text-amber-300 border border-amber-700/50 font-semibold">
-                      Swarm Voting Active
-                    </span>
-                  </h1>
-                  <p class="text-[11px] text-gray-400">
-                    Cross-validating patch proposals between Cloud LLMs and local Apple Silicon models
-                  </p>
-                </div>
-              </div>
-
-              <%!-- Manual Arbitration Controls --%>
-              <div class="flex items-center gap-2">
+              <:meta>
+                <span class="text-xs text-gray-400">Swarm voting active</span>
+              </:meta>
+              <:actions>
                 <%= if @consensus_status == :approved do %>
                   <div class="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-950/60 border border-emerald-800/80 rounded-lg text-emerald-300 font-semibold text-xs">
                     <.icon name="hero-check-circle" class="w-4 h-4 text-emerald-400" />
@@ -2825,24 +2818,24 @@
                     type="button"
                     id="consensus-btn-approve"
                     phx-click="approve_consensus"
-                    class="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold flex items-center gap-1.5 shadow-sm transition-smooth"
+                    class="header-control header-control--primary"
                   >
                     <.icon name="hero-check" class="w-3.5 h-3.5" />
-                    <span>Approve Proposal</span>
+                    <span>Approve proposal</span>
                   </button>
                   <button
                     type="button"
                     id="consensus-btn-reject"
                     phx-click="reject_consensus"
                     phx-value-reason="Security concerns"
-                    class="px-3 py-1.5 rounded-lg bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/30 text-rose-300 font-semibold flex items-center gap-1.5 transition-smooth"
+                    class="header-control"
                   >
-                    <.icon name="hero-x-mark" class="w-3.5 h-3.5 text-rose-400" />
-                    <span>Reject Proposal</span>
+                    <.icon name="hero-x-mark" class="w-3.5 h-3.5" />
+                    <span>Reject proposal</span>
                   </button>
                 <% end %>
-              </div>
-            </div>
+              </:actions>
+            </.page_header>
 
             <%!-- Main Consensus Content --%>
             <div class="flex-1 flex min-h-0 overflow-y-auto p-4 gap-4 flex-col lg:flex-row">
@@ -3173,55 +3166,51 @@
         <%= if @active_tab == "ast" do %>
           <div class="flex-1 flex flex-col h-full overflow-hidden">
             <%!-- Mode Switcher Bar --%>
-            <div class="px-4 py-2 bg-[#161b22] border-b border-[#30363d] flex items-center justify-between shrink-0 font-mono text-xs">
-              <div class="flex items-center gap-2">
+            <.page_toolbar id="symbol-explorer-mode-toolbar">
+              <:leading>
                 <button
+                  id="symbol-explorer-ast-mode"
                   type="button"
                   phx-click="set_ast_mode"
                   phx-value-mode="ast"
-                  class={[
-                    "px-3 py-1 rounded-lg transition-smooth flex items-center gap-1.5",
-                    @ast_search_mode == "ast" &&
-                      "bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 font-bold",
-                    @ast_search_mode != "ast" && "text-zinc-400 hover:text-zinc-200"
-                  ]}
+                  aria-pressed={to_string(@ast_search_mode == "ast")}
+                  class="header-control"
                 >
                   <.icon name="hero-cube-transparent" class="w-3.5 h-3.5" />
-                  <span>AST Symbols</span>
+                  <span>Symbols</span>
                 </button>
                 <button
+                  id="symbol-explorer-semantic-mode"
                   type="button"
                   phx-click="set_ast_mode"
                   phx-value-mode="semantic"
-                  class={[
-                    "px-3 py-1 rounded-lg transition-smooth flex items-center gap-1.5",
-                    @ast_search_mode == "semantic" &&
-                      "bg-purple-500/20 text-purple-300 border border-purple-500/30 font-bold",
-                    @ast_search_mode != "semantic" && "text-zinc-400 hover:text-zinc-200"
-                  ]}
+                  aria-pressed={to_string(@ast_search_mode == "semantic")}
+                  class="header-control"
                 >
                   <.icon name="hero-sparkles" class="w-3.5 h-3.5" />
-                  <span>Semantic Vector Search</span>
+                  <span>Semantic search</span>
                 </button>
-              </div>
-
-              <%= if @ast_search_mode == "semantic" do %>
-                <div class="flex items-center gap-2">
-                  <span class="text-[11px] text-zinc-500">
-                    {@semantic_stats.ets_chunks} chunks cached
-                  </span>
-                  <button
-                    type="button"
-                    phx-click="reindex_semantic"
-                    class="px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-[#30363d] text-[11px] flex items-center gap-1 transition-smooth"
-                    title="Re-index workspace chunks into SQLite and ETS"
-                  >
-                    <.icon name="hero-arrow-path" class="w-3 h-3" />
-                    <span>Re-index Codebase</span>
-                  </button>
-                </div>
-              <% end %>
-            </div>
+              </:leading>
+              <:actions>
+                <%= if @ast_search_mode == "semantic" do %>
+                  <div class="flex items-center gap-2">
+                    <span class="text-[11px] text-zinc-500">
+                      {@semantic_stats.ets_chunks} chunks cached
+                    </span>
+                    <button
+                      id="semantic-reindex-btn"
+                      type="button"
+                      phx-click="reindex_semantic"
+                      class="header-control"
+                      title="Re-index workspace chunks into SQLite and ETS"
+                    >
+                      <.icon name="hero-arrow-path" class="w-3 h-3" />
+                      <span>Re-index codebase</span>
+                    </button>
+                  </div>
+                <% end %>
+              </:actions>
+            </.page_toolbar>
 
             <%= if @ast_search_mode == "ast" do %>
               <.ast_explorer
@@ -3238,24 +3227,21 @@
                 id="semantic-search-panel"
                 class="flex-1 flex flex-col h-full bg-[#0d1117] overflow-hidden font-mono text-xs"
               >
-                <div class="p-4 border-b border-[#21262d] bg-[#11151c] flex flex-col gap-3">
-                  <div class="flex items-center justify-between">
-                    <div>
-                      <h2 class="text-sm font-bold text-gray-100 flex items-center gap-2">
-                        <span>Offline Local Semantic Vector Search</span>
-                        <span class="px-2 py-0.5 rounded text-[10px] bg-emerald-900/40 text-emerald-300 border border-emerald-700/50">Zero-Cloud</span>
-                      </h2>
-                      <p class="text-[11px] text-gray-400 mt-0.5">
-                        Pure BEAM IEEE-754 vector similarity matching with sub-second retrieval
-                      </p>
-                    </div>
-                  </div>
-
+                <.page_header
+                  id="semantic-search-page-header"
+                  title="Semantic search"
+                  description="Find related code with natural language, entirely on your machine."
+                  icon="hero-sparkles"
+                />
+                <.page_toolbar
+                  id="semantic-search-toolbar"
+                  class="[&_.page-toolbar__controls]:w-full"
+                >
                   <form
                     id="semantic-search-form"
                     phx-change="search_semantic"
                     phx-submit="search_semantic"
-                    class="relative"
+                    class="relative w-full"
                   >
                     <.icon
                       name="hero-magnifying-glass"
@@ -3270,7 +3256,7 @@
                       class="w-full bg-[#161b22] border border-[#21262d] rounded-xl pl-9 pr-4 py-2 text-gray-100 placeholder-gray-500 font-mono text-xs focus:outline-none focus:border-purple-500/50 focus:ring-1 focus:ring-purple-500/50"
                     />
                   </form>
-                </div>
+                </.page_toolbar>
 
                 <%!-- Semantic Results List --%>
                 <div class="flex-1 overflow-y-auto p-4 space-y-3">
@@ -3322,42 +3308,35 @@
         <%!-- DEDICATED DEEP RESEARCH WORKSPACE --%>
         <%= if @active_tab == "research" do %>
           <% level = research_level_semantics(@research_launch_level) %>
-          <div id="deep-research-page" class="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8">
+          <div id="deep-research-page" class="flex-1 overflow-y-auto p-5">
             <div class="mx-auto max-w-7xl space-y-5">
-              <header class="flex flex-col gap-5 border-b border-[#252c35] pb-6 lg:flex-row lg:items-end lg:justify-between">
-                <div class="max-w-3xl">
-                  <div class="mb-2 flex items-center gap-2 font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-violet-300">
-                    <span class="h-1.5 w-1.5 bg-violet-400"></span> Evidence workspace
-                  </div>
-                  <h2 class="text-3xl font-semibold tracking-[-0.04em] text-white sm:text-4xl">
-                    Deep research, without hidden work.
-                  </h2>
-                  <p class="mt-3 max-w-[68ch] text-sm leading-6 text-gray-400">
-                    Define an exact bounded investigation, attach prior research, and keep the
-                    requested execution contract visible before any work begins.
-                  </p>
-                </div>
-                <div class="flex items-center gap-2">
+              <.page_header
+                id="research-page-header"
+                title="Research"
+                description="Plan an investigation, attach prior findings, and review your reports."
+                icon="hero-magnifying-glass"
+                class="page-header--embedded"
+              >
+                <:actions>
                   <button
+                    id="research-detach-dag"
                     type="button"
                     phx-click="detach_window"
                     phx-value-tool="dag"
-                    class="inline-flex min-h-11 items-center justify-center gap-2 border border-[#303844] bg-[#11161d] px-4 font-mono text-[10px] font-semibold uppercase tracking-wider text-cyan-300 transition-colors hover:border-cyan-400/40 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/60"
+                    class="header-control"
                     title="Detach DAG execution map into standalone window"
                   >
-                    <.icon name="hero-arrow-top-right-on-square" class="h-4 w-4 text-cyan-400" />
-                    Detach DAG Map
+                    <.icon name="hero-arrow-top-right-on-square" class="h-4 w-4" /> Detach map
                   </button>
                   <.link
                     id="research-open-settings"
                     navigate={~p"/sessions/#{@session.id}/settings#providers"}
-                    class="inline-flex min-h-11 items-center justify-center gap-2 border border-[#303844] bg-[#11161d] px-4 font-mono text-[10px] font-semibold uppercase tracking-wider text-gray-300 transition-colors hover:border-violet-400/40 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60"
+                    class="header-control"
                   >
-                    <.icon name="hero-adjustments-horizontal" class="h-4 w-4 text-violet-300" />
-                    Provider settings
+                    <.icon name="hero-adjustments-horizontal" class="h-4 w-4" /> Provider settings
                   </.link>
-                </div>
-              </header>
+                </:actions>
+              </.page_header>
 
               <div class="grid gap-5 xl:grid-cols-[minmax(0,1.15fr)_minmax(22rem,0.85fr)]">
                 <.form
@@ -3365,7 +3344,7 @@
                   id="deep-research-form"
                   phx-change="update_research_launch"
                   phx-submit="submit_deep_research"
-                  class="min-w-0 border border-[#29313a] bg-[#0d1218] p-4 sm:p-5"
+                  class="research-panel min-w-0 border border-[#29313a] bg-[#0d1218] p-4 sm:p-5"
                 >
                   <input
                     id="deep-research-request-id"
@@ -3380,7 +3359,7 @@
                         Queued as a durable finite DAG with exact level limits.
                       </p>
                     </div>
-                    <span class="border border-violet-500/20 bg-violet-500/[0.05] px-2 py-1 font-mono text-[9px] uppercase tracking-wider text-violet-300">
+                    <span class="research-badge border border-violet-500/20 bg-violet-500/[0.05] px-2 py-1 font-mono text-[9px] uppercase tracking-wider text-violet-300">
                       async · durable
                     </span>
                   </div>
@@ -3411,7 +3390,7 @@
                           ]
                         }
                         class={[
-                          "cursor-pointer border p-3 transition-colors focus-within:outline-none focus-within:ring-2 focus-within:ring-violet-300/70",
+                          "research-choice cursor-pointer border p-3 transition-colors focus-within:outline-none focus-within:ring-2 focus-within:ring-violet-300/70",
                           @research_launch_level == level_name &&
                             "border-violet-400/50 bg-violet-500/[0.07]",
                           @research_launch_level != level_name &&
@@ -3439,7 +3418,7 @@
                   </fieldset>
 
                   <div class="mt-4 grid gap-3 sm:grid-cols-2">
-                    <div class="border border-[#29313a] bg-[#10151b] px-3 py-2.5">
+                    <div class="research-inset border border-[#29313a] bg-[#10151b] px-3 py-2.5">
                       <p class="font-mono text-[9px] uppercase tracking-wider text-gray-600">
                         Requested rounds
                       </p>
@@ -3447,7 +3426,7 @@
                         {level.rounds} sequential evidence rounds
                       </p>
                     </div>
-                    <div class="border border-[#29313a] bg-[#10151b] px-3 py-2.5">
+                    <div class="research-inset border border-[#29313a] bg-[#10151b] px-3 py-2.5">
                       <p class="font-mono text-[9px] uppercase tracking-wider text-gray-600">
                         Per-search-step query fanout
                       </p>
@@ -3481,7 +3460,7 @@
                         <label
                           :for={provider <- @settings.search_provider_order || ["duckduckgo"]}
                           class={[
-                            "inline-flex min-h-9 items-center gap-2 border border-[#303844] bg-[#10151b] px-2.5 font-mono text-[9px]",
+                            "research-choice inline-flex min-h-9 items-center gap-2 border border-[#303844] bg-[#10151b] px-2.5 font-mono text-[9px]",
                             research_provider_selectable?(@settings, provider) &&
                               "cursor-pointer text-gray-400",
                             !research_provider_selectable?(@settings, provider) &&
@@ -3513,7 +3492,7 @@
                     </div>
                   </div>
 
-                  <div class="mt-5 border border-[#29313a] bg-[#0a0f14] p-3">
+                  <div class="research-inset mt-5 border border-[#29313a] bg-[#0a0f14] p-3">
                     <div class="flex flex-wrap items-center justify-between gap-3">
                       <div>
                         <p class="font-mono text-[10px] font-semibold uppercase tracking-wider text-gray-400">
@@ -3529,7 +3508,7 @@
                         phx-click="toggle_research_attachment_picker"
                         aria-expanded={@research_attachment_picker_open?}
                         aria-controls="deep-research-attachment-picker"
-                        class="inline-flex min-h-10 items-center gap-2 border border-[#303844] px-3 font-mono text-[9px] uppercase tracking-wider text-gray-300 hover:border-violet-400/40"
+                        class="research-action inline-flex min-h-10 items-center gap-2 border border-[#303844] px-3 font-mono text-[9px] uppercase tracking-wider text-gray-300 hover:border-violet-400/40"
                       >
                         <.icon name="hero-paper-clip" class="h-3.5 w-3.5 text-violet-300" />
                         Attach ready results
@@ -3543,7 +3522,7 @@
                         :for={
                           public_id <- @research_attachments |> MapSet.to_list() |> Enum.sort()
                         }
-                        class="max-w-full truncate border border-violet-500/20 bg-violet-500/[0.05] px-2 py-1 font-mono text-[9px] text-violet-200"
+                        class="research-badge max-w-full truncate border border-violet-500/20 bg-violet-500/[0.05] px-2 py-1 font-mono text-[9px] text-violet-200"
                         title={"Ready research result ##{public_id}"}
                       >
                         /deep_research {public_id}
@@ -3609,7 +3588,7 @@
                     id="deep-research-submit"
                     type="submit"
                     phx-disable-with="Checking availability…"
-                    class="mt-5 inline-flex min-h-12 w-full items-center justify-center gap-2 bg-violet-400 px-5 font-mono text-[11px] font-semibold uppercase tracking-wider text-[#0b0d12] transition-colors hover:bg-violet-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-300/70"
+                    class="research-action mt-5 inline-flex min-h-12 w-full items-center justify-center gap-2 bg-violet-400 px-5 font-mono text-[11px] font-semibold uppercase tracking-wider text-[#0b0d12] transition-colors hover:bg-violet-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-300/70"
                   >
                     <.icon name="hero-arrow-up-right" class="h-4 w-4" /> Queue deep research
                   </button>
@@ -3618,13 +3597,13 @@
                 <aside class="min-w-0 space-y-4">
                   <section
                     id="deep-research-semantics"
-                    class="border border-[#29313a] bg-[#0d1218] p-4 sm:p-5"
+                    class="research-panel border border-[#29313a] bg-[#0d1218] p-4 sm:p-5"
                   >
                     <div class="flex items-center justify-between gap-3">
                       <h3 class="text-sm font-semibold text-white">
                         Exact execution semantics
                       </h3>
-                      <span class="border border-amber-400/25 bg-amber-400/[0.06] px-2 py-1 font-mono text-[9px] uppercase tracking-wider text-amber-200">
+                      <span class="research-badge border border-amber-400/25 bg-amber-400/[0.06] px-2 py-1 font-mono text-[9px] uppercase tracking-wider text-amber-200">
                         active
                       </span>
                     </div>
@@ -3634,7 +3613,7 @@
                       asynchronous query tasks. Durable provider intents prevent ambiguous
                       paid-call replay.
                     </p>
-                    <dl class="mt-4 grid grid-cols-2 gap-px border border-[#29313a] bg-[#29313a]">
+                    <dl class="research-inset research-metrics mt-4 grid grid-cols-2 gap-px border border-[#29313a] bg-[#29313a]">
                       <div class="bg-[#10151b] p-3">
                         <dt class="font-mono text-[9px] uppercase tracking-wider text-gray-600">
                           Rounds
@@ -3650,7 +3629,7 @@
                         </dd>
                       </div>
                     </dl>
-                    <div class="mt-4 border border-[#29313a] bg-[#0a0f14] p-3 text-[10px] leading-5 text-gray-500">
+                    <div class="research-inset mt-4 border border-[#29313a] bg-[#0a0f14] p-3 text-[10px] leading-5 text-gray-500">
                       The composer, <code class="text-gray-300">/research</code>, and this page
                       all queue the exact finite DAG. Existing persisted legacy runs keep their
                       fixed-stage execution history without being reinterpreted.
@@ -3663,7 +3642,7 @@
 
                   <section
                     id="deep-research-run-list"
-                    class="border border-[#29313a] bg-[#0d1218] p-4 sm:p-5"
+                    class="research-panel border border-[#29313a] bg-[#0d1218] p-4 sm:p-5"
                   >
                     <div class="flex items-center justify-between gap-3">
                       <h3 class="text-sm font-semibold text-white">Recent investigations</h3>
@@ -3681,7 +3660,7 @@
                       type="button"
                       phx-click="open_research_run"
                       phx-value-id={run.id}
-                      class="mt-2 w-full border border-[#29313a] bg-[#10151b] p-3 text-left transition-colors hover:border-violet-400/30"
+                      class="research-inset mt-2 w-full border border-[#29313a] bg-[#10151b] p-3 text-left transition-colors hover:border-violet-400/30"
                     >
                       <div class="flex items-center justify-between gap-3">
                         <span class="font-mono text-[9px] uppercase tracking-wider text-violet-300">{run.status}</span>
@@ -3696,7 +3675,7 @@
 
                   <section
                     id="deep-research-ready-results"
-                    class="border border-[#29313a] bg-[#0d1218] p-4 sm:p-5"
+                    class="research-panel border border-[#29313a] bg-[#0d1218] p-4 sm:p-5"
                   >
                     <div class="flex items-center justify-between gap-3">
                       <div>
@@ -3720,7 +3699,7 @@
                     <article
                       :for={result <- Enum.take(@research_results, 12)}
                       id={"deep-research-result-#{research_result_public_id(result)}"}
-                      class="mt-3 border border-[#29313a] bg-[#10151b] p-3"
+                      class="research-inset mt-3 border border-[#29313a] bg-[#10151b] p-3"
                     >
                       <div class="flex items-start justify-between gap-3">
                         <div class="min-w-0">
@@ -3744,7 +3723,7 @@
                           href={~p"/research/#{research_result_public_id(result)}/report"}
                           target="_blank"
                           rel="noopener noreferrer"
-                          class="inline-flex min-h-9 items-center justify-center gap-1 border border-violet-400/30 bg-violet-500/[0.06] px-2 font-mono text-[9px] uppercase tracking-wider text-violet-200 hover:border-violet-300/60"
+                          class="research-action inline-flex min-h-9 items-center justify-center gap-1 border border-violet-400/30 bg-violet-500/[0.06] px-2 font-mono text-[9px] uppercase tracking-wider text-violet-200 hover:border-violet-300/60"
                         >
                           <.icon name="hero-arrow-top-right-on-square" class="h-3 w-3" /> Open
                         </.link>
@@ -3753,7 +3732,7 @@
                           href={
                             ~p"/research/#{research_result_public_id(result)}/report/download"
                           }
-                          class="inline-flex min-h-9 items-center justify-center gap-1 border border-[#303844] px-2 font-mono text-[9px] uppercase tracking-wider text-gray-400 hover:text-white"
+                          class="research-action inline-flex min-h-9 items-center justify-center gap-1 border border-[#303844] px-2 font-mono text-[9px] uppercase tracking-wider text-gray-400 hover:text-white"
                         >
                           <.icon name="hero-arrow-down-tray" class="h-3 w-3" /> HTML
                         </.link>
@@ -3762,7 +3741,7 @@
                           href={
                             ~p"/research/#{research_result_public_id(result)}/result/download"
                           }
-                          class="inline-flex min-h-9 items-center justify-center gap-1 border border-[#303844] px-2 font-mono text-[9px] uppercase tracking-wider text-gray-400 hover:text-white"
+                          class="research-action inline-flex min-h-9 items-center justify-center gap-1 border border-[#303844] px-2 font-mono text-[9px] uppercase tracking-wider text-gray-400 hover:text-white"
                         >
                           <.icon name="hero-document-arrow-down" class="h-3 w-3" /> MD
                         </.link>
@@ -3772,7 +3751,7 @@
                         navigate={
                           ~p"/create-workflow?research_query=#{URI.encode(research_result_label(result))}"
                         }
-                        class="mt-1.5 flex min-h-8 w-full items-center justify-center gap-1.5 border border-cyan-400/30 bg-cyan-500/[0.08] px-2 font-mono text-[9px] uppercase tracking-wider text-cyan-200 hover:border-cyan-300/60 hover:bg-cyan-500/[0.15] transition"
+                        class="research-action mt-1.5 flex min-h-8 w-full items-center justify-center gap-1.5 border border-cyan-400/30 bg-cyan-500/[0.08] px-2 font-mono text-[9px] uppercase tracking-wider text-cyan-200 hover:border-cyan-300/60 hover:bg-cyan-500/[0.15] transition"
                       >
                         <.icon name="hero-bolt" class="h-3 w-3 text-cyan-400" /> Create Workflow
                       </.link>
@@ -4021,19 +4000,21 @@
           "flex-1 flex flex-col h-full bg-[#0a0d12] overflow-hidden",
           @active_tab != "terminal" && "hidden"
         ]}>
-          <div class="px-3 py-1.5 bg-[#161b22] border-b border-[#30363d] flex items-center justify-between shrink-0 font-mono text-xs">
-            <span class="text-zinc-400">Terminal PTY</span>
-            <button
-              type="button"
-              phx-click="detach_window"
-              phx-value-tool="terminal"
-              class="flex items-center gap-1.5 px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-emerald-300 hover:text-white border border-[#30363d] transition-smooth text-[11px]"
-              title="Detach Terminal into standalone window"
-            >
-              <.icon name="hero-arrow-top-right-on-square" class="w-3.5 h-3.5 text-emerald-400" />
-              <span>Detach Terminal Window</span>
-            </button>
-          </div>
+          <.page_toolbar id="terminal-page-toolbar" title="Terminal">
+            <:actions>
+              <button
+                id="terminal-detach-btn"
+                type="button"
+                phx-click="detach_window"
+                phx-value-tool="terminal"
+                class="header-control"
+                title="Detach Terminal into standalone window"
+              >
+                <.icon name="hero-arrow-top-right-on-square" class="w-3.5 h-3.5" />
+                <span>Detach terminal</span>
+              </button>
+            </:actions>
+          </.page_toolbar>
           <%= if not @bottom_terminal_open do %>
             <.terminal_session
               session={@session}
@@ -4451,7 +4432,7 @@
                   <div
                     :if={@run_setup_mode == "research"}
                     id="run-setup-research-attempt-policy"
-                    class="border border-amber-400/25 bg-amber-400/[0.05] px-3 py-2"
+                    class="rounded-xl border border-amber-400/25 bg-amber-400/[0.05] px-3 py-2"
                   >
                     <p class="text-xs font-semibold text-amber-100">One paid run attempt</p>
                     <p class="mt-1 text-[10px] leading-4 text-amber-200/70">
@@ -5789,7 +5770,7 @@
                     id={"settings-search-provider-#{provider}"}
                     data-provider-lifecycle={descriptor.lifecycle}
                     class={[
-                      "min-w-0 border bg-[#0d1117] p-3",
+                      "min-w-0 rounded-xl border bg-[#0d1117] p-3",
                       descriptor.lifecycle == :retired && "border-rose-500/20 opacity-75",
                       descriptor.lifecycle == :sunsetting && "border-amber-500/25",
                       descriptor.lifecycle not in [:retired, :sunsetting] && "border-[#2a313a]"
@@ -5804,7 +5785,7 @@
                         <span
                           id={"settings-provider-lifecycle-#{provider}"}
                           class={[
-                            "shrink-0 border px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-wider",
+                            "shrink-0 rounded-md border px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-wider",
                             search_lifecycle_tone(descriptor.lifecycle)
                           ]}
                         >
@@ -5984,7 +5965,7 @@
                   placeholder="level ceiling"
                   class="mt-1 w-full border border-[#30363d] bg-[#090d12] px-2 py-1.5 text-[10px] normal-case text-white outline-none focus-visible:ring-2 focus-visible:ring-violet-400/50"
                 />
-                <div class="min-h-12 border border-[#30363d] bg-[#090d12] px-2.5 py-2">
+                <div class="min-h-12 rounded-xl border border-[#30363d] bg-[#090d12] px-2.5 py-2">
                   <.input
                     field={@settings_form[:research_require_conflict_audit]}
                     id="settings-research-conflict-audit"

@@ -73,18 +73,15 @@ defmodule IexCodeWeb.RunComponents do
 
     ~H"""
     <section id="async-run-control" aria-labelledby="async-run-heading" class="mission-control">
-      <header class="mission-header">
-        <div class="mission-heading-group">
-          <div class="mission-heading-icon" aria-hidden="true">
-            <.icon name="hero-command-line" class="h-5 w-5" />
-          </div>
-          <div>
-            <h2 id="async-run-heading" class="mission-title">Mission Control</h2>
-            <p class="mission-subtitle">Track background runs and keep work moving.</p>
-          </div>
-        </div>
-
-        <div class="mission-header-actions">
+      <.page_header
+        id="async-run-header"
+        title_id="async-run-heading"
+        title="Mission Control"
+        description="Track background runs and keep work moving."
+        icon="hero-command-line"
+        class="page-header--embedded"
+      >
+        <:actions>
           <div
             id="async-dispatcher-status"
             role="status"
@@ -117,12 +114,12 @@ defmodule IexCodeWeb.RunComponents do
               JS.push("set_dispatch_mode", value: %{mode: "background"})
               |> JS.focus(to: "#prompt-textarea")
             }
-            class="mission-button mission-button-primary ui-depth-effect"
+            class="header-control header-control--primary ui-depth-effect"
           >
             <.icon name="hero-plus" class="h-4 w-4" /> New run
           </button>
-        </div>
-      </header>
+        </:actions>
+      </.page_header>
 
       <section
         id="workspace-lock-overview"
@@ -635,7 +632,7 @@ defmodule IexCodeWeb.RunComponents do
                       !manifest_enabled?(@run_manifest) && "bg-raised"
                     ]}></span>
                   </div>
-                  <div class="grid grid-cols-3 gap-px bg-raised">
+                  <div class="grid grid-cols-3 gap-px overflow-hidden rounded-lg bg-raised">
                     <.manifest_fact
                       label="Mode"
                       value={manifest_value(@run_manifest, :mode, "Not requested")}
