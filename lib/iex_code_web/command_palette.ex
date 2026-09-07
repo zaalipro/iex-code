@@ -134,6 +134,44 @@ defmodule IexCodeWeb.CommandPalette do
       }
     },
     %{
+      id: "teamwork_preview",
+      category: :action,
+      title: "Teamwork Blueprint Preview",
+      subtitle: "Multi-agent orchestration decomposition & preview",
+      icon: "hero-user-group",
+      shortcut: "Cmd+Shift+P",
+      event: "open_teamwork_preview",
+      params: %{},
+      preview: %{
+        category: :action,
+        shortcut: "Cmd+Shift+P",
+        description:
+          "Preview multi-agent blueprint decomposition, squad composition, and verification gates",
+        target_tab: "swarm",
+        event: "open_teamwork_preview",
+        params: %{}
+      }
+    },
+    %{
+      id: "toggle_boost_mode",
+      category: :action,
+      title: "Toggle 3-Tier Boost Reasoning",
+      subtitle: "Orchestrator → DeepCoder → Verifier high-reasoning hierarchy",
+      icon: "hero-bolt",
+      shortcut: "Cmd+B",
+      event: "toggle_boost_mode",
+      params: %{},
+      preview: %{
+        category: :action,
+        shortcut: "Cmd+B",
+        description:
+          "Toggle 3-tier deep reasoning boost engine with AST and Git context enrichment",
+        target_tab: "chat",
+        event: "toggle_boost_mode",
+        params: %{}
+      }
+    },
+    %{
       id: "new_task",
       category: :action,
       title: "New Kanban Task",
@@ -631,210 +669,215 @@ defmodule IexCodeWeb.CommandPalette do
   """
   def search(query, files, sessions, category_filter \\ "all", extra \\ %{}) do
     query_str = if is_binary(query), do: query, else: ""
-    cat_filter = if is_binary(category_filter), do: category_filter, else: "all"
-    extra_map = if is_map(extra), do: extra, else: %{}
 
-    files_list = if is_list(files), do: files, else: []
-    sessions_list = if is_list(sessions), do: sessions, else: []
-
-    {effective_query, effective_category} = parse_query_prefix(query_str, cat_filter)
-    q = String.downcase(String.trim(effective_query))
-
-    valid_categories = [
-      "all",
-      "actions",
-      "views",
-      "files",
-      "sessions",
-      "swarms",
-      "models",
-      "branches",
-      "terminal"
-    ]
-
-    if effective_category not in valid_categories or byte_size(q) > 200 do
+    if byte_size(query_str) > 250 do
       []
     else
-      workspace_root = Map.get(extra_map, :workspace_root, ".")
+      cat_filter = if is_binary(category_filter), do: category_filter, else: "all"
+      extra_map = if is_map(extra), do: extra, else: %{}
 
-      prep =
-        if q != "" do
-          q_len = byte_size(q)
-          q_chars = String.graphemes(q)
-          q_chars_count = length(q_chars)
-          {q, q_len, q_chars, q_chars_count}
-        else
-          nil
-        end
+      files_list = if is_list(files), do: files, else: []
+      sessions_list = if is_list(sessions), do: sessions, else: []
 
-      actions =
-        if effective_category in ["all", "actions"] do
-          if q == "" do
-            Enum.map(@actions, fn a -> a |> build_action_item() |> Map.put(:score, 0) end)
-          else
-            @actions
-            |> Enum.map(&build_action_item/1)
-            |> filter_and_rank_items(prep)
-          end
-        else
-          []
-        end
+      {effective_query, effective_category} = parse_query_prefix(query_str, cat_filter)
+      q = String.downcase(String.trim(effective_query))
 
-      views =
-        if effective_category in ["all", "views"] do
-          if q == "" do
-            Enum.map(@views, fn v -> v |> build_view_item() |> Map.put(:score, 0) end)
-          else
-            @views
-            |> Enum.map(&build_view_item/1)
-            |> filter_and_rank_items(prep)
-          end
-        else
-          []
-        end
+      valid_categories = [
+        "all",
+        "actions",
+        "views",
+        "files",
+        "sessions",
+        "swarms",
+        "models",
+        "branches",
+        "terminal"
+      ]
 
-      file_items =
-        if effective_category in ["all", "files"] do
-          if q == "" do
-            files_list
-            |> Enum.take(25)
-            |> Enum.map(fn p ->
-              p
-              |> build_file_item()
-              |> Map.put(:score, 0)
-              |> attach_file_preview(workspace_root)
-            end)
-          else
-            search_files(files_list, prep, workspace_root)
-          end
-        else
-          []
-        end
-
-      session_items =
-        if effective_category in ["all", "sessions"] do
-          if q == "" do
-            sessions_list
-            |> Enum.take(10)
-            |> Enum.map(fn s -> s |> build_session_item() |> Map.put(:score, 0) end)
-          else
-            sessions_list
-            |> Enum.map(&build_session_item/1)
-            |> filter_and_rank_items(prep)
-            |> Enum.take(10)
-          end
-        else
-          []
-        end
-
-      swarms_data =
-        case Map.get(extra_map, :swarms) do
-          list when is_list(list) -> list
-          _ -> []
-        end
-
-      swarm_items =
-        if effective_category in ["all", "swarms"] do
-          if q == "" do
-            swarms_data
-            |> Enum.take(10)
-            |> Enum.map(fn s -> s |> build_swarm_item() |> Map.put(:score, 0) end)
-          else
-            swarms_data
-            |> Enum.map(&build_swarm_item/1)
-            |> filter_and_rank_items(prep)
-            |> Enum.take(10)
-          end
-        else
-          []
-        end
-
-      models_data =
-        case Map.get(extra_map, :models) do
-          list when is_list(list) -> list
-          _ -> @standard_cloud_models
-        end
-
-      model_items =
-        if effective_category in ["all", "models"] do
-          if q == "" do
-            models_data
-            |> Enum.take(10)
-            |> Enum.map(fn m -> m |> build_model_item() |> Map.put(:score, 0) end)
-          else
-            models_data
-            |> Enum.map(&build_model_item/1)
-            |> filter_and_rank_items(prep)
-            |> Enum.take(10)
-          end
-        else
-          []
-        end
-
-      branches_data =
-        case Map.get(extra_map, :branches) do
-          list when is_list(list) -> list
-          _ -> []
-        end
-
-      branch_items =
-        if effective_category in ["all", "branches"] do
-          if q == "" do
-            branches_data
-            |> Enum.take(15)
-            |> Enum.map(fn b -> b |> build_branch_item() |> Map.put(:score, 0) end)
-          else
-            branches_data
-            |> Enum.map(&build_branch_item/1)
-            |> filter_and_rank_items(prep)
-            |> Enum.take(15)
-          end
-        else
-          []
-        end
-
-      terminal_data =
-        case Map.get(extra_map, :terminal_commands) do
-          list when is_list(list) -> list
-          _ -> @default_terminal_commands
-        end
-
-      terminal_items =
-        if effective_category in ["all", "terminal"] do
-          if q == "" do
-            terminal_data
-            |> Enum.take(15)
-            |> Enum.map(fn t ->
-              t
-              |> build_terminal_item(workspace_root)
-              |> Map.put(:score, 0)
-            end)
-          else
-            terminal_data
-            |> Enum.map(&build_terminal_item(&1, workspace_root))
-            |> filter_and_rank_items(prep)
-            |> Enum.take(15)
-          end
-        else
-          []
-        end
-
-      all_items =
-        actions ++
-          views ++
-          file_items ++
-          session_items ++
-          swarm_items ++
-          model_items ++
-          branch_items ++
-          terminal_items
-
-      if effective_category == "all" and q != "" do
-        Enum.sort_by(all_items, fn item ->
-          {-Map.get(item, :score, 0), to_string(item[:title])}
-        end)
+      if effective_category not in valid_categories or byte_size(q) > 200 do
+        []
       else
-        all_items
+        workspace_root = Map.get(extra_map, :workspace_root, ".")
+
+        prep =
+          if q != "" do
+            q_len = byte_size(q)
+            q_chars = String.graphemes(q)
+            q_chars_count = length(q_chars)
+            {q, q_len, q_chars, q_chars_count}
+          else
+            nil
+          end
+
+        actions =
+          if effective_category in ["all", "actions"] do
+            if q == "" do
+              Enum.map(@actions, fn a -> a |> build_action_item() |> Map.put(:score, 0) end)
+            else
+              @actions
+              |> Enum.map(&build_action_item/1)
+              |> filter_and_rank_items(prep)
+            end
+          else
+            []
+          end
+
+        views =
+          if effective_category in ["all", "views"] do
+            if q == "" do
+              Enum.map(@views, fn v -> v |> build_view_item() |> Map.put(:score, 0) end)
+            else
+              @views
+              |> Enum.map(&build_view_item/1)
+              |> filter_and_rank_items(prep)
+            end
+          else
+            []
+          end
+
+        file_items =
+          if effective_category in ["all", "files"] do
+            if q == "" do
+              files_list
+              |> Enum.take(25)
+              |> Enum.map(fn p ->
+                p
+                |> build_file_item()
+                |> Map.put(:score, 0)
+                |> attach_file_preview(workspace_root)
+              end)
+            else
+              search_files(files_list, prep, workspace_root)
+            end
+          else
+            []
+          end
+
+        session_items =
+          if effective_category in ["all", "sessions"] do
+            if q == "" do
+              sessions_list
+              |> Enum.take(10)
+              |> Enum.map(fn s -> s |> build_session_item() |> Map.put(:score, 0) end)
+            else
+              sessions_list
+              |> Enum.map(&build_session_item/1)
+              |> filter_and_rank_items(prep)
+              |> Enum.take(10)
+            end
+          else
+            []
+          end
+
+        swarms_data =
+          case Map.get(extra_map, :swarms) do
+            list when is_list(list) -> list
+            _ -> []
+          end
+
+        swarm_items =
+          if effective_category in ["all", "swarms"] do
+            if q == "" do
+              swarms_data
+              |> Enum.take(10)
+              |> Enum.map(fn s -> s |> build_swarm_item() |> Map.put(:score, 0) end)
+            else
+              swarms_data
+              |> Enum.map(&build_swarm_item/1)
+              |> filter_and_rank_items(prep)
+              |> Enum.take(10)
+            end
+          else
+            []
+          end
+
+        models_data =
+          case Map.get(extra_map, :models) do
+            list when is_list(list) -> list
+            _ -> @standard_cloud_models
+          end
+
+        model_items =
+          if effective_category in ["all", "models"] do
+            if q == "" do
+              models_data
+              |> Enum.take(10)
+              |> Enum.map(fn m -> m |> build_model_item() |> Map.put(:score, 0) end)
+            else
+              models_data
+              |> Enum.map(&build_model_item/1)
+              |> filter_and_rank_items(prep)
+              |> Enum.take(10)
+            end
+          else
+            []
+          end
+
+        branches_data =
+          case Map.get(extra_map, :branches) do
+            list when is_list(list) -> list
+            _ -> []
+          end
+
+        branch_items =
+          if effective_category in ["all", "branches"] do
+            if q == "" do
+              branches_data
+              |> Enum.take(15)
+              |> Enum.map(fn b -> b |> build_branch_item() |> Map.put(:score, 0) end)
+            else
+              branches_data
+              |> Enum.map(&build_branch_item/1)
+              |> filter_and_rank_items(prep)
+              |> Enum.take(15)
+            end
+          else
+            []
+          end
+
+        terminal_data =
+          case Map.get(extra_map, :terminal_commands) do
+            list when is_list(list) -> list
+            _ -> @default_terminal_commands
+          end
+
+        terminal_items =
+          if effective_category in ["all", "terminal"] do
+            if q == "" do
+              terminal_data
+              |> Enum.take(15)
+              |> Enum.map(fn t ->
+                t
+                |> build_terminal_item(workspace_root)
+                |> Map.put(:score, 0)
+              end)
+            else
+              terminal_data
+              |> Enum.map(&build_terminal_item(&1, workspace_root))
+              |> filter_and_rank_items(prep)
+              |> Enum.take(15)
+            end
+          else
+            []
+          end
+
+        all_items =
+          actions ++
+            views ++
+            file_items ++
+            session_items ++
+            swarm_items ++
+            model_items ++
+            branch_items ++
+            terminal_items
+
+        if effective_category == "all" and q != "" do
+          Enum.sort_by(all_items, fn item ->
+            {-Map.get(item, :score, 0), to_string(item[:title])}
+          end)
+        else
+          all_items
+        end
       end
     end
   end

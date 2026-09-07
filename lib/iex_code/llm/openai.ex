@@ -51,12 +51,9 @@ defmodule IexCode.LLM.OpenAI do
 
     caps = IexCode.LLM.Capabilities.detect(provider, model)
 
-    reasoning_model? =
-      caps.type == :openai or (caps.reasoning_supported? and not caps.supports_temperature?)
-
     reasoning_effort =
       case Keyword.get(opts, :reasoning_effort) do
-        nil -> if reasoning_model?, do: caps.default_effort || "medium", else: nil
+        nil -> if caps.reasoning_supported?, do: caps.default_effort || "medium", else: nil
         effort -> to_string(effort)
       end
 
@@ -66,14 +63,20 @@ defmodule IexCode.LLM.OpenAI do
     body =
       %{"model" => model, "messages" => formatted_messages}
       |> then(fn map ->
-        if reasoning_model? do
-          map
-          |> put_optional("reasoning_effort", reasoning_effort)
-          |> put_optional("max_completion_tokens", max_tokens)
+        map =
+          if caps.reasoning_supported? do
+            map
+            |> put_optional("reasoning_effort", reasoning_effort)
+            |> put_optional("max_completion_tokens", max_tokens)
+          else
+            map
+            |> put_optional("max_tokens", max_tokens)
+          end
+
+        if caps.supports_temperature? do
+          put_optional(map, "temperature", temperature)
         else
           map
-          |> put_optional("temperature", temperature)
-          |> put_optional("max_tokens", max_tokens)
         end
       end)
       |> then(fn map ->

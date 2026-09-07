@@ -322,4 +322,67 @@ defmodule IexCode.Execution.RouterTest do
     assert {:error, :invalid_execution_intent} = Router.route(forged, context)
     assert Runs.list_runs(session_id: context.session_id) == []
   end
+
+  describe "teamwork preview and boost routing" do
+    test "/teamwork-preview /boost /goal returns teamwork preview blueprint when unconfirmed", %{
+      context: context
+    } do
+      assert {:ok, result} =
+               Router.route(
+                 "/teamwork-preview /boost /goal Build resilient payment webhook",
+                 context
+               )
+
+      assert {:teamwork_preview, blueprint} = result.action
+      assert blueprint.objective == "Build resilient payment webhook"
+      assert blueprint.boost? == true
+      assert length(blueprint.milestones) >= 4
+      assert length(blueprint.agent_squad) >= 4
+      assert Runs.list_runs(session_id: context.session_id) == []
+    end
+
+    test "/boost command elevates policy reasoning and enriches metadata with AST symbols and Git summary",
+         %{context: context} do
+      context = Map.put(context, :request_key, "boost-run-#{Ecto.UUID.generate()}")
+
+      assert {:ok, %{action: {:run, run}}} =
+               Router.route("/boost Refactor connection pooling in PostgreSQL adapter", context)
+
+      assert run.metadata["boost"] == true
+      assert run.metadata["boost_reasoning_effort"] == "high"
+      assert run.metadata["boost_hierarchy"] == ["orchestrator", "deep_coder", "verifier"]
+      assert is_map(run.metadata["boost_context"])
+      assert Map.has_key?(run.metadata["boost_context"], "git_summary")
+      assert is_binary(run.metadata["prompt_enhancement"])
+      assert run.metadata["prompt_enhancement"] =~ "BOOST MODE ENGAGED"
+
+      policy = run.metadata["execution_policy"]
+      assert policy["boost"] == true
+      assert policy["reasoning_effort"] == "high"
+      assert policy["thinking_budget"] == 16_384
+      assert policy["max_tokens"] >= 16_384
+    end
+
+    test "confirmed teamwork preview launches swarm run with blueprint attached to metadata", %{
+      context: context
+    } do
+      objective = "Build high-throughput telemetry aggregator"
+      blueprint = IexCode.Execution.TeamworkPreview.generate_blueprint(objective, boost?: true)
+
+      confirmed_context =
+        context
+        |> Map.put(:request_key, "teamwork-run-#{Ecto.UUID.generate()}")
+        |> Map.put(:teamwork_blueprint, blueprint)
+
+      assert {:ok, %{action: {:run, run}}} =
+               Router.route("/teamwork-preview /boost /goal #{objective}", confirmed_context)
+
+      assert run.kind == "coding_swarm"
+      assert run.mode == "swarm"
+      assert run.metadata["teamwork_blueprint"]["id"] == blueprint.id
+      assert run.metadata["teamwork_blueprint"]["boost"] == true
+      assert run.metadata["boost"] == true
+      assert is_map(run.metadata["boost_context"])
+    end
+  end
 end

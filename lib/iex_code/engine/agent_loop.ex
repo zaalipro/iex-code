@@ -9,7 +9,7 @@ defmodule IexCode.Engine.AgentLoop do
   """
 
   alias IexCode.Runs
-  alias IexCode.Execution.{Limits, ModelRoute}
+  alias IexCode.Execution.{BoostEngine, Limits, ModelRoute}
   alias IexCode.Runs.{DagPayload, Run, RunCommand}
   alias IexCode.{Sessions, Settings, Tools}
 
@@ -762,7 +762,8 @@ defmodule IexCode.Engine.AgentLoop do
       |> Enum.filter(&(&1.role in ["user", "assistant"] and not run_message?(&1, run.id)))
       |> Enum.map(&%{role: &1.role, content: bounded_text(&1.content, 20_000)})
 
-    history ++ [%{role: "user", content: bounded_text(run.objective, @max_message_chars)}]
+    user_prompt = BoostEngine.effective_prompt(run)
+    history ++ [%{role: "user", content: bounded_text(user_prompt, @max_message_chars)}]
   end
 
   defp ensure_run_user_message(run) do

@@ -336,7 +336,25 @@ defmodule IexCodeWeb.RunComponents do
                 {run.objective}
               </p>
               <div class="mt-2 flex items-center justify-between gap-2 text-[11px] text-subtle">
-                <span>{run.kind |> String.replace("_", " ")}</span>
+                <div class="flex items-center gap-1.5 flex-wrap">
+                  <span>{run.kind |> String.replace("_", " ")}</span>
+                  <%= if Map.get(run.metadata || %{}, "boost") in [true, "true"] do %>
+                    <span
+                      id={"run-boost-badge-#{run.id}"}
+                      class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                    >
+                      <.icon name="hero-bolt" class="w-2.5 h-2.5 text-amber-400" /> BOOST
+                    </span>
+                  <% end %>
+                  <%= if Map.get(run.metadata || %{}, "teamwork_blueprint") do %>
+                    <span
+                      id={"run-teamwork-badge-#{run.id}"}
+                      class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/40"
+                    >
+                      <.icon name="hero-user-group" class="w-2.5 h-2.5 text-cyan-400" /> TEAM
+                    </span>
+                  <% end %>
+                </div>
                 <span class="tabular-nums">{min(max(run.progress || 0, 0), 100)}%</span>
               </div>
               <div
@@ -450,6 +468,22 @@ defmodule IexCodeWeb.RunComponents do
                     <span class="font-mono text-[11px] uppercase tracking-wider text-subtle">
                       {@selected_run.priority} priority
                     </span>
+                    <%= if Map.get(@selected_run.metadata || %{}, "boost") in [true, "true"] do %>
+                      <span
+                        id="selected-run-boost-badge"
+                        class="inline-flex items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/20 px-2 py-0.5 font-mono text-[11px] font-bold text-amber-300 animate-pulse"
+                      >
+                        <.icon name="hero-bolt" class="h-3 w-3 text-amber-400" /> BOOST ACTIVE
+                      </span>
+                    <% end %>
+                    <%= if Map.get(@selected_run.metadata || %{}, "teamwork_blueprint") do %>
+                      <span
+                        id="selected-run-teamwork-badge"
+                        class="inline-flex items-center gap-1 rounded-md border border-cyan-500/40 bg-cyan-500/20 px-2 py-0.5 font-mono text-[11px] font-bold text-cyan-300"
+                      >
+                        <.icon name="hero-user-group" class="h-3 w-3 text-cyan-400" /> TEAMWORK
+                      </span>
+                    <% end %>
                   </div>
                   <h3 class="mission-detail-title">
                     {@selected_run.objective}
@@ -653,6 +687,183 @@ defmodule IexCodeWeb.RunComponents do
                       label="Depth"
                       value={manifest_value(@run_manifest, :depth, "Unset")}
                     />
+                  </div>
+                </div>
+
+                <div
+                  :if={Map.get(@selected_run.metadata || %{}, "teamwork_blueprint")}
+                  id="async-run-teamwork-blueprint"
+                  class="mission-detail-section rounded-xl border border-line bg-surface p-3 space-y-3"
+                >
+                  <div class="flex items-center justify-between gap-3">
+                    <div>
+                      <h4 class="text-xs font-semibold text-content flex items-center gap-1.5">
+                        <.icon name="hero-user-group" class="h-3.5 w-3.5 text-cyan-400" />
+                        Teamwork Blueprint
+                      </h4>
+                      <p class="mt-0.5 text-[11px] text-subtle">
+                        {get_in(@selected_run.metadata, ["teamwork_blueprint", "pattern_name"]) ||
+                          "Orchestration Blueprint"} • ~{get_in(@selected_run.metadata, [
+                          "teamwork_blueprint",
+                          "estimated_tokens"
+                        ]) || 45_000} tokens
+                      </p>
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <%= if get_in(@selected_run.metadata, ["teamwork_blueprint", "boost"]) in [true, "true"] do %>
+                        <span class="px-2 py-0.5 rounded-full text-[9px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center gap-1">
+                          <.icon name="hero-bolt" class="w-3 h-3 text-amber-400" /> BOOST
+                        </span>
+                      <% end %>
+                      <span class="h-1.5 w-1.5 rounded-full bg-cyan-400 animate-pulse"></span>
+                    </div>
+                  </div>
+
+                  <%!-- Strategy summary --%>
+                  <p class="text-[11px] text-subtle italic">
+                    {get_in(@selected_run.metadata, ["teamwork_blueprint", "summary"])}
+                  </p>
+
+                  <%!-- Milestone Progress Bar --%>
+                  <% stats =
+                    IexCode.Execution.TeamworkPreview.milestone_stats(
+                      get_in(@selected_run.metadata, ["teamwork_blueprint", "milestones"]) || []
+                    ) %>
+                  <div class="space-y-1 rounded-lg bg-raised p-2 border border-line">
+                    <div class="flex items-center justify-between text-[10px] font-mono">
+                      <span class="text-content font-semibold">
+                        Milestone Progress: {stats.completed}/{stats.total}
+                      </span>
+                      <span class={[
+                        "font-bold",
+                        if(stats.percent == 100, do: "text-emerald-400", else: "text-cyan-400")
+                      ]}>
+                        {stats.percent}%
+                      </span>
+                    </div>
+                    <div class="w-full bg-surface rounded-full h-1.5 overflow-hidden border border-line">
+                      <div
+                        class={[
+                          "h-1.5 rounded-full transition-all duration-500",
+                          if(stats.percent == 100,
+                            do: "bg-emerald-400",
+                            else: "bg-gradient-to-r from-cyan-500 to-indigo-500"
+                          )
+                        ]}
+                        style={"width: #{stats.percent}%"}
+                      >
+                      </div>
+                    </div>
+                  </div>
+
+                  <%!-- Milestones List with rich details --%>
+                  <div class="space-y-2 pt-1">
+                    <%= for m <- get_in(@selected_run.metadata, ["teamwork_blueprint", "milestones"]) || [] do %>
+                      <div class={[
+                        "p-2 rounded-lg border text-[11px] font-mono transition-all",
+                        case m["status"] do
+                          "completed" -> "bg-emerald-950/20 border-emerald-500/30"
+                          "in_progress" -> "bg-cyan-950/20 border-cyan-500/40 ring-1 ring-cyan-500/30"
+                          "failed" -> "bg-rose-950/20 border-rose-500/30"
+                          _ -> "bg-raised border-line opacity-80"
+                        end
+                      ]}>
+                        <div class="flex items-center justify-between gap-2">
+                          <div class="flex items-center gap-1.5 min-w-0 flex-1">
+                            <%= case m["status"] do %>
+                              <% "completed" -> %>
+                                <span class="text-emerald-400 shrink-0">
+                                  <.icon name="hero-check-circle" class="w-3.5 h-3.5 text-emerald-400" />
+                                </span>
+                              <% "in_progress" -> %>
+                                <span class="text-cyan-400 shrink-0 animate-spin">
+                                  <.icon name="hero-arrow-path" class="w-3.5 h-3.5" />
+                                </span>
+                              <% "failed" -> %>
+                                <span class="text-rose-400 shrink-0">
+                                  <.icon name="hero-x-circle" class="w-3.5 h-3.5 text-rose-400" />
+                                </span>
+                              <% _ -> %>
+                                <span class="text-subtle shrink-0">
+                                  <.icon name="hero-clock" class="w-3.5 h-3.5" />
+                                </span>
+                            <% end %>
+                            <span class="text-content font-semibold truncate">{m["title"]}</span>
+                          </div>
+                          <div class="flex items-center gap-1.5 shrink-0">
+                            <span class="text-subtle text-[10px] px-1.5 py-0.5 rounded bg-surface border border-line">
+                              {m["agent_title"]}
+                            </span>
+                            <span class={[
+                              "text-[9px] font-bold uppercase px-1.5 py-0.5 rounded",
+                              case m["status"] do
+                                "completed" -> "bg-emerald-500/20 text-emerald-300"
+                                "in_progress" -> "bg-cyan-500/20 text-cyan-300 animate-pulse"
+                                "failed" -> "bg-rose-500/20 text-rose-300"
+                                _ -> "bg-surface text-subtle"
+                              end
+                            ]}>
+                              {m["status"] || "pending"}
+                            </span>
+                          </div>
+                        </div>
+
+                        <%= if m["target_files"] && m["target_files"] != [] do %>
+                          <div class="flex items-center gap-1 flex-wrap pt-1 text-[10px]">
+                            <span class="text-subtle">Targets:</span>
+                            <%= for file <- m["target_files"] do %>
+                              <span class="px-1 py-0.5 rounded bg-surface text-amber-300/80 border border-amber-500/20 text-[9px]">
+                                {file}
+                              </span>
+                            <% end %>
+                          </div>
+                        <% end %>
+
+                        <%= if m["acceptance_criteria"] && m["acceptance_criteria"] != [] do %>
+                          <div class="pt-1 space-y-0.5 text-[10px] text-subtle">
+                            <%= for ac <- m["acceptance_criteria"] do %>
+                              <div class="flex items-center gap-1">
+                                <.icon name="hero-check" class="w-2.5 h-2.5 text-emerald-400 shrink-0" />
+                                <span class="truncate">{ac}</span>
+                              </div>
+                            <% end %>
+                          </div>
+                        <% end %>
+                      </div>
+                    <% end %>
+                  </div>
+                </div>
+
+                <div
+                  :if={Map.get(@selected_run.metadata || %{}, "boost") in [true, "true"]}
+                  id="async-run-boost-telemetry"
+                  class="mission-detail-section rounded-xl border border-line bg-surface p-3"
+                >
+                  <div class="mb-3 flex items-center justify-between gap-3">
+                    <div>
+                      <h4 class="text-xs font-semibold text-content flex items-center gap-1.5">
+                        <.icon name="hero-bolt" class="h-3.5 w-3.5 text-amber-400" />
+                        3-Tier Boost Reasoning Hierarchy
+                      </h4>
+                      <p class="mt-0.5 text-[11px] text-subtle">
+                        High-effort cognitive pipeline active (Tier 1 → Tier 2 → Tier 3)
+                      </p>
+                    </div>
+                    <span class="h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse"></span>
+                  </div>
+                  <div class="space-y-1.5 text-[11px] font-mono">
+                    <div class="flex items-center justify-between p-1.5 rounded bg-raised border border-line">
+                      <span class="text-amber-300 font-semibold">Tier 1: Sentinel</span>
+                      <span class="text-subtle">Contract & atomic decomposition</span>
+                    </div>
+                    <div class="flex items-center justify-between p-1.5 rounded bg-raised border border-line">
+                      <span class="text-cyan-300 font-semibold">Tier 2: DeepCoder</span>
+                      <span class="text-subtle">AST-aligned surgical synthesis</span>
+                    </div>
+                    <div class="flex items-center justify-between p-1.5 rounded bg-raised border border-line">
+                      <span class="text-emerald-300 font-semibold">Tier 3: Verifier</span>
+                      <span class="text-subtle">ExUnit test & property audit</span>
+                    </div>
                   </div>
                 </div>
               </div>

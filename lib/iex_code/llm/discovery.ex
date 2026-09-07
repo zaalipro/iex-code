@@ -201,7 +201,12 @@ defmodule IexCode.LLM.Discovery do
             headers
           end
 
-        ping_http_endpoint(url, headers, opts)
+        cloud_opts =
+          opts
+          |> Keyword.put_new(:connect_timeout, 3_000)
+          |> Keyword.put_new(:receive_timeout, 5_000)
+
+        ping_http_endpoint(url, headers, cloud_opts)
 
       provider_str == "anthropic" ->
         base_url =
@@ -226,13 +231,24 @@ defmodule IexCode.LLM.Discovery do
             headers
           end
 
-        ping_http_endpoint(url, headers, opts)
+        cloud_opts =
+          opts
+          |> Keyword.put_new(:connect_timeout, 3_000)
+          |> Keyword.put_new(:receive_timeout, 5_000)
+
+        ping_http_endpoint(url, headers, cloud_opts)
 
       provider_str in ["gemini", "google"] ->
         base_url = Keyword.get(opts, :base_url, "https://generativelanguage.googleapis.com")
         url = String.trim_trailing(base_url, "/") <> "/v1beta/models"
         headers = [{"accept", "application/json"}]
-        ping_http_endpoint(url, headers, opts)
+
+        cloud_opts =
+          opts
+          |> Keyword.put_new(:connect_timeout, 3_000)
+          |> Keyword.put_new(:receive_timeout, 5_000)
+
+        ping_http_endpoint(url, headers, cloud_opts)
 
       true ->
         {:error, :unsupported_provider}
@@ -247,6 +263,9 @@ defmodule IexCode.LLM.Discovery do
     opts = [base_url: base_url, api_key: api_key]
 
     case ping(provider, nil, opts) do
+      {:ok, %{latency_ms: ms, models: models}} ->
+        {:ok, ms, models}
+
       {:ok, %{latency_ms: ms}} ->
         {:ok, ms, []}
 
@@ -501,15 +520,54 @@ defmodule IexCode.LLM.Discovery do
 
     case result do
       {:ok, %{status: status, body: body}} when status in 200..299 ->
-        model_count =
+        {models, model_count} =
           cond do
-            is_map(body) and is_list(body["data"]) -> length(body["data"])
-            is_map(body) and is_list(body["models"]) -> length(body["models"])
-            is_list(body) -> length(body)
-            true -> 1
+            is_map(body) and is_list(body["data"]) ->
+              list =
+                Enum.map(body["data"], fn
+                  %{"id" => id} -> id
+                  id when is_binary(id) -> id
+                  _ -> nil
+                end)
+                |> Enum.reject(&is_nil/1)
+
+              {list, length(list)}
+
+            is_map(body) and is_list(body["models"]) ->
+              list =
+                Enum.map(body["models"], fn
+                  %{"name" => name} -> name
+                  %{"id" => id} -> id
+                  name when is_binary(name) -> name
+                  _ -> nil
+                end)
+                |> Enum.reject(&is_nil/1)
+
+              {list, length(list)}
+
+            is_list(body) ->
+              list =
+                Enum.map(body, fn
+                  %{"id" => id} -> id
+                  %{"name" => name} -> name
+                  other when is_binary(other) -> other
+                  _ -> nil
+                end)
+                |> Enum.reject(&is_nil/1)
+
+              {list, length(list)}
+
+            true ->
+              {[], 1}
           end
 
-        {:ok, %{latency_ms: latency_ms, model_count: model_count, status: :online}}
+        {:ok,
+         %{
+           latency_ms: latency_ms,
+           model_count: model_count,
+           models: models,
+           status: :online
+         }}
 
       {:ok, %{status: status}} ->
         {:error, {:unexpected_status, status}}

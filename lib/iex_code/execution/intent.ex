@@ -17,7 +17,10 @@ defmodule IexCode.Execution.Intent do
     :attachment_id,
     :raw_command,
     :source,
-    draft?: false
+    :blueprint_pattern,
+    draft?: false,
+    boost?: false,
+    teamwork_preview?: false
   ]
 
   @type kind ::
@@ -31,9 +34,19 @@ defmodule IexCode.Execution.Intent do
           | :navigate
           | :help
           | :create_workflow
+          | :teamwork_preview
+          | :boost
 
   @type durability :: :interactive | :durable | :none
-  @type mode :: :single | :swarm | :research | :navigation | :help | :workflow
+  @type mode ::
+          :single
+          | :swarm
+          | :research
+          | :navigation
+          | :help
+          | :workflow
+          | :teamwork_preview
+          | :boost
 
   @type t :: %__MODULE__{
           kind: kind(),
@@ -41,6 +54,9 @@ defmodule IexCode.Execution.Intent do
           durability: durability(),
           mode: mode(),
           draft?: boolean(),
+          boost?: boolean(),
+          teamwork_preview?: boolean(),
+          blueprint_pattern: String.t() | nil,
           level: String.t() | nil,
           attachment_id: pos_integer() | nil,
           raw_command: String.t() | nil,

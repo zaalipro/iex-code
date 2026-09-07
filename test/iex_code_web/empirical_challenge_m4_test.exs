@@ -370,7 +370,7 @@ defmodule IexCodeWeb.EmpiricalChallengeM4Test do
           length(extra.branches) +
           length(extra.terminal_commands)
 
-      assert total_items in [2374, 2380, 2382]
+      assert total_items in [2374, 2380, 2382, 2384]
 
       benchmark_queries = [
         {"Empty query (all items indexed)", ""},

@@ -70,6 +70,18 @@ defmodule IexCode.Execution.CommandParser do
       command: "/workflows",
       usage: "/workflows",
       summary: "Open the project workflows workspace view and library."
+    },
+    %{
+      command: "/teamwork-preview",
+      usage: "/teamwork-preview [<command>] <objective>",
+      summary:
+        "Generate and preview a multi-agent teamwork blueprint before execution. Can be used alone or prepended to /boost, /goal, /swarm, or /run."
+    },
+    %{
+      command: "/boost",
+      usage: "/boost [<command>] <objective>",
+      summary:
+        "Activate high-reasoning 3-tier hierarchy (Orchestrator → DeepCoder → Verifier) with codebase context and maximum reasoning effort."
     }
   ]
   @supported_commands Enum.map(@command_help, & &1.command)
@@ -237,7 +249,232 @@ defmodule IexCode.Execution.CommandParser do
   defp parse_command("/workflows" = command, _arguments, _source),
     do: error(:unexpected_arguments, "/workflows does not accept arguments", command)
 
+  @valid_patterns ~w(iterative_coding distributed_coding root_cause_and_fix self_verification system_migration)
+
+  defp parse_command("/teamwork-preview" = command, arguments, source) do
+    parse_teamwork_command(command, arguments, source)
+  end
+
+  defp parse_command("/boost" = command, arguments, source) do
+    parse_boost_command(command, arguments, source)
+  end
+
   defp parse_command(command, _arguments, _source), do: unknown_command(command)
+
+  defp parse_teamwork_command(command, arguments, source) do
+    case parse_teamwork_flags(arguments, %{teamwork_preview?: true}) do
+      {:ok, flags, remaining} ->
+        remaining_trimmed = String.trim(remaining)
+
+        cond do
+          remaining_trimmed == "" ->
+            if flags[:blueprint_pattern] != nil do
+              error(
+                :missing_objective,
+                "#{command} requires an objective. Usage: #{command_usage(command)}",
+                command
+              )
+            else
+              {:ok,
+               intent(:teamwork_preview, nil, :none, :teamwork_preview, source,
+                 raw_command: build_teamwork_raw_command(command, flags, nil),
+                 teamwork_preview?: true,
+                 boost?: flags[:boost?] || false,
+                 blueprint_pattern: flags[:blueprint_pattern]
+               )}
+            end
+
+          String.starts_with?(remaining_trimmed, "/") ->
+            case parse_trimmed(remaining_trimmed, source) do
+              {:ok, nested_intent} ->
+                raw = build_teamwork_raw_command(command, flags, nested_intent.raw_command)
+
+                {:ok,
+                 %{
+                   nested_intent
+                   | teamwork_preview?: true,
+                     boost?: flags[:boost?] || nested_intent.boost?,
+                     blueprint_pattern:
+                       flags[:blueprint_pattern] || nested_intent.blueprint_pattern,
+                     raw_command: raw
+                 }}
+
+              {:error, _} = error ->
+                error
+            end
+
+          true ->
+            with {:ok, objective} <- required_objective(command, remaining_trimmed) do
+              raw = build_teamwork_raw_command(command, flags, nil)
+
+              {:ok,
+               intent(:teamwork_preview, objective, :durable, :teamwork_preview, source,
+                 raw_command: raw,
+                 teamwork_preview?: true,
+                 boost?: flags[:boost?] || false,
+                 blueprint_pattern: flags[:blueprint_pattern]
+               )}
+            end
+        end
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp parse_boost_command(command, arguments, source) do
+    trimmed_args = String.trim(arguments)
+
+    if trimmed_args == "" do
+      error(
+        :missing_objective,
+        "#{command} requires an objective or chained command. Usage: #{command_usage(command)}",
+        command
+      )
+    else
+      case parse_teamwork_flags(trimmed_args, %{boost?: true}) do
+        {:ok, flags, remaining} ->
+          remaining_trimmed = String.trim(remaining)
+
+          cond do
+            remaining_trimmed == "" ->
+              error(
+                :missing_objective,
+                "#{command} requires an objective or chained command. Usage: #{command_usage(command)}",
+                command
+              )
+
+            String.starts_with?(remaining_trimmed, "/") ->
+              case parse_trimmed(remaining_trimmed, source) do
+                {:ok, nested_intent} ->
+                  raw = build_boost_raw_command(command, flags, nested_intent.raw_command)
+
+                  {:ok,
+                   %{
+                     nested_intent
+                     | boost?: true,
+                       teamwork_preview?:
+                         flags[:teamwork_preview?] || nested_intent.teamwork_preview?,
+                       blueprint_pattern:
+                         flags[:blueprint_pattern] || nested_intent.blueprint_pattern,
+                       raw_command: raw
+                   }}
+
+                {:error, _} = error ->
+                  error
+              end
+
+            true ->
+              with {:ok, objective} <- required_objective(command, remaining_trimmed) do
+                kind = if flags[:teamwork_preview?], do: :teamwork_preview, else: :run
+                mode = if flags[:teamwork_preview?], do: :teamwork_preview, else: :single
+                raw = build_boost_raw_command(command, flags, nil)
+
+                {:ok,
+                 intent(kind, objective, :durable, mode, source,
+                   raw_command: raw,
+                   boost?: true,
+                   teamwork_preview?: flags[:teamwork_preview?] || false,
+                   blueprint_pattern: flags[:blueprint_pattern]
+                 )}
+              end
+          end
+
+        {:error, _} = error ->
+          error
+      end
+    end
+  end
+
+  defp parse_teamwork_flags(input, acc) do
+    trimmed = String.trim(input)
+
+    cond do
+      trimmed == "" ->
+        {:ok, acc, ""}
+
+      String.starts_with?(trimmed, "--pattern=") ->
+        {"--pattern=" <> pattern_and_rest, _} = split_command(trimmed)
+        {pattern, _} = split_command(pattern_and_rest)
+        prefix_len = byte_size("--pattern=" <> pattern)
+        remaining = String.slice(trimmed, prefix_len..-1//1) |> String.trim_leading()
+        validate_and_record_pattern(pattern, remaining, acc)
+
+      String.starts_with?(trimmed, "--pattern") ->
+        {_opt, rest} = split_command(trimmed)
+        {pattern, remaining} = split_command(rest)
+        validate_and_record_pattern(pattern, remaining, acc)
+
+      String.starts_with?(trimmed, "-p ") ->
+        {_opt, rest} = split_command(trimmed)
+        {pattern, remaining} = split_command(rest)
+        validate_and_record_pattern(pattern, remaining, acc)
+
+      String.starts_with?(trimmed, "--boost") ->
+        {_opt, remaining} = split_command(trimmed)
+        parse_teamwork_flags(remaining, Map.put(acc, :boost?, true))
+
+      String.starts_with?(trimmed, "-b ") or trimmed == "-b" ->
+        {_opt, remaining} = split_command(trimmed)
+        parse_teamwork_flags(remaining, Map.put(acc, :boost?, true))
+
+      String.starts_with?(trimmed, "--teamwork-preview") ->
+        {_opt, remaining} = split_command(trimmed)
+        parse_teamwork_flags(remaining, Map.put(acc, :teamwork_preview?, true))
+
+      String.starts_with?(trimmed, "--") ->
+        {opt, _rest} = split_command(trimmed)
+
+        error(
+          :invalid_option,
+          "Unrecognized option #{opt} for /teamwork-preview. Usage: #{command_usage("/teamwork-preview")}",
+          "/teamwork-preview"
+        )
+
+      true ->
+        {:ok, acc, trimmed}
+    end
+  end
+
+  defp validate_and_record_pattern(pattern, remaining, acc) do
+    cleaned = String.trim(pattern)
+
+    if cleaned != "" and cleaned in @valid_patterns do
+      parse_teamwork_flags(remaining, Map.put(acc, :blueprint_pattern, cleaned))
+    else
+      error(
+        :invalid_pattern,
+        "Invalid blueprint pattern. Choose from: #{Enum.join(@valid_patterns, ", ")}",
+        "/teamwork-preview"
+      )
+    end
+  end
+
+  defp build_teamwork_raw_command(command, flags, nested_raw) do
+    parts =
+      [
+        command,
+        if(flags[:blueprint_pattern], do: "--pattern #{flags[:blueprint_pattern]}"),
+        if(flags[:boost?], do: "--boost"),
+        nested_raw
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    Enum.join(parts, " ") |> String.trim()
+  end
+
+  defp build_boost_raw_command(command, flags, nested_raw) do
+    parts =
+      [
+        command,
+        if(flags[:blueprint_pattern], do: "--pattern #{flags[:blueprint_pattern]}"),
+        if(flags[:teamwork_preview?], do: "--teamwork-preview"),
+        nested_raw
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    Enum.join(parts, " ") |> String.trim()
+  end
 
   defp parse_research_level(command, rest, source) do
     {level, objective} = split_command(rest)
@@ -341,7 +578,10 @@ defmodule IexCode.Execution.CommandParser do
       level: Keyword.get(opts, :level),
       attachment_id: Keyword.get(opts, :attachment_id),
       raw_command: Keyword.get(opts, :raw_command),
-      source: source
+      source: source,
+      boost?: Keyword.get(opts, :boost?, false),
+      teamwork_preview?: Keyword.get(opts, :teamwork_preview?, false),
+      blueprint_pattern: Keyword.get(opts, :blueprint_pattern)
     }
   end
 

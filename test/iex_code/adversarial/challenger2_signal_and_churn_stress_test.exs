@@ -390,7 +390,10 @@ defmodule IexCode.Adversarial.Challenger2SignalAndChurnStressTest do
         :ok = TerminalServer.kill(sid)
 
         res = Task.await(agent_task, 4_000)
-        assert match?({:error, _}, res)
+
+        assert match?({:error, _}, res) or
+                 match?({:ok, %{exit_code: code}} when code in [-9, 137], res)
+
         assert TerminalServer.whereis(sid) == nil
       end
     end

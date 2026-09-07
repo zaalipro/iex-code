@@ -14,7 +14,15 @@ defmodule IexCodeWeb.WorkspaceLive do
   }
 
   alias IexCode.Engine.SessionServer
-  alias IexCode.Execution.{CommandError, CommandParser, Intent, Router}
+
+  alias IexCode.Execution.{
+    CommandError,
+    CommandParser,
+    Intent,
+    Router,
+    TeamworkPreview
+  }
+
   alias IexCode.Runs.{DagProjection, DagScheduler, RunDispatcher}
   alias IexCode.Research.Results, as: ResearchResults
   alias IexCode.Research.Registry, as: SearchRegistry
@@ -286,6 +294,9 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:layout_density, settings.layout_density || "comfortable")
       # Goal & Steering assigns
       |> assign(:show_goal_modal, false)
+      |> assign(:show_teamwork_modal, false)
+      |> assign(:teamwork_blueprint, nil)
+      |> assign(:boost_mode_active, false)
       |> assign(:show_cancel_modal, false)
       |> assign(:cancel_mode, "rollback")
       |> assign(:steer_text, "")
@@ -2639,6 +2650,126 @@ defmodule IexCodeWeb.WorkspaceLive do
   end
 
   @impl true
+  def handle_event("open_teamwork_preview", params, socket) do
+    objective =
+      cond do
+        is_binary(params["objective"]) and String.trim(params["objective"]) != "" ->
+          String.trim(params["objective"])
+
+        socket.assigns[:composer_objective] ->
+          socket.assigns.composer_objective
+
+        true ->
+          "Take iex-code to the next level with multi-agent orchestration and verification"
+      end
+
+    blueprint =
+      TeamworkPreview.generate_blueprint(
+        objective,
+        pattern: params["pattern"],
+        boost?: socket.assigns[:boost_mode_active] || false,
+        model: socket.assigns[:selected_model] || "deepseek-v4-pro"
+      )
+
+    {:noreply,
+     socket
+     |> assign(:show_teamwork_modal, true)
+     |> assign(:teamwork_blueprint, blueprint)}
+  end
+
+  @impl true
+  def handle_event("close_teamwork_preview", _params, socket) do
+    {:noreply, assign(socket, :show_teamwork_modal, false)}
+  end
+
+  @impl true
+  def handle_event("change_blueprint_pattern", %{"pattern" => pattern}, socket) do
+    if bp = socket.assigns.teamwork_blueprint do
+      model = socket.assigns[:selected_model] || "deepseek-v4-pro"
+      updated = TeamworkPreview.regenerate_with_pattern(bp, pattern, boost?: socket.assigns[:boost_mode_active] || bp.boost?, model: model)
+      {:noreply, assign(socket, :teamwork_blueprint, updated)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("launch_teamwork_swarm", _params, socket) do
+    blueprint = socket.assigns.teamwork_blueprint
+
+    if blueprint do
+      intent = %Intent{
+        kind: :goal,
+        objective: blueprint.objective,
+        durability: :durable,
+        mode: :swarm,
+        draft?: false,
+        boost?: blueprint.boost?,
+        teamwork_preview?: true,
+        blueprint_pattern: blueprint.pattern,
+        source: "workspace_composer",
+        raw_command: "/teamwork-preview /goal"
+      }
+
+      context =
+        socket
+        |> composer_router_context(%{})
+        |> Map.put(:teamwork_blueprint, blueprint)
+        |> Map.put(:boost, blueprint.boost?)
+
+      case Router.route(intent, context) do
+        {:ok, %{action: {:run, run}, intent: routed}} ->
+          {:noreply,
+           socket
+           |> assign(:show_teamwork_modal, false)
+           |> composer_run_queued(run, routed, false)
+           |> put_flash(
+             :info,
+             "🚀 Teamwork Swarm launched with #{blueprint.pattern_name} pattern!"
+           )}
+
+        {:ok, %{action: {:draft, run}, intent: routed}} ->
+          {:noreply,
+           socket
+           |> assign(:show_teamwork_modal, false)
+           |> composer_run_queued(run, routed, true)
+           |> put_flash(:info, "Teamwork draft created")}
+
+        {:error, reason} ->
+          {:noreply,
+           put_flash(socket, :error, "Failed to launch teamwork swarm: #{inspect(reason)}")}
+      end
+    else
+      {:noreply, assign(socket, :show_teamwork_modal, false)}
+    end
+  end
+
+  @impl true
+  def handle_event("toggle_boost_mode", _params, socket) do
+    new_boost = not (socket.assigns[:boost_mode_active] || false)
+
+    bp =
+      if bp = socket.assigns[:teamwork_blueprint] do
+        model = socket.assigns[:selected_model] || "deepseek-v4-pro"
+        TeamworkPreview.regenerate_with_pattern(bp, bp.pattern, boost?: new_boost, model: model)
+      else
+        nil
+      end
+
+    msg =
+      if new_boost,
+        do:
+          "⚡ Boost mode enabled: 3-tier deep reasoning hierarchy (Orchestrator → DeepCoder → Verifier)",
+        else: "Boost mode disabled"
+
+    {:noreply,
+     socket
+     |> assign(:boost_mode_active, new_boost)
+     |> assign(:teamwork_blueprint, bp)
+     |> put_flash(:info, msg)}
+  end
+
+  @impl true
   def handle_event("create_goal", params, socket) do
     cond do
       socket.assigns.submitting? ->
@@ -3893,6 +4024,36 @@ defmodule IexCodeWeb.WorkspaceLive do
          |> assign(:show_goal_modal, true)
          |> reset_prompt_form()
          |> put_flash(:info, "Describe the durable goal and choose whether to queue it now")}
+
+      text == "/teamwork-preview" ->
+        blueprint =
+          TeamworkPreview.generate_blueprint(
+            "Synthesize next-level application architecture and verify implementation",
+            boost?: socket.assigns[:boost_mode_active] || false,
+            model: socket.assigns[:selected_model] || "deepseek-v4-pro"
+          )
+
+        {:noreply,
+         socket
+         |> assign(:show_teamwork_modal, true)
+         |> assign(:teamwork_blueprint, blueprint)
+         |> reset_prompt_form()
+         |> put_flash(:info, "Review the multi-agent teamwork blueprint before launching")}
+
+      text == "/boost" ->
+        new_boost = not (socket.assigns[:boost_mode_active] || false)
+
+        msg =
+          if new_boost,
+            do:
+              "⚡ Boost mode activated: 3-tier deep reasoning hierarchy enabled (Orchestrator → DeepCoder → Verifier)",
+            else: "Boost mode deactivated"
+
+        {:noreply,
+         socket
+         |> assign(:boost_mode_active, new_boost)
+         |> reset_prompt_form()
+         |> put_flash(:info, msg)}
 
       text == "/research" ->
         {:noreply,
@@ -5624,6 +5785,12 @@ defmodule IexCodeWeb.WorkspaceLive do
           "ast_search" ->
             {:noreply, assign(socket, :active_tab, "ast")}
 
+          "teamwork_preview" ->
+            handle_event("open_teamwork_preview", %{}, socket)
+
+          "toggle_boost_mode" ->
+            handle_event("toggle_boost_mode", %{}, socket)
+
           "new_task" ->
             handle_event("toggle_new_task_modal", %{}, socket)
 
@@ -6222,6 +6389,48 @@ defmodule IexCodeWeb.WorkspaceLive do
     {:noreply, put_flash(socket, :error, "Fix Run setup before queueing work: #{error}")}
   end
 
+  defp route_composer_intent(socket, %Intent{teamwork_preview?: true} = intent, _params) do
+    blueprint =
+      TeamworkPreview.generate_blueprint(
+        intent.objective || "Take iex-code to next level",
+        pattern: intent.blueprint_pattern,
+        boost?: intent.boost? || socket.assigns[:boost_mode_active] || false,
+        model: socket.assigns[:selected_model] || "deepseek-v4-pro"
+      )
+
+    {:noreply,
+     socket
+     |> assign(:show_teamwork_modal, true)
+     |> assign(:teamwork_blueprint, blueprint)
+     |> assign(:boost_mode_active, intent.boost? || socket.assigns[:boost_mode_active] || false)
+     |> reset_prompt_form()
+     |> put_flash(
+       :info,
+       "Teamwork Blueprint generated: #{blueprint.pattern_name}. Review milestones before launching."
+     )}
+  end
+
+  defp route_composer_intent(socket, %Intent{kind: :teamwork_preview} = intent, _params) do
+    blueprint =
+      TeamworkPreview.generate_blueprint(
+        intent.objective || "Take iex-code to next level",
+        pattern: intent.blueprint_pattern,
+        boost?: intent.boost? || socket.assigns[:boost_mode_active] || false,
+        model: socket.assigns[:selected_model] || "deepseek-v4-pro"
+      )
+
+    {:noreply,
+     socket
+     |> assign(:show_teamwork_modal, true)
+     |> assign(:teamwork_blueprint, blueprint)
+     |> assign(:boost_mode_active, intent.boost? || socket.assigns[:boost_mode_active] || false)
+     |> reset_prompt_form()
+     |> put_flash(
+       :info,
+       "Teamwork Blueprint generated: #{blueprint.pattern_name}. Review milestones before launching."
+     )}
+  end
+
   defp route_composer_intent(socket, %Intent{} = intent, params) do
     intent = apply_composer_mode(intent, socket.assigns.run_setup_mode)
 
@@ -6242,6 +6451,7 @@ defmodule IexCodeWeb.WorkspaceLive do
             socket
             |> composer_router_context(params)
             |> maybe_restore_goal_tools(intent, socket)
+            |> Map.put(:boost, intent.boost? || socket.assigns[:boost_mode_active] || false)
 
           case Router.route(intent, context) do
             {:ok, %{action: {:interactive, prompt, opts}}} ->

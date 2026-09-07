@@ -122,8 +122,33 @@ defmodule IexCode.LLM.Capabilities do
           tags: [:thinking, :multimodal]
         }
 
+      # DeepSeek / Open Reasoning Models on OpenAI-compatible proxies
+      (norm_provider in ["openai", ""] or norm_provider == "deepseek") and
+          (String.contains?(norm_model, "deepseek-v4") or
+             String.contains?(norm_model, "deepseek-reasoner") or
+             String.contains?(norm_model, "deepseek-v3")) ->
+        %__MODULE__{
+          provider: "openai",
+          model: model,
+          reasoning_supported: true,
+          reasoning_supported?: true,
+          type: :openai,
+          reasoning_type: :reasoning_effort,
+          supports_temperature: true,
+          supports_temperature?: true,
+          requires_temperature_1_0?: false,
+          supports_extended_thinking?: false,
+          default_effort: "high",
+          default_budget: 8_192,
+          min_budget: 2_048,
+          max_output_tokens: 65_536,
+          tags: [:deepseek_reasoning, :reasoning, :coding, :fast]
+        }
+
       # Local & Open Reasoning Models (DeepSeek R1, QwQ)
-      contains_any_pattern?(norm_model, @local_think_tag_patterns) ->
+      contains_any_pattern?(norm_model, @local_think_tag_patterns) or
+        String.contains?(norm_model, "deepseek-v4") or
+          String.contains?(norm_model, "deepseek-v3") ->
         %__MODULE__{
           provider: norm_provider,
           model: model,

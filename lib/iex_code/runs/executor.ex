@@ -11,6 +11,7 @@ defmodule IexCode.Runs.Executor do
               {:ok, term()} | {:error, term()}
 
   alias IexCode.Engine.{AgentLoop, SwarmCoordinator}
+  alias IexCode.Execution.BoostEngine
   alias IexCode.Projects
   alias IexCode.Research.Runner, as: ResearchRunner
   alias IexCode.Runs.Run
@@ -61,9 +62,10 @@ defmodule IexCode.Runs.Executor do
         :all
 
     max_retries = bounded_swarm_retries(policy_value(policy, "swarm_max_retries"))
+    effective_prompt = BoostEngine.effective_prompt(run)
 
     run.session_id
-    |> SwarmCoordinator.run(run.objective,
+    |> SwarmCoordinator.run(effective_prompt,
       project_root: project_root,
       run_id: run.id,
       allowed_tools: allowed_tools,

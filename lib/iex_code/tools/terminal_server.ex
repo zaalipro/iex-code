@@ -522,8 +522,12 @@ defmodule IexCode.Tools.TerminalServer do
         end
 
       {:terminal_exit, %{session_id: ^session_id, exit_code: code}} ->
-        duration = System.monotonic_time(:millisecond) - start_time
-        {:ok, %{output: acc, exit_code: code || 0, duration_ms: duration}}
+        if code == 0 do
+          duration = System.monotonic_time(:millisecond) - start_time
+          {:ok, %{output: acc, exit_code: 0, duration_ms: duration}}
+        else
+          {:error, {:terminal_exit, code || -1}}
+        end
     after
       remaining ->
         {:error, :timeout}

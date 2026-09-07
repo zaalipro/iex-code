@@ -58,9 +58,10 @@ defmodule IexCode.LLM.Reasoning do
     {effective_temp, effective_max_tokens, effective_budget, effective_effort} =
       case caps.type do
         :openai ->
-          # OpenAI reasoning models (o1, o3, o4) reject temperature.
+          # OpenAI reasoning models (o1, o3, o4) reject temperature, while proxies (DeepSeek) support it.
           effort = normalize_openai_effort(raw_effort)
-          {nil, max_tokens_val, nil, effort}
+          temp = if caps.supports_temperature?, do: temp_val, else: nil
+          {temp, max_tokens_val, nil, effort}
 
         :anthropic ->
           # Anthropic extended thinking (Claude 3.7 Sonnet+)
@@ -179,6 +180,7 @@ defmodule IexCode.LLM.Reasoning do
 
     base
     |> put_optional("reasoning_effort", profile.reasoning_effort)
+    |> put_optional("temperature", profile.temperature)
     |> put_tools_openai(tools)
     |> put_stream(stream?)
   end

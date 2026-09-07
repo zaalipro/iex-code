@@ -13,7 +13,15 @@ defmodule IexCode.Execution.Router do
   `execution_policy` returned by `IexCode.Execution.Policy`.
   """
 
-  alias IexCode.Execution.{CommandParser, DagTemplate, Intent, Policy}
+  alias IexCode.Execution.{
+    BoostEngine,
+    CommandParser,
+    DagTemplate,
+    Intent,
+    Policy,
+    TeamworkPreview
+  }
+
   alias IexCode.Research.Launch, as: ResearchLaunch
   alias IexCode.Research.Results, as: ResearchResults
   alias IexCode.Runs.RunDispatcher
@@ -49,7 +57,7 @@ defmodule IexCode.Execution.Router do
   def route(command_or_intent, context) when is_map(context) do
     with {:ok, intent} <- normalize_intent(command_or_intent, context),
          {:ok, scope} <- resolve_scope(context),
-         {:ok, policy} <- resolve_policy(scope, context),
+         {:ok, policy} <- resolve_policy(scope, intent, context),
          :ok <- validate_intent(intent) do
       dispatch_intent(intent, scope, policy, context)
     end
@@ -120,7 +128,20 @@ defmodule IexCode.Execution.Router do
     _error -> {:error, :session_not_found}
   end
 
-  defp resolve_policy(scope, context) do
+  defp resolve_scope_model(scope) do
+    cond do
+      scope && Map.get(scope, :session) && Map.get(scope.session, :model_name) ->
+        scope.session.model_name
+
+      scope && Map.get(scope, :settings) && Map.get(scope.settings, :default_model) ->
+        scope.settings.default_model
+
+      true ->
+        "deepseek-v4-pro"
+    end
+  end
+
+  defp resolve_policy(scope, intent, context) do
     overrides =
       context
       |> value(:overrides)
@@ -128,7 +149,17 @@ defmodule IexCode.Execution.Router do
       |> drop_router_overrides()
 
     if is_map(overrides) do
-      Policy.from_settings(scope.settings, scope.session, overrides)
+      case Policy.from_settings(scope.settings, scope.session, overrides) do
+        {:ok, policy} ->
+          if intent.boost? or value(context, :boost) == true do
+            {:ok, BoostEngine.boost_policy(policy)}
+          else
+            {:ok, policy}
+          end
+
+        {:error, _} = error ->
+          error
+      end
     else
       {:error, :invalid_execution_overrides}
     end
@@ -145,14 +176,26 @@ defmodule IexCode.Execution.Router do
         :research_picker,
         :research_attachment,
         :navigate,
-        :help
+        :help,
+        :create_workflow,
+        :teamwork_preview,
+        :boost
       ] and
         intent.durability in [:interactive, :durable, :none] and
-        intent.mode in [:single, :swarm, :research, :navigation, :help] and
+        intent.mode in [
+          :single,
+          :swarm,
+          :research,
+          :navigation,
+          :help,
+          :workflow,
+          :teamwork_preview,
+          :boost
+        ] and
         is_boolean(intent.draft?) and is_binary(intent.source) and
         byte_size(intent.source) in 1..100
 
-    objective_required? = intent.kind in [:prompt, :run, :swarm, :goal, :research]
+    objective_required? = intent.kind in [:prompt, :run, :swarm, :goal, :research, :boost]
 
     cond do
       not valid_shape? ->
@@ -162,6 +205,10 @@ defmodule IexCode.Execution.Router do
         {:error, :invalid_execution_intent}
 
       objective_required? and not valid_objective?(intent.objective) ->
+        {:error, :invalid_execution_objective}
+
+      intent.kind == :teamwork_preview and intent.objective != nil and
+          not valid_objective?(intent.objective) ->
         {:error, :invalid_execution_objective}
 
       intent.kind == :research_attachment and
@@ -234,6 +281,25 @@ defmodule IexCode.Execution.Router do
     end
   end
 
+  defp dispatch_intent(%Intent{teamwork_preview?: true} = intent, scope, policy, context) do
+    if is_nil(value(context, :teamwork_blueprint)) do
+      blueprint =
+        if intent.objective do
+          TeamworkPreview.generate_blueprint(intent.objective,
+            pattern: intent.blueprint_pattern,
+            boost?: intent.boost?,
+            model: resolve_scope_model(scope)
+          )
+        else
+          nil
+        end
+
+      {:ok, action_result(intent, {:teamwork_preview, blueprint})}
+    else
+      dispatch_confirmed_teamwork(intent, scope, policy, context)
+    end
+  end
+
   defp dispatch_intent(%Intent{kind: :run} = intent, scope, policy, context) do
     enqueue_coding(intent, scope, policy, context, "coding_agent", "single", false)
   end
@@ -251,8 +317,37 @@ defmodule IexCode.Execution.Router do
     enqueue_research(intent, scope, policy, context)
   end
 
+  defp dispatch_intent(%Intent{kind: :boost} = intent, scope, policy, context) do
+    enqueue_coding(
+      %Intent{intent | boost?: true},
+      scope,
+      policy,
+      context,
+      "coding_swarm",
+      "swarm",
+      false
+    )
+  end
+
   defp dispatch_intent(_intent, _scope, _policy, _context),
     do: {:error, :unsupported_execution_intent}
+
+  defp dispatch_confirmed_teamwork(%Intent{kind: :goal} = intent, scope, policy, context) do
+    draft? = intent.draft? or policy["goal_auto_start"] == false
+    enqueue_coding(intent, scope, policy, context, "coding_swarm", "swarm", draft?)
+  end
+
+  defp dispatch_confirmed_teamwork(%Intent{kind: :swarm} = intent, scope, policy, context) do
+    enqueue_coding(intent, scope, policy, context, "coding_swarm", "swarm", false)
+  end
+
+  defp dispatch_confirmed_teamwork(%Intent{kind: :run} = intent, scope, policy, context) do
+    enqueue_coding(intent, scope, policy, context, "coding_agent", "single", false)
+  end
+
+  defp dispatch_confirmed_teamwork(intent, scope, policy, context) do
+    enqueue_coding(intent, scope, policy, context, "coding_swarm", "swarm", false)
+  end
 
   defp dispatch_background_prompt(intent, scope, policy, context) do
     case policy["run_mode"] do
@@ -325,7 +420,7 @@ defmodule IexCode.Execution.Router do
 
   defp enqueue_coding(intent, scope, policy, context, kind, mode, draft?) do
     with {:ok, request_key} <- request_key(context),
-         {:ok, metadata} <- coding_metadata(intent, policy, context, draft?, request_key),
+         {:ok, metadata} <- coding_metadata(intent, scope, policy, context, draft?, request_key),
          attrs <-
            intent
            |> run_attrs(scope, policy, request_key, metadata, kind, mode)
@@ -402,8 +497,51 @@ defmodule IexCode.Execution.Router do
     }
   end
 
-  defp coding_metadata(intent, policy, context, draft?, request_key) do
+  defp coding_metadata(intent, scope, policy, context, draft?, request_key) do
     with {:ok, metadata} <- base_metadata(intent, policy, context) do
+      metadata =
+        if intent.boost? or value(context, :boost) == true do
+          project_path =
+            if scope && scope.project,
+              do: Map.get(scope.project, :root_path) || File.cwd!(),
+              else: File.cwd!()
+
+          boost_ctx = BoostEngine.boost_context(intent.objective, project_path)
+
+          metadata
+          |> Map.put("boost", true)
+          |> Map.put("boost_tier", "deep_reasoning_v1")
+          |> Map.put("boost_hierarchy", ["orchestrator", "deep_coder", "verifier"])
+          |> Map.put("boost_reasoning_effort", "high")
+          |> Map.put("boost_context", BoostEngine.to_map(boost_ctx))
+          |> Map.put("prompt_enhancement", boost_ctx.prompt_enhancement)
+        else
+          metadata
+        end
+
+      metadata =
+        if intent.teamwork_preview? and intent.objective != nil do
+          blueprint =
+            case value(context, :teamwork_blueprint) do
+              %TeamworkPreview.Blueprint{} = bp ->
+                bp
+
+              map when is_map(map) ->
+                TeamworkPreview.from_map(map)
+
+              _ ->
+                TeamworkPreview.generate_blueprint(intent.objective,
+                  pattern: intent.blueprint_pattern,
+                  boost?: intent.boost?,
+                  model: resolve_scope_model(scope)
+                )
+            end
+
+          Map.put(metadata, "teamwork_blueprint", TeamworkPreview.to_map(blueprint))
+        else
+          metadata
+        end
+
       if intent.kind == :goal do
         title = goal_title(intent, context)
         description = goal_description(intent, context)
@@ -622,6 +760,20 @@ defmodule IexCode.Execution.Router do
     do: true
 
   defp valid_intent_semantics?(%Intent{kind: :help, mode: :help, durability: :none}), do: true
+
+  defp valid_intent_semantics?(%Intent{
+         kind: :create_workflow,
+         mode: :workflow,
+         durability: :none
+       }),
+       do: true
+
+  defp valid_intent_semantics?(%Intent{kind: :teamwork_preview, mode: :teamwork_preview}),
+    do: true
+
+  defp valid_intent_semantics?(%Intent{kind: :boost, mode: :boost, durability: :durable}),
+    do: true
+
   defp valid_intent_semantics?(_intent), do: false
 
   defp minutes_to_ms(value) when is_integer(value) and value > 0, do: value * 60_000

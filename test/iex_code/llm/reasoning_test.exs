@@ -21,6 +21,24 @@ defmodule IexCode.LLM.ReasoningTest do
       assert profile.capabilities.type == :openai
     end
 
+    test "DeepSeek V4 Pro on OpenAI-compatible proxy preserves temperature and reasoning_effort" do
+      settings = %AppSettings{
+        default_reasoning_effort: "high",
+        default_thinking_budget: 8192,
+        temperature: 0.3,
+        max_tokens: 8192
+      }
+
+      profile = Reasoning.resolve_profile("openai", "deepseek-v4-pro", settings)
+
+      assert profile.temperature == 0.3
+      assert profile.reasoning_effort == "high"
+      assert profile.max_tokens == 8192
+      assert profile.capabilities.type == :openai
+      assert profile.capabilities.supports_temperature? == true
+      assert profile.capabilities.reasoning_supported? == true
+    end
+
     test "Anthropic extended thinking clamps temperature to 1.0 and enforces max_tokens > budget" do
       settings = %AppSettings{
         default_reasoning_effort: "medium",
@@ -223,6 +241,31 @@ defmodule IexCode.LLM.ReasoningTest do
 
       assert payload["options"]["num_ctx"] == 16_384
       assert payload["options"]["temperature"] == 0.6
+    end
+
+    test "DeepSeek V4 Pro payload preserves temperature, reasoning_effort, and max_completion_tokens" do
+      settings = %AppSettings{
+        temperature: 0.3,
+        max_tokens: 8192,
+        default_reasoning_effort: "high"
+      }
+
+      messages = [%{"role" => "user", "content" => "Synthesize AST parser"}]
+
+      payload =
+        Reasoning.serialize_payload(
+          "openai",
+          "deepseek-v4-pro",
+          messages,
+          nil,
+          settings,
+          reasoning_effort: "high"
+        )
+
+      assert payload["model"] == "deepseek-v4-pro"
+      assert payload["temperature"] == 0.3
+      assert payload["reasoning_effort"] == "high"
+      assert payload["max_completion_tokens"] == 8192
     end
   end
 end
