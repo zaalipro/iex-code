@@ -90,11 +90,11 @@ defmodule IexCode.Execution.BoostEngineTest do
 
     test "augments prompt with teamwork blueprint milestones when blueprint exists" do
       blueprint =
-        IexCode.Execution.TeamworkPreview.generate_blueprint("Synthesize streaming pipeline")
+        IexCode.Execution.Teamwork.generate_blueprint("Synthesize streaming pipeline")
 
       run = %{
         objective: "Synthesize streaming pipeline",
-        metadata: %{"teamwork_blueprint" => IexCode.Execution.TeamworkPreview.to_map(blueprint)}
+        metadata: %{"teamwork_blueprint" => IexCode.Execution.Teamwork.to_map(blueprint)}
       }
 
       effective = BoostEngine.effective_prompt(run)

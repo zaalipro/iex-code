@@ -323,17 +323,17 @@ defmodule IexCode.Execution.RouterTest do
     assert Runs.list_runs(session_id: context.session_id) == []
   end
 
-  describe "teamwork preview and boost routing" do
-    test "/teamwork-preview /boost /goal returns teamwork preview blueprint when unconfirmed", %{
+  describe "teamwork and boost routing" do
+    test "/teamwork /boost /goal returns teamwork blueprint when unconfirmed", %{
       context: context
     } do
       assert {:ok, result} =
                Router.route(
-                 "/teamwork-preview /boost /goal Build resilient payment webhook",
+                 "/teamwork /boost /goal Build resilient payment webhook",
                  context
                )
 
-      assert {:teamwork_preview, blueprint} = result.action
+      assert {:teamwork, blueprint} = result.action
       assert blueprint.objective == "Build resilient payment webhook"
       assert blueprint.boost? == true
       assert length(blueprint.milestones) >= 4
@@ -363,11 +363,11 @@ defmodule IexCode.Execution.RouterTest do
       assert policy["max_tokens"] >= 16_384
     end
 
-    test "confirmed teamwork preview launches swarm run with blueprint attached to metadata", %{
+    test "confirmed teamwork launches swarm run with blueprint attached to metadata", %{
       context: context
     } do
       objective = "Build high-throughput telemetry aggregator"
-      blueprint = IexCode.Execution.TeamworkPreview.generate_blueprint(objective, boost?: true)
+      blueprint = IexCode.Execution.Teamwork.generate_blueprint(objective, boost?: true)
 
       confirmed_context =
         context
@@ -375,7 +375,7 @@ defmodule IexCode.Execution.RouterTest do
         |> Map.put(:teamwork_blueprint, blueprint)
 
       assert {:ok, %{action: {:run, run}}} =
-               Router.route("/teamwork-preview /boost /goal #{objective}", confirmed_context)
+               Router.route("/teamwork /boost /goal #{objective}", confirmed_context)
 
       assert run.kind == "coding_swarm"
       assert run.mode == "swarm"

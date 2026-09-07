@@ -4791,11 +4791,11 @@
                       <span>{if @boost_mode_active, do: "⚡ BOOST ACTIVE", else: "Boost"}</span>
                     </button>
 
-                    <%!-- Teamwork Preview Studio Button --%>
+                    <%!-- Teamwork Studio Button --%>
                     <button
-                      id="open-teamwork-preview-btn"
+                      id="open-teamwork-btn"
                       type="button"
-                      phx-click="open_teamwork_preview"
+                      phx-click="open_teamwork"
                       title="Open Multi-Agent Teamwork Blueprint Studio"
                       class="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-[#161b22] hover:bg-[#1c2128] border border-[#30363d] text-xs font-mono text-gray-300 hover:text-white transition-all shadow-sm"
                     >
@@ -5366,18 +5366,18 @@
     </div>
   <% end %>
 
-  <%!-- Multi-Agent Teamwork Preview & Orchestration Blueprint Modal --%>
+  <%!-- Multi-Agent Teamwork Orchestration Blueprint Modal --%>
   <%= if @show_teamwork_modal and @teamwork_blueprint do %>
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4 overflow-y-auto">
       <div
-        id="teamwork-preview-modal"
+        id="teamwork-modal"
         phx-hook="ModalFocus"
         data-modal-focus
-        data-cancel-event="close_teamwork_preview"
+        data-cancel-event="close_teamwork"
         data-initial-focus="#teamwork-modal-launch-btn"
         role="dialog"
         aria-modal="true"
-        aria-labelledby="teamwork-preview-modal-title"
+        aria-labelledby="teamwork-modal-title"
         tabindex="-1"
         class="bg-[#11151c] border border-[#21262d] rounded-3xl w-full max-w-4xl p-6 sm:p-8 shadow-2xl font-sans text-xs space-y-5 animate-in fade-in zoom-in-95 max-h-[90vh] flex flex-col"
       >
@@ -5390,7 +5390,7 @@
             <div>
               <div class="flex items-center gap-2">
                 <h3
-                  id="teamwork-preview-modal-title"
+                  id="teamwork-modal-title"
                   class="text-base font-bold text-white tracking-tight"
                 >
                   Multi-Agent Teamwork Blueprint
@@ -5412,8 +5412,8 @@
           <button
             id="teamwork-modal-close"
             type="button"
-            phx-click="close_teamwork_preview"
-            aria-label="Close teamwork preview modal"
+            phx-click="close_teamwork"
+            aria-label="Close teamwork modal"
             class="text-gray-400 hover:text-white p-1.5 rounded-xl hover:bg-[#21262d] transition-colors"
           >
             <.icon name="hero-x-mark" class="w-5 h-5" />
@@ -5447,7 +5447,7 @@
               Orchestration Blueprint Pattern
             </label>
             <div class="grid grid-cols-2 sm:grid-cols-5 gap-2" id="teamwork-patterns-grid">
-              <%= for p <- IexCode.Execution.TeamworkPreview.patterns() do %>
+              <%= for p <- IexCode.Execution.Teamwork.patterns() do %>
                 <button
                   id={"pattern-select-#{p.id}"}
                   type="button"
@@ -5600,7 +5600,7 @@
             <button
               id="teamwork-modal-cancel-btn"
               type="button"
-              phx-click="close_teamwork_preview"
+              phx-click="close_teamwork"
               class="px-4 py-2 bg-[#21262d] hover:bg-[#30363d] text-gray-300 font-semibold rounded-xl transition-colors"
             >
               Dismiss

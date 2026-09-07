@@ -134,21 +134,21 @@ defmodule IexCodeWeb.CommandPalette do
       }
     },
     %{
-      id: "teamwork_preview",
+      id: "teamwork",
       category: :action,
-      title: "Teamwork Blueprint Preview",
-      subtitle: "Multi-agent orchestration decomposition & preview",
+      title: "Teamwork Orchestration Blueprint",
+      subtitle: "Multi-agent orchestration decomposition & blueprint",
       icon: "hero-user-group",
       shortcut: "Cmd+Shift+P",
-      event: "open_teamwork_preview",
+      event: "open_teamwork",
       params: %{},
       preview: %{
         category: :action,
         shortcut: "Cmd+Shift+P",
         description:
-          "Preview multi-agent blueprint decomposition, squad composition, and verification gates",
+          "Orchestrate multi-agent blueprint decomposition, squad composition, and verification gates",
         target_tab: "swarm",
-        event: "open_teamwork_preview",
+        event: "open_teamwork",
         params: %{}
       }
     },

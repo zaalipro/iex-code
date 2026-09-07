@@ -1,6 +1,6 @@
-defmodule IexCode.Execution.TeamworkPreview do
+defmodule IexCode.Execution.Teamwork do
   @moduledoc """
-  Multi-agent Teamwork Preview orchestration framework.
+  Multi-agent Teamwork orchestration framework.
 
   Analyzes high-level goals and objectives to synthesize a structured Teamwork
   Blueprint featuring:
@@ -13,6 +13,8 @@ defmodule IexCode.Execution.TeamworkPreview do
 
   defmodule Milestone do
     @moduledoc false
+    @behaviour Access
+
     defstruct [
       :id,
       :phase,
@@ -25,10 +27,48 @@ defmodule IexCode.Execution.TeamworkPreview do
       :acceptance_criteria,
       :status
     ]
+
+    @impl Access
+    def fetch(struct, key) when is_atom(key), do: Map.fetch(struct, key)
+
+    def fetch(struct, key) when is_binary(key) do
+      try do
+        Map.fetch(struct, String.to_existing_atom(key))
+      rescue
+        _ -> :error
+      end
+    end
+
+    def fetch(_struct, _key), do: :error
+
+    @impl Access
+    def get_and_update(struct, key, fun) when is_atom(key),
+      do: Map.get_and_update(struct, key, fun)
+
+    def get_and_update(struct, key, fun) when is_binary(key) do
+      try do
+        Map.get_and_update(struct, String.to_existing_atom(key), fun)
+      rescue
+        _ -> {nil, struct}
+      end
+    end
+
+    @impl Access
+    def pop(struct, key) when is_atom(key), do: Map.pop(struct, key)
+
+    def pop(struct, key) when is_binary(key) do
+      try do
+        Map.pop(struct, String.to_existing_atom(key))
+      rescue
+        _ -> {nil, struct}
+      end
+    end
   end
 
   defmodule AgentSpec do
     @moduledoc false
+    @behaviour Access
+
     defstruct [
       :role,
       :title,
@@ -37,10 +77,48 @@ defmodule IexCode.Execution.TeamworkPreview do
       :mission,
       :capabilities
     ]
+
+    @impl Access
+    def fetch(struct, key) when is_atom(key), do: Map.fetch(struct, key)
+
+    def fetch(struct, key) when is_binary(key) do
+      try do
+        Map.fetch(struct, String.to_existing_atom(key))
+      rescue
+        _ -> :error
+      end
+    end
+
+    def fetch(_struct, _key), do: :error
+
+    @impl Access
+    def get_and_update(struct, key, fun) when is_atom(key),
+      do: Map.get_and_update(struct, key, fun)
+
+    def get_and_update(struct, key, fun) when is_binary(key) do
+      try do
+        Map.get_and_update(struct, String.to_existing_atom(key), fun)
+      rescue
+        _ -> {nil, struct}
+      end
+    end
+
+    @impl Access
+    def pop(struct, key) when is_atom(key), do: Map.pop(struct, key)
+
+    def pop(struct, key) when is_binary(key) do
+      try do
+        Map.pop(struct, String.to_existing_atom(key))
+      rescue
+        _ -> {nil, struct}
+      end
+    end
   end
 
   defmodule Blueprint do
     @moduledoc false
+    @behaviour Access
+
     defstruct [
       :id,
       :objective,
@@ -54,6 +132,42 @@ defmodule IexCode.Execution.TeamworkPreview do
       :boost?,
       :created_at
     ]
+
+    @impl Access
+    def fetch(struct, key) when is_atom(key), do: Map.fetch(struct, key)
+
+    def fetch(struct, key) when is_binary(key) do
+      try do
+        Map.fetch(struct, String.to_existing_atom(key))
+      rescue
+        _ -> :error
+      end
+    end
+
+    def fetch(_struct, _key), do: :error
+
+    @impl Access
+    def get_and_update(struct, key, fun) when is_atom(key),
+      do: Map.get_and_update(struct, key, fun)
+
+    def get_and_update(struct, key, fun) when is_binary(key) do
+      try do
+        Map.get_and_update(struct, String.to_existing_atom(key), fun)
+      rescue
+        _ -> {nil, struct}
+      end
+    end
+
+    @impl Access
+    def pop(struct, key) when is_atom(key), do: Map.pop(struct, key)
+
+    def pop(struct, key) when is_binary(key) do
+      try do
+        Map.pop(struct, String.to_existing_atom(key))
+      rescue
+        _ -> {nil, struct}
+      end
+    end
   end
 
   @patterns [
@@ -208,6 +322,19 @@ defmodule IexCode.Execution.TeamworkPreview do
   def sync_milestones(blueprint_or_list, stage, opts \\ [])
 
   def sync_milestones(milestones, stage, _opts) when is_list(milestones) do
+    total_count = length(milestones)
+
+    active_id =
+      case stage do
+        :init -> 1
+        :planning -> 1
+        :exploring -> min(2, total_count)
+        :coding -> min(3, total_count)
+        :verifying -> total_count
+        :complete -> total_count + 1
+        _ -> nil
+      end
+
     Enum.map(milestones, fn m ->
       m_id =
         cond do
@@ -225,41 +352,18 @@ defmodule IexCode.Execution.TeamworkPreview do
 
       new_status =
         case stage do
-          :init ->
-            if m_id == 1, do: "in_progress", else: "pending"
-
-          :planning ->
-            cond do
-              m_id == 1 -> "in_progress"
-              true -> "pending"
-            end
-
-          :exploring ->
-            cond do
-              m_id == 1 -> "completed"
-              m_id == 2 -> "in_progress"
-              true -> "pending"
-            end
-
-          :coding ->
-            cond do
-              m_id == 1 -> "completed"
-              m_id == 2 -> "in_progress"
-              true -> "pending"
-            end
-
-          :verifying ->
-            cond do
-              m_id in [1, 2] -> "completed"
-              m_id == 3 -> "in_progress"
-              true -> "pending"
-            end
+          :failed ->
+            if current_status == "in_progress", do: "failed", else: current_status
 
           :complete ->
             "completed"
 
-          :failed ->
-            if current_status == "in_progress", do: "failed", else: current_status
+          _ when is_integer(active_id) ->
+            cond do
+              m_id < active_id -> "completed"
+              m_id == active_id -> "in_progress"
+              m_id > active_id -> "pending"
+            end
 
           _ ->
             current_status
@@ -270,7 +374,8 @@ defmodule IexCode.Execution.TeamworkPreview do
           %{m | status: new_status}
 
         is_map(m) ->
-          Map.put(m, "status", new_status)
+          key = if Map.has_key?(m, :status), do: :status, else: "status"
+          Map.put(m, key, new_status)
 
         true ->
           m
@@ -285,6 +390,11 @@ defmodule IexCode.Execution.TeamworkPreview do
   def sync_milestones(%{"milestones" => milestones} = bp_map, stage, opts)
       when is_list(milestones) do
     Map.put(bp_map, "milestones", sync_milestones(milestones, stage, opts))
+  end
+
+  def sync_milestones(%{milestones: milestones} = bp_map, stage, opts)
+      when is_list(milestones) do
+    Map.put(bp_map, :milestones, sync_milestones(milestones, stage, opts))
   end
 
   def sync_milestones(other, _stage, _opts), do: other
@@ -311,7 +421,12 @@ defmodule IexCode.Execution.TeamworkPreview do
           Enum.map(milestones, fn m ->
             if to_string(m["id"] || m[:id]) == str_id do
               Enum.reduce(updates, m, fn {k, v}, acc ->
-                Map.put(acc, to_string(k), v)
+                key =
+                  if Map.has_key?(acc, to_string(k)),
+                    do: to_string(k),
+                    else: if(Map.has_key?(acc, k), do: k, else: to_string(k))
+
+                Map.put(acc, key, v)
               end)
             else
               m
@@ -320,13 +435,39 @@ defmodule IexCode.Execution.TeamworkPreview do
 
         Map.put(map, "milestones", updated)
 
+      %{milestones: milestones} = map ->
+        str_id = to_string(milestone_id)
+
+        updated =
+          Enum.map(milestones, fn m ->
+            if to_string(m["id"] || m[:id]) == str_id do
+              Enum.reduce(updates, m, fn {k, v}, acc ->
+                key =
+                  if Map.has_key?(acc, k),
+                    do: k,
+                    else: if(Map.has_key?(acc, to_string(k)), do: to_string(k), else: k)
+
+                Map.put(acc, key, v)
+              end)
+            else
+              m
+            end
+          end)
+
+        Map.put(map, :milestones, updated)
+
       milestones when is_list(milestones) ->
         str_id = to_string(milestone_id)
 
         Enum.map(milestones, fn m ->
           if to_string(m["id"] || m[:id]) == str_id do
             Enum.reduce(updates, m, fn {k, v}, acc ->
-              Map.put(acc, to_string(k), v)
+              key =
+                if Map.has_key?(acc, to_string(k)),
+                  do: to_string(k),
+                  else: if(Map.has_key?(acc, k), do: k, else: to_string(k))
+
+              Map.put(acc, key, v)
             end)
           else
             m
@@ -920,7 +1061,7 @@ defmodule IexCode.Execution.TeamworkPreview do
         ["lib/iex_code/llm/capabilities.ex", "lib/iex_code/llm/openai.ex"]
 
       String.contains?(lower, "swarm") or String.contains?(lower, "team") ->
-        ["lib/iex_code/execution/teamwork_preview.ex", "lib/iex_code_web/live/workspace_live.ex"]
+        ["lib/iex_code/execution/teamwork.ex", "lib/iex_code_web/live/workspace_live.ex"]
 
       String.contains?(lower, "settings") ->
         ["lib/iex_code_web/live/settings_live.ex", "lib/iex_code/settings/app_settings.ex"]

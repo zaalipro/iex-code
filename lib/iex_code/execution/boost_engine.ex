@@ -74,7 +74,8 @@ defmodule IexCode.Execution.BoostEngine do
 
   def boost_policy(policy, _caps) when is_map(policy) do
     # Elevate policy with Boost parameters, respecting existing key type (string vs atom)
-    atom_keys? = Enum.any?(Map.keys(policy), &is_atom/1) and not Enum.any?(Map.keys(policy), &is_binary/1)
+    atom_keys? =
+      Enum.any?(Map.keys(policy), &is_atom/1) and not Enum.any?(Map.keys(policy), &is_binary/1)
 
     if atom_keys? do
       policy
@@ -154,13 +155,13 @@ defmodule IexCode.Execution.BoostEngine do
 
     blueprint_cli =
       case blueprint_raw do
-        %IexCode.Execution.TeamworkPreview.Blueprint{} = bp ->
-          "\n\n" <> IexCode.Execution.TeamworkPreview.format_cli(bp)
+        %IexCode.Execution.Teamwork.Blueprint{} = bp ->
+          "\n\n" <> IexCode.Execution.Teamwork.format_cli(bp)
 
         %{} = map ->
-          case IexCode.Execution.TeamworkPreview.from_map(map) do
-            %IexCode.Execution.TeamworkPreview.Blueprint{} = bp ->
-              "\n\n" <> IexCode.Execution.TeamworkPreview.format_cli(bp)
+          case IexCode.Execution.Teamwork.from_map(map) do
+            %IexCode.Execution.Teamwork.Blueprint{} = bp ->
+              "\n\n" <> IexCode.Execution.Teamwork.format_cli(bp)
 
             _ ->
               ""
@@ -192,6 +193,8 @@ defmodule IexCode.Execution.BoostEngine do
       the and for with that this from have been were will would could should lets does
       what when where which some further next also into over under than then them they
       here there each every both few more most other only same such than too very
+      objective improvements verifications fixes lets make take build get set show
+      run task goal preview swarm agent boost level app
     )
 
     tokens =
@@ -202,10 +205,16 @@ defmodule IexCode.Execution.BoostEngine do
       |> Enum.reject(&(&1 in stop_words))
       |> Enum.take(8)
 
+    target_path =
+      if File.dir?(Path.join(project_path, "lib")), do: "lib", else: ""
+
     symbol_candidates =
       try do
         Enum.flat_map(tokens, fn token ->
-          case ASTSearch.search(project_path, %{name: token}, limit: 5) do
+          query =
+            if target_path != "", do: %{name: token, path: target_path}, else: %{name: token}
+
+          case ASTSearch.search(project_path, query, limit: 5) do
             {:ok, list} ->
               Enum.map(list, fn sym ->
                 %{
@@ -231,7 +240,10 @@ defmodule IexCode.Execution.BoostEngine do
         try do
           case Git.status(project_path) do
             {:ok, %{staged: staged, unstaged: unstaged}} ->
-              modified_files = (staged ++ unstaged) |> Enum.take(3)
+              modified_files =
+                (staged ++ unstaged)
+                |> Enum.reject(&String.starts_with?(&1, "tmp/"))
+                |> Enum.take(3)
 
               Enum.flat_map(modified_files, fn file ->
                 case ASTSearch.search(project_path, %{file: file}, limit: 3) do

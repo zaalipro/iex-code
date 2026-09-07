@@ -690,8 +690,14 @@ defmodule IexCodeWeb.RunComponents do
                   </div>
                 </div>
 
+                <% bp =
+                  case @selected_run.metadata do
+                    %{"teamwork_blueprint" => b} when not is_nil(b) -> b
+                    %{teamwork_blueprint: b} when not is_nil(b) -> b
+                    _ -> nil
+                  end %>
                 <div
-                  :if={Map.get(@selected_run.metadata || %{}, "teamwork_blueprint")}
+                  :if={bp}
                   id="async-run-teamwork-blueprint"
                   class="mission-detail-section rounded-xl border border-line bg-surface p-3 space-y-3"
                 >
@@ -702,15 +708,14 @@ defmodule IexCodeWeb.RunComponents do
                         Teamwork Blueprint
                       </h4>
                       <p class="mt-0.5 text-[11px] text-subtle">
-                        {get_in(@selected_run.metadata, ["teamwork_blueprint", "pattern_name"]) ||
-                          "Orchestration Blueprint"} • ~{get_in(@selected_run.metadata, [
-                          "teamwork_blueprint",
-                          "estimated_tokens"
-                        ]) || 45_000} tokens
+                        {(is_map(bp) && (bp["pattern_name"] || bp[:pattern_name])) ||
+                          "Orchestration Blueprint"} • ~{(is_map(bp) &&
+                                                            (bp["estimated_tokens"] ||
+                                                               bp[:estimated_tokens])) || 45_000} tokens
                       </p>
                     </div>
                     <div class="flex items-center gap-2">
-                      <%= if get_in(@selected_run.metadata, ["teamwork_blueprint", "boost"]) in [true, "true"] do %>
+                      <%= if is_map(bp) and ((bp["boost"] || bp[:boost] || bp[:boost?]) in [true, "true"]) do %>
                         <span class="px-2 py-0.5 rounded-full text-[9px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center gap-1">
                           <.icon name="hero-bolt" class="w-3 h-3 text-amber-400" /> BOOST
                         </span>
@@ -721,14 +726,12 @@ defmodule IexCodeWeb.RunComponents do
 
                   <%!-- Strategy summary --%>
                   <p class="text-[11px] text-subtle italic">
-                    {get_in(@selected_run.metadata, ["teamwork_blueprint", "summary"])}
+                    {is_map(bp) && (bp["summary"] || bp[:summary])}
                   </p>
 
                   <%!-- Milestone Progress Bar --%>
-                  <% stats =
-                    IexCode.Execution.TeamworkPreview.milestone_stats(
-                      get_in(@selected_run.metadata, ["teamwork_blueprint", "milestones"]) || []
-                    ) %>
+                  <% raw_milestones = (is_map(bp) && (bp["milestones"] || bp[:milestones])) || []
+                  stats = IexCode.Execution.Teamwork.milestone_stats(raw_milestones) %>
                   <div class="space-y-1 rounded-lg bg-raised p-2 border border-line">
                     <div class="flex items-center justify-between text-[10px] font-mono">
                       <span class="text-content font-semibold">
@@ -758,10 +761,17 @@ defmodule IexCodeWeb.RunComponents do
 
                   <%!-- Milestones List with rich details --%>
                   <div class="space-y-2 pt-1">
-                    <%= for m <- get_in(@selected_run.metadata, ["teamwork_blueprint", "milestones"]) || [] do %>
+                    <%= for m <- raw_milestones do %>
+                      <% m_status = (is_map(m) && (m["status"] || m[:status])) || "pending"
+                      m_title = (is_map(m) && (m["title"] || m[:title])) || ""
+                      m_agent = (is_map(m) && (m["agent_title"] || m[:agent_title])) || ""
+                      m_files = (is_map(m) && (m["target_files"] || m[:target_files])) || []
+
+                      m_criteria =
+                        (is_map(m) && (m["acceptance_criteria"] || m[:acceptance_criteria])) || [] %>
                       <div class={[
                         "p-2 rounded-lg border text-[11px] font-mono transition-all",
-                        case m["status"] do
+                        case m_status do
                           "completed" -> "bg-emerald-950/20 border-emerald-500/30"
                           "in_progress" -> "bg-cyan-950/20 border-cyan-500/40 ring-1 ring-cyan-500/30"
                           "failed" -> "bg-rose-950/20 border-rose-500/30"
@@ -770,10 +780,13 @@ defmodule IexCodeWeb.RunComponents do
                       ]}>
                         <div class="flex items-center justify-between gap-2">
                           <div class="flex items-center gap-1.5 min-w-0 flex-1">
-                            <%= case m["status"] do %>
+                            <%= case m_status do %>
                               <% "completed" -> %>
                                 <span class="text-emerald-400 shrink-0">
-                                  <.icon name="hero-check-circle" class="w-3.5 h-3.5 text-emerald-400" />
+                                  <.icon
+                                    name="hero-check-circle"
+                                    class="w-3.5 h-3.5 text-emerald-400"
+                                  />
                                 </span>
                               <% "in_progress" -> %>
                                 <span class="text-cyan-400 shrink-0 animate-spin">
@@ -788,30 +801,30 @@ defmodule IexCodeWeb.RunComponents do
                                   <.icon name="hero-clock" class="w-3.5 h-3.5" />
                                 </span>
                             <% end %>
-                            <span class="text-content font-semibold truncate">{m["title"]}</span>
+                            <span class="text-content font-semibold truncate">{m_title}</span>
                           </div>
                           <div class="flex items-center gap-1.5 shrink-0">
                             <span class="text-subtle text-[10px] px-1.5 py-0.5 rounded bg-surface border border-line">
-                              {m["agent_title"]}
+                              {m_agent}
                             </span>
                             <span class={[
                               "text-[9px] font-bold uppercase px-1.5 py-0.5 rounded",
-                              case m["status"] do
+                              case m_status do
                                 "completed" -> "bg-emerald-500/20 text-emerald-300"
                                 "in_progress" -> "bg-cyan-500/20 text-cyan-300 animate-pulse"
                                 "failed" -> "bg-rose-500/20 text-rose-300"
                                 _ -> "bg-surface text-subtle"
                               end
                             ]}>
-                              {m["status"] || "pending"}
+                              {m_status}
                             </span>
                           </div>
                         </div>
 
-                        <%= if m["target_files"] && m["target_files"] != [] do %>
+                        <%= if m_files != [] do %>
                           <div class="flex items-center gap-1 flex-wrap pt-1 text-[10px]">
                             <span class="text-subtle">Targets:</span>
-                            <%= for file <- m["target_files"] do %>
+                            <%= for file <- m_files do %>
                               <span class="px-1 py-0.5 rounded bg-surface text-amber-300/80 border border-amber-500/20 text-[9px]">
                                 {file}
                               </span>
@@ -819,11 +832,14 @@ defmodule IexCodeWeb.RunComponents do
                           </div>
                         <% end %>
 
-                        <%= if m["acceptance_criteria"] && m["acceptance_criteria"] != [] do %>
+                        <%= if m_criteria != [] do %>
                           <div class="pt-1 space-y-0.5 text-[10px] text-subtle">
-                            <%= for ac <- m["acceptance_criteria"] do %>
+                            <%= for ac <- m_criteria do %>
                               <div class="flex items-center gap-1">
-                                <.icon name="hero-check" class="w-2.5 h-2.5 text-emerald-400 shrink-0" />
+                                <.icon
+                                  name="hero-check"
+                                  class="w-2.5 h-2.5 text-emerald-400 shrink-0"
+                                />
                                 <span class="truncate">{ac}</span>
                               </div>
                             <% end %>

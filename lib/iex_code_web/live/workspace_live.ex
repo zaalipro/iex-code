@@ -20,7 +20,7 @@ defmodule IexCodeWeb.WorkspaceLive do
     CommandParser,
     Intent,
     Router,
-    TeamworkPreview
+    Teamwork
   }
 
   alias IexCode.Runs.{DagProjection, DagScheduler, RunDispatcher}
@@ -2650,7 +2650,7 @@ defmodule IexCodeWeb.WorkspaceLive do
   end
 
   @impl true
-  def handle_event("open_teamwork_preview", params, socket) do
+  def handle_event("open_teamwork", params, socket) do
     objective =
       cond do
         is_binary(params["objective"]) and String.trim(params["objective"]) != "" ->
@@ -2664,7 +2664,7 @@ defmodule IexCodeWeb.WorkspaceLive do
       end
 
     blueprint =
-      TeamworkPreview.generate_blueprint(
+      Teamwork.generate_blueprint(
         objective,
         pattern: params["pattern"],
         boost?: socket.assigns[:boost_mode_active] || false,
@@ -2678,7 +2678,7 @@ defmodule IexCodeWeb.WorkspaceLive do
   end
 
   @impl true
-  def handle_event("close_teamwork_preview", _params, socket) do
+  def handle_event("close_teamwork", _params, socket) do
     {:noreply, assign(socket, :show_teamwork_modal, false)}
   end
 
@@ -2686,7 +2686,13 @@ defmodule IexCodeWeb.WorkspaceLive do
   def handle_event("change_blueprint_pattern", %{"pattern" => pattern}, socket) do
     if bp = socket.assigns.teamwork_blueprint do
       model = socket.assigns[:selected_model] || "deepseek-v4-pro"
-      updated = TeamworkPreview.regenerate_with_pattern(bp, pattern, boost?: socket.assigns[:boost_mode_active] || bp.boost?, model: model)
+
+      updated =
+        Teamwork.regenerate_with_pattern(bp, pattern,
+          boost?: socket.assigns[:boost_mode_active] || bp.boost?,
+          model: model
+        )
+
       {:noreply, assign(socket, :teamwork_blueprint, updated)}
     else
       {:noreply, socket}
@@ -2705,10 +2711,10 @@ defmodule IexCodeWeb.WorkspaceLive do
         mode: :swarm,
         draft?: false,
         boost?: blueprint.boost?,
-        teamwork_preview?: true,
+        teamwork?: true,
         blueprint_pattern: blueprint.pattern,
         source: "workspace_composer",
-        raw_command: "/teamwork-preview /goal"
+        raw_command: "/teamwork /goal"
       }
 
       context =
@@ -2751,7 +2757,7 @@ defmodule IexCodeWeb.WorkspaceLive do
     bp =
       if bp = socket.assigns[:teamwork_blueprint] do
         model = socket.assigns[:selected_model] || "deepseek-v4-pro"
-        TeamworkPreview.regenerate_with_pattern(bp, bp.pattern, boost?: new_boost, model: model)
+        Teamwork.regenerate_with_pattern(bp, bp.pattern, boost?: new_boost, model: model)
       else
         nil
       end
@@ -4025,9 +4031,9 @@ defmodule IexCodeWeb.WorkspaceLive do
          |> reset_prompt_form()
          |> put_flash(:info, "Describe the durable goal and choose whether to queue it now")}
 
-      text == "/teamwork-preview" ->
+      text == "/teamwork" ->
         blueprint =
-          TeamworkPreview.generate_blueprint(
+          Teamwork.generate_blueprint(
             "Synthesize next-level application architecture and verify implementation",
             boost?: socket.assigns[:boost_mode_active] || false,
             model: socket.assigns[:selected_model] || "deepseek-v4-pro"
@@ -5785,8 +5791,8 @@ defmodule IexCodeWeb.WorkspaceLive do
           "ast_search" ->
             {:noreply, assign(socket, :active_tab, "ast")}
 
-          "teamwork_preview" ->
-            handle_event("open_teamwork_preview", %{}, socket)
+          "teamwork" ->
+            handle_event("open_teamwork", %{}, socket)
 
           "toggle_boost_mode" ->
             handle_event("toggle_boost_mode", %{}, socket)
@@ -6389,9 +6395,9 @@ defmodule IexCodeWeb.WorkspaceLive do
     {:noreply, put_flash(socket, :error, "Fix Run setup before queueing work: #{error}")}
   end
 
-  defp route_composer_intent(socket, %Intent{teamwork_preview?: true} = intent, _params) do
+  defp route_composer_intent(socket, %Intent{teamwork?: true} = intent, _params) do
     blueprint =
-      TeamworkPreview.generate_blueprint(
+      Teamwork.generate_blueprint(
         intent.objective || "Take iex-code to next level",
         pattern: intent.blueprint_pattern,
         boost?: intent.boost? || socket.assigns[:boost_mode_active] || false,
@@ -6410,9 +6416,9 @@ defmodule IexCodeWeb.WorkspaceLive do
      )}
   end
 
-  defp route_composer_intent(socket, %Intent{kind: :teamwork_preview} = intent, _params) do
+  defp route_composer_intent(socket, %Intent{kind: :teamwork} = intent, _params) do
     blueprint =
-      TeamworkPreview.generate_blueprint(
+      Teamwork.generate_blueprint(
         intent.objective || "Take iex-code to next level",
         pattern: intent.blueprint_pattern,
         boost?: intent.boost? || socket.assigns[:boost_mode_active] || false,

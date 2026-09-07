@@ -45,7 +45,8 @@ defmodule Mix.Tasks.IexCode.Run do
     timeout: :integer,
     json: :boolean,
     boost: :boolean,
-    confirm: :boolean
+    confirm: :boolean,
+    pattern: :string
   ]
 
   @aliases [p: :project, s: :session, j: :json, b: :boost, c: :confirm]
@@ -87,9 +88,9 @@ defmodule Mix.Tasks.IexCode.Run do
     CLI.start_app()
 
     blueprint_override =
-      if opts[:confirm] && intent.teamwork_preview? && intent.objective do
-        IexCode.Execution.TeamworkPreview.generate_blueprint(intent.objective,
-          pattern: intent.blueprint_pattern,
+      if opts[:confirm] && intent.teamwork? && intent.objective do
+        IexCode.Execution.Teamwork.generate_blueprint(intent.objective,
+          pattern: opts[:pattern] || intent.blueprint_pattern,
           boost?: intent.boost? || opts[:boost] || false
         )
       else
@@ -105,6 +106,7 @@ defmodule Mix.Tasks.IexCode.Run do
            source: "cli",
            wake_dispatcher: false,
            boost: opts[:boost] || intent.boost? || false,
+           pattern: opts[:pattern],
            teamwork_blueprint: blueprint_override,
            overrides: execution_overrides(opts)
          },
@@ -115,20 +117,18 @@ defmodule Mix.Tasks.IexCode.Run do
     end
   end
 
-  defp handle_result(%{action: {:teamwork_preview, blueprint}}, opts, _timeout_seconds) do
+  defp handle_result(%{action: {:teamwork, blueprint}}, opts, _timeout_seconds) do
     if opts[:json] do
-      Mix.shell().info(
-        Jason.encode!(IexCode.Execution.TeamworkPreview.to_map(blueprint), pretty: true)
-      )
+      Mix.shell().info(Jason.encode!(IexCode.Execution.Teamwork.to_map(blueprint), pretty: true))
     else
       if blueprint do
-        cli_text = IexCode.Execution.TeamworkPreview.format_cli(blueprint)
+        cli_text = IexCode.Execution.Teamwork.format_cli(blueprint)
 
         launch_hint = """
 
         ── Launch Multi-Agent Swarm ────────────────────────────────────────────────────
         To execute this blueprint with your multi-agent squad, re-run with --confirm (-c):
-          mix iex_code.run "/teamwork-preview /boost /goal #{blueprint.objective}" --confirm
+          mix iex_code.run "/teamwork /boost /goal #{blueprint.objective}" --confirm
         """
 
         Mix.shell().info(cli_text <> launch_hint)

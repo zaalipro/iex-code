@@ -248,33 +248,33 @@ defmodule IexCode.Execution.CommandParserTest do
     end
   end
 
-  describe "teamwork preview and boost commands" do
-    test "parses standalone /teamwork-preview command" do
-      assert {:ok, intent} = CommandParser.parse("/teamwork-preview Decompose data pipeline")
-      assert intent.kind == :teamwork_preview
-      assert intent.teamwork_preview? == true
+  describe "teamwork and boost commands" do
+    test "parses standalone /teamwork command" do
+      assert {:ok, intent} = CommandParser.parse("/teamwork Decompose data pipeline")
+      assert intent.kind == :teamwork
+      assert intent.teamwork? == true
       assert intent.objective == "Decompose data pipeline"
       assert intent.durability == :durable
     end
 
-    test "parses /teamwork-preview with explicit pattern option" do
+    test "parses /teamwork with explicit pattern option" do
       assert {:ok, intent} =
                CommandParser.parse(
-                 "/teamwork-preview --pattern root_cause_and_fix Investigate memory leak"
+                 "/teamwork --pattern root_cause_and_fix Investigate memory leak"
                )
 
-      assert intent.kind == :teamwork_preview
-      assert intent.teamwork_preview? == true
+      assert intent.kind == :teamwork
+      assert intent.teamwork? == true
       assert intent.blueprint_pattern == "root_cause_and_fix"
       assert intent.objective == "Investigate memory leak"
     end
 
-    test "parses standalone /teamwork-preview without objective as modal trigger" do
-      assert {:ok, intent} = CommandParser.parse("/teamwork-preview")
-      assert intent.kind == :teamwork_preview
+    test "parses standalone /teamwork without objective as modal trigger" do
+      assert {:ok, intent} = CommandParser.parse("/teamwork")
+      assert intent.kind == :teamwork
       assert intent.objective == nil
       assert intent.durability == :none
-      assert intent.teamwork_preview? == true
+      assert intent.teamwork? == true
     end
 
     test "parses standalone /boost command as durable boosted run" do
@@ -287,122 +287,127 @@ defmodule IexCode.Execution.CommandParserTest do
       assert intent.durability == :durable
     end
 
-    test "parses compound chained commands /teamwork-preview /boost /goal" do
+    test "parses compound chained commands /teamwork /boost /goal" do
       assert {:ok, intent} =
-               CommandParser.parse(
-                 "/teamwork-preview /boost /goal Build resilient payment webhook"
-               )
+               CommandParser.parse("/teamwork /boost /goal Build resilient payment webhook")
 
       assert intent.kind == :goal
       assert intent.mode == :swarm
       assert intent.durability == :durable
       assert intent.boost? == true
-      assert intent.teamwork_preview? == true
+      assert intent.teamwork? == true
       assert intent.objective == "Build resilient payment webhook"
     end
 
-    test "parses compound chained commands in alternative order /boost /teamwork-preview /swarm" do
+    test "parses compound chained commands in alternative order /boost /teamwork /swarm" do
       assert {:ok, intent} =
-               CommandParser.parse(
-                 "/boost /teamwork-preview /swarm Parallelize data processing jobs"
-               )
+               CommandParser.parse("/boost /teamwork /swarm Parallelize data processing jobs")
 
       assert intent.kind == :swarm
       assert intent.mode == :swarm
       assert intent.durability == :durable
       assert intent.boost? == true
-      assert intent.teamwork_preview? == true
+      assert intent.teamwork? == true
       assert intent.objective == "Parallelize data processing jobs"
     end
 
-    test "parses /teamwork-preview with --pattern chained with /boost /goal" do
+    test "parses /teamwork with --pattern chained with /boost /goal" do
       assert {:ok, intent} =
                CommandParser.parse(
-                 "/teamwork-preview --pattern root_cause_and_fix /boost /goal Diagnose memory spike"
+                 "/teamwork --pattern root_cause_and_fix /boost /goal Diagnose memory spike"
                )
 
       assert intent.kind == :goal
       assert intent.mode == :swarm
       assert intent.durability == :durable
       assert intent.boost? == true
-      assert intent.teamwork_preview? == true
+      assert intent.teamwork? == true
       assert intent.blueprint_pattern == "root_cause_and_fix"
       assert intent.objective == "Diagnose memory spike"
     end
 
-    test "parses /teamwork-preview with --boost flag and chained /goal" do
+    test "parses /teamwork with --boost flag and chained /goal" do
       assert {:ok, intent} =
-               CommandParser.parse("/teamwork-preview --boost /goal Fix race conditions")
+               CommandParser.parse("/teamwork --boost /goal Fix race conditions")
 
       assert intent.kind == :goal
       assert intent.mode == :swarm
       assert intent.boost? == true
-      assert intent.teamwork_preview? == true
+      assert intent.teamwork? == true
       assert intent.objective == "Fix race conditions"
     end
 
-    test "parses /teamwork-preview with --pattern, --boost and shorthand flags" do
+    test "parses /teamwork with --pattern, --boost and shorthand flags" do
       assert {:ok, intent1} =
                CommandParser.parse(
-                 "/teamwork-preview --pattern distributed_coding --boost /goal Parallel workers"
+                 "/teamwork --pattern distributed_coding --boost /goal Parallel workers"
                )
 
       assert intent1.kind == :goal
       assert intent1.boost? == true
-      assert intent1.teamwork_preview? == true
+      assert intent1.teamwork? == true
       assert intent1.blueprint_pattern == "distributed_coding"
       assert intent1.objective == "Parallel workers"
 
       assert {:ok, intent2} =
-               CommandParser.parse(
-                 "/teamwork-preview --pattern=root_cause_and_fix -b /goal Trace leak"
-               )
+               CommandParser.parse("/teamwork --pattern=root_cause_and_fix -b /goal Trace leak")
 
       assert intent2.kind == :goal
       assert intent2.boost? == true
-      assert intent2.teamwork_preview? == true
+      assert intent2.teamwork? == true
       assert intent2.blueprint_pattern == "root_cause_and_fix"
       assert intent2.objective == "Trace leak"
 
       assert {:ok, intent3} =
-               CommandParser.parse(
-                 "/teamwork-preview -p system_migration /goal Zero-downtime cutover"
-               )
+               CommandParser.parse("/teamwork -p system_migration /goal Zero-downtime cutover")
 
       assert intent3.kind == :goal
       assert intent3.boost? == false
-      assert intent3.teamwork_preview? == true
+      assert intent3.teamwork? == true
       assert intent3.blueprint_pattern == "system_migration"
       assert intent3.objective == "Zero-downtime cutover"
     end
 
-    test "parses standalone /teamwork-preview with flags and direct objective" do
+    test "parses standalone /teamwork with flags and direct objective" do
       assert {:ok, intent} =
                CommandParser.parse(
-                 "/teamwork-preview --pattern=self_verification --boost Run security audit"
+                 "/teamwork --pattern=self_verification --boost Run security audit"
                )
 
-      assert intent.kind == :teamwork_preview
+      assert intent.kind == :teamwork
       assert intent.boost? == true
-      assert intent.teamwork_preview? == true
+      assert intent.teamwork? == true
       assert intent.blueprint_pattern == "self_verification"
       assert intent.objective == "Run security audit"
     end
 
+    test "rejects legacy /teamwork-preview and --teamwork-preview" do
+      assert_error("/teamwork-preview", :unknown_command, "/teamwork-preview")
+      assert_error("/teamwork --teamwork-preview", :invalid_option, "/teamwork")
+    end
+
+    test "supports --teamwork flag in /boost command" do
+      assert {:ok, intent} = CommandParser.parse("/boost --teamwork /goal Migrate legacy code")
+      assert intent.kind == :goal
+      assert intent.teamwork? == true
+      assert intent.boost? == true
+      assert intent.objective == "Migrate legacy code"
+    end
+
     test "rejects empty objectives for boost and chained commands without objective" do
       assert_error("/boost", :missing_objective, "/boost")
-      assert_error("/teamwork-preview /boost", :missing_objective, "/boost")
+      assert_error("/teamwork /boost", :missing_objective, "/boost")
 
       assert_error(
-        "/teamwork-preview --pattern root_cause_and_fix",
+        "/teamwork --pattern root_cause_and_fix",
         :missing_objective,
-        "/teamwork-preview"
+        "/teamwork"
       )
 
       assert_error(
-        "/teamwork-preview --pattern invalid_pattern /goal Fix bug",
+        "/teamwork --pattern invalid_pattern /goal Fix bug",
         :invalid_pattern,
-        "/teamwork-preview"
+        "/teamwork"
       )
     end
   end

@@ -1,12 +1,12 @@
-defmodule IexCode.Execution.TeamworkPreviewTest do
+defmodule IexCode.Execution.TeamworkTest do
   use ExUnit.Case, async: true
 
-  alias IexCode.Execution.TeamworkPreview
-  alias IexCode.Execution.TeamworkPreview.Blueprint
+  alias IexCode.Execution.Teamwork
+  alias IexCode.Execution.Teamwork.Blueprint
 
   describe "patterns/0" do
     test "returns all 5 orchestration patterns" do
-      patterns = TeamworkPreview.patterns()
+      patterns = Teamwork.patterns()
       assert length(patterns) == 5
 
       ids = Enum.map(patterns, & &1.id)
@@ -22,7 +22,7 @@ defmodule IexCode.Execution.TeamworkPreviewTest do
   describe "generate_blueprint/2" do
     test "generates default blueprint for standard objective" do
       objective = "Build high-performance rate limiter with sliding window counter"
-      blueprint = TeamworkPreview.generate_blueprint(objective)
+      blueprint = Teamwork.generate_blueprint(objective)
 
       assert %Blueprint{} = blueprint
       assert blueprint.objective == objective
@@ -47,8 +47,8 @@ defmodule IexCode.Execution.TeamworkPreviewTest do
 
     test "boost mode elevates token budget and reasoning effort" do
       objective = "Refactor Phoenix channel multiplexer"
-      normal = TeamworkPreview.generate_blueprint(objective, boost?: false)
-      boosted = TeamworkPreview.generate_blueprint(objective, boost?: true)
+      normal = Teamwork.generate_blueprint(objective, boost?: false)
+      boosted = Teamwork.generate_blueprint(objective, boost?: true)
 
       assert boosted.boost? == true
       assert boosted.estimated_tokens > normal.estimated_tokens
@@ -57,7 +57,7 @@ defmodule IexCode.Execution.TeamworkPreviewTest do
 
     test "explicit pattern selection is respected" do
       objective = "Fix race condition in pubsub broker"
-      bp = TeamworkPreview.generate_blueprint(objective, pattern: "root_cause_and_fix")
+      bp = Teamwork.generate_blueprint(objective, pattern: "root_cause_and_fix")
 
       assert bp.pattern == "root_cause_and_fix"
       assert bp.pattern_name == "Root Cause & Fix"
@@ -68,7 +68,7 @@ defmodule IexCode.Execution.TeamworkPreviewTest do
   describe "regenerate_with_pattern/2" do
     test "switches blueprint pattern while preserving objective and boost state" do
       bp =
-        TeamworkPreview.generate_blueprint("Optimize PostgreSQL JSON queries",
+        Teamwork.generate_blueprint("Optimize PostgreSQL JSON queries",
           boost?: true,
           pattern: "iterative_coding"
         )
@@ -76,7 +76,7 @@ defmodule IexCode.Execution.TeamworkPreviewTest do
       assert bp.pattern == "iterative_coding"
       assert bp.boost? == true
 
-      switched = TeamworkPreview.regenerate_with_pattern(bp, "self_verification")
+      switched = Teamwork.regenerate_with_pattern(bp, "self_verification")
       assert switched.pattern == "self_verification"
       assert switched.pattern_name == "Self-Verification & Audit"
       assert switched.objective == bp.objective
@@ -88,9 +88,9 @@ defmodule IexCode.Execution.TeamworkPreviewTest do
   describe "serialization: to_map/1 and from_map/1" do
     test "round-trips blueprint faithfully" do
       bp =
-        TeamworkPreview.generate_blueprint("Decompose monolith into umbrella apps", boost?: true)
+        Teamwork.generate_blueprint("Decompose monolith into umbrella apps", boost?: true)
 
-      map = TeamworkPreview.to_map(bp)
+      map = Teamwork.to_map(bp)
 
       assert is_map(map)
       assert map["id"] == bp.id
@@ -99,7 +99,7 @@ defmodule IexCode.Execution.TeamworkPreviewTest do
       assert is_list(map["milestones"])
       assert is_list(map["agent_squad"])
 
-      reconstructed = TeamworkPreview.from_map(map)
+      reconstructed = Teamwork.from_map(map)
       assert %Blueprint{} = reconstructed
       assert reconstructed.id == bp.id
       assert reconstructed.objective == bp.objective
@@ -112,8 +112,8 @@ defmodule IexCode.Execution.TeamworkPreviewTest do
 
   describe "format_cli/1" do
     test "renders rich ANSI boxed preview string" do
-      bp = TeamworkPreview.generate_blueprint("Add distributed consensus via Raft", boost?: true)
-      cli = TeamworkPreview.format_cli(bp)
+      bp = Teamwork.generate_blueprint("Add distributed consensus via Raft", boost?: true)
+      cli = Teamwork.format_cli(bp)
 
       assert is_binary(cli)
       assert cli =~ "TEAMWORK ORCHESTRATION BLUEPRINT"
@@ -127,7 +127,7 @@ defmodule IexCode.Execution.TeamworkPreviewTest do
   describe "pattern-specific milestone generators" do
     test "system_migration generates phased schema and cutover milestones" do
       bp =
-        TeamworkPreview.generate_blueprint("Migrate legacy users table to accounts schema",
+        Teamwork.generate_blueprint("Migrate legacy users table to accounts schema",
           pattern: "system_migration"
         )
 
@@ -142,7 +142,7 @@ defmodule IexCode.Execution.TeamworkPreviewTest do
 
     test "distributed_coding generates modular decoupled synthesis milestones" do
       bp =
-        TeamworkPreview.generate_blueprint("Parallelize image processing pipelines",
+        Teamwork.generate_blueprint("Parallelize image processing pipelines",
           pattern: "distributed_coding"
         )
 
@@ -157,7 +157,7 @@ defmodule IexCode.Execution.TeamworkPreviewTest do
 
     test "custom model propagates to squad agent specifications" do
       bp =
-        TeamworkPreview.generate_blueprint("Build web scraper",
+        Teamwork.generate_blueprint("Build web scraper",
           model: "claude-3-7-sonnet"
         )
 
@@ -167,52 +167,130 @@ defmodule IexCode.Execution.TeamworkPreviewTest do
 
   describe "toggle_boost/1 and milestone lifecycle" do
     test "toggle_boost flips boost and recalculates budgets" do
-      bp = TeamworkPreview.generate_blueprint("Fix race condition", boost?: false)
+      bp = Teamwork.generate_blueprint("Fix race condition", boost?: false)
       assert bp.boost? == false
 
-      boosted = TeamworkPreview.toggle_boost(bp)
+      boosted = Teamwork.toggle_boost(bp)
       assert boosted.boost? == true
       assert boosted.estimated_tokens > bp.estimated_tokens
       assert Enum.any?(boosted.agent_squad, &(&1.reasoning_effort == "high"))
 
-      unboosted = TeamworkPreview.toggle_boost(boosted)
+      unboosted = Teamwork.toggle_boost(boosted)
       assert unboosted.boost? == false
     end
 
     test "milestone_stats and sync_milestones track progress across stages" do
-      bp = TeamworkPreview.generate_blueprint("Audit security", pattern: "self_verification")
+      bp = Teamwork.generate_blueprint("Audit security", pattern: "self_verification")
 
-      stats_init = TeamworkPreview.milestone_stats(bp)
+      stats_init = Teamwork.milestone_stats(bp)
       assert stats_init.total == length(bp.milestones)
       assert stats_init.completed == 0
       assert stats_init.percent == 0
 
-      bp_exploring = TeamworkPreview.sync_milestones(bp, :exploring)
-      stats_exploring = TeamworkPreview.milestone_stats(bp_exploring)
+      bp_exploring = Teamwork.sync_milestones(bp, :exploring)
+      stats_exploring = Teamwork.milestone_stats(bp_exploring)
       assert stats_exploring.completed >= 1
       assert stats_exploring.in_progress >= 1
       assert stats_exploring.percent > 0
 
-      bp_complete = TeamworkPreview.sync_milestones(bp, :complete)
-      stats_complete = TeamworkPreview.milestone_stats(bp_complete)
+      bp_complete = Teamwork.sync_milestones(bp, :complete)
+      stats_complete = Teamwork.milestone_stats(bp_complete)
       assert stats_complete.completed == stats_complete.total
       assert stats_complete.percent == 100
       assert stats_complete.pending == 0
 
       # Also test with map representation
-      map_bp = TeamworkPreview.to_map(bp)
-      synced_map = TeamworkPreview.sync_milestones(map_bp, :coding)
-      map_stats = TeamworkPreview.milestone_stats(synced_map)
+      map_bp = Teamwork.to_map(bp)
+      synced_map = Teamwork.sync_milestones(map_bp, :coding)
+      map_stats = Teamwork.milestone_stats(synced_map)
       assert map_stats.completed >= 1
       assert map_stats.in_progress >= 1
     end
 
+    test "implements Access behaviour on Milestone, AgentSpec, and Blueprint" do
+      bp = Teamwork.generate_blueprint("Verify Access protocol implementation")
+
+      # Bracket access with strings and atoms on Blueprint
+      assert bp["objective"] == "Verify Access protocol implementation"
+      assert bp[:objective] == "Verify Access protocol implementation"
+      assert bp["boost?"] == false
+      assert bp[:boost?] == false
+
+      # get_in support
+      assert get_in(bp, ["pattern"]) == bp.pattern
+      assert get_in(bp, [:pattern]) == bp.pattern
+
+      # Milestone struct Access
+      milestone = hd(bp.milestones)
+      assert milestone["id"] == 1
+      assert milestone[:id] == 1
+      assert milestone["status"] == "pending"
+      assert milestone[:status] == "pending"
+      assert get_in(milestone, ["title"]) == milestone.title
+
+      # AgentSpec struct Access
+      agent = hd(bp.agent_squad)
+      assert agent["role"] == "sentinel_orchestrator"
+      assert agent[:role] == "sentinel_orchestrator"
+      assert agent["model"] == "deepseek-v4-pro"
+    end
+
+    test "milestone progression visits all 4 phases before completion" do
+      bp =
+        Teamwork.generate_blueprint("Build high-throughput ingestion",
+          pattern: "iterative_coding"
+        )
+
+      assert length(bp.milestones) == 4
+
+      # Phase 1: Planning / Discovery
+      bp_planning = Teamwork.sync_milestones(bp, :planning)
+      statuses_plan = Enum.map(bp_planning.milestones, & &1.status)
+      assert statuses_plan == ["in_progress", "pending", "pending", "pending"]
+
+      # Phase 2: Exploring / Core Feature
+      bp_exploring = Teamwork.sync_milestones(bp, :exploring)
+      statuses_exp = Enum.map(bp_exploring.milestones, & &1.status)
+      assert statuses_exp == ["completed", "in_progress", "pending", "pending"]
+
+      # Phase 3: Coding / Integration & UX
+      bp_coding = Teamwork.sync_milestones(bp, :coding)
+      statuses_code = Enum.map(bp_coding.milestones, & &1.status)
+      assert statuses_code == ["completed", "completed", "in_progress", "pending"]
+
+      # Phase 4: Verifying / Precommit Gate
+      bp_verifying = Teamwork.sync_milestones(bp, :verifying)
+      statuses_ver = Enum.map(bp_verifying.milestones, & &1.status)
+      assert statuses_ver == ["completed", "completed", "completed", "in_progress"]
+
+      # Phase 5: Complete
+      bp_done = Teamwork.sync_milestones(bp, :complete)
+      statuses_done = Enum.map(bp_done.milestones, & &1.status)
+      assert statuses_done == ["completed", "completed", "completed", "completed"]
+
+      # Phase 6: Failed state transition
+      bp_failed = Teamwork.sync_milestones(bp_verifying, :failed)
+      statuses_fail = Enum.map(bp_failed.milestones, & &1.status)
+      assert statuses_fail == ["completed", "completed", "completed", "failed"]
+    end
+
     test "update_milestone modifies specific milestone in blueprint" do
-      bp = TeamworkPreview.generate_blueprint("Refactor engine", pattern: "iterative_coding")
-      updated = TeamworkPreview.update_milestone(bp, 1, %{status: "completed", description: "Updated spec"})
+      bp = Teamwork.generate_blueprint("Refactor engine", pattern: "iterative_coding")
+
+      updated =
+        Teamwork.update_milestone(bp, 1, %{
+          status: "completed",
+          description: "Updated spec"
+        })
+
       first_milestone = hd(updated.milestones)
       assert first_milestone.status == "completed"
       assert first_milestone.description == "Updated spec"
+
+      # Also test with atom-keyed map
+      atom_map = %{milestones: [%{id: 1, status: "pending", title: "Task 1"}]}
+      updated_map = Teamwork.update_milestone(atom_map, 1, %{status: "in_progress"})
+      assert hd(updated_map.milestones).status == "in_progress"
     end
   end
 end

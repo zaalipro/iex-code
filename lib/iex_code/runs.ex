@@ -7085,7 +7085,12 @@ defmodule IexCode.Runs do
             assert_unleased_mutation!(current)
 
             attrs =
-              maybe_sync_blueprint_metadata(attrs, current.metadata, source, attrs[:progress] || 0)
+              maybe_sync_blueprint_metadata(
+                attrs,
+                current.metadata,
+                source,
+                attrs[:progress] || 0
+              )
 
             updated =
               case current |> Run.changeset(attrs) |> Repo.update() do
@@ -7692,13 +7697,47 @@ defmodule IexCode.Runs do
   end
 
   defp maybe_sync_blueprint_metadata(attrs, metadata, source, percent) do
-    case metadata && metadata["teamwork_blueprint"] do
-      %{"milestones" => milestones} = bp when is_list(milestones) ->
+    bp_data = metadata && (metadata["teamwork_blueprint"] || metadata[:teamwork_blueprint])
+
+    case bp_data do
+      %IexCode.Execution.Teamwork.Blueprint{} = bp ->
         stage = parse_stage_from_source(source, percent)
-        updated_bp = IexCode.Execution.TeamworkPreview.sync_milestones(bp, stage)
-        existing_meta = attrs[:metadata] || metadata
-        updated_metadata = Map.put(existing_meta, "teamwork_blueprint", updated_bp)
-        Map.put(attrs, :metadata, updated_metadata)
+        updated_bp = IexCode.Execution.Teamwork.sync_milestones(bp, stage)
+        existing_meta = attrs[:metadata] || attrs["metadata"] || metadata
+
+        key =
+          if Map.has_key?(existing_meta, :teamwork_blueprint),
+            do: :teamwork_blueprint,
+            else: "teamwork_blueprint"
+
+        updated_metadata =
+          Map.put(existing_meta, key, IexCode.Execution.Teamwork.to_map(updated_bp))
+
+        meta_key =
+          if Map.has_key?(attrs, :metadata),
+            do: :metadata,
+            else: if(Map.has_key?(attrs, "metadata"), do: "metadata", else: :metadata)
+
+        Map.put(attrs, meta_key, updated_metadata)
+
+      %{} = bp when is_map_key(bp, "milestones") or is_map_key(bp, :milestones) ->
+        stage = parse_stage_from_source(source, percent)
+        updated_bp = IexCode.Execution.Teamwork.sync_milestones(bp, stage)
+        existing_meta = attrs[:metadata] || attrs["metadata"] || metadata
+
+        key =
+          if Map.has_key?(existing_meta, :teamwork_blueprint),
+            do: :teamwork_blueprint,
+            else: "teamwork_blueprint"
+
+        updated_metadata = Map.put(existing_meta, key, updated_bp)
+
+        meta_key =
+          if Map.has_key?(attrs, :metadata),
+            do: :metadata,
+            else: if(Map.has_key?(attrs, "metadata"), do: "metadata", else: :metadata)
+
+        Map.put(attrs, meta_key, updated_metadata)
 
       _ ->
         attrs
@@ -7706,13 +7745,47 @@ defmodule IexCode.Runs do
   end
 
   defp maybe_terminalize_blueprint_metadata(terminal_attrs, metadata, new_status) do
-    case metadata && metadata["teamwork_blueprint"] do
-      %{"milestones" => milestones} = bp when is_list(milestones) ->
+    bp_data = metadata && (metadata["teamwork_blueprint"] || metadata[:teamwork_blueprint])
+
+    case bp_data do
+      %IexCode.Execution.Teamwork.Blueprint{} = bp ->
         stage = if new_status == "completed", do: :complete, else: :failed
-        updated_bp = IexCode.Execution.TeamworkPreview.sync_milestones(bp, stage)
-        existing_meta = terminal_attrs[:metadata] || metadata
-        updated_metadata = Map.put(existing_meta, "teamwork_blueprint", updated_bp)
-        Map.put(terminal_attrs, :metadata, updated_metadata)
+        updated_bp = IexCode.Execution.Teamwork.sync_milestones(bp, stage)
+        existing_meta = terminal_attrs[:metadata] || terminal_attrs["metadata"] || metadata
+
+        key =
+          if Map.has_key?(existing_meta, :teamwork_blueprint),
+            do: :teamwork_blueprint,
+            else: "teamwork_blueprint"
+
+        updated_metadata =
+          Map.put(existing_meta, key, IexCode.Execution.Teamwork.to_map(updated_bp))
+
+        meta_key =
+          if Map.has_key?(terminal_attrs, :metadata),
+            do: :metadata,
+            else: if(Map.has_key?(terminal_attrs, "metadata"), do: "metadata", else: :metadata)
+
+        Map.put(terminal_attrs, meta_key, updated_metadata)
+
+      %{} = bp when is_map_key(bp, "milestones") or is_map_key(bp, :milestones) ->
+        stage = if new_status == "completed", do: :complete, else: :failed
+        updated_bp = IexCode.Execution.Teamwork.sync_milestones(bp, stage)
+        existing_meta = terminal_attrs[:metadata] || terminal_attrs["metadata"] || metadata
+
+        key =
+          if Map.has_key?(existing_meta, :teamwork_blueprint),
+            do: :teamwork_blueprint,
+            else: "teamwork_blueprint"
+
+        updated_metadata = Map.put(existing_meta, key, updated_bp)
+
+        meta_key =
+          if Map.has_key?(terminal_attrs, :metadata),
+            do: :metadata,
+            else: if(Map.has_key?(terminal_attrs, "metadata"), do: "metadata", else: :metadata)
+
+        Map.put(terminal_attrs, meta_key, updated_metadata)
 
       _ ->
         terminal_attrs
@@ -7723,14 +7796,15 @@ defmodule IexCode.Runs do
     src = to_string(source || "")
 
     cond do
-      src =~ "planning" -> :planning
-      src =~ "exploring" -> :exploring
-      src =~ "coding" -> :coding
-      src =~ "verifying" -> :verifying
       src =~ "complete" or (is_integer(percent) and percent >= 100) -> :complete
+      src =~ "failed" -> :failed
+      src =~ "verifying" -> :verifying
+      src =~ "coding" -> :coding
+      src =~ "exploring" -> :exploring
+      src =~ "planning" -> :planning
       is_integer(percent) and percent <= 15 -> :init
       is_integer(percent) and percent <= 30 -> :planning
-      is_integer(percent) and percent <= 50 -> :exploring
+      is_integer(percent) and percent <= 55 -> :exploring
       is_integer(percent) and percent <= 80 -> :coding
       true -> :verifying
     end

@@ -72,10 +72,10 @@ defmodule IexCode.Execution.CommandParser do
       summary: "Open the project workflows workspace view and library."
     },
     %{
-      command: "/teamwork-preview",
-      usage: "/teamwork-preview [<command>] <objective>",
+      command: "/teamwork",
+      usage: "/teamwork [<command>] <objective>",
       summary:
-        "Generate and preview a multi-agent teamwork blueprint before execution. Can be used alone or prepended to /boost, /goal, /swarm, or /run."
+        "Generate and orchestrate a multi-agent teamwork blueprint before execution. Can be used alone or prepended to /boost, /goal, /swarm, or /run."
     },
     %{
       command: "/boost",
@@ -251,7 +251,7 @@ defmodule IexCode.Execution.CommandParser do
 
   @valid_patterns ~w(iterative_coding distributed_coding root_cause_and_fix self_verification system_migration)
 
-  defp parse_command("/teamwork-preview" = command, arguments, source) do
+  defp parse_command("/teamwork" = command, arguments, source) do
     parse_teamwork_command(command, arguments, source)
   end
 
@@ -262,7 +262,7 @@ defmodule IexCode.Execution.CommandParser do
   defp parse_command(command, _arguments, _source), do: unknown_command(command)
 
   defp parse_teamwork_command(command, arguments, source) do
-    case parse_teamwork_flags(arguments, %{teamwork_preview?: true}) do
+    case parse_teamwork_flags(arguments, %{teamwork?: true}) do
       {:ok, flags, remaining} ->
         remaining_trimmed = String.trim(remaining)
 
@@ -276,9 +276,9 @@ defmodule IexCode.Execution.CommandParser do
               )
             else
               {:ok,
-               intent(:teamwork_preview, nil, :none, :teamwork_preview, source,
+               intent(:teamwork, nil, :none, :teamwork, source,
                  raw_command: build_teamwork_raw_command(command, flags, nil),
-                 teamwork_preview?: true,
+                 teamwork?: true,
                  boost?: flags[:boost?] || false,
                  blueprint_pattern: flags[:blueprint_pattern]
                )}
@@ -292,7 +292,7 @@ defmodule IexCode.Execution.CommandParser do
                 {:ok,
                  %{
                    nested_intent
-                   | teamwork_preview?: true,
+                   | teamwork?: true,
                      boost?: flags[:boost?] || nested_intent.boost?,
                      blueprint_pattern:
                        flags[:blueprint_pattern] || nested_intent.blueprint_pattern,
@@ -308,9 +308,9 @@ defmodule IexCode.Execution.CommandParser do
               raw = build_teamwork_raw_command(command, flags, nil)
 
               {:ok,
-               intent(:teamwork_preview, objective, :durable, :teamwork_preview, source,
+               intent(:teamwork, objective, :durable, :teamwork, source,
                  raw_command: raw,
-                 teamwork_preview?: true,
+                 teamwork?: true,
                  boost?: flags[:boost?] || false,
                  blueprint_pattern: flags[:blueprint_pattern]
                )}
@@ -353,8 +353,7 @@ defmodule IexCode.Execution.CommandParser do
                    %{
                      nested_intent
                      | boost?: true,
-                       teamwork_preview?:
-                         flags[:teamwork_preview?] || nested_intent.teamwork_preview?,
+                       teamwork?: flags[:teamwork?] || nested_intent.teamwork?,
                        blueprint_pattern:
                          flags[:blueprint_pattern] || nested_intent.blueprint_pattern,
                        raw_command: raw
@@ -366,15 +365,15 @@ defmodule IexCode.Execution.CommandParser do
 
             true ->
               with {:ok, objective} <- required_objective(command, remaining_trimmed) do
-                kind = if flags[:teamwork_preview?], do: :teamwork_preview, else: :run
-                mode = if flags[:teamwork_preview?], do: :teamwork_preview, else: :single
+                kind = if flags[:teamwork?], do: :teamwork, else: :run
+                mode = if flags[:teamwork?], do: :teamwork, else: :single
                 raw = build_boost_raw_command(command, flags, nil)
 
                 {:ok,
                  intent(kind, objective, :durable, mode, source,
                    raw_command: raw,
                    boost?: true,
-                   teamwork_preview?: flags[:teamwork_preview?] || false,
+                   teamwork?: flags[:teamwork?] || false,
                    blueprint_pattern: flags[:blueprint_pattern]
                  )}
               end
@@ -400,35 +399,35 @@ defmodule IexCode.Execution.CommandParser do
         remaining = String.slice(trimmed, prefix_len..-1//1) |> String.trim_leading()
         validate_and_record_pattern(pattern, remaining, acc)
 
-      String.starts_with?(trimmed, "--pattern") ->
+      trimmed == "--pattern" or String.starts_with?(trimmed, "--pattern ") ->
         {_opt, rest} = split_command(trimmed)
         {pattern, remaining} = split_command(rest)
         validate_and_record_pattern(pattern, remaining, acc)
 
-      String.starts_with?(trimmed, "-p ") ->
+      trimmed == "-p" or String.starts_with?(trimmed, "-p ") ->
         {_opt, rest} = split_command(trimmed)
         {pattern, remaining} = split_command(rest)
         validate_and_record_pattern(pattern, remaining, acc)
 
-      String.starts_with?(trimmed, "--boost") ->
+      trimmed == "--boost" or String.starts_with?(trimmed, "--boost ") ->
         {_opt, remaining} = split_command(trimmed)
         parse_teamwork_flags(remaining, Map.put(acc, :boost?, true))
 
-      String.starts_with?(trimmed, "-b ") or trimmed == "-b" ->
+      trimmed == "-b" or String.starts_with?(trimmed, "-b ") ->
         {_opt, remaining} = split_command(trimmed)
         parse_teamwork_flags(remaining, Map.put(acc, :boost?, true))
 
-      String.starts_with?(trimmed, "--teamwork-preview") ->
+      trimmed == "--teamwork" or String.starts_with?(trimmed, "--teamwork ") ->
         {_opt, remaining} = split_command(trimmed)
-        parse_teamwork_flags(remaining, Map.put(acc, :teamwork_preview?, true))
+        parse_teamwork_flags(remaining, Map.put(acc, :teamwork?, true))
 
       String.starts_with?(trimmed, "--") ->
         {opt, _rest} = split_command(trimmed)
 
         error(
           :invalid_option,
-          "Unrecognized option #{opt} for /teamwork-preview. Usage: #{command_usage("/teamwork-preview")}",
-          "/teamwork-preview"
+          "Unrecognized option #{opt} for /teamwork. Usage: #{command_usage("/teamwork")}",
+          "/teamwork"
         )
 
       true ->
@@ -445,7 +444,7 @@ defmodule IexCode.Execution.CommandParser do
       error(
         :invalid_pattern,
         "Invalid blueprint pattern. Choose from: #{Enum.join(@valid_patterns, ", ")}",
-        "/teamwork-preview"
+        "/teamwork"
       )
     end
   end
@@ -468,7 +467,7 @@ defmodule IexCode.Execution.CommandParser do
       [
         command,
         if(flags[:blueprint_pattern], do: "--pattern #{flags[:blueprint_pattern]}"),
-        if(flags[:teamwork_preview?], do: "--teamwork-preview"),
+        if(flags[:teamwork?], do: "--teamwork"),
         nested_raw
       ]
       |> Enum.reject(&is_nil/1)
@@ -580,7 +579,7 @@ defmodule IexCode.Execution.CommandParser do
       raw_command: Keyword.get(opts, :raw_command),
       source: source,
       boost?: Keyword.get(opts, :boost?, false),
-      teamwork_preview?: Keyword.get(opts, :teamwork_preview?, false),
+      teamwork?: Keyword.get(opts, :teamwork?, false),
       blueprint_pattern: Keyword.get(opts, :blueprint_pattern)
     }
   end

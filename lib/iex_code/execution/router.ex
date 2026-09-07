@@ -19,7 +19,7 @@ defmodule IexCode.Execution.Router do
     DagTemplate,
     Intent,
     Policy,
-    TeamworkPreview
+    Teamwork
   }
 
   alias IexCode.Research.Launch, as: ResearchLaunch
@@ -178,7 +178,7 @@ defmodule IexCode.Execution.Router do
         :navigate,
         :help,
         :create_workflow,
-        :teamwork_preview,
+        :teamwork,
         :boost
       ] and
         intent.durability in [:interactive, :durable, :none] and
@@ -189,7 +189,7 @@ defmodule IexCode.Execution.Router do
           :navigation,
           :help,
           :workflow,
-          :teamwork_preview,
+          :teamwork,
           :boost
         ] and
         is_boolean(intent.draft?) and is_binary(intent.source) and
@@ -207,7 +207,7 @@ defmodule IexCode.Execution.Router do
       objective_required? and not valid_objective?(intent.objective) ->
         {:error, :invalid_execution_objective}
 
-      intent.kind == :teamwork_preview and intent.objective != nil and
+      intent.kind == :teamwork and intent.objective != nil and
           not valid_objective?(intent.objective) ->
         {:error, :invalid_execution_objective}
 
@@ -281,20 +281,20 @@ defmodule IexCode.Execution.Router do
     end
   end
 
-  defp dispatch_intent(%Intent{teamwork_preview?: true} = intent, scope, policy, context) do
+  defp dispatch_intent(%Intent{teamwork?: true} = intent, scope, policy, context) do
     if is_nil(value(context, :teamwork_blueprint)) do
       blueprint =
         if intent.objective do
-          TeamworkPreview.generate_blueprint(intent.objective,
-            pattern: intent.blueprint_pattern,
-            boost?: intent.boost?,
+          Teamwork.generate_blueprint(intent.objective,
+            pattern: value(context, :pattern) || intent.blueprint_pattern,
+            boost?: intent.boost? or value(context, :boost) == true,
             model: resolve_scope_model(scope)
           )
         else
           nil
         end
 
-      {:ok, action_result(intent, {:teamwork_preview, blueprint})}
+      {:ok, action_result(intent, {:teamwork, blueprint})}
     else
       dispatch_confirmed_teamwork(intent, scope, policy, context)
     end
@@ -520,24 +520,24 @@ defmodule IexCode.Execution.Router do
         end
 
       metadata =
-        if intent.teamwork_preview? and intent.objective != nil do
+        if intent.teamwork? and intent.objective != nil do
           blueprint =
             case value(context, :teamwork_blueprint) do
-              %TeamworkPreview.Blueprint{} = bp ->
+              %Teamwork.Blueprint{} = bp ->
                 bp
 
               map when is_map(map) ->
-                TeamworkPreview.from_map(map)
+                Teamwork.from_map(map)
 
               _ ->
-                TeamworkPreview.generate_blueprint(intent.objective,
-                  pattern: intent.blueprint_pattern,
-                  boost?: intent.boost?,
+                Teamwork.generate_blueprint(intent.objective,
+                  pattern: value(context, :pattern) || intent.blueprint_pattern,
+                  boost?: intent.boost? or value(context, :boost) == true,
                   model: resolve_scope_model(scope)
                 )
             end
 
-          Map.put(metadata, "teamwork_blueprint", TeamworkPreview.to_map(blueprint))
+          Map.put(metadata, "teamwork_blueprint", Teamwork.to_map(blueprint))
         else
           metadata
         end
@@ -768,8 +768,7 @@ defmodule IexCode.Execution.Router do
        }),
        do: true
 
-  defp valid_intent_semantics?(%Intent{kind: :teamwork_preview, mode: :teamwork_preview}),
-    do: true
+  defp valid_intent_semantics?(%Intent{kind: :teamwork, mode: :teamwork}), do: true
 
   defp valid_intent_semantics?(%Intent{kind: :boost, mode: :boost, durability: :durable}),
     do: true
