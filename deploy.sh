@@ -12,9 +12,10 @@
 #   7. Prunes old releases/images. On failure it rolls back automatically.
 #
 # Prod chain: nginx :443 -> 127.0.0.1:$PUBLIC_PORT -> iex-code container.
-# PUBLIC_PORT defaults to 49152 to match the proxy_pass pin in
+# PUBLIC_PORT defaults to 14052 to match the proxy_pass pin in
 # /etc/nginx/sites-available/iex.llmotions.com. Change it only together
-# with the nginx config.
+# with the nginx config. 14052 is deliberately outside Linux's ephemeral
+# port range (32768-60999) so outbound churn can't steal the bind.
 #
 # The first deploy from THIS repo replaces the iex-code-web container that
 # currently owns the port. That cutover needs the explicit --takeover flag;
@@ -29,7 +30,7 @@
 #   DEPLOY_RELEASES    versioned release root     (default /opt/iex-code_releases)
 #   DEPLOY_ENV_FILE    container env file on VPS  (default /etc/iex-code-web/app.env)
 #   DEPLOY_HEALTH_URL  public healthcheck URL     (default https://iex.llmotions.com/)
-#   DEPLOY_PUBLIC_PORT loopback port nginx uses   (default 49152)
+#   DEPLOY_PUBLIC_PORT loopback port nginx uses   (default 14052)
 #   DEPLOY_KEEP        releases to keep           (default 5)
 #
 # Remote steps run as root via passwordless sudo (same privilege model as the
@@ -49,7 +50,7 @@ PORT="${DEPLOY_PORT:-22}"
 RELEASES_ROOT="${DEPLOY_RELEASES:-/opt/iex-code_releases}"
 ENV_FILE="${DEPLOY_ENV_FILE:-/etc/iex-code-web/app.env}"
 HEALTH_URL="${DEPLOY_HEALTH_URL:-https://iex.llmotions.com/}"
-PUBLIC_PORT="${DEPLOY_PUBLIC_PORT:-49152}"
+PUBLIC_PORT="${DEPLOY_PUBLIC_PORT:-14052}"
 KEEP="${DEPLOY_KEEP:-5}"
 
 TAKEOVER=0 SKIP_CHECKS=0 ALLOW_DIRTY=0 DRY_RUN=0 ROLLBACK=0
@@ -276,9 +277,12 @@ restore() {
 }
 trap 'echo "REMOTE_ERR at line $LINENO; restoring previous container" >&2; restore' ERR
 echo 'PHASE:migrate'
+# NB: </dev/null is load-bearing. `compose run` attaches stdin, and this
+# script arrives on stdin itself; without the redirect it swallows the
+# rest of the script and remote bash exits silently mid-cutover.
 if ! docker compose -p "$APP" run --rm --no-deps "$SERVICE" \
     /opt/iex-code/bin/iex_code eval \
-    'Ecto.Migrator.with_repo(IexCode.Repo, &Ecto.Migrator.run(&1, :up, all: true))'; then
+    'Ecto.Migrator.with_repo(IexCode.Repo, &Ecto.Migrator.run(&1, :up, all: true))' </dev/null; then
   echo 'migration failed; restoring previous container' >&2
   restore; trap - ERR; exit 1
 fi
@@ -309,11 +313,36 @@ if [ "$status" != healthy ]; then
 fi
 trap - ERR
 echo "$RELEASE_ID" > "$RELEASES_ROOT/.current"
+echo 'SWITCH_COMPLETE'
 REMOTE_EOF
 SWITCH_STATUS=${PIPESTATUS[0]}
 set -e
-[ "$SWITCH_STATUS" -eq 0 ] || die "cutover failed (previous container restored if this was a takeover)"
-grep -q CONTAINER_HEALTHY "$SWITCH_LOG" || die "cutover failed (previous container restored if this was a takeover)"
+cutover_failed() {
+  log "cutover failed; attempting rescue of stopped siblings"
+  names="$(grep STOPPED_SIBLING: "$SWITCH_LOG" 2>/dev/null | head -n 1 | sed 's/^STOPPED_SIBLING://')"
+  safe=""
+  for n in $names; do
+    case "$n" in
+      ""|*[!A-Za-z0-9_.-]*) log "skipping unsafe name: $n" ;;
+      *) safe="$safe $n" ;;
+    esac
+  done
+  if [ -n "$safe" ]; then
+    # shellcheck disable=SC2029
+    $SSH "sudo -n bash -s" <<RESCUE_EOF || log "rescue call failed (prod may need manual docker start)"
+for c in $safe; do
+  for i in \$(seq 1 10); do
+    if docker start "\$c" >/dev/null 2>&1; then echo "RESCUED:\$c"; break; fi
+    sleep 2
+  done
+done
+RESCUE_EOF
+  fi
+  die "cutover failed (rescue attempted; verify $HEALTH_URL and containers)"
+}
+[ "$SWITCH_STATUS" -eq 0 ] || cutover_failed
+grep -q CONTAINER_HEALTHY "$SWITCH_LOG" || cutover_failed
+grep -q SWITCH_COMPLETE "$SWITCH_LOG" || cutover_failed
 
 # ---------------------------------------------------------- public health
 

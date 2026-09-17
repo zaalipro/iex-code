@@ -2,7 +2,7 @@
 # host by ./deploy.sh.
 #
 # Prod chain: nginx :443 (host) -> 127.0.0.1:${IEX_CODE_PUBLIC_PORT} ->
-# this app container. IEX_CODE_PUBLIC_PORT defaults to 49152 to match the
+# this app container. IEX_CODE_PUBLIC_PORT defaults to 14052 to match the
 # proxy_pass pin in /etc/nginx/sites-available/iex.llmotions.com; change it
 # only together with the nginx config.
 #
@@ -44,7 +44,7 @@ services:
       PORT: "4000"
     user: "${IEX_CODE_APP_UID:-10001}:${IEX_CODE_APP_GID:-10001}"
     ports:
-      - "127.0.0.1:${IEX_CODE_PUBLIC_PORT:-49152}:4000"
+      - "127.0.0.1:${IEX_CODE_PUBLIC_PORT:-14052}:4000"
     volumes:
       - type: bind
         source: ${IEX_CODE_STATE_DIR:-/var/lib/iex-code-web}
