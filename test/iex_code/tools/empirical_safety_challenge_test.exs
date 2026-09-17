@@ -2,7 +2,7 @@ defmodule IexCode.Tools.EmpiricalSafetyChallengeTest do
   @moduledoc """
   Empirical Challenge Test Suite for Milestone M2.
   Adversarially verifies:
-    1. Safety tier permutations across all 17 tools (full_auto, prompt_dangerous, read_only).
+    1. Safety tier permutations across all 20 tools (full_auto, prompt_dangerous, read_only).
     2. Read-only mutating tool invariants, default AppSettings behaviors, and privilege escalation vulnerabilities.
     3. ContextCompactor stress testing with 100+ turns, massive outputs, and token bounding.
     4. Exit code and diff header preservation.
@@ -28,30 +28,33 @@ defmodule IexCode.Tools.EmpiricalSafetyChallengeTest do
     run_tests
     web_search
     fetch_url
+    update_plan
+    request_input
+    spawn_agent
   )
 
-  @all_17_tools @mutating_tools ++ @readonly_tools
+  @all_tools @mutating_tools ++ @readonly_tools
 
   # ---------------------------------------------------------------------------
   # Task 1: Safety Tier Permutations Across All 17 Tools
   # ---------------------------------------------------------------------------
-  describe "Permutations Matrix: All 17 Tools across Safety Tiers" do
-    test "verifies total tool count matches the 17 defined tools" do
+  describe "Permutations Matrix: All 20 Tools across Safety Tiers" do
+    test "verifies total tool count matches the 20 defined tools" do
       definitions = Tools.tool_definitions(:all)
       tool_names = Enum.map(definitions, & &1.name) |> Enum.sort()
 
-      assert length(@all_17_tools) == 17
-      assert length(tool_names) == 17
-      assert Enum.sort(@all_17_tools) == tool_names
+      assert length(@all_tools) == 20
+      assert length(tool_names) == 20
+      assert Enum.sort(@all_tools) == tool_names
     end
 
-    test "full_auto mode permits all 17 tools without prompts or denials" do
+    test "full_auto mode permits all 20 tools without prompts or denials" do
       clean_settings = %AppSettings{
         tool_approval_mode: "full_auto",
         tool_category_overrides: %{}
       }
 
-      for tool <- @all_17_tools do
+      for tool <- @all_tools do
         assert SafetyPolicy.evaluate(tool, clean_settings) == :allow,
                "Expected tool #{tool} to be :allow in full_auto"
 
@@ -61,7 +64,7 @@ defmodule IexCode.Tools.EmpiricalSafetyChallengeTest do
       end
     end
 
-    test "prompt_dangerous mode prompts for 6 mutating tools and permits 11 read-only tools" do
+    test "prompt_dangerous mode prompts for 6 mutating tools and permits 14 read-only tools" do
       clean_settings = %AppSettings{
         tool_approval_mode: "prompt_dangerous",
         tool_category_overrides: %{}
@@ -84,7 +87,7 @@ defmodule IexCode.Tools.EmpiricalSafetyChallengeTest do
       end
     end
 
-    test "read_only mode (with clean overrides) denies 6 mutating tools and permits 11 read-only tools" do
+    test "read_only mode (with clean overrides) denies 6 mutating tools and permits 14 read-only tools" do
       clean_settings = %AppSettings{
         tool_approval_mode: "read_only",
         tool_category_overrides: %{}

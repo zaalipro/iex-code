@@ -24,6 +24,7 @@ defmodule IexCode.Engine.AgentLoop do
   @max_message_chars 100_000
   @max_context_chars 400_000
   @history_limit 20
+  @retry_backoff_ms 100
 
   @system_prompt """
   You are the durable single coding agent for IexCode. Work directly in the selected
@@ -41,6 +42,76 @@ defmodule IexCode.Engine.AgentLoop do
 
   def execute(%Run{} = run, project_root, progress, opts)
       when is_binary(project_root) and is_function(progress, 2) and is_list(opts) do
+    case init_execution(run, project_root, progress, opts) do
+      {:ok, state, messages} ->
+        case replay_final_message(state) do
+          {:ok, nil} ->
+            record_event(state, "user", %{"content" => run.objective, "run_id" => run.id})
+            finish_execution(run, loop(messages, 1, state))
+
+          {:ok, result} ->
+            {:ok, result}
+
+          {:error, _reason} = error ->
+            error
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
+  rescue
+    error -> {:error, {error, __STACKTRACE__}}
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  def execute(_run, _project_root, _progress, _opts), do: {:error, :invalid_agent_loop}
+
+  @doc """
+  Resumes a run paused by `request_input` with the user's answer.
+
+  Returns the same shapes as `execute/4`.
+  """
+  @spec resume(
+          Run.t(),
+          String.t(),
+          (non_neg_integer(), String.t() -> any()),
+          String.t(),
+          keyword()
+        ) ::
+          result()
+  def resume(run, project_root, progress, answer, opts \\ [])
+
+  def resume(%Run{} = run, project_root, progress, answer, opts)
+      when is_binary(project_root) and is_function(progress, 2) and is_binary(answer) and
+             is_list(opts) do
+    with {:ok, state, _messages} <- init_execution(run, project_root, progress, opts),
+         %{} = bundle <- IexCode.Engine.PlanStore.take_pause(run.id) do
+      _ = IexCode.Engine.PlanStore.take_input_request(run.id)
+      restored = restore_paused_state(state, bundle)
+
+      resume_messages =
+        bundle.messages ++
+          [
+            %{role: "assistant", content: bundle.text, tool_calls: bundle.tool_calls}
+            | bundle.tool_messages
+          ] ++ [paused_answer_message(bundle, answer)]
+
+      progress.(10, "Resuming paused run at turn #{bundle.turn + 1}")
+      finish_execution(run, loop(resume_messages, bundle.turn + 1, restored))
+    else
+      nil -> {:error, :no_pause_bundle}
+      {:error, _reason} = error -> error
+    end
+  rescue
+    error -> {:error, {error, __STACKTRACE__}}
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  def resume(_run, _project_root, _progress, _answer, _opts), do: {:error, :invalid_agent_loop}
+
+  defp init_execution(run, project_root, progress, opts) do
     llm = Keyword.get(opts, :llm, IexCode.LLM)
     tool_executor = Keyword.get(opts, :tool_executor, Tools)
 
@@ -78,26 +149,46 @@ defmodule IexCode.Engine.AgentLoop do
         max_turns: max_turns,
         tool_calls: 0,
         usage: %{input_tokens: 0, output_tokens: 0, cost_cents: 0},
-        session_overrides: %{}
+        session_overrides: %{},
+        rollout_path: rollout_path(opts, session)
       }
 
-      case replay_final_message(state) do
-        {:ok, nil} -> loop(messages, 1, state)
-        {:ok, result} -> {:ok, result}
-        {:error, _reason} = error -> error
-      end
+      {:ok, state, messages}
     else
       nil -> {:error, :session_not_found}
       false -> {:error, :run_session_scope_mismatch}
       {:error, _reason} = error -> error
     end
-  rescue
-    error -> {:error, {error, __STACKTRACE__}}
-  catch
-    kind, reason -> {:error, {kind, reason}}
   end
 
-  def execute(_run, _project_root, _progress, _opts), do: {:error, :invalid_agent_loop}
+  defp finish_execution(run, {:ok, _result} = ok) do
+    IexCode.Engine.PlanStore.clear(run.id)
+    ok
+  end
+
+  defp finish_execution(_run, other), do: other
+
+  defp restore_paused_state(state, bundle) do
+    usage = %{
+      input_tokens: state.usage.input_tokens + (get_in(bundle.usage, [:input_tokens]) || 0),
+      output_tokens: state.usage.output_tokens + (get_in(bundle.usage, [:output_tokens]) || 0),
+      cost_cents: state.usage.cost_cents + (get_in(bundle.usage, [:cost_cents]) || 0)
+    }
+
+    %{
+      state
+      | usage: usage,
+        tool_calls: Map.get(bundle, :tool_call_count, 0),
+        session_overrides: Map.get(bundle, :session_overrides, %{})
+    }
+  end
+
+  defp paused_answer_message(bundle, answer) do
+    paused_call = Enum.at(bundle.tool_calls, length(bundle.tool_messages), %{})
+    call_id = Map.get(paused_call, :id) || Map.get(paused_call, "id") || "paused-call"
+
+    %{role: "tool", tool_call_id: call_id, content: "User answer: #{answer}"}
+  end
 
   defp loop(_messages, turn, %{max_turns: maximum}) when turn > maximum,
     do: {:error, {:agent_turn_limit_exceeded, maximum}}
@@ -108,17 +199,25 @@ defmodule IexCode.Engine.AgentLoop do
          :ok <- report_turn_progress(state, turn),
          {:ok, text, tool_calls, state} <-
            execute_model_turn(state, bounded_context(messages), steering_controls, turn),
+         :ok <- record_turn(state, turn, text, tool_calls),
          :ok <- resolve_consumed_steering(steering_controls, turn, state),
          :ok <- checkpoint(state.run.id, state.authority) do
       if tool_calls == [] do
         persist_final_message(state, text, turn)
       else
-        with {:ok, tool_messages, state} <- execute_tool_calls(state, tool_calls, turn) do
-          next_messages =
-            messages ++
-              [%{role: "assistant", content: text, tool_calls: tool_calls}] ++ tool_messages
+        case execute_tool_calls(state, tool_calls, turn) do
+          {:ok, tool_messages, next_state} ->
+            next_messages =
+              messages ++
+                [%{role: "assistant", content: text, tool_calls: tool_calls}] ++ tool_messages
 
-          loop(next_messages, turn + 1, state)
+            loop(next_messages, turn + 1, next_state)
+
+          {:pause, payload, tool_messages, next_state} ->
+            pause_run(next_state, messages, text, tool_calls, tool_messages, turn, payload)
+
+          {:error, _reason} = error ->
+            error
         end
       end
     end
@@ -447,6 +546,9 @@ defmodule IexCode.Engine.AgentLoop do
         {:ok, tool_message, updated} ->
           {:cont, {:ok, messages ++ [tool_message], updated}}
 
+        {:pause, payload, updated} ->
+          {:halt, {:pause, payload, messages, updated}}
+
         {:error, _reason} = error ->
           {:halt, error}
       end
@@ -468,6 +570,151 @@ defmodule IexCode.Engine.AgentLoop do
          {:ok, output} <- execute_or_replay_command(state, command, call.name, arguments) do
       message = %{role: "tool", tool_call_id: call.id, content: output}
       {:ok, message, %{state | tool_calls: state.tool_calls + 1}}
+    else
+      {:pause, payload} -> {:pause, tag_pause_call(payload, call.id), state}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp tag_pause_call(payload, call_id) when is_map(payload) do
+    Map.put_new(payload, "tool_call_id", call_id)
+  end
+
+  defp tag_pause_call(payload, call_id), do: %{"request" => payload, "tool_call_id" => call_id}
+
+  defp rollout_path(opts, session) do
+    case Keyword.get(opts, :rollout_path) do
+      path when is_binary(path) and path != "" ->
+        path
+
+      _unset ->
+        case Application.get_env(:iex_code, :rollout_dir) do
+          dir when is_binary(dir) and dir != "" ->
+            IexCode.Session.Rollout.path_for(dir, session.id)
+
+          _disabled ->
+            nil
+        end
+    end
+  end
+
+  defp record_turn(state, turn, text, tool_calls) do
+    record_event(state, "assistant", %{
+      "turn" => turn,
+      "text" => text,
+      "tool_calls" => tool_calls,
+      "run_id" => state.run.id
+    })
+
+    if is_binary(state.rollout_path) do
+      try do
+        IexCode.Session.Rollout.maybe_compact(
+          state.rollout_path,
+          nil,
+          value(state.execution_policy, "model_name")
+        )
+      rescue
+        _error -> :ok
+      catch
+        _kind, _reason -> :ok
+      end
+    end
+
+    :ok
+  end
+
+  defp record_event(%{rollout_path: path} = _state, type, data) when is_binary(path) do
+    try do
+      IexCode.Session.Rollout.record(path, type, data)
+    rescue
+      _error -> :ok
+    catch
+      _kind, _reason -> :ok
+    end
+
+    :ok
+  end
+
+  defp record_event(_state, _type, _data), do: :ok
+
+  defp pause_run(state, messages, text, tool_calls, tool_messages, turn, payload) do
+    record_event(state, "pause", %{"turn" => turn, "request" => payload, "run_id" => state.run.id})
+
+    bundle = %{
+      messages: messages,
+      text: text,
+      tool_calls: tool_calls,
+      tool_messages: tool_messages,
+      turn: turn,
+      usage: state.usage,
+      tool_call_count: state.tool_calls,
+      session_overrides: Map.get(state, :session_overrides, %{})
+    }
+
+    :ok = IexCode.Engine.PlanStore.put_pause(state.run.id, bundle)
+
+    {:paused,
+     %{
+       run_id: state.run.id,
+       turn: turn,
+       request: payload,
+       plan: IexCode.Engine.PlanStore.get_plan(state.run.id)
+     }}
+  end
+
+  defp record_tool_settlement(state, command, name, settled) do
+    {status, content} =
+      case settled do
+        {:ok, result} -> {"ok", format_tool_output(result)}
+        {:error, reason} -> {"error", inspect(reason, limit: 20, printable_limit: 4_000)}
+        {:pause, _payload} -> {"pause", ""}
+        other -> {"invalid", inspect(other, limit: 10)}
+      end
+
+    record_event(state, "tool", %{
+      "command_id" => command.id,
+      "tool" => name,
+      "status" => status,
+      "tool_call_id" => command.id,
+      "content" => content,
+      "run_id" => state.run.id
+    })
+  end
+
+  defp pause_tool_result(state, command, payload) do
+    details =
+      case payload do
+        payload when is_map(payload) -> %{"code" => "paused", "request" => payload}
+        payload -> %{"code" => "paused", "request" => inspect(payload)}
+      end
+
+    with :ok <- checkpoint(state.run.id, state.authority),
+         {:ok, _paused} <-
+           Runs.transition_command_worker(
+             command,
+             "failed",
+             %{error_message: "paused waiting for user input", error_details: details},
+             authority_opts(state.authority)
+           ) do
+      {:pause, payload}
+    end
+  end
+
+  defp run_with_retries(fun, attempts) do
+    case fun.() do
+      {:error, {:retriable, _reason}} when attempts > 1 ->
+        Process.sleep(@retry_backoff_ms)
+        run_with_retries(fun, attempts - 1)
+
+      result ->
+        result
+    end
+  end
+
+  defp retry_attempts(state) do
+    case value(state.execution_policy, "tool_retry_attempts") do
+      attempts when is_integer(attempts) and attempts > 0 -> min(attempts, 5)
+      _default -> 2
     end
   end
 
@@ -519,16 +766,40 @@ defmodule IexCode.Engine.AgentLoop do
           {:ok, :allowed, next_overrides} ->
             updated_state = %{state | session_overrides: next_overrides}
 
-            settle_tool_result(
-              updated_state,
-              running,
-              updated_state.tool_executor.execute(
-                name,
-                trusted_arguments,
-                state.project_root,
-                progress
+            executor_arguments =
+              if name == "spawn_agent" do
+                Map.put(trusted_arguments, "__sub_agent__", %{
+                  llm: updated_state.llm,
+                  tool_executor: updated_state.tool_executor,
+                  lease_owner: updated_state.authority.lease_owner,
+                  run_attempt: updated_state.authority.run_attempt,
+                  run_lease_generation: updated_state.authority.lease_generation
+                })
+              else
+                trusted_arguments
+              end
+
+            result =
+              run_with_retries(
+                fn ->
+                  updated_state.tool_executor.execute(
+                    name,
+                    executor_arguments,
+                    state.project_root,
+                    progress
+                  )
+                end,
+                retry_attempts(updated_state)
               )
-            )
+
+            case result do
+              {:pause, payload} ->
+                pause_tool_result(updated_state, running, payload)
+
+              settled ->
+                record_tool_settlement(updated_state, running, name, settled)
+                settle_tool_result(updated_state, running, settled)
+            end
 
           {:deny, reason} ->
             settle_tool_result(state, running, {:error, {:safety_policy_denied, reason}})
@@ -640,6 +911,13 @@ defmodule IexCode.Engine.AgentLoop do
           {:message_created, message}
         )
       end
+
+      record_event(state, "final", %{
+        "turn" => turn,
+        "text" => content,
+        "tool_calls" => state.tool_calls,
+        "run_id" => state.run.id
+      })
 
       {:ok,
        %{

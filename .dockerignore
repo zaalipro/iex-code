@@ -1,0 +1,15 @@
+_build/
+deps/
+.git/
+.github/
+*.db
+*.db-shm
+*.db-wal
+erl_crash.dump
+tmp/
+cover/
+doc/
+.elixir_ls/
+assets/node_modules/
+node_modules/
+.DS_Store

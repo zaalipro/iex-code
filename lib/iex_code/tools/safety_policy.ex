@@ -18,6 +18,9 @@ defmodule IexCode.Tools.SafetyPolicy do
   @categories %{
     "shell_execution" => ~w(run_command),
     "file_mutations" => ~w(write_file patch_file multi_patch),
+    "autonomy" => ~w(update_plan request_input spawn_agent),
+    # mcp_tools members are dynamic (mcp__server__tool); matched by prefix.
+    "mcp_tools" => [],
     "git_push" => ~w(git_stage git_commit),
     "web_search" => ~w(web_search fetch_url),
     "read_only" => ~w(
@@ -33,7 +36,7 @@ defmodule IexCode.Tools.SafetyPolicy do
     )
   }
 
-  @mutating_categories ~w(shell_execution file_mutations git_push)
+  @mutating_categories ~w(shell_execution file_mutations git_push mcp_tools)
 
   @doc """
   Returns the predefined map of tool categories.
@@ -48,6 +51,8 @@ defmodule IexCode.Tools.SafetyPolicy do
   def category_for_tool(tool_name) when is_atom(tool_name) do
     category_for_tool(Atom.to_string(tool_name))
   end
+
+  def category_for_tool("mcp__" <> _rest), do: "mcp_tools"
 
   def category_for_tool(tool_name) when is_binary(tool_name) do
     Enum.find_value(@categories, "other", fn {cat, tools} ->

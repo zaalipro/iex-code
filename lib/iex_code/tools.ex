@@ -248,7 +248,12 @@ defmodule IexCode.Tools do
           type: "object",
           properties: %{
             command: %{type: "string", description: "Shell command line to execute"},
-            timeout_ms: %{type: "integer", description: "Timeout in milliseconds (default 30000)"}
+            timeout_ms: %{type: "integer", description: "Timeout in milliseconds (default 30000)"},
+            sandbox_policy: %{
+              type: "object",
+              description:
+                "Optional OS sandbox policy: reads/writes path prefixes, network allow|deny, strict bool"
+            }
           },
           required: ["command"]
         }
@@ -286,10 +291,78 @@ defmodule IexCode.Tools do
           },
           required: ["url"]
         }
+      },
+      %{
+        name: "update_plan",
+        description: "Replace the run's task plan with an ordered list of steps and statuses.",
+        parameters: %{
+          type: "object",
+          properties: %{
+            steps: %{
+              type: "array",
+              items: %{
+                type: "object",
+                properties: %{
+                  title: %{type: "string", description: "Short step title"},
+                  status: %{
+                    type: "string",
+                    enum: ["pending", "in_progress", "done"],
+                    description: "Step status (default pending)"
+                  },
+                  detail: %{type: "string", description: "Optional step detail"}
+                },
+                required: ["title"]
+              },
+              description: "Ordered plan steps"
+            }
+          },
+          required: ["steps"]
+        }
+      },
+      %{
+        name: "request_input",
+        description:
+          "Pause the run and ask the user a question. Resume continues with the answer.",
+        parameters: %{
+          type: "object",
+          properties: %{
+            question: %{type: "string", description: "Question for the user"},
+            options: %{
+              type: "array",
+              items: %{type: "string"},
+              description: "Optional suggested answers"
+            }
+          },
+          required: ["question"]
+        }
+      },
+      %{
+        name: "spawn_agent",
+        description:
+          "Spawn a bounded child agent to complete an objective and report back a summary.",
+        parameters: %{
+          type: "object",
+          properties: %{
+            objective: %{type: "string", description: "Objective for the child agent"},
+            max_turns: %{
+              type: "integer",
+              description: "Child turn budget 1-10 (default 5)"
+            }
+          },
+          required: ["objective"]
+        }
       }
     ]
 
-    filter_tool_definitions(definitions, allowlist)
+    filter_tool_definitions(definitions ++ mcp_definitions(), allowlist)
+  end
+
+  defp mcp_definitions do
+    IexCode.MCP.ToolBridge.definitions()
+  rescue
+    _error -> []
+  catch
+    :exit, _reason -> []
   end
 
   # --- Direct Delegations ---
@@ -875,6 +948,11 @@ defmodule IexCode.Tools do
     end
   end
 
+  defp do_execute("run_command", %{"sandbox_policy" => policy} = args, root_path, on_progress)
+       when is_map(policy) do
+    run_sandboxed_command(args, policy, root_path, on_progress)
+  end
+
   defp do_execute("run_command", args, root_path, on_progress) do
     command = Map.get(args, "command") || Map.get(args, :command)
     session_id = Map.get(args, "session_id") || Map.get(args, :session_id)
@@ -1045,9 +1123,140 @@ defmodule IexCode.Tools do
     end
   end
 
+  defp do_execute("update_plan", args, _root_path, on_progress) do
+    with {:ok, run_id} <- autonomy_run_id(args),
+         {:ok, steps} <- autonomy_steps(args),
+         {:ok, normalized} <- IexCode.Engine.PlanStore.update_plan(run_id, steps) do
+      on_progress.(100, "Plan updated with #{length(normalized)} steps")
+      {:ok, %{"steps" => length(normalized), "run_id" => run_id}}
+    end
+  end
+
+  defp do_execute("request_input", args, _root_path, on_progress) do
+    with {:ok, run_id} <- autonomy_run_id(args),
+         {:ok, question} <- autonomy_question(args) do
+      options = args |> Map.get("options", []) |> List.wrap() |> Enum.take(10)
+
+      request = %{
+        "type" => "input_request",
+        "run_id" => run_id,
+        "question" => question,
+        "options" => options
+      }
+
+      :ok = IexCode.Engine.PlanStore.put_input_request(run_id, request)
+      on_progress.(100, "Run paused waiting for user input")
+      {:pause, request}
+    end
+  end
+
+  defp do_execute("spawn_agent", args, root_path, on_progress) do
+    with {:ok, run_id} <- autonomy_run_id(args),
+         {:ok, objective} <- autonomy_objective(args),
+         {:ok, context} <- sub_agent_context(args) do
+      max_turns = Map.get(args, "max_turns")
+      on_progress.(10, "Spawning child agent: #{String.slice(objective, 0, 80)}")
+
+      IexCode.Engine.SubAgent.run(
+        run_id,
+        objective,
+        root_path,
+        Map.put(context, :max_turns, max_turns),
+        on_progress
+      )
+    end
+  end
+
+  defp do_execute("mcp__" <> _rest = name, args, _root_path, on_progress) do
+    on_progress.(10, "Calling MCP tool #{name}...")
+
+    case IexCode.MCP.ToolBridge.split(name) do
+      {:ok, _server, _tool} -> IexCode.MCP.ToolBridge.execute(IexCode.MCP.Manager, name, args)
+      {:error, _reason} = error -> error
+    end
+  end
+
   defp do_execute(unknown_tool, _args, _root_path, _on_progress) do
     {:error, "Unknown tool: #{unknown_tool}"}
   end
+
+  defp run_sandboxed_command(args, policy_params, root_path, on_progress) do
+    command = Map.get(args, "command") || Map.get(args, :command)
+    timeout = Map.get(args, "timeout_ms") || Map.get(args, :timeout_ms) || 30_000
+    server = Map.get(args, "__sandbox_server__", IexCode.Sandbox.Manager)
+    backend = Map.get(args, "__sandbox_backend__")
+
+    settings = IexCode.Settings.get_settings()
+
+    known_secrets =
+      [
+        settings.openai_api_key,
+        settings.anthropic_api_key
+        | Map.values(settings.custom_env_vars || %{})
+      ]
+      |> Enum.filter(&(is_binary(&1) and byte_size(&1) >= 4))
+
+    with {:ok, policy} <- IexCode.Sandbox.Policy.from_map(policy_params),
+         {:ok, result} <-
+           IexCode.Sandbox.Manager.run(
+             ["sh", "-c", command],
+             policy,
+             workdir: root_path,
+             timeout_ms: timeout,
+             server: server,
+             backend: backend || IexCode.Sandbox.Backend.detect()
+           ) do
+      on_progress.(100, "Sandboxed command exited (#{result.exit_code})")
+      output = IexCode.Tools.SecretMasker.scrub(result.output, known_secrets)
+
+      if result.exit_code == 0 do
+        {:ok, output}
+      else
+        {:ok, "Exit Code #{result.exit_code}:\n#{output}"}
+      end
+    else
+      {:error, reason} ->
+        on_progress.(100, "Sandboxed command failed: #{inspect(reason)}")
+        {:error, "Sandboxed command failed: #{inspect(reason)}"}
+    end
+  end
+
+  defp autonomy_run_id(args) do
+    case Map.get(args, "run_id") || Map.get(args, :run_id) do
+      run_id when is_binary(run_id) and run_id != "" -> {:ok, run_id}
+      _missing -> {:error, :missing_run_context}
+    end
+  end
+
+  defp autonomy_steps(%{"steps" => steps}) when is_list(steps), do: {:ok, steps}
+  defp autonomy_steps(%{steps: steps}) when is_list(steps), do: {:ok, steps}
+  defp autonomy_steps(_args), do: {:error, :plan_steps_must_be_a_list}
+
+  defp autonomy_question(args) do
+    case Map.get(args, "question") || Map.get(args, :question) do
+      question when is_binary(question) ->
+        trimmed = String.trim(question)
+        if trimmed == "", do: {:error, :input_question_required}, else: {:ok, trimmed}
+
+      _missing ->
+        {:error, :input_question_required}
+    end
+  end
+
+  defp autonomy_objective(args) do
+    case Map.get(args, "objective") || Map.get(args, :objective) do
+      objective when is_binary(objective) ->
+        trimmed = String.trim(objective)
+        if trimmed == "", do: {:error, :spawn_objective_required}, else: {:ok, trimmed}
+
+      _missing ->
+        {:error, :spawn_objective_required}
+    end
+  end
+
+  # Loop-injected trusted context (modules are never taken from model args).
+  defp sub_agent_context(%{"__sub_agent__" => context}) when is_map(context), do: {:ok, context}
+  defp sub_agent_context(_args), do: {:error, :requires_agent_loop}
 
   defp resolve_path(root_path, path) do
     case WorkspacePath.resolve(root_path, path) do

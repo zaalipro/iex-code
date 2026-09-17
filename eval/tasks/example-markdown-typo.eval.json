@@ -1,0 +1,8 @@
+{
+  "id": "example-markdown-typo",
+  "prompt": "Fix the typo in TYPO.md (\"teh\" should be \"the\").",
+  "repo": "fixtures/markdown-typo",
+  "test_cmd": ["sh", "-c", "grep -q 'the quick' TYPO.md && ! grep -q 'teh quick' TYPO.md"],
+  "timeout_ms": 60000,
+  "max_turns": 6
+}
