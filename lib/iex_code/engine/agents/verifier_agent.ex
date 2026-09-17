@@ -5,7 +5,7 @@ defmodule IexCode.Engine.Agents.VerifierAgent do
   """
   use GenServer, restart: :transient
   require Logger
-  alias IexCode.Engine.{AgentRegistry, OperationManager}
+  alias IexCode.Engine.{AgentCancellation, AgentRegistry, OperationManager}
   alias IexCode.{Sessions, Tools}
   alias IexCode.Tools.TestRunner
 
@@ -367,11 +367,11 @@ defmodule IexCode.Engine.Agents.VerifierAgent do
   end
 
   defp set_cancelled?(session_id, value) do
-    :persistent_term.put({__MODULE__, :cancelled?, session_id}, value)
+    AgentCancellation.set(__MODULE__, session_id, value)
   end
 
   defp cancelled_fun(%State{control_token: nil, session_id: session_id}) do
-    fn -> :persistent_term.get({__MODULE__, :cancelled?, session_id}, false) end
+    fn -> AgentCancellation.cancelled?(session_id, __MODULE__) end
   end
 
   defp cancelled_fun(%State{control_token: token}) do

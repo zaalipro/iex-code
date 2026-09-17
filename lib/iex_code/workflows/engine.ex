@@ -32,7 +32,8 @@ defmodule IexCode.Workflows.Engine do
     pressure_backoff_count: 0,
     max_pressure_backoffs: 120,
     pressure_backoff_interval_ms: 1_000,
-    memory_checker: &IexCode.Observability.MemoryGuardrail.critical?/0
+    memory_checker: &IexCode.Observability.MemoryGuardrail.critical?/0,
+    run_persister: nil
   ]
 
   # Client API
@@ -133,7 +134,8 @@ defmodule IexCode.Workflows.Engine do
        run_id: run_id,
        max_pressure_backoffs: max_pressure_backoffs,
        pressure_backoff_interval_ms: pressure_backoff_interval_ms,
-       memory_checker: memory_checker
+       memory_checker: memory_checker,
+       run_persister: Keyword.get(opts, :run_persister)
      }}
   end
 
@@ -190,18 +192,24 @@ defmodule IexCode.Workflows.Engine do
             )
 
           current_status == :running ->
-            updated_run =
-              update_run_record(run, %{
-                status: "running",
-                started_at: run.started_at || DateTime.utc_now(),
-                step_states: initial_step_states
-              })
+            case update_run_record(new_state, run, %{
+                   status: "running",
+                   started_at: run.started_at || DateTime.utc_now(),
+                   step_states: initial_step_states
+                 }) do
+              {:ok, updated_run} ->
+                broadcast_run_event(updated_run, {:workflow_run_started, updated_run})
+                broadcast_run_event(updated_run, {:workflow_run_updated, updated_run})
 
-            broadcast_run_event(updated_run, {:workflow_run_started, updated_run})
-            broadcast_run_event(updated_run, {:workflow_run_updated, updated_run})
+                send(self(), :execute_next_layer)
+                {:noreply, new_state}
 
-            send(self(), :execute_next_layer)
-            {:noreply, new_state}
+              {:error, reason} ->
+                finalize_run_failure(
+                  new_state,
+                  "Failed to persist workflow run start: #{inspect(reason, limit: 3)}"
+                )
+            end
 
           true ->
             {:noreply, new_state}
@@ -326,14 +334,10 @@ defmodule IexCode.Workflows.Engine do
     run = load_run(state.run_id)
 
     updated_run =
-      if run do
-        update_run_record(run, %{
-          step_states: new_step_states,
-          progress: progress
-        })
-      else
-        nil
-      end
+      persist_run_transition(state, run, %{
+        step_states: new_step_states,
+        progress: progress
+      })
 
     if updated_run do
       broadcast_run_event(updated_run, {:step_state_updated, state.run_id, step_key, "completed"})
@@ -369,15 +373,11 @@ defmodule IexCode.Workflows.Engine do
     run = load_run(state.run_id)
 
     updated_run =
-      if run do
-        update_run_record(run, %{
-          status: "failed",
-          error_message: "Step #{step_key} failed: #{error_str}",
-          step_states: new_step_states
-        })
-      else
-        nil
-      end
+      persist_run_transition(state, run, %{
+        status: "failed",
+        error_message: "Step #{step_key} failed: #{error_str}",
+        step_states: new_step_states
+      })
 
     if updated_run do
       broadcast_run_event(updated_run, {:step_state_updated, state.run_id, step_key, "failed"})
@@ -463,48 +463,49 @@ defmodule IexCode.Workflows.Engine do
 
   @impl true
   def handle_call(:pause, _from, state) do
-    run = load_run(state.run_id)
+    case load_run(state.run_id) do
+      nil ->
+        {:reply, {:error, :run_not_found}, state}
 
-    updated_run =
-      if run do
-        update_run_record(run, %{
-          status: "paused",
-          paused_at: DateTime.utc_now()
-        })
-      else
-        nil
-      end
+      run ->
+        case update_run_record(state, run, %{
+               status: "paused",
+               paused_at: DateTime.utc_now()
+             }) do
+          {:ok, updated_run} ->
+            broadcast_run_event(updated_run, {:workflow_run_paused, updated_run})
+            broadcast_run_event(updated_run, {:workflow_run_updated, updated_run})
+            {:reply, :ok, %{state | paused?: true, status: :paused}}
 
-    if updated_run do
-      broadcast_run_event(updated_run, {:workflow_run_paused, updated_run})
-      broadcast_run_event(updated_run, {:workflow_run_updated, updated_run})
+          {:error, _reason} ->
+            {:reply, {:error, :persistence_failed}, state}
+        end
     end
-
-    {:reply, :ok, %{state | paused?: true, status: :paused}}
   end
 
   @impl true
   def handle_call(:resume, _from, state) do
-    run = load_run(state.run_id)
+    case load_run(state.run_id) do
+      nil ->
+        {:reply, {:error, :run_not_found}, state}
 
-    updated_run =
-      if run do
-        update_run_record(run, %{
-          status: "running",
-          paused_at: nil
-        })
-      else
-        nil
-      end
+      run ->
+        case update_run_record(state, run, %{
+               status: "running",
+               paused_at: nil
+             }) do
+          {:ok, updated_run} ->
+            broadcast_run_event(updated_run, {:workflow_run_resumed, updated_run})
+            broadcast_run_event(updated_run, {:workflow_run_updated, updated_run})
 
-    if updated_run do
-      broadcast_run_event(updated_run, {:workflow_run_resumed, updated_run})
-      broadcast_run_event(updated_run, {:workflow_run_updated, updated_run})
+            new_state = %{state | paused?: false, status: :running, pressure_backoff_count: 0}
+            send(self(), :execute_next_layer)
+            {:reply, :ok, new_state}
+
+          {:error, _reason} ->
+            {:reply, {:error, :persistence_failed}, state}
+        end
     end
-
-    new_state = %{state | paused?: false, status: :running, pressure_backoff_count: 0}
-    send(self(), :execute_next_layer)
-    {:reply, :ok, new_state}
   end
 
   @impl true
@@ -518,7 +519,9 @@ defmodule IexCode.Workflows.Engine do
 
     run = load_run(state.run_id)
 
-    updated_run =
+    # Tasks are already dead at this point; the reply only reports whether
+    # the cancellation was durably recorded.
+    reply =
       if run do
         curr_step_states = run.step_states || %{}
 
@@ -535,29 +538,27 @@ defmodule IexCode.Workflows.Engine do
             end
           end)
 
-        updated =
-          update_run_record(run, %{
-            status: "cancelled",
-            completed_at: DateTime.utc_now(),
-            step_states: updated_step_states
-          })
+        case update_run_record(state, run, %{
+               status: "cancelled",
+               completed_at: DateTime.utc_now(),
+               step_states: updated_step_states
+             }) do
+          {:ok, updated} ->
+            Enum.each(cancelled_keys, fn step_k ->
+              broadcast_run_event(updated, {:step_state_updated, run.id, step_k, "cancelled"})
+            end)
 
-        if updated do
-          Enum.each(cancelled_keys, fn step_k ->
-            broadcast_run_event(updated, {:step_state_updated, run.id, step_k, "cancelled"})
-          end)
+            broadcast_run_event(updated, {:workflow_run_updated, updated})
+            :ok
+
+          {:error, _reason} ->
+            {:error, :persistence_failed}
         end
-
-        updated
       else
-        nil
+        {:error, :run_not_found}
       end
 
-    if updated_run do
-      broadcast_run_event(updated_run, {:workflow_run_updated, updated_run})
-    end
-
-    {:stop, :normal, :ok, %{state | cancelled?: true, status: :cancelled, active_tasks: %{}}}
+    {:stop, :normal, reply, %{state | cancelled?: true, status: :cancelled, active_tasks: %{}}}
   end
 
   @impl true
@@ -566,34 +567,40 @@ defmodule IexCode.Workflows.Engine do
 
     if Map.get(current, "status") in ["failed", "cancelled"] do
       new_step_states = Map.put(state.step_states, step_key, %{"status" => "pending"})
-      run = load_run(state.run_id)
 
-      updated_run =
-        if run do
-          update_run_record(run, %{
-            status: "running",
-            error_message: nil,
-            step_states: new_step_states
-          })
-        else
-          nil
-        end
+      case load_run(state.run_id) do
+        nil ->
+          {:reply, {:error, :run_not_found}, state}
 
-      if updated_run do
-        broadcast_run_event(updated_run, {:step_state_updated, state.run_id, step_key, "pending"})
-        broadcast_run_event(updated_run, {:workflow_run_updated, updated_run})
+        run ->
+          case update_run_record(state, run, %{
+                 status: "running",
+                 error_message: nil,
+                 step_states: new_step_states
+               }) do
+            {:ok, updated_run} ->
+              broadcast_run_event(
+                updated_run,
+                {:step_state_updated, state.run_id, step_key, "pending"}
+              )
+
+              broadcast_run_event(updated_run, {:workflow_run_updated, updated_run})
+
+              new_state = %{
+                state
+                | status: :running,
+                  step_states: new_step_states,
+                  paused?: false,
+                  pressure_backoff_count: 0
+              }
+
+              send(self(), :execute_next_layer)
+              {:reply, {:ok, updated_run}, new_state}
+
+            {:error, _reason} ->
+              {:reply, {:error, :persistence_failed}, state}
+          end
       end
-
-      new_state = %{
-        state
-        | status: :running,
-          step_states: new_step_states,
-          paused?: false,
-          pressure_backoff_count: 0
-      }
-
-      send(self(), :execute_next_layer)
-      {:reply, {:ok, updated_run || run}, new_state}
     else
       {:reply, {:error, :step_not_failed}, state}
     end
@@ -612,11 +619,12 @@ defmodule IexCode.Workflows.Engine do
       run = load_run(state.run_id)
 
       if run && run.status not in ["completed", "cancelled", "failed"] do
-        update_run_record(run, %{
-          status: "failed",
-          error_message: "Engine terminated unexpectedly: #{inspect(reason)}",
-          completed_at: DateTime.utc_now()
-        })
+        _ =
+          update_run_record(state, run, %{
+            status: "failed",
+            error_message: "Engine terminated unexpectedly: #{inspect(reason)}",
+            completed_at: DateTime.utc_now()
+          })
       end
     end
 
@@ -639,14 +647,10 @@ defmodule IexCode.Workflows.Engine do
     run = load_run(state.run_id)
 
     updated_run =
-      if run do
-        update_run_record(run, %{
-          current_step_key: step_key,
-          step_states: new_step_states
-        })
-      else
-        nil
-      end
+      persist_run_transition(state, run, %{
+        current_step_key: step_key,
+        step_states: new_step_states
+      })
 
     if updated_run do
       broadcast_run_event(updated_run, {:workflow_step_started, step_key, step})
@@ -737,17 +741,13 @@ defmodule IexCode.Workflows.Engine do
       end
 
     updated_run =
-      if run do
-        update_run_record(run, %{
-          status: "completed",
-          progress: 100,
-          completed_at: now,
-          duration_ms: duration,
-          current_step_key: nil
-        })
-      else
-        nil
-      end
+      persist_run_transition(state, run, %{
+        status: "completed",
+        progress: 100,
+        completed_at: now,
+        duration_ms: duration,
+        current_step_key: nil
+      })
 
     if updated_run do
       broadcast_run_event(updated_run, {:workflow_run_completed, updated_run})
@@ -788,17 +788,13 @@ defmodule IexCode.Workflows.Engine do
     now = DateTime.utc_now()
 
     updated_run =
-      if run do
-        update_run_record(run, %{
-          status: "failed",
-          error_message: reason,
-          step_states: updated_step_states,
-          completed_at: now,
-          current_step_key: nil
-        })
-      else
-        nil
-      end
+      persist_run_transition(state, run, %{
+        status: "failed",
+        error_message: reason,
+        step_states: updated_step_states,
+        completed_at: now,
+        current_step_key: nil
+      })
 
     if updated_run do
       Enum.each(aborted_keys, fn step_k ->
@@ -824,28 +820,47 @@ defmodule IexCode.Workflows.Engine do
     :exit, _ -> nil
   end
 
-  defp update_run_record(run, attrs) do
+  # Persists a run transition. Returns {:ok, run} or {:error, reason} —
+  # never a stale record. Callers must skip success broadcasts on error.
+  defp update_run_record(state, run, attrs) do
+    persister = state.run_persister || (&default_persist_run_update/2)
+
+    result =
+      try do
+        persister.(run, attrs)
+      rescue
+        e -> {:error, {:exception, e.__struct__, Exception.message(e)}}
+      catch
+        kind, reason -> {:error, {kind, reason}}
+      end
+
+    case result do
+      {:ok, _} = ok ->
+        ok
+
+      {:error, reason} = error ->
+        Logger.error("Failed to update workflow run #{run.id}: #{inspect(reason, limit: 5)}")
+        error
+    end
+  end
+
+  defp default_persist_run_update(run, attrs) do
     Repo.retry_on_busy(fn ->
       run
       |> WorkflowRun.changeset(attrs)
       |> Repo.update()
     end)
-    |> case do
-      {:ok, updated} ->
-        updated
+  end
 
-      {:error, changeset} ->
-        Logger.error("Failed to update workflow run: #{inspect(changeset.errors)}")
-        run
+  # Persists a transition and returns the updated run, or nil when the run
+  # is gone or the write failed. A nil result means "state unknown".
+  defp persist_run_transition(_state, nil, _attrs), do: nil
+
+  defp persist_run_transition(state, run, attrs) do
+    case update_run_record(state, run, attrs) do
+      {:ok, updated} -> updated
+      {:error, _reason} -> nil
     end
-  rescue
-    e ->
-      Logger.error("Exception updating workflow run: #{inspect(e)}")
-      run
-  catch
-    :exit, e ->
-      Logger.error("Exit updating workflow run: #{inspect(e)}")
-      run
   end
 
   defp broadcast_run_event(run, event) do

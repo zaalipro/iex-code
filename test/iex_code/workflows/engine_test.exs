@@ -727,4 +727,142 @@ defmodule IexCode.Workflows.EngineTest do
       assert db_run.completed_at != nil
     end
   end
+
+  describe "persistence failure handling" do
+    test "pause surfaces persistence failures instead of reporting success" do
+      project = create_test_project()
+
+      {:ok, workflow} =
+        Workflows.create_workflow(%{
+          project_id: project.id,
+          name: "Pause Fault Pipeline",
+          slug: "pause-fault-pipeline-#{System.unique_integer([:positive])}",
+          steps: [
+            %{
+              "key" => "effect",
+              "kind" => "deep_research",
+              "title" => "Slow effect",
+              "depends_on" => [],
+              "params" => %{"query" => "durable workflows", "delay_ms" => 30_000}
+            }
+          ]
+        })
+
+      {:ok, run} = Workflows.launch_workflow(workflow, %{}, async: false)
+      Phoenix.PubSub.subscribe(IexCode.PubSub, "workflow_run:#{run.id}")
+
+      {:ok, switch} = Agent.start_link(fn -> :ok end)
+
+      engine_pid =
+        start_supervised!({Engine, run_id: run.id, run_persister: switchable_persister(switch)})
+
+      assert_receive {:workflow_step_started, "effect", _step}, 2_000
+
+      Agent.update(switch, fn _ -> :fail end)
+      assert Engine.pause_run(run.id) == {:error, :persistence_failed}
+
+      refute_receive {:workflow_run_paused, _}, 200
+      _ = :sys.get_state(engine_pid)
+      assert Workflows.get_run!(run.id).status == "running"
+
+      Agent.update(switch, fn _ -> :ok end)
+      assert Engine.pause_run(run.id) == :ok
+      assert_receive {:workflow_run_paused, paused_run}, 2_000
+      assert paused_run.status == "paused"
+    end
+
+    test "retry reports persistence failures instead of returning a stale run" do
+      project = create_test_project()
+
+      {:ok, workflow} =
+        Workflows.create_workflow(%{
+          project_id: project.id,
+          name: "Retry Fault Pipeline",
+          slug: "retry-fault-pipeline-#{System.unique_integer([:positive])}",
+          steps: [
+            %{
+              "key" => "effect",
+              "kind" => "deep_research",
+              "title" => "External effect",
+              "depends_on" => [],
+              "params" => %{"query" => "durable workflows"}
+            }
+          ]
+        })
+
+      {:ok, run} = Workflows.launch_workflow(workflow, %{}, async: false)
+
+      run
+      |> WorkflowRun.changeset(%{
+        status: "failed",
+        error_message: "boom",
+        step_states: %{"effect" => %{"status" => "failed"}}
+      })
+      |> Repo.update!()
+
+      Phoenix.PubSub.subscribe(IexCode.PubSub, "workflow_run:#{run.id}")
+
+      {:ok, switch} = Agent.start_link(fn -> :ok end)
+
+      engine_pid =
+        start_supervised!({Engine, run_id: run.id, run_persister: switchable_persister(switch)})
+
+      _ = :sys.get_state(engine_pid)
+
+      Agent.update(switch, fn _ -> :fail end)
+      assert Engine.retry_step(run.id, "effect") == {:error, :persistence_failed}
+
+      refute_receive {:step_state_updated, _, "effect", "pending"}, 200
+      _ = :sys.get_state(engine_pid)
+      assert Workflows.get_run!(run.id).status == "failed"
+    end
+
+    test "cancel reports persistence failures while still stopping the engine" do
+      project = create_test_project()
+
+      {:ok, workflow} =
+        Workflows.create_workflow(%{
+          project_id: project.id,
+          name: "Cancel Fault Pipeline",
+          slug: "cancel-fault-pipeline-#{System.unique_integer([:positive])}",
+          steps: [
+            %{
+              "key" => "effect",
+              "kind" => "deep_research",
+              "title" => "Slow effect",
+              "depends_on" => [],
+              "params" => %{"query" => "durable workflows", "delay_ms" => 30_000}
+            }
+          ]
+        })
+
+      {:ok, run} = Workflows.launch_workflow(workflow, %{}, async: false)
+      Phoenix.PubSub.subscribe(IexCode.PubSub, "workflow_run:#{run.id}")
+
+      {:ok, switch} = Agent.start_link(fn -> :ok end)
+
+      engine_pid =
+        start_supervised!({Engine, run_id: run.id, run_persister: switchable_persister(switch)})
+
+      engine_ref = Process.monitor(engine_pid)
+      assert_receive {:workflow_step_started, "effect", _step}, 2_000
+
+      Agent.update(switch, fn _ -> :fail end)
+      assert Engine.cancel_run(run.id) == {:error, :persistence_failed}
+
+      assert_receive {:DOWN, ^engine_ref, :process, ^engine_pid, :normal}, 2_000
+      refute_receive {:workflow_run_updated, %{status: "cancelled"}}, 200
+      assert Workflows.get_run!(run.id).status == "running"
+    end
+
+    defp switchable_persister(switch) do
+      fn run, attrs ->
+        if Agent.get(switch, & &1) == :fail do
+          raise DBConnection.ConnectionError, "database is locked (busy)"
+        else
+          run |> WorkflowRun.changeset(attrs) |> Repo.update()
+        end
+      end
+    end
+  end
 end

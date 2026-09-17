@@ -97,6 +97,41 @@ defmodule IexCode.Engine.AgentLoopTest do
            } = Enum.find(messages, &(&1.role == "assistant" and &1.metadata["run_id"] == run.id))
   end
 
+  test "never orphans tool replies when the context budget cuts a parallel exchange", context do
+    run = running_run(context)
+
+    calls =
+      for i <- 1..15 do
+        %{id: "bulk-call-#{i}", name: "read_file", args: %{"path" => "mix.exs"}}
+      end
+
+    Process.put(:agent_loop_tool_result, fn _name, _arguments, _root ->
+      {:ok, String.duplicate("o", 40_000)}
+    end)
+
+    Process.put(:agent_loop_responses, [
+      {:ok, %{text: "Reading many files in parallel.", tool_calls: calls, usage: %{}}},
+      {:ok, %{text: "All reads complete.", tool_calls: [], usage: %{}}}
+    ])
+
+    assert {:ok, _result} = execute(run, context.root)
+
+    assert_receive {:agent_loop_llm_call, _first, _system, _policy}
+    assert_receive {:agent_loop_llm_call, second, _system, _policy}
+
+    refute match?([%{role: "tool"} | _], second)
+
+    request_index =
+      Enum.find_index(second, &(Map.get(&1, :tool_calls) not in [nil, []]))
+
+    first_tool_index = Enum.find_index(second, &(&1.role == "tool"))
+
+    assert is_integer(request_index)
+    assert is_integer(first_tool_index)
+    assert request_index < first_tool_index
+    assert Enum.count(second, &(&1.role == "tool")) == 15
+  end
+
   test "enforces the bounded turn limit after durable tool settlement", context do
     run = running_run(context, execution_policy: %{"agent_max_turns" => 2})
 

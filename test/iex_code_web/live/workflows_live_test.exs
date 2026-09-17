@@ -420,6 +420,64 @@ defmodule IexCodeWeb.WorkflowsLiveTest do
     end
   end
 
+  describe "WorkflowsLive invalid id handling" do
+    test "malformed workflow id redirects to index without crashing", %{conn: conn} do
+      assert {:error, {_kind, %{to: "/workflows"}}} = live(conn, "/workflows/not-a-uuid")
+    end
+
+    test "missing workflow id redirects to index without crashing", %{conn: conn} do
+      assert {:error, {_kind, %{to: "/workflows"}}} =
+               live(conn, "/workflows/#{Ecto.UUID.generate()}")
+    end
+
+    test "malformed run id redirects to index without crashing", %{
+      conn: conn,
+      project: project
+    } do
+      workflow = create_sample_workflow(project)
+
+      assert {:error, {_kind, %{to: "/workflows"}}} =
+               live(conn, "/workflows/#{workflow.id}/runs/not-a-uuid")
+    end
+
+    test "launch and delete events with unknown ids flash instead of crashing", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/workflows")
+      missing = Ecto.UUID.generate()
+
+      assert render_click(view, "delete_workflow", %{"id" => missing}) =~ "Workflow not found"
+
+      assert render_click(view, "open_launch_modal", %{"id" => "not-a-uuid"}) =~
+               "Workflow not found"
+
+      assert render_click(view, "launch_workflow", %{"id" => missing}) =~ "Workflow not found"
+      assert has_element?(view, "#workflows-gallery")
+    end
+
+    test "stale submit_launch without an open modal flashes instead of crashing", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/workflows")
+
+      assert render_click(view, "submit_launch", %{"inputs" => %{}}) =~
+               "Select a workflow before launching"
+
+      assert has_element?(view, "#workflows-gallery")
+    end
+
+    test "canvas pan/zoom coerce malformed values without crashing", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/workflows")
+
+      render_click(view, "canvas_pan", %{"x" => "12.5", "y" => "not-a-number"})
+      assert :sys.get_state(view.pid).socket.assigns.pan_offset == %{x: 12.5, y: 0.0}
+
+      render_click(view, "canvas_zoom", %{"level" => "garbage"})
+      assert :sys.get_state(view.pid).socket.assigns.zoom_level == 1.0
+
+      render_click(view, "canvas_zoom", %{"level" => 99.0})
+      assert :sys.get_state(view.pid).socket.assigns.zoom_level == 2.5
+
+      assert has_element?(view, "#workflows-gallery")
+    end
+  end
+
   # ============================================================================
   # 4. REAL-TIME SVG EXECUTION COCKPIT TESTS
   # ============================================================================

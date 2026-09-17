@@ -8,6 +8,7 @@ defmodule IexCode.Engine.AgentLoop do
   policy data.
   """
 
+  alias IexCode.LLM.ContextCompactor
   alias IexCode.Runs
   alias IexCode.Execution.{BoostEngine, Limits, ModelRoute}
   alias IexCode.Runs.{DagPayload, Run, RunCommand}
@@ -789,21 +790,30 @@ defmodule IexCode.Engine.AgentLoop do
   end
 
   defp bounded_context(messages) do
+    truncated = Enum.map(messages, &truncate_model_text/1)
+
     {selected, _size} =
-      messages
+      truncated
       |> Enum.reverse()
       |> Enum.reduce_while({[], 0}, fn message, {acc, size} ->
-        content = bounded_text(value(message, "content") || "", @max_model_text_chars)
-        next_size = size + String.length(content)
+        next_size = size + String.length(value(message, "content") || "")
 
         if next_size <= @max_context_chars do
-          {:cont, {[Map.put(message, :content, content) | acc], next_size}}
+          {:cont, {[message | acc], next_size}}
         else
           {:halt, {acc, size}}
         end
       end)
 
-    selected
+    # A budget cut through parallel tool replies would orphan them from their
+    # assistant request; expand the kept window back to the exchange start.
+    {dropped, _kept} = Enum.split(truncated, length(truncated) - length(selected))
+    ContextCompactor.restore_exchange_boundary(dropped, selected)
+  end
+
+  defp truncate_model_text(message) do
+    content = bounded_text(value(message, "content") || "", @max_model_text_chars)
+    Map.put(message, :content, content)
   end
 
   defp execution_policy(metadata) when is_map(metadata) do

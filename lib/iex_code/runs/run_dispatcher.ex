@@ -53,6 +53,8 @@ defmodule IexCode.Runs.RunDispatcher do
     :research_finalizer,
     :provider_effect,
     :research_reconcile_interval,
+    :lease_renewal,
+    :run_reader,
     workers: %{},
     lock_waiters: %{},
     run_refs: %{},
@@ -316,7 +318,9 @@ defmodule IexCode.Runs.RunDispatcher do
           ),
           @default_research_reconcile_interval
         )
-        |> max(1_000)
+        |> max(1_000),
+      lease_renewal: Keyword.get(opts, :lease_renewal, &Runs.renew_lease/4),
+      run_reader: Keyword.get(opts, :run_reader, &Runs.get_run/1)
     }
 
     # A new dispatcher identity cannot safely resume writes abandoned by an old
@@ -538,7 +542,7 @@ defmodule IexCode.Runs.RunDispatcher do
     Enum.each(state.workers, fn {_ref, worker} ->
       unless MapSet.member?(state.cancelling, worker.run_id) or
                Map.has_key?(state.finalization_retries, worker.run_id) do
-        case Runs.renew_lease(worker.run_id, state.worker_id, state.lease_ms,
+        case safe_renew_lease(state, worker.run_id,
                run_attempt: worker.run_attempt,
                lease_generation: worker.run_generation
              ) do
@@ -549,7 +553,7 @@ defmodule IexCode.Runs.RunDispatcher do
     end)
 
     Enum.each(state.lock_waiters, fn {run_id, waiter} ->
-      case Runs.renew_lease(run_id, state.worker_id, state.lease_ms,
+      case safe_renew_lease(state, run_id,
              run_attempt: waiter.run_attempt,
              lease_generation: waiter.run_generation
            ) do
@@ -641,7 +645,7 @@ defmodule IexCode.Runs.RunDispatcher do
   end
 
   def handle_info({:run_lease_heartbeat_failed, run_id, reason}, state) do
-    case Runs.get_run(run_id) do
+    case safe_get_run(state, run_id) do
       %Run{cancellation_requested_at: %DateTime{}} ->
         {:noreply, drain_external_cancellations(state)}
 
@@ -712,6 +716,42 @@ defmodule IexCode.Runs.RunDispatcher do
   end
 
   def handle_info(_message, state), do: {:noreply, state}
+
+  # A storage exception during one run's renewal must fail that run closed
+  # without crashing the dispatcher or blocking renewal of all other runs.
+  defp safe_renew_lease(state, run_id, opts) do
+    state.lease_renewal.(run_id, state.worker_id, state.lease_ms, opts)
+  rescue
+    exception ->
+      Logger.warning(
+        "Run #{run_id} lease renewal raised #{inspect(exception.__struct__)}: " <>
+          Exception.message(exception)
+      )
+
+      {:error, {:lease_storage_error, inspect(exception.__struct__)}}
+  catch
+    kind, reason ->
+      Logger.warning("Run #{run_id} lease renewal #{kind}: #{inspect(reason)}")
+      {:error, {:lease_storage_error, inspect(kind)}}
+  end
+
+  # A storage exception while checking cancellation must not crash the
+  # dispatcher: without evidence of cancellation, fail the run closed.
+  defp safe_get_run(state, run_id) do
+    state.run_reader.(run_id)
+  rescue
+    exception ->
+      Logger.warning(
+        "Run #{run_id} heartbeat failure lookup raised #{inspect(exception.__struct__)}: " <>
+          Exception.message(exception)
+      )
+
+      nil
+  catch
+    kind, reason ->
+      Logger.warning("Run #{run_id} heartbeat failure lookup #{kind}: #{inspect(reason)}")
+      nil
+  end
 
   defp handle_run_lease_heartbeat_failure(state, run_id, reason) do
     case Map.get(state.run_refs, run_id) do
@@ -988,7 +1028,7 @@ defmodule IexCode.Runs.RunDispatcher do
       when status in ["running", "paused"] and run.attempt == waiter.run_attempt and
              run.lease_generation == waiter.run_generation and
              run.lease_owner == state.worker_id ->
-        case Runs.renew_lease(run.id, state.worker_id, state.lease_ms,
+        case safe_renew_lease(state, run.id,
                run_attempt: waiter.run_attempt,
                lease_generation: waiter.run_generation
              ) do

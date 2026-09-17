@@ -67,6 +67,60 @@ defmodule IexCode.Runs.RunDispatcherTest do
     assert IexCode.Kanban.get_task!(task.id) == projected
   end
 
+  test "heartbeat storage exceptions fail the run closed without crashing the dispatcher",
+       context do
+    restart_dispatcher(
+      lease_renewal: fn _run_id, _owner, _lease_ms, _opts ->
+        raise DBConnection.ConnectionError, "database is locked (busy)"
+      end
+    )
+
+    attrs =
+      run_attrs(context, "heartbeat fault injection") |> Map.put(:max_attempts, 1)
+
+    {:ok, queued} = RunDispatcher.enqueue(attrs, @dispatcher)
+    assert_receive {:test_run_started, run_id, _worker_pid}, 2_000
+    assert run_id == queued.id
+
+    dispatcher = Process.whereis(@dispatcher)
+    assert is_pid(dispatcher)
+    ref = Process.monitor(dispatcher)
+    send(dispatcher, :heartbeat)
+
+    assert_receive {:async_run_updated, %Run{id: ^run_id, status: "interrupted"}}, 2_000
+    _ = :sys.get_state(dispatcher)
+    refute_receive {:DOWN, ^ref, :process, ^dispatcher, _}, 100
+    assert Runs.get_run!(run_id).status == "interrupted"
+  end
+
+  test "heartbeat failure lookup exceptions still fail the run closed", context do
+    restart_dispatcher(
+      lease_renewal: fn _run_id, _owner, _lease_ms, _opts ->
+        raise DBConnection.ConnectionError, "database is locked (busy)"
+      end,
+      run_reader: fn _run_id ->
+        raise DBConnection.ConnectionError, "database is locked (busy)"
+      end
+    )
+
+    attrs =
+      run_attrs(context, "heartbeat lookup fault injection") |> Map.put(:max_attempts, 1)
+
+    {:ok, queued} = RunDispatcher.enqueue(attrs, @dispatcher)
+    assert_receive {:test_run_started, run_id, _worker_pid}, 2_000
+    assert run_id == queued.id
+
+    dispatcher = Process.whereis(@dispatcher)
+    assert is_pid(dispatcher)
+    ref = Process.monitor(dispatcher)
+    send(dispatcher, :heartbeat)
+
+    assert_receive {:async_run_updated, %Run{id: ^run_id, status: "interrupted"}}, 2_000
+    _ = :sys.get_state(dispatcher)
+    refute_receive {:DOWN, ^ref, :process, ^dispatcher, _}, 100
+    assert Runs.get_run!(run_id).status == "interrupted"
+  end
+
   test "durable drafts remain unclaimed until explicitly started", context do
     assert {:ok, draft} = RunDispatcher.create_draft(run_attrs(context, "draft run"))
     assert draft.status == "draft"

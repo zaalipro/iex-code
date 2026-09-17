@@ -67,6 +67,43 @@ defmodule IexCodeWeb.Live.ToolApprovalModalTest do
     assert has_element?(view, "#deny-tool-btn")
   end
 
+  test "Escape binding fails closed to deny with hint and focused safe default", %{
+    conn: conn,
+    session: session
+  } do
+    PubSub.subscribe(IexCode.PubSub, "session:#{session.id}")
+
+    {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+    req = %{
+      id: "app-test-escape",
+      session_id: session.id,
+      tool_name: "run_command",
+      category: "shell_execution",
+      arguments: %{"command" => "rm -rf /tmp/escape_probe"},
+      reason: "Mutates the workspace",
+      tier: "prompt_dangerous"
+    }
+
+    PubSub.broadcast(
+      IexCode.PubSub,
+      "session:#{session.id}",
+      {:tool_approval_requested, session.id, req}
+    )
+
+    assert has_element?(view, "#tool-approval-modal[phx-window-keydown=\"deny_tool\"]")
+    assert has_element?(view, "#tool-approval-modal[phx-key=\"Escape\"]")
+    assert has_element?(view, "#deny-tool-btn[autofocus]")
+    assert has_element?(view, "#deny-tool-kbd-hint", "esc")
+
+    # The Escape binding targets deny_tool with the request id: firing it
+    # denies and dismisses the modal.
+    render_click(view, "deny_tool", %{"id" => req.id})
+
+    refute has_element?(view, "#tool-approval-modal")
+    assert_receive {:tool_approval_decision, "app-test-escape", :deny}, 1_000
+  end
+
   test "Approve Once flow: permits single tool invocation and dismisses modal", %{
     conn: conn,
     session: session

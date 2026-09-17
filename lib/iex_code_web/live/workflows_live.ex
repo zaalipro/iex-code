@@ -117,14 +117,14 @@ defmodule IexCodeWeb.WorkflowsLive do
       action when action in [:show, :session_show] ->
         workflow_id = params["workflow_id"] || params["id"]
 
-        case Workflows.get_workflow(workflow_id) do
-          nil ->
+        case fetch_workflow(workflow_id) do
+          {:error, :not_found} ->
             {:noreply,
              socket
              |> put_flash(:error, "Workflow not found")
              |> push_navigate(to: workflows_index_path(socket.assigns.context_session))}
 
-          workflow ->
+          {:ok, workflow} ->
             runs = Workflows.list_runs(workflow.id, limit: 10)
 
             {:noreply,
@@ -144,14 +144,14 @@ defmodule IexCodeWeb.WorkflowsLive do
           Phoenix.PubSub.subscribe(IexCode.PubSub, "workflow_run:#{run_id}")
         end
 
-        case Workflows.get_run(run_id) do
-          nil ->
+        case fetch_workflow_run(run_id) do
+          {:error, :not_found} ->
             {:noreply,
              socket
              |> put_flash(:error, "Workflow run not found")
              |> push_navigate(to: workflows_index_path(socket.assigns.context_session))}
 
-          run ->
+          {:ok, run} ->
             workflow = run.workflow || Workflows.get_workflow!(run.workflow_id)
             first_step = get_initial_step(run, workflow)
 
@@ -382,7 +382,10 @@ defmodule IexCodeWeb.WorkflowsLive do
 
   @impl true
   def handle_event("canvas_pan", %{"x" => x, "y" => y}, socket) do
-    {:noreply, assign(socket, :pan_offset, %{x: x * 1.0, y: y * 1.0})}
+    current = socket.assigns.pan_offset
+
+    {:noreply,
+     assign(socket, :pan_offset, %{x: to_float(x, current.x), y: to_float(y, current.y)})}
   end
 
   @impl true
@@ -399,7 +402,13 @@ defmodule IexCodeWeb.WorkflowsLive do
 
   @impl true
   def handle_event("canvas_zoom", %{"level" => level}, socket) do
-    {:noreply, assign(socket, :zoom_level, level * 1.0)}
+    clamped =
+      level
+      |> to_float(socket.assigns.zoom_level)
+      |> min(2.5)
+      |> max(0.25)
+
+    {:noreply, assign(socket, :zoom_level, Float.round(clamped, 2))}
   end
 
   # Search & Filter
@@ -416,21 +425,26 @@ defmodule IexCodeWeb.WorkflowsLive do
   # Launching & Modals
   @impl true
   def handle_event("open_launch_modal", %{"id" => id}, socket) do
-    workflow = Workflows.get_workflow!(id)
-    vars = workflow.variables || []
+    case fetch_workflow(id) do
+      {:error, :not_found} ->
+        {:noreply, put_flash(socket, :error, "Workflow not found")}
 
-    initial_inputs =
-      Map.new(vars, fn var ->
-        name = Map.get(var, "name") || Map.get(var, :name)
-        default = Map.get(var, "default") || Map.get(var, :default) || ""
-        {name, default}
-      end)
+      {:ok, workflow} ->
+        vars = workflow.variables || []
 
-    {:noreply,
-     socket
-     |> assign(:show_launch_modal, true)
-     |> assign(:launching_workflow, workflow)
-     |> assign(:launch_form, to_form(initial_inputs, as: :inputs))}
+        initial_inputs =
+          Map.new(vars, fn var ->
+            name = Map.get(var, "name") || Map.get(var, :name)
+            default = Map.get(var, "default") || Map.get(var, :default) || ""
+            {name, default}
+          end)
+
+        {:noreply,
+         socket
+         |> assign(:show_launch_modal, true)
+         |> assign(:launching_workflow, workflow)
+         |> assign(:launch_form, to_form(initial_inputs, as: :inputs))}
+    end
   end
 
   @impl true
@@ -444,72 +458,45 @@ defmodule IexCodeWeb.WorkflowsLive do
 
   @impl true
   def handle_event("launch_workflow", %{"id" => id}, socket) do
-    workflow = Workflows.get_workflow!(id)
-    vars = workflow.variables || []
+    case fetch_workflow(id) do
+      {:error, :not_found} ->
+        {:noreply, put_flash(socket, :error, "Workflow not found")}
 
-    # If has required variables without default, open modal
-    required_missing =
-      Enum.any?(vars, fn var ->
-        (Map.get(var, "required") == true or Map.get(var, :required) == true) and
-          is_nil(Map.get(var, "default") || Map.get(var, :default))
-      end)
-
-    if required_missing do
-      handle_event("open_launch_modal", %{"id" => id}, socket)
-    else
-      # Default inputs
-      inputs =
-        Map.new(vars, fn var ->
-          name = Map.get(var, "name") || Map.get(var, :name)
-          default = Map.get(var, "default") || Map.get(var, :default) || ""
-          {name, default}
-        end)
-
-      live_async = Application.get_env(:iex_code, :workflows_live_async, true)
-
-      opts = [
-        session_id: socket.assigns.context_session && socket.assigns.context_session.id,
-        async: live_async
-      ]
-
-      case Workflows.launch_workflow(workflow, inputs, opts) do
-        {:ok, run} ->
-          path = workflow_run_path(socket.assigns.context_session, workflow.id, run.id)
-
-          {:noreply,
-           socket
-           |> put_flash(:info, "Workflow launched successfully")
-           |> push_navigate(to: path)}
-
-        {:error, reason} ->
-          {:noreply, put_flash(socket, :error, "Failed to launch: #{inspect(reason)}")}
-      end
+      {:ok, workflow} ->
+        do_launch_workflow(socket, id, workflow)
     end
   end
 
   @impl true
   def handle_event("submit_launch", %{"inputs" => inputs}, socket) do
-    workflow = socket.assigns.launching_workflow
-    live_async = Application.get_env(:iex_code, :workflows_live_async, true)
+    # The modal may be closed (or never opened) when a stale/forged event
+    # arrives; launching_workflow is nil then and must not reach dispatch.
+    case socket.assigns.launching_workflow do
+      %Workflow{} = workflow ->
+        live_async = Application.get_env(:iex_code, :workflows_live_async, true)
 
-    opts = [
-      session_id: socket.assigns.context_session && socket.assigns.context_session.id,
-      async: live_async
-    ]
+        opts = [
+          session_id: socket.assigns.context_session && socket.assigns.context_session.id,
+          async: live_async
+        ]
 
-    case Workflows.launch_workflow(workflow, inputs, opts) do
-      {:ok, run} ->
-        path = workflow_run_path(socket.assigns.context_session, workflow.id, run.id)
+        case Workflows.launch_workflow(workflow, inputs, opts) do
+          {:ok, run} ->
+            path = workflow_run_path(socket.assigns.context_session, workflow.id, run.id)
 
-        {:noreply,
-         socket
-         |> assign(:show_launch_modal, false)
-         |> assign(:launching_workflow, nil)
-         |> put_flash(:info, "Workflow launched successfully")
-         |> push_navigate(to: path)}
+            {:noreply,
+             socket
+             |> assign(:show_launch_modal, false)
+             |> assign(:launching_workflow, nil)
+             |> put_flash(:info, "Workflow launched successfully")
+             |> push_navigate(to: path)}
 
-      {:error, reason} ->
-        {:noreply, put_flash(socket, :error, "Launch failed: #{inspect(reason)}")}
+          {:error, reason} ->
+            {:noreply, put_flash(socket, :error, "Launch failed: #{inspect(reason)}")}
+        end
+
+      _ ->
+        {:noreply, put_flash(socket, :error, "Select a workflow before launching")}
     end
   end
 
@@ -634,19 +621,12 @@ defmodule IexCodeWeb.WorkflowsLive do
 
   @impl true
   def handle_event("delete_workflow", %{"id" => id}, socket) do
-    workflow = Workflows.get_workflow!(id)
+    case fetch_workflow(id) do
+      {:error, :not_found} ->
+        {:noreply, put_flash(socket, :error, "Workflow not found")}
 
-    case Workflows.delete_workflow(workflow) do
-      {:ok, _deleted} ->
-        workflows = Enum.reject(socket.assigns.workflows, &(&1.id == id))
-
-        {:noreply,
-         socket
-         |> assign(:workflows, workflows)
-         |> put_flash(:info, "Workflow deleted successfully")}
-
-      {:error, _} ->
-        {:noreply, put_flash(socket, :error, "Failed to delete workflow")}
+      {:ok, workflow} ->
+        do_delete_workflow(socket, id, workflow)
     end
   end
 
@@ -697,6 +677,103 @@ defmodule IexCodeWeb.WorkflowsLive do
     Sessions.get_session(id)
   rescue
     _ -> nil
+  end
+
+  # Client-supplied ids can be malformed or reference deleted rows. Validate
+  # the UUID shape before hitting the repo so neither Ecto.Query.CastError
+  # nor Ecto.NoResultsError can crash the LiveView.
+  defp fetch_workflow(id) when is_binary(id) do
+    with {:ok, _} <- Ecto.UUID.cast(id),
+         %Workflow{} = workflow <- Workflows.get_workflow(id) do
+      {:ok, workflow}
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  defp fetch_workflow(_), do: {:error, :not_found}
+
+  defp fetch_workflow_run(id) when is_binary(id) do
+    with {:ok, _} <- Ecto.UUID.cast(id),
+         %WorkflowRun{} = run <- Workflows.get_run(id) do
+      {:ok, run}
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  defp fetch_workflow_run(_), do: {:error, :not_found}
+
+  # Client event payloads are untrusted: coerce numbers defensively so a
+  # malformed value keeps the current state instead of crashing the view.
+  defp to_float(value, _fallback) when is_number(value), do: value * 1.0
+
+  defp to_float(value, fallback) when is_binary(value) do
+    case Float.parse(value) do
+      {float, _rest} -> float
+      :error -> fallback * 1.0
+    end
+  end
+
+  defp to_float(_value, fallback) when is_number(fallback), do: fallback * 1.0
+  defp to_float(_value, _fallback), do: 0.0
+
+  defp do_launch_workflow(socket, id, workflow) do
+    vars = workflow.variables || []
+
+    # If has required variables without default, open modal
+    required_missing =
+      Enum.any?(vars, fn var ->
+        (Map.get(var, "required") == true or Map.get(var, :required) == true) and
+          is_nil(Map.get(var, "default") || Map.get(var, :default))
+      end)
+
+    if required_missing do
+      handle_event("open_launch_modal", %{"id" => id}, socket)
+    else
+      # Default inputs
+      inputs =
+        Map.new(vars, fn var ->
+          name = Map.get(var, "name") || Map.get(var, :name)
+          default = Map.get(var, "default") || Map.get(var, :default) || ""
+          {name, default}
+        end)
+
+      live_async = Application.get_env(:iex_code, :workflows_live_async, true)
+
+      opts = [
+        session_id: socket.assigns.context_session && socket.assigns.context_session.id,
+        async: live_async
+      ]
+
+      case Workflows.launch_workflow(workflow, inputs, opts) do
+        {:ok, run} ->
+          path = workflow_run_path(socket.assigns.context_session, workflow.id, run.id)
+
+          {:noreply,
+           socket
+           |> put_flash(:info, "Workflow launched successfully")
+           |> push_navigate(to: path)}
+
+        {:error, reason} ->
+          {:noreply, put_flash(socket, :error, "Failed to launch: #{inspect(reason)}")}
+      end
+    end
+  end
+
+  defp do_delete_workflow(socket, id, workflow) do
+    case Workflows.delete_workflow(workflow) do
+      {:ok, _deleted} ->
+        workflows = Enum.reject(socket.assigns.workflows, &(&1.id == id))
+
+        {:noreply,
+         socket
+         |> assign(:workflows, workflows)
+         |> put_flash(:info, "Workflow deleted successfully")}
+
+      {:error, _} ->
+        {:noreply, put_flash(socket, :error, "Failed to delete workflow")}
+    end
   end
 
   defp resolve_project(nil) do

@@ -10,7 +10,15 @@ defmodule IexCode.Engine.SessionServer do
   use GenServer, restart: :temporary
   require Logger
   alias IexCode.{LLM, Projects, Sessions, Tools, WorkspacePath}
-  alias IexCode.Engine.{AgentRegistry, AgentSupervisor, OperationManager, SwarmCoordinator}
+
+  alias IexCode.Engine.{
+    AgentCancellation,
+    AgentRegistry,
+    AgentSupervisor,
+    OperationManager,
+    SwarmCoordinator
+  }
+
   alias IexCode.Runs.RunDispatcher
   alias Phoenix.PubSub
 
@@ -1413,6 +1421,9 @@ defmodule IexCode.Engine.SessionServer do
     # 1. Signal all workers via PubSub. A live swarm coordinator subscribes to
     #    this topic and performs its own rollback/commit + termination, so the
     #    server must NOT roll back again for that path (avoid double-delivery).
+    #    Set agent flags directly first: agents blocked inside handle_call
+    #    cannot process the broadcast until their work finishes.
+    AgentCancellation.cancel(session_id)
     PubSub.broadcast(IexCode.PubSub, "session:#{session_id}:steer", {:cancel, session_id, opts})
 
     # 2. Wait briefly for the running task to die on its own (it also observes
@@ -1599,6 +1610,7 @@ defmodule IexCode.Engine.SessionServer do
     current_session = fetch_current_session(session_id, session)
 
     update_db_session_status(session_id, "paused")
+    AgentCancellation.cancel(session_id)
     PubSub.broadcast(IexCode.PubSub, "session:#{session_id}:steer", {:pause, session_id})
     broadcast(session_id, {:session_status_changed, "paused"})
 
@@ -1635,6 +1647,7 @@ defmodule IexCode.Engine.SessionServer do
       current_session = fetch_current_session(session_id, session)
 
       update_db_session_status(session_id, "running")
+      AgentCancellation.resume(session_id)
       PubSub.broadcast(IexCode.PubSub, "session:#{session_id}:steer", {:resume, session_id})
       broadcast(session_id, {:session_status_changed, "running"})
 

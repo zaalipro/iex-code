@@ -9,6 +9,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
   require Logger
 
   alias IexCode.Engine.{
+    AgentCancellation,
     AgentRegistry,
     AgentSupervisor,
     FleetManager,
@@ -132,6 +133,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
   """
   def pause(session_id) do
     update_db_session_status(session_id, "paused")
+    AgentCancellation.cancel(session_id)
     PubSub.broadcast(IexCode.PubSub, "session:#{session_id}:steer", {:pause, session_id})
   end
 
@@ -139,6 +141,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
   Resumes the paused swarm coordinator.
   """
   def resume(session_id) do
+    AgentCancellation.resume(session_id)
     PubSub.broadcast(IexCode.PubSub, "session:#{session_id}:steer", {:resume, session_id})
   end
 
@@ -146,6 +149,9 @@ defmodule IexCode.Engine.SwarmCoordinator do
   Cancels the active swarm coordinator.
   """
   def cancel(session_id, opts \\ []) do
+    # Set agent flags directly: agents blocked inside handle_call cannot
+    # process the broadcast until their work finishes.
+    AgentCancellation.cancel(session_id)
     PubSub.broadcast(IexCode.PubSub, "session:#{session_id}:steer", {:cancel, session_id, opts})
   end
 

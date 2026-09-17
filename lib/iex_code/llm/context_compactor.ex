@@ -65,6 +65,21 @@ defmodule IexCode.LLM.ContextCompactor do
 
   def estimate_tokens(_), do: 0
 
+  @doc """
+  Expands a kept message suffix back across a cut tool exchange.
+
+  A tool request and all of its replies are one protocol exchange. When a
+  budget cut lands between them, the leading tool replies are orphaned from
+  their assistant request. Given the dropped prefix and the kept suffix,
+  moves messages back from dropped to kept until the kept window no longer
+  starts mid-exchange.
+  """
+  @spec restore_exchange_boundary(list(map()), list(map())) :: list(map())
+  def restore_exchange_boundary(dropped, kept) when is_list(dropped) and is_list(kept) do
+    {_remaining, expanded} = restore_tool_request(Enum.reverse(dropped), kept)
+    expanded
+  end
+
   defp estimate_message_tokens(msg) when is_map(msg) do
     content = get_message_field(msg, :content) || ""
     role = get_message_field(msg, :role) || ""

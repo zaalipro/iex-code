@@ -231,4 +231,71 @@ defmodule IexCode.LLM.ContextCompactorTest do
       assert Enum.at(compacted, 1)["content"] =~ "Summary of earlier conversation history"
     end
   end
+
+  describe "restore_exchange_boundary/2" do
+    test "expands the kept window back to the assistant request" do
+      dropped = [
+        %{role: "user", content: "Read every config"},
+        %{role: "assistant", content: "On it", tool_calls: [%{id: "call-1"}]}
+      ]
+
+      kept = [
+        %{role: "tool", tool_call_id: "call-1", content: "config output"},
+        %{role: "assistant", content: "Summary"}
+      ]
+
+      assert ContextCompactor.restore_exchange_boundary(dropped, kept) == [
+               %{role: "assistant", content: "On it", tool_calls: [%{id: "call-1"}]},
+               %{role: "tool", tool_call_id: "call-1", content: "config output"},
+               %{role: "assistant", content: "Summary"}
+             ]
+    end
+
+    test "walks back through parallel tool replies to the shared request" do
+      dropped = [
+        %{role: "user", content: "Read both configs"},
+        %{role: "assistant", content: "On it", tool_calls: [%{id: "c1"}, %{id: "c2"}]},
+        %{role: "tool", tool_call_id: "c1", content: "first output"}
+      ]
+
+      kept = [
+        %{role: "tool", tool_call_id: "c2", content: "second output"},
+        %{role: "assistant", content: "Summary"}
+      ]
+
+      assert ContextCompactor.restore_exchange_boundary(dropped, kept) == [
+               %{role: "assistant", content: "On it", tool_calls: [%{id: "c1"}, %{id: "c2"}]},
+               %{role: "tool", tool_call_id: "c1", content: "first output"},
+               %{role: "tool", tool_call_id: "c2", content: "second output"},
+               %{role: "assistant", content: "Summary"}
+             ]
+    end
+
+    test "leaves the kept window unchanged when it does not start mid-exchange" do
+      dropped = [%{role: "user", content: "Older turn"}]
+
+      kept = [
+        %{role: "assistant", content: "Newer answer"},
+        %{role: "user", content: "Follow-up"}
+      ]
+
+      assert ContextCompactor.restore_exchange_boundary(dropped, kept) == kept
+    end
+
+    test "supports string-keyed provider payloads" do
+      dropped = [
+        %{"role" => "assistant", "content" => "On it", "tool_calls" => [%{"id" => "c1"}]}
+      ]
+
+      kept = [%{"role" => "tool", "tool_call_id" => "c1", "content" => "output"}]
+
+      assert ContextCompactor.restore_exchange_boundary(dropped, kept) == dropped ++ kept
+    end
+
+    test "handles empty inputs without dropping kept messages" do
+      kept = [%{role: "tool", tool_call_id: "c1", content: "orphaned but unrestorable"}]
+      assert ContextCompactor.restore_exchange_boundary([], kept) == kept
+      assert ContextCompactor.restore_exchange_boundary([], []) == []
+    end
+  end
 end

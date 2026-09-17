@@ -22,6 +22,9 @@ defmodule IexCodeWeb.ToolApprovalModal do
       role="dialog"
       aria-modal="true"
       aria-labelledby="tool-approval-title"
+      phx-window-keydown="deny_tool"
+      phx-key="Escape"
+      phx-value-id={request_field(@request, :id)}
     >
       <div class="ui-dialog relative w-full max-w-2xl overflow-hidden border border-amber-500/30 bg-surface ring-1 ring-line">
         <!-- Header -->
@@ -99,15 +102,25 @@ defmodule IexCodeWeb.ToolApprovalModal do
         <!-- Action Buttons -->
         <div class="flex items-center justify-between border-t border-line px-6 py-4 bg-raised">
           <!-- Deny Button -->
-          <button
-            id="deny-tool-btn"
-            type="button"
-            phx-click="deny_tool"
-            phx-value-id={request_field(@request, :id)}
-            class="inline-flex items-center gap-2 rounded-xl bg-red-500/10 border border-red-500/30 px-4 py-2.5 text-xs font-medium text-red-400 hover:bg-red-500/20 hover:text-red-300 transition-colors"
-          >
-            <.icon name="hero-x-mark" class="h-4 w-4" /> Deny
-          </button>
+          <div class="flex items-center gap-2">
+            <button
+              id="deny-tool-btn"
+              type="button"
+              autofocus
+              phx-click="deny_tool"
+              phx-value-id={request_field(@request, :id)}
+              class="inline-flex items-center gap-2 rounded-xl bg-red-500/10 border border-red-500/30 px-4 py-2.5 text-xs font-medium text-red-400 hover:bg-red-500/20 hover:text-red-300 transition-colors"
+            >
+              <.icon name="hero-x-mark" class="h-4 w-4" /> Deny
+            </button>
+            <kbd
+              id="deny-tool-kbd-hint"
+              class="hidden sm:inline-flex items-center rounded-md border border-line bg-inset px-1.5 py-0.5 font-mono text-[10px] text-subtle"
+              title="Press Escape to deny"
+            >
+              esc
+            </kbd>
+          </div>
 
           <div class="flex items-center gap-3">
             <!-- Allow for Session Button -->

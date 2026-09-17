@@ -710,20 +710,26 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("launch_workflow_from_workspace", %{"id" => id}, socket) do
-    workflow = Workflows.get_workflow!(id)
-    opts = [session_id: socket.assigns.session.id]
+    case fetch_workflow(id) do
+      nil ->
+        {:noreply, put_flash(socket, :error, "Workflow not found")}
 
-    case Workflows.launch_workflow(workflow, %{}, opts) do
-      {:ok, run} ->
-        {:noreply,
-         socket
-         |> put_flash(:info, "Launched workflow: #{workflow.name}")
-         |> push_navigate(
-           to: ~p"/sessions/#{socket.assigns.session.id}/workflows/#{workflow.id}/runs/#{run.id}"
-         )}
+      workflow ->
+        opts = [session_id: socket.assigns.session.id]
 
-      {:error, reason} ->
-        {:noreply, put_flash(socket, :error, "Cannot launch workflow: #{inspect(reason)}")}
+        case Workflows.launch_workflow(workflow, %{}, opts) do
+          {:ok, run} ->
+            {:noreply,
+             socket
+             |> put_flash(:info, "Launched workflow: #{workflow.name}")
+             |> push_navigate(
+               to:
+                 ~p"/sessions/#{socket.assigns.session.id}/workflows/#{workflow.id}/runs/#{run.id}"
+             )}
+
+          {:error, reason} ->
+            {:noreply, put_flash(socket, :error, "Cannot launch workflow: #{inspect(reason)}")}
+        end
     end
   end
 
@@ -1186,20 +1192,22 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("picker_select_day", %{"year" => y, "month" => m, "day" => d}, socket) do
-    y_int = if is_binary(y), do: String.to_integer(y), else: y
-    m_int = if is_binary(m), do: String.to_integer(m), else: m
-    d_int = if is_binary(d), do: String.to_integer(d), else: d
+    with y_int when is_integer(y_int) <- parse_int_param(y, nil),
+         m_int when is_integer(m_int) <- parse_int_param(m, nil),
+         d_int when is_integer(d_int) <- parse_int_param(d, nil),
+         {:ok, date} <- Date.new(y_int, m_int, d_int) do
+      date_str = Date.to_iso8601(date)
 
-    date = Date.new!(y_int, m_int, d_int)
-    date_str = Date.to_iso8601(date)
-
-    {:noreply,
-     socket
-     |> assign(:new_task_date, date_str)
-     |> assign(:selected_calendar_date, date_str)
-     |> assign(:picker_year, y_int)
-     |> assign(:picker_month, m_int)
-     |> assign(:show_date_picker_popover, false)}
+      {:noreply,
+       socket
+       |> assign(:new_task_date, date_str)
+       |> assign(:selected_calendar_date, date_str)
+       |> assign(:picker_year, y_int)
+       |> assign(:picker_month, m_int)
+       |> assign(:show_date_picker_popover, false)}
+    else
+      _ -> {:noreply, socket}
+    end
   end
 
   @impl true
@@ -2092,8 +2100,11 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("command_palette_select_item", %{"index" => index_str}, socket) do
-    index = String.to_integer(index_str)
-    item = Enum.at(socket.assigns.command_palette_results, index)
+    index = parse_int_param(index_str, nil)
+
+    item =
+      if is_integer(index) and index >= 0,
+        do: Enum.at(socket.assigns.command_palette_results, index)
 
     if item do
       execute_command_palette_item(socket, item)
@@ -2122,17 +2133,18 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("autofix_failure", %{"index" => idx_str}, socket) do
-    idx = String.to_integer(idx_str)
+    idx = parse_int_param(idx_str, nil)
     result = socket.assigns.test_runner_result
 
     failure =
-      if result do
+      if result && is_integer(idx) do
         Enum.find(result.failures, fn f -> f.index == idx end) ||
           Enum.find(result.compilation_errors, fn ce -> to_string(ce.line) == idx_str end)
       end
 
     if is_nil(failure) do
-      {:noreply, put_flash(socket, :error, "Failure ##{idx} not found in current test results")}
+      {:noreply,
+       put_flash(socket, :error, "Failure ##{idx_str} not found in current test results")}
     else
       project_root = socket.assigns.project.root_path
 
@@ -2358,15 +2370,23 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("jump_to_symbol", %{"path" => rel_path, "line" => line_str}, socket) do
-    line = String.to_integer(line_str)
+    case parse_int_param(line_str, nil) do
+      nil ->
+        {:noreply,
+         socket
+         |> open_file_buffer(rel_path)
+         |> assign(:active_tab, "files")
+         |> put_flash(:error, "Invalid line number")}
 
-    socket =
-      socket
-      |> open_file_buffer(rel_path)
-      |> assign(:active_tab, "files")
-      |> push_event("jump_to_editor_line", %{line: line, file: rel_path})
+      line ->
+        socket =
+          socket
+          |> open_file_buffer(rel_path)
+          |> assign(:active_tab, "files")
+          |> push_event("jump_to_editor_line", %{line: line, file: rel_path})
 
-    {:noreply, socket}
+        {:noreply, socket}
+    end
   end
 
   @impl true
@@ -4424,21 +4444,25 @@ defmodule IexCodeWeb.WorkspaceLive do
     parsed_value =
       case key do
         "sound_enabled" -> value in [true, "true", "1"]
-        "default_thinking_budget" -> String.to_integer(value)
+        "default_thinking_budget" -> parse_int_param(value, nil)
         _ -> value
       end
 
-    attrs = %{key => parsed_value}
+    if key == "default_thinking_budget" and is_nil(parsed_value) do
+      {:noreply, put_flash(socket, :error, "Invalid thinking budget value")}
+    else
+      attrs = %{key => parsed_value}
 
-    case Settings.update_settings(attrs) do
-      {:ok, updated} ->
-        {:noreply,
-         socket
-         |> assign(:settings, updated)
-         |> put_flash(:info, "Setting updated")}
+      case Settings.update_settings(attrs) do
+        {:ok, updated} ->
+          {:noreply,
+           socket
+           |> assign(:settings, updated)
+           |> put_flash(:info, "Setting updated")}
 
-      {:error, _changeset} ->
-        {:noreply, put_flash(socket, :error, "Failed to update setting")}
+        {:error, _changeset} ->
+          {:noreply, put_flash(socket, :error, "Failed to update setting")}
+      end
     end
   end
 
@@ -5360,6 +5384,14 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   defp fetch_project(_), do: nil
 
+  defp fetch_workflow(id) when is_binary(id) do
+    Workflows.get_workflow(id)
+  rescue
+    _ in [Ecto.Query.CastError] -> nil
+  end
+
+  defp fetch_workflow(_), do: nil
+
   defp resolve_mount_context(params) do
     case params["id"] && fetch_session(params["id"]) do
       %Sessions.Session{} = session ->
@@ -5484,8 +5516,7 @@ defmodule IexCodeWeb.WorkspaceLive do
           [stale: true]
 
         "file" when is_binary(file_path) and file_path != "" ->
-          l = if line && line != "", do: String.to_integer(line), else: nil
-          [paths: [file_path], line: l]
+          [paths: [file_path], line: parse_int_param(line, nil)]
 
         _ ->
           []
@@ -5880,6 +5911,19 @@ defmodule IexCodeWeb.WorkspaceLive do
   end
 
   defp parse_terminal_dimension(_val, default), do: default
+
+  # Client event payloads are untrusted: parse integers defensively so a
+  # malformed value falls back instead of crashing the LiveView.
+  defp parse_int_param(val, _default) when is_integer(val), do: val
+
+  defp parse_int_param(val, default) when is_binary(val) do
+    case Integer.parse(String.trim(val)) do
+      {int, _} -> int
+      :error -> default
+    end
+  end
+
+  defp parse_int_param(_val, default), do: default
 
   # -- Workspace search --------------------------------------------------------
 
