@@ -92,7 +92,7 @@ defmodule IexCode.Settings.AppSettings do
     field :approval_prompt_chime, :string, default: "ping"
     field :theme_accent, :string, default: "cyan"
     field :layout_density, :string, default: "comfortable"
-    field :ui_theme, :string, default: "midnight"
+    field :ui_theme, :string, default: "obsidian"
     field :shadows_3d, :boolean, default: true
     field :effects_3d, :boolean, default: true
 
@@ -108,7 +108,7 @@ defmodule IexCode.Settings.AppSettings do
   @chimes ~w(hero sosumi basso ping glass bottle funk)
   @theme_accents ~w(cyan emerald violet amber rose carbon)
   @layout_densities ~w(comfortable compact)
-  @ui_themes ~w(midnight graphite aurora porcelain sandstone)
+  @ui_themes ~w(obsidian midnight graphite aurora porcelain sandstone)
 
   @required_fields [
     :anthropic_base_url,

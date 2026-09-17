@@ -12,12 +12,12 @@ defmodule IexCode.SettingsAppearanceTest do
   end
 
   test "appearance defaults are canonical in new structs and persisted settings" do
-    assert %AppSettings{ui_theme: "midnight", shadows_3d: true, effects_3d: true} =
+    assert %AppSettings{ui_theme: "obsidian", shadows_3d: true, effects_3d: true} =
              %AppSettings{}
 
     settings = Settings.get_settings()
 
-    assert settings.ui_theme == "midnight"
+    assert settings.ui_theme == "obsidian"
     assert settings.shadows_3d
     assert settings.effects_3d
   end
@@ -85,7 +85,7 @@ defmodule IexCode.SettingsAppearanceTest do
              shadows_3d: nil,
              effects_3d: nil
            }) == %{
-             ui_theme: "midnight",
+             ui_theme: "obsidian",
              shadows_3d: true,
              effects_3d: true
            }

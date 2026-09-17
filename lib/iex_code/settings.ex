@@ -22,7 +22,7 @@ defmodule IexCode.Settings do
   @tool_atoms %{"ast_search" => :ast_search, "web_search" => :web_search}
   @previous_search_provider_order ~w(tavily brave exa serper google bing searxng duckduckgo)
   @search_provider_order ~w(tavily brave exa perplexity firecrawl linkup serper serpapi google bing searxng duckduckgo)
-  @ui_themes ~w(midnight graphite aurora porcelain sandstone)
+  @ui_themes ~w(obsidian midnight graphite aurora porcelain sandstone)
   @doc """
   Returns the active application settings.
   Safely fetches the most recently updated or created settings record.
@@ -63,7 +63,7 @@ defmodule IexCode.Settings do
   end
 
   def appearance(_settings),
-    do: %{ui_theme: "midnight", shadows_3d: true, effects_3d: true}
+    do: %{ui_theme: "obsidian", shadows_3d: true, effects_3d: true}
 
   defp update_latest_settings(attrs, stale_attempts) do
     case settings_for_update() do
@@ -300,7 +300,7 @@ defmodule IexCode.Settings do
       approval_prompt_chime: "ping",
       theme_accent: "cyan",
       layout_density: "comfortable",
-      ui_theme: "midnight",
+      ui_theme: "obsidian",
       shadows_3d: true,
       effects_3d: true
     }
@@ -800,7 +800,7 @@ defmodule IexCode.Settings do
   defp parse_boolean(_value), do: :error
 
   defp normalize_ui_theme(theme) when theme in @ui_themes, do: theme
-  defp normalize_ui_theme(_theme), do: "midnight"
+  defp normalize_ui_theme(_theme), do: "obsidian"
 
   defp boolean_or_default(value, _default) when is_boolean(value), do: value
   defp boolean_or_default(_value, default), do: default

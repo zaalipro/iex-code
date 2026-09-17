@@ -205,6 +205,47 @@
   --ui-grid: rgb(181 84 57 / 0.04);
 }
 
+[data-ui-theme="obsidian"] {
+  color-scheme: dark;
+  --ui-bg: #0a0a0b;
+  --ui-surface: #101014;
+  --ui-surface-raised: #17171d;
+  --ui-surface-inset: #060607;
+  --ui-border: #26262c;
+  --ui-border-strong: #3d3d46;
+  --ui-text: #f5f4f0;
+  --ui-muted: #a7a49b;
+  --ui-subtle: #6e6c64;
+  --ui-accent: #e8a33d;
+  --ui-accent-strong: #f2be6b;
+  --ui-accent-text: #14100a;
+  --ui-accent-soft: rgb(232 163 61 / 0.14);
+  --ui-accent-softer: rgb(232 163 61 / 0.07);
+  --ui-focus: #f2be6b;
+  --ui-focus-soft: rgb(242 190 107 / 0.28);
+  --ui-overlay: rgb(4 4 5 / 0.78);
+  --ui-selection: rgb(232 163 61 / 0.32);
+  --ui-success: #7bc98b;
+  --ui-success-soft: rgb(123 201 139 / 0.13);
+  --ui-warning: #efbd73;
+  --ui-warning-soft: rgb(239 189 115 / 0.14);
+  --ui-danger: #e26d5a;
+  --ui-danger-soft: rgb(226 109 90 / 0.13);
+  --ui-info: #7fb6d9;
+  --ui-info-soft: rgb(127 182 217 / 0.13);
+  --ui-shadow-card: 0 16px 38px rgb(0 0 0 / 0.5), 0 1px 0 rgb(255 255 255 / 0.06) inset;
+  --ui-shadow-control: 0 4px 14px rgb(0 0 0 / 0.34), 0 1px 0 rgb(255 255 255 / 0.06) inset;
+  --ui-shadow-modal: 0 24px 64px rgb(0 0 0 / 0.66), 0 1px 0 rgb(255 255 255 / 0.07) inset;
+  --ui-shadow-inset: inset 0 1px 4px rgb(0 0 0 / 0.5);
+  --ui-highlight: rgb(255 255 255 / 0.055);
+  --ui-grid: rgb(232 163 61 / 0.035);
+  --ui-radius-control: 0.75rem;
+  --ui-radius-card: 1.375rem;
+  --ui-radius-dialog: 1.75rem;
+  --ui-transition-fast: 160ms cubic-bezier(0.32, 0.72, 0, 1);
+  --ui-transition: 260ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+
 html {
   --ui-radius-control: 0.625rem;
   --ui-radius-card: 1.125rem;

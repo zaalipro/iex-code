@@ -3,22 +3,22 @@ defmodule IexCodeWeb.SettingsAppearanceLiveTest do
 
   alias IexCode.Settings
 
-  test "appearance studio exposes five native palette choices and independent depth controls", %{
+  test "appearance studio exposes six native palette choices and independent depth controls", %{
     conn: conn
   } do
     {:ok, view, _html} = live(conn, ~p"/settings/appearance")
 
     assert has_element?(view, "#settings-appearance-studio")
-    assert has_element?(view, "#settings-appearance-preview[data-ui-theme='midnight']")
+    assert has_element?(view, "#settings-appearance-preview[data-ui-theme='obsidian']")
 
-    for theme <- ~w(midnight graphite aurora porcelain sandstone) do
+    for theme <- ~w(obsidian midnight graphite aurora porcelain sandstone) do
       assert has_element?(
                view,
                "#settings-ui-theme-#{theme}[type='radio'][name='settings[ui_theme]'][value='#{theme}']"
              )
     end
 
-    assert has_element?(view, "#settings-ui-theme-midnight[checked]")
+    assert has_element?(view, "#settings-ui-theme-obsidian[checked]")
     assert has_element?(view, "label[for='settings-shadows-3d']", "3D shadows")
     assert has_element?(view, "label[for='settings-effects-3d']", "3D effects")
     assert has_element?(view, "#settings-shadows-3d[type='checkbox'][checked]")
@@ -92,6 +92,6 @@ defmodule IexCodeWeb.SettingsAppearanceLiveTest do
            )
 
     assert has_element?(view, "#settings-ui-theme-error[role='alert']")
-    assert Settings.get_settings().ui_theme == "midnight"
+    assert Settings.get_settings().ui_theme == "obsidian"
   end
 end

@@ -4,11 +4,11 @@ defmodule IexCodeWeb.Appearance do
   import Phoenix.Component, only: [assign: 3]
   import Phoenix.LiveView, only: [attach_hook: 4, connected?: 1, push_event: 3]
 
-  @themes ~w(midnight graphite aurora porcelain sandstone)
+  @themes ~w(obsidian midnight graphite aurora porcelain sandstone)
 
   def from_settings(settings) when is_map(settings) do
     %{
-      ui_theme: choice(Map.get(settings, :ui_theme), @themes, "midnight"),
+      ui_theme: choice(Map.get(settings, :ui_theme), @themes, "obsidian"),
       shadows_3d: boolean(Map.get(settings, :shadows_3d)),
       effects_3d: boolean(Map.get(settings, :effects_3d)),
       layout_density:

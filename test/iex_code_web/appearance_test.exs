@@ -23,7 +23,7 @@ defmodule IexCodeWeb.AppearanceTest do
 
   test "normalizes missing or unsupported settings without arbitrary theme attributes" do
     assert Appearance.from_settings(%{ui_theme: "unknown", shadows_3d: nil}) == %{
-             ui_theme: "midnight",
+             ui_theme: "obsidian",
              shadows_3d: true,
              effects_3d: true,
              layout_density: "comfortable"

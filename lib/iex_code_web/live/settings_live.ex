@@ -26,6 +26,12 @@ defmodule IexCodeWeb.SettingsLive do
 
   @appearance_themes [
     %{
+      id: "obsidian",
+      name: "Obsidian",
+      description: "Machined black glass lit by copper instruments.",
+      mood: "Black glass · copper"
+    },
+    %{
       id: "midnight",
       name: "Midnight",
       description: "Deep space surfaces illuminated by ice cyan.",
@@ -535,7 +541,7 @@ defmodule IexCodeWeb.SettingsLive do
   def appearance_theme(form) do
     case form[:ui_theme].value do
       theme when theme in @appearance_theme_ids -> theme
-      _theme -> "midnight"
+      _theme -> "obsidian"
     end
   end
 
