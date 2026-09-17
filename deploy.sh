@@ -274,13 +274,21 @@ fi
 restore() {
   for c in $stopped; do docker start "$c" >/dev/null 2>&1 || true; done
 }
+trap 'echo "REMOTE_ERR at line $LINENO; restoring previous container" >&2; restore' ERR
+echo 'PHASE:migrate'
 if ! docker compose -p "$APP" run --rm --no-deps "$SERVICE" \
     /opt/iex-code/bin/iex_code eval \
     'Ecto.Migrator.with_repo(IexCode.Repo, &Ecto.Migrator.run(&1, :up, all: true))'; then
   echo 'migration failed; restoring previous container' >&2
-  restore; exit 1
+  restore; trap - ERR; exit 1
 fi
-docker compose -p "$APP" up -d "$SERVICE"
+echo 'PHASE:up'
+if ! docker compose -p "$APP" up -d "$SERVICE"; then
+  echo 'compose up failed; restoring previous container' >&2
+  docker compose -p "$APP" down >/dev/null 2>&1 || true
+  restore; trap - ERR; exit 1
+fi
+echo 'PHASE:health'
 status=missing
 for _i in $(seq 1 30); do
   status=$(docker inspect --format '{{.State.Health.Status}}' "$APP-$SERVICE-1" 2>/dev/null || echo missing)
@@ -289,7 +297,7 @@ for _i in $(seq 1 30); do
     echo 'new container unhealthy:' >&2
     docker logs --tail 40 "$APP-$SERVICE-1" >&2 || true
     docker compose -p "$APP" down
-    restore; exit 1
+    restore; trap - ERR; exit 1
   fi
   sleep 5
 done
@@ -297,8 +305,9 @@ if [ "$status" != healthy ]; then
   echo 'new container never became healthy' >&2
   docker logs --tail 40 "$APP-$SERVICE-1" >&2 || true
   docker compose -p "$APP" down
-  restore; exit 1
+  restore; trap - ERR; exit 1
 fi
+trap - ERR
 echo "$RELEASE_ID" > "$RELEASES_ROOT/.current"
 REMOTE_EOF
 SWITCH_STATUS=${PIPESTATUS[0]}
