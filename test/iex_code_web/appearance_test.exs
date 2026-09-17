@@ -29,4 +29,17 @@ defmodule IexCodeWeb.AppearanceTest do
              layout_density: "comfortable"
            }
   end
+
+  test "browser theme allowlist accepts every server theme" do
+    js =
+      Path.join([File.cwd!(), "assets", "js", "appearance.js"])
+      |> File.read!()
+
+    [_, allowlist] = Regex.run(~r/const themes = new Set\(\[(.*?)\]\)/s, js)
+
+    for theme <- Appearance.themes() do
+      assert allowlist =~ ~s("#{theme}"),
+             "assets/js/appearance.js drops #{theme} and falls back to midnight"
+    end
+  end
 end

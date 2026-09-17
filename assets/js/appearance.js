@@ -1,4 +1,4 @@
-const themes = new Set(["midnight", "graphite", "aurora", "porcelain", "sandstone"])
+const themes = new Set(["obsidian", "midnight", "graphite", "aurora", "porcelain", "sandstone"])
 const lightThemes = new Set(["porcelain", "sandstone"])
 
 // Preferences come from the server-rendered document and public LiveView

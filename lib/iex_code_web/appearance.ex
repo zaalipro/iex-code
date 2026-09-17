@@ -6,6 +6,8 @@ defmodule IexCodeWeb.Appearance do
 
   @themes ~w(obsidian midnight graphite aurora porcelain sandstone)
 
+  def themes, do: @themes
+
   def from_settings(settings) when is_map(settings) do
     %{
       ui_theme: choice(Map.get(settings, :ui_theme), @themes, "obsidian"),
