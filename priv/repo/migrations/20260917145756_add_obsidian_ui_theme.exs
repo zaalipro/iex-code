@@ -131,7 +131,10 @@ defmodule IexCode.Repo.Migrations.AddObsidianUiTheme do
   """
 
   def up do
-    rebuild("app_settings_obsidian", @base_columns <> @obsidian_ui_theme <> @tail_columns <> @checks)
+    rebuild(
+      "app_settings_obsidian",
+      @base_columns <> @obsidian_ui_theme <> @tail_columns <> @checks
+    )
   end
 
   def down do
