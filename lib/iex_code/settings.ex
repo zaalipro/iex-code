@@ -22,7 +22,7 @@ defmodule IexCode.Settings do
   @tool_atoms %{"ast_search" => :ast_search, "web_search" => :web_search}
   @previous_search_provider_order ~w(tavily brave exa serper google bing searxng duckduckgo)
   @search_provider_order ~w(tavily brave exa perplexity firecrawl linkup serper serpapi google bing searxng duckduckgo)
-  @ui_themes ~w(obsidian midnight graphite aurora porcelain sandstone)
+  @ui_themes ~w(obsidian midnight graphite aurora porcelain sandstone editorial)
   @doc """
   Returns the active application settings.
   Safely fetches the most recently updated or created settings record.

@@ -411,7 +411,7 @@ defmodule IexCodeWeb.CoreComponents do
 
   defp error(assigns) do
     ~H"""
-    <p id={@id} class="mt-1.5 flex items-center gap-2 text-sm text-rose-400">
+    <p id={@id} class="form-error mt-1.5 flex items-center gap-2 text-sm text-rose-400">
       <.icon name="hero-exclamation-circle" class="size-5" />
       {render_slot(@inner_block)}
     </p>

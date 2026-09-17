@@ -3,7 +3,7 @@ defmodule IexCodeWeb.SettingsAppearanceLiveTest do
 
   alias IexCode.Settings
 
-  test "appearance studio exposes six native palette choices and independent depth controls", %{
+  test "appearance studio exposes seven native palette choices and independent depth controls", %{
     conn: conn
   } do
     {:ok, view, _html} = live(conn, ~p"/settings/appearance")
@@ -11,7 +11,7 @@ defmodule IexCodeWeb.SettingsAppearanceLiveTest do
     assert has_element?(view, "#settings-appearance-studio")
     assert has_element?(view, "#settings-appearance-preview[data-ui-theme='obsidian']")
 
-    for theme <- ~w(obsidian midnight graphite aurora porcelain sandstone) do
+    for theme <- ~w(obsidian midnight graphite aurora porcelain sandstone editorial) do
       assert has_element?(
                view,
                "#settings-ui-theme-#{theme}[type='radio'][name='settings[ui_theme]'][value='#{theme}']"

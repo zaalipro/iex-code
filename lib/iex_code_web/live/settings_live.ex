@@ -60,6 +60,12 @@ defmodule IexCodeWeb.SettingsLive do
       name: "Sandstone",
       description: "Warm paper grounded by terracotta.",
       mood: "Warm paper · terracotta"
+    },
+    %{
+      id: "editorial",
+      name: "Editorial",
+      description: "Calm paper pages set in oversized type, one copper voice.",
+      mood: "Warm paper · copper"
     }
   ]
 

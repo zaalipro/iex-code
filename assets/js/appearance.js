@@ -1,5 +1,5 @@
-const themes = new Set(["obsidian", "midnight", "graphite", "aurora", "porcelain", "sandstone"])
-const lightThemes = new Set(["porcelain", "sandstone"])
+const themes = new Set(["obsidian", "midnight", "graphite", "aurora", "porcelain", "sandstone", "editorial"])
+const lightThemes = new Set(["porcelain", "sandstone", "editorial"])
 
 // Preferences come from the server-rendered document and public LiveView
 // events. Browser-local dark-mode remnants never override saved app settings.

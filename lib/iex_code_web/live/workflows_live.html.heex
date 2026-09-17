@@ -3,6 +3,12 @@
     id="workflows-live-container"
     class="orbital-workflows min-h-dvh bg-canvas text-content flex flex-col"
   >
+    <IexCodeWeb.EditorialChrome.masthead
+      appearance={assigns[:appearance]}
+      current={:workflows}
+      session={@context_session}
+      palette_navigate={@return_path}
+    />
     <.page_toolbar id="workflows-navigation">
       <:leading>
         <.link
@@ -78,6 +84,20 @@
             matches_query? && matches_tag?
           end) %>
         <div id="workflows-gallery" class="space-y-6">
+          <IexCodeWeb.EditorialChrome.hero
+            appearance={assigns[:appearance]}
+            id="workflows-editorial-hero"
+            kicker="Workflows · Execution library"
+            standfirst="Choose a pipeline. Follow every step from research to verification — the dense console, set like a magazine."
+            stats={[
+              {length(@workflows), "pipelines"},
+              {Enum.count(@active_runs, &(&1.status == "running")), "running"},
+              {length(@active_runs), "recent runs"}
+            ]}
+            marginalia="iex-code · broken grid study · whitespace is a feature"
+          >
+            Every pipeline, <em>on one page.</em>
+          </IexCodeWeb.EditorialChrome.hero>
           <.page_header
             id="workflows-gallery-header"
             class="page-header--flush"
@@ -126,6 +146,15 @@
               </div>
             </dl>
           </section>
+
+          <IexCodeWeb.EditorialChrome.note
+            appearance={assigns[:appearance]}
+            id="workflows-editorial-note"
+            body="Sound off, density airy, accent fixed. The settings studio stays one keystroke away, but the work stays on the page."
+            byline="— studio log · appearance tab"
+          >
+            “The console shouted. This page <em>speaks once</em> — in copper.”
+          </IexCodeWeb.EditorialChrome.note>
 
           <%!-- Controls: Search & Tag Filters --%>
           <div class="workflow-library-controls flex flex-col sm:flex-row items-center justify-between gap-4">
@@ -203,7 +232,7 @@
           <%= if length(visible_workflows) > 0 do %>
             <div
               id="workflows-library-grid"
-              class="workflow-library-grid grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6"
+              class="workflow-library-grid ed-stagger grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6"
             >
               <%= for workflow <- visible_workflows do %>
                 <% active_run =
@@ -219,54 +248,84 @@
               <% end %>
             </div>
           <% else %>
-            <%!-- Empty State --%>
-            <div
-              id="workflows-empty-state"
-              class="workflow-empty-state rounded-3xl border border-line p-12"
-            >
-              <div class="workflow-observatory ui-depth-effect" aria-hidden="true">
-                <span class="workflow-observatory-orbit workflow-observatory-orbit--outer"></span>
-                <span class="workflow-observatory-orbit workflow-observatory-orbit--inner"></span>
-                <span class="workflow-observatory-core"><.icon
-                  name="hero-square-3-stack-3d"
-                  class="w-9 h-9"
-                /></span>
-                <span class="workflow-observatory-satellite workflow-observatory-satellite--one"><.icon
-                  name="hero-magnifying-glass"
-                  class="w-4 h-4"
-                /></span>
-                <span class="workflow-observatory-satellite workflow-observatory-satellite--two"><.icon
-                  name="hero-code-bracket"
-                  class="w-4 h-4"
-                /></span>
-                <span class="workflow-observatory-satellite workflow-observatory-satellite--three"><.icon
-                  name="hero-check"
-                  class="w-4 h-4"
-                /></span>
-              </div>
-              <div class="workflow-empty-copy">
-                <h3 class="text-base font-bold text-content">
-                  {if @search_query != "" || @tag_filter != "all",
+            <%!-- Empty State: composed plate under editorial, observatory otherwise. --%>
+            <%= if IexCodeWeb.EditorialChrome.editorial?(assigns[:appearance]) do %>
+              <IexCodeWeb.EditorialChrome.empty_state
+                appearance={assigns[:appearance]}
+                id="workflows-empty-state"
+                eyebrow="Execution library · empty shelf"
+                title={
+                  if @search_query != "" || @tag_filter != "all",
                     do: "No matching workflows",
-                    else: "No workflows configured yet"}
-                </h3>
-                <p class="text-xs text-muted mt-2">
-                  <%= if @search_query != "" || @tag_filter != "all" do %>
-                    Try a different search or select another tag to find a pipeline.
-                  <% else %>
-                    Describe your objective to create a five-step pipeline, then inspect its architecture before launch.
-                  <% end %>
-                </p>
-                <.link
-                  id="workflows-empty-create"
-                  navigate={IexCodeWeb.WorkflowsLive.workflows_new_path(@context_session)}
-                  class="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-accent bg-accent text-accent-ink font-mono text-xs font-bold hover:bg-accent-strong shadow-[var(--ui-shadow-control)] transition-colors"
-                >
-                  <.icon name="hero-plus" class="w-4 h-4" />
-                  <span>Create Workflow</span>
-                </.link>
+                    else: "No workflows configured yet"
+                }
+                body={
+                  if @search_query != "" || @tag_filter != "all",
+                    do: "Try a different search or select another tag to find a pipeline.",
+                    else:
+                      "Describe your objective to create a five-step pipeline, then inspect its architecture before launch."
+                }
+              >
+                <:actions>
+                  <.link
+                    id="workflows-empty-create"
+                    navigate={IexCodeWeb.WorkflowsLive.workflows_new_path(@context_session)}
+                    class="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-accent bg-accent text-accent-ink font-mono text-xs font-bold hover:bg-accent-strong shadow-[var(--ui-shadow-control)] transition-colors"
+                  >
+                    <.icon name="hero-plus" class="w-4 h-4" />
+                    <span>Create Workflow</span>
+                  </.link>
+                </:actions>
+              </IexCodeWeb.EditorialChrome.empty_state>
+            <% else %>
+              <div
+                id="workflows-empty-state"
+                class="workflow-empty-state rounded-3xl border border-line p-12"
+              >
+                <div class="workflow-observatory ui-depth-effect" aria-hidden="true">
+                  <span class="workflow-observatory-orbit workflow-observatory-orbit--outer"></span>
+                  <span class="workflow-observatory-orbit workflow-observatory-orbit--inner"></span>
+                  <span class="workflow-observatory-core"><.icon
+                    name="hero-square-3-stack-3d"
+                    class="w-9 h-9"
+                  /></span>
+                  <span class="workflow-observatory-satellite workflow-observatory-satellite--one"><.icon
+                    name="hero-magnifying-glass"
+                    class="w-4 h-4"
+                  /></span>
+                  <span class="workflow-observatory-satellite workflow-observatory-satellite--two"><.icon
+                    name="hero-code-bracket"
+                    class="w-4 h-4"
+                  /></span>
+                  <span class="workflow-observatory-satellite workflow-observatory-satellite--three"><.icon
+                    name="hero-check"
+                    class="w-4 h-4"
+                  /></span>
+                </div>
+                <div class="workflow-empty-copy">
+                  <h3 class="text-base font-bold text-content">
+                    {if @search_query != "" || @tag_filter != "all",
+                      do: "No matching workflows",
+                      else: "No workflows configured yet"}
+                  </h3>
+                  <p class="text-xs text-muted mt-2">
+                    <%= if @search_query != "" || @tag_filter != "all" do %>
+                      Try a different search or select another tag to find a pipeline.
+                    <% else %>
+                      Describe your objective to create a five-step pipeline, then inspect its architecture before launch.
+                    <% end %>
+                  </p>
+                  <.link
+                    id="workflows-empty-create"
+                    navigate={IexCodeWeb.WorkflowsLive.workflows_new_path(@context_session)}
+                    class="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-accent bg-accent text-accent-ink font-mono text-xs font-bold hover:bg-accent-strong shadow-[var(--ui-shadow-control)] transition-colors"
+                  >
+                    <.icon name="hero-plus" class="w-4 h-4" />
+                    <span>Create Workflow</span>
+                  </.link>
+                </div>
               </div>
-            </div>
+            <% end %>
           <% end %>
 
           <%!-- Recent Runs Section --%>
@@ -288,7 +347,7 @@
                       <th class="p-3.5 text-right">Action</th>
                     </tr>
                   </thead>
-                  <tbody class="divide-y divide-line text-muted">
+                  <tbody class="ed-stagger-fade divide-y divide-line text-muted">
                     <%= for run <- @active_runs do %>
                       <tr
                         id={"workflow-run-row-#{run.id}"}
@@ -407,6 +466,17 @@
                   </button>
                 </div>
               </.form>
+              <div
+                :if={IexCodeWeb.EditorialChrome.editorial?(assigns[:appearance])}
+                class="ed-submit-shelf"
+              >
+                <IexCodeWeb.EditorialChrome.skeleton
+                  appearance={assigns[:appearance]}
+                  id="blueprint-steps-skeleton"
+                  variant={:steps}
+                  count={3}
+                />
+              </div>
               <div class="workflow-blueprint-guide">
                 <.icon name="hero-arrow-path-rounded-square" class="w-5 h-5" />
                 <p>
@@ -465,7 +535,7 @@
                     <h3>Configured DAG steps</h3>
                     <span>{length(@workflow_form[:steps].value || [])} steps</span>
                   </div>
-                  <div class="workflow-step-sequence space-y-2">
+                  <div class="workflow-step-sequence ed-stagger space-y-2">
                     <% steps = @workflow_form[:steps].value || [] %>
                     <%= if steps == [] do %>
                       <div id="workflow-steps-empty" class="workflow-steps-empty">

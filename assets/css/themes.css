@@ -205,6 +205,42 @@
   --ui-grid: rgb(181 84 57 / 0.04);
 }
 
+[data-ui-theme="editorial"] {
+  color-scheme: light;
+  --ui-bg: #f6f1e8;
+  --ui-surface: #fbf8f1;
+  --ui-surface-raised: #fffdf8;
+  --ui-surface-inset: #efe7d8;
+  --ui-border: #ddd2c0;
+  --ui-border-strong: #b3a48c;
+  --ui-text: #201a15;
+  --ui-muted: #575046;
+  --ui-subtle: #8d8478;
+  --ui-accent: #b4652a;
+  --ui-accent-strong: #8f4e1f;
+  --ui-accent-text: #ffffff;
+  --ui-accent-soft: rgb(180 101 42 / 0.12);
+  --ui-accent-softer: rgb(180 101 42 / 0.065);
+  --ui-focus: #8f4e1f;
+  --ui-focus-soft: rgb(143 78 31 / 0.22);
+  --ui-overlay: rgb(32 26 21 / 0.46);
+  --ui-selection: rgb(180 101 42 / 0.2);
+  --ui-success: #35744c;
+  --ui-success-soft: rgb(53 116 76 / 0.11);
+  --ui-warning: #8d641d;
+  --ui-warning-soft: rgb(141 100 29 / 0.12);
+  --ui-danger: #a83a4e;
+  --ui-danger-soft: rgb(168 58 78 / 0.1);
+  --ui-info: #2f6d8d;
+  --ui-info-soft: rgb(47 109 141 / 0.1);
+  --ui-shadow-card: 0 1px 0 rgb(255 255 255 / 0.7) inset, 0 24px 44px -22px rgb(92 58 24 / 0.42), 0 4px 12px -6px rgb(92 58 24 / 0.25);
+  --ui-shadow-control: 0 10px 24px -14px rgb(92 58 24 / 0.45);
+  --ui-shadow-modal: 0 30px 60px -20px rgb(92 58 24 / 0.45);
+  --ui-shadow-inset: inset 0 1px 3px rgb(92 58 24 / 0.14);
+  --ui-highlight: rgb(255 255 255 / 0.7);
+  --ui-grid: rgb(180 101 42 / 0.05);
+}
+
 [data-ui-theme="obsidian"] {
   color-scheme: dark;
   --ui-bg: #0a0a0b;

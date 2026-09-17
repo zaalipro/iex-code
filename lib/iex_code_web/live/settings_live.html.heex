@@ -3,6 +3,12 @@
     id="settings-page"
     class="orbital-settings settings-page min-h-dvh overflow-x-hidden bg-canvas text-content"
   >
+    <IexCodeWeb.EditorialChrome.masthead
+      appearance={assigns[:appearance]}
+      current={:settings}
+      session={@context_session}
+      palette_navigate={@return_path}
+    />
     <.page_toolbar
       id="settings-navigation"
       title="Settings"
@@ -63,7 +69,7 @@
           </div>
         </div>
         <nav id="settings-studio-tabs" aria-label="Settings categories">
-          <div id="settings-section-nav" class="settings-category-list">
+          <div id="settings-section-nav" class="settings-category-list ed-stagger">
             <div
               :for={{id, label, icon} <- @studio_tabs}
               class={["settings-category", to_string(@active_tab) == id && "is-active"]}
@@ -76,6 +82,12 @@
               >
                 <.icon name={icon} class="h-4 w-4 shrink-0" />
                 <span>{label}</span>
+                <small
+                  :if={IexCodeWeb.EditorialChrome.editorial?(assigns[:appearance])}
+                  class="ed-chapter-hint"
+                >
+                  {IexCodeWeb.EditorialChrome.chapter_hint(id)}
+                </small>
               </.link>
               <div class="settings-category-sections">
                 <.link
@@ -98,6 +110,19 @@
       </aside>
 
       <div class="settings-main">
+        <IexCodeWeb.EditorialChrome.hero
+          appearance={assigns[:appearance]}
+          id="settings-editorial-hero"
+          kicker="Settings · Studio index"
+          standfirst="Six chapters of global defaults, stored on this Mac and shared by every workspace. New work inherits them; running sessions keep their overrides."
+          stats={[
+            {length(@studio_tabs), "chapters"},
+            {length(IexCodeWeb.SettingsLive.settings_sections()), "sections"}
+          ]}
+          marginalia="global defaults · six chapters · no sidebar was harmed"
+        >
+          Tune the <em>instrument.</em>
+        </IexCodeWeb.EditorialChrome.hero>
         <.page_header
           id="settings-category-header"
           class="settings-category-header page-header--flush"

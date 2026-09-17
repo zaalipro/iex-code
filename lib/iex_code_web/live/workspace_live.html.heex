@@ -469,6 +469,11 @@
       class="studio-stage flex-1 flex flex-col h-full min-w-0 bg-canvas relative overflow-hidden"
     >
       <h1 class="sr-only">IexCode workspace: {@project.name}</h1>
+      <IexCodeWeb.EditorialChrome.masthead
+        appearance={assigns[:appearance]}
+        current={if @active_tab == "research", do: :research, else: :workspace}
+        session={@session}
+      />
       <%!-- Top Navigation Bar & Tab Switchers --%>
       <header
         id="workspace-header"
@@ -1246,7 +1251,7 @@
             </p>
 
             <%!-- Classic accordion: tall stage rails and one expanded card column. --%>
-            <div id="kanban-board" class="studio-kanban-board" aria-label="Task stages">
+            <div id="kanban-board" class="studio-kanban-board ed-stagger" aria-label="Task stages">
               <%= for col_status <- Kanban.Task.statuses() do %>
                 <% col_tasks = Enum.filter(@tasks, &(&1.status == col_status))
                 is_expanded = @expanded_column == col_status %>
@@ -1479,7 +1484,10 @@
 
             <%!-- Workflow Cards Grid in Workspace --%>
             <%= if length(@workflows || []) > 0 do %>
-              <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              <div
+                id="workspace-workflows-grid"
+                class="ed-stagger grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"
+              >
                 <%= for workflow <- @workflows do %>
                   <% active_run =
                     Enum.find(@workflow_runs || [], fn r ->

@@ -12,6 +12,7 @@
 @import "./orbital_workflows.css";
 @import "./orbital_foundation.css";
 @import "./obsidian.css";
+@import "./editorial.css";
 
 @source "../css";
 @source "../js";

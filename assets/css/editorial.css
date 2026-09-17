@@ -1,0 +1,1415 @@
+/*
+ * Editorial design system layer (Direction B: "Editorial Instrument").
+ *
+ * Paper surfaces, one copper accent, oversized Clash Display type, tabular
+ * numerals for data, and a page-wide film grain. Everything visual is scoped
+ * to [data-ui-theme="editorial"]; the @font-face declarations already live
+ * globally in obsidian.css so the faces are ready on theme switch.
+ */
+
+[data-ui-theme="editorial"] {
+  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --ui-font-display: "Clash Display", "Plus Jakarta Sans", Georgia, serif;
+}
+
+[data-ui-theme="editorial"] body,
+[data-ui-theme="editorial"].studio-application {
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+
+[data-ui-theme="editorial"] :where(h1, h2, .ed-display) {
+  font-family: var(--ui-font-display);
+  letter-spacing: -0.02em;
+}
+
+[data-ui-theme="editorial"] :where(code, kbd, samp, pre, .tabular) {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Copper-on-white text selection, per the mockup. */
+[data-ui-theme="editorial"] ::selection {
+  color: #fff;
+  background: var(--ui-accent);
+}
+
+/*
+ * Page-wide film grain. Uses body::before so body::after stays reserved for
+ * the LiveView disconnect banner. Static image: no animation to guard.
+ */
+[data-ui-theme="editorial"] body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 60;
+  opacity: 0.5;
+  mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='matrix' values='0 0 0 0 0.45 0 0 0 0 0.38 0 0 0 0 0.30 0 0 0 0.05 0'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* ---- B2 app chrome: masthead with pill palette + top nav ---- */
+[data-ui-theme="editorial"] .ed-masthead {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  background: color-mix(in srgb, var(--ui-bg) 88%, transparent);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--ui-border);
+}
+
+[data-ui-theme="editorial"] .ed-masthead-inner {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 14px 40px 10px;
+  display: grid;
+  grid-template-columns: 1fr minmax(280px, 560px) 1fr;
+  align-items: center;
+  gap: 24px;
+}
+
+[data-ui-theme="editorial"] .ed-wordmark {
+  font-family: var(--ui-font-display);
+  font-weight: 600;
+  font-size: 21px;
+  letter-spacing: -0.01em;
+  line-height: 1.1;
+  color: var(--ui-text);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+[data-ui-theme="editorial"] .ed-wordmark .ed-dot {
+  color: var(--ui-accent);
+}
+
+[data-ui-theme="editorial"] .ed-wordmark small {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 400;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ui-subtle);
+}
+
+[data-ui-theme="editorial"] .ed-palette {
+  position: relative;
+  min-width: 0;
+}
+
+[data-ui-theme="editorial"] .ed-pill {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 12px;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  text-align: left;
+  color: var(--ui-subtle);
+  text-decoration: none;
+  background: var(--ui-surface);
+  border: 1px solid var(--ui-border);
+  border-radius: 999px;
+  padding: 11px 12px 11px 17px;
+  box-shadow: var(--ui-shadow-control);
+  cursor: pointer;
+  transition: border-color var(--ui-transition-fast), box-shadow var(--ui-transition-fast);
+}
+
+[data-ui-theme="editorial"] button.ed-pill {
+  font: inherit;
+}
+
+[data-ui-theme="editorial"] .ed-pill:hover {
+  border-color: var(--ui-accent);
+}
+
+[data-ui-theme="editorial"] .ed-pill:focus-visible {
+  outline: 2px solid var(--ui-focus);
+  outline-offset: 2px;
+  border-color: var(--ui-accent);
+}
+
+[data-ui-theme="editorial"] .ed-pill-lens {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  color: var(--ui-subtle);
+}
+
+[data-ui-theme="editorial"] .ed-pill-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-ui-theme="editorial"] .ed-pill kbd {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ui-muted);
+  background: var(--ui-surface-inset);
+  border: 1px solid var(--ui-border);
+  border-radius: 6px;
+  padding: 2px 8px;
+}
+
+[data-ui-theme="editorial"] .ed-masthead-right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 16px;
+  min-width: 0;
+}
+
+[data-ui-theme="editorial"] .ed-session-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--ui-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+[data-ui-theme="editorial"] .ed-live-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--ui-accent);
+  box-shadow: 0 0 0 4px var(--ui-accent-soft);
+}
+
+[data-ui-theme="editorial"] .ed-topnav {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 2px 40px 12px;
+}
+
+[data-ui-theme="editorial"] .ed-topnav ul {
+  display: flex;
+  align-items: baseline;
+  gap: 26px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+[data-ui-theme="editorial"] .ed-topnav ul::-webkit-scrollbar {
+  display: none;
+}
+
+[data-ui-theme="editorial"] .ed-topnav-link {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ui-muted);
+  text-decoration: none;
+  white-space: nowrap;
+  padding-bottom: 4px;
+  border-bottom: 2px solid transparent;
+}
+
+[data-ui-theme="editorial"] .ed-topnav-link:hover {
+  color: var(--ui-text);
+}
+
+[data-ui-theme="editorial"] .ed-topnav-link:focus-visible {
+  outline: 2px solid var(--ui-focus);
+  outline-offset: 4px;
+  border-radius: 2px;
+}
+
+[data-ui-theme="editorial"] .ed-topnav-numeral {
+  font-size: 10.5px;
+  color: var(--ui-subtle);
+}
+
+[data-ui-theme="editorial"] .ed-topnav-link.is-active {
+  color: var(--ui-accent-strong);
+  border-bottom-color: var(--ui-accent);
+}
+
+[data-ui-theme="editorial"] .ed-topnav-link.is-active .ed-topnav-numeral {
+  color: var(--ui-accent);
+}
+
+@media (max-width: 1000px) {
+  [data-ui-theme="editorial"] .ed-masthead-inner {
+    grid-template-columns: 1fr;
+    gap: 12px;
+    padding: 14px 22px 8px;
+  }
+
+  [data-ui-theme="editorial"] .ed-masthead-right {
+    justify-content: flex-start;
+  }
+
+  [data-ui-theme="editorial"] .ed-topnav {
+    padding: 2px 22px 12px;
+  }
+
+  [data-ui-theme="editorial"] .ed-topnav ul {
+    gap: 20px;
+  }
+}
+
+/*
+ * The masthead + top nav replace the persistent sidebar at desktop widths.
+ * Below 64rem the existing fixed-drawer sidebar path is untouched, so narrow
+ * screens keep the current open/backdrop/close behavior as the fallback.
+ */
+@media (min-width: 64rem) {
+  [data-ui-theme="editorial"] #workspace-sidebar {
+    display: none;
+  }
+
+  [data-ui-theme="editorial"] #sidebar-desktop-toggle-btn {
+    display: none;
+  }
+}
+
+/* ---- B3 workspace surfaces: hero, broken grid, plates, settings index ----
+ *
+ * Morph-safety contract (LiveView patches list heights at any time):
+ * - in-flow grid placement only; nothing here is absolutely positioned;
+ * - stagger uses positive margin-top only — the mockup's negative-margin
+ *   overlaps are deliberately NOT reproduced, because a morphed list growing
+ *   under a negative offset would collide instead of reflowing;
+ * - tilts are transform: rotate() on STATIC shells only (overview, empty
+ *   state, marginal note): paint-only, so layout and hit-testing keep working;
+ * - dynamic lists (workflow cards, runs, kanban, settings fields) never take
+ *   transforms, so filtering, patching, and validation reflow safely.
+ */
+
+/* Hero: oversized display type on a 12-column grid (mockup .hero, app scale). */
+[data-ui-theme="editorial"] .ed-hero {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 24px;
+  align-items: start;
+  padding: 20px 4px 4px;
+}
+
+[data-ui-theme="editorial"] .ed-hero-kicker {
+  grid-column: 2 / 7;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ui-accent);
+}
+
+[data-ui-theme="editorial"] .ed-hero-kicker::before {
+  content: "";
+  display: inline-block;
+  width: 44px;
+  height: 2px;
+  flex: none;
+  background: var(--ui-accent);
+}
+
+[data-ui-theme="editorial"] .ed-hero-title {
+  grid-column: 2 / 11;
+  margin: 6px 0 0;
+  font-family: var(--ui-font-display);
+  font-weight: 600;
+  font-size: clamp(44px, 6vw, 88px);
+  line-height: 0.98;
+  letter-spacing: -0.025em;
+  color: var(--ui-text);
+  text-wrap: balance;
+}
+
+[data-ui-theme="editorial"] .ed-hero-title em {
+  font-style: normal;
+  color: var(--ui-accent);
+}
+
+[data-ui-theme="editorial"] .ed-hero-standfirst {
+  grid-column: 7 / 12;
+  max-width: 44ch;
+  margin-top: 8px;
+  padding-left: 22px;
+  border-left: 2px solid var(--ui-border);
+  font-size: 16px;
+  color: var(--ui-muted);
+}
+
+[data-ui-theme="editorial"] .ed-hero-meta {
+  grid-column: 2 / 6;
+  display: flex;
+  gap: 28px;
+  margin-top: 26px;
+}
+
+[data-ui-theme="editorial"] .ed-hero-meta b {
+  display: block;
+  font-family: var(--ui-font-display);
+  font-size: 30px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--ui-text);
+  font-variant-numeric: tabular-nums;
+}
+
+[data-ui-theme="editorial"] .ed-hero-meta span {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ui-subtle);
+}
+
+[data-ui-theme="editorial"] .ed-marginalia {
+  grid-column: 11 / 13;
+  grid-row: 1 / 4;
+  align-self: start;
+  margin-top: 96px;
+  justify-self: end;
+  writing-mode: vertical-rl;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--ui-subtle);
+  white-space: nowrap;
+}
+
+/* Feature plates: paper cards with tinted shadows + film grain. */
+[data-ui-theme="editorial"] .ed-plate {
+  position: relative;
+  background: var(--ui-surface);
+  border: 1px solid color-mix(in srgb, var(--ui-accent) 28%, var(--ui-border));
+  border-radius: 18px;
+  padding: 28px 30px;
+  box-shadow: var(--ui-shadow-card);
+}
+
+[data-ui-theme="editorial"] .ed-plate::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0.6;
+  mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='matrix' values='0 0 0 0 0.42 0 0 0 0 0.34 0 0 0 0 0.26 0 0 0 0.06 0'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23g)'/%3E%3C/svg%3E");
+}
+
+[data-ui-theme="editorial"] .ed-plate-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ui-subtle);
+}
+
+/* Dark marginal note: the contrast plate. Mockup-fixed companion tones. */
+[data-ui-theme="editorial"] .ed-plate--dark {
+  background: var(--ui-text);
+  border-color: var(--ui-text);
+  color: var(--ui-bg);
+}
+
+[data-ui-theme="editorial"] .ed-plate--dark::after {
+  opacity: 0.35;
+}
+
+[data-ui-theme="editorial"] .ed-plate--dark .ed-plate-eyebrow {
+  color: #b9ac9c;
+}
+
+[data-ui-theme="editorial"] .ed-pullquote {
+  margin: 0 0 14px;
+  font-family: var(--ui-font-display);
+  font-weight: 500;
+  font-size: 24px;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  text-wrap: pretty;
+}
+
+[data-ui-theme="editorial"] .ed-pullquote em {
+  font-style: normal;
+  color: #e9b98a;
+}
+
+[data-ui-theme="editorial"] .ed-note-body {
+  font-size: 14px;
+  color: #cfc4b4;
+}
+
+[data-ui-theme="editorial"] .ed-byline {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ui-subtle);
+}
+
+/* Display type for shared page headers on every editorial surface. */
+[data-ui-theme="editorial"] .page-header .page-header__title {
+  font-family: var(--ui-font-display);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+[data-ui-theme="editorial"] .page-header .page-header__count {
+  font-family: var(--ui-font-display);
+  color: var(--ui-accent-strong);
+}
+
+/* ---- Workflows gallery: the broken 12-column grid ---- */
+[data-ui-theme="editorial"] #workflows-gallery {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 28px;
+  align-items: start;
+}
+
+[data-ui-theme="editorial"] #workflows-gallery > * {
+  grid-column: 1 / -1;
+  min-width: 0;
+  margin-top: 0;
+  margin-block-start: 0;
+}
+
+[data-ui-theme="editorial"] #workflows-live-container .workflow-overview-intro h2 {
+  font-family: var(--ui-font-display);
+  font-size: 22px;
+  font-weight: 600;
+}
+
+[data-ui-theme="editorial"] #workflows-live-container .workflow-overview-metrics dd {
+  font-family: var(--ui-font-display);
+}
+
+[data-ui-theme="editorial"]
+  #workflows-live-container
+  .workflow-library-grid
+  > [id^="workflow-card-"]
+  > div:first-child
+  > div:first-child
+  a {
+  font-family: var(--ui-font-display);
+  font-weight: 600;
+}
+
+[data-ui-theme="editorial"] #workflows-live-container .workflow-empty-state h3 {
+  font-family: var(--ui-font-display);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+[data-ui-theme="editorial"] #workflows-live-container .workflow-section-heading h3 {
+  font-family: var(--ui-font-display);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+@media (min-width: 1001px) {
+  /* Deliberate offsets + tilts; all in-flow, all positive, all static-shell. */
+  [data-ui-theme="editorial"] #workflows-live-container #workflows-overview {
+    grid-column: 1 / 9;
+    transform: rotate(-0.8deg);
+  }
+
+  [data-ui-theme="editorial"] #workflows-live-container #workflows-editorial-note {
+    grid-column: 9 / 13;
+    margin-top: 56px;
+    transform: rotate(0.9deg);
+  }
+
+  [data-ui-theme="editorial"] #workflows-gallery .workflow-library-controls {
+    grid-column: 2 / 12;
+  }
+
+  [data-ui-theme="editorial"] #workflows-gallery #workflows-empty-state {
+    grid-column: 2 / 12;
+    transform: rotate(0.7deg);
+  }
+
+  /* Middle-column stagger on workflow cards: margins reflow under morphs. */
+  [data-ui-theme="editorial"] #workflows-library-grid {
+    align-items: start;
+  }
+
+  [data-ui-theme="editorial"]
+    #workflows-library-grid
+    > [id^="workflow-card-"]:nth-child(3n + 2) {
+    margin-top: 24px;
+  }
+}
+
+/* ---- Settings: the studio index ---- */
+[data-ui-theme="editorial"] #settings-page .settings-main > .ed-hero {
+  padding: 36px clamp(1.25rem, 2.5vw, 2rem) 20px;
+  border-bottom: 1px solid var(--ui-border);
+}
+
+[data-ui-theme="editorial"] #settings-page #settings-section-nav {
+  counter-reset: ed-chapter;
+}
+
+[data-ui-theme="editorial"] #settings-page #settings-section-nav .settings-category {
+  counter-increment: ed-chapter;
+}
+
+[data-ui-theme="editorial"] #settings-page .settings-category-link {
+  display: grid;
+  grid-template-columns: 2.75rem minmax(0, 1fr);
+  column-gap: 0.75rem;
+  align-items: baseline;
+  min-height: 0;
+  padding: 0.8rem 0.4rem;
+  border: 0;
+  border-bottom: 1px solid var(--ui-border);
+  border-radius: 0;
+  background: transparent;
+  text-decoration: none;
+}
+
+[data-ui-theme="editorial"] #settings-page .settings-category-link::before {
+  content: counter(ed-chapter, decimal-leading-zero);
+  grid-column: 1;
+  grid-row: 1 / 3;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ui-accent-strong);
+}
+
+[data-ui-theme="editorial"] #settings-page .settings-category-link > span:first-child {
+  display: none;
+}
+
+[data-ui-theme="editorial"] #settings-page .settings-category-link > span:nth-child(2) {
+  grid-column: 2;
+  grid-row: 1;
+  font-family: var(--ui-font-display);
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--ui-text);
+}
+
+[data-ui-theme="editorial"] #settings-page .ed-chapter-hint {
+  grid-column: 2;
+  grid-row: 2;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ui-subtle);
+}
+
+[data-ui-theme="editorial"] #settings-page .settings-category-link:hover {
+  background: var(--ui-accent-soft);
+}
+
+[data-ui-theme="editorial"]
+  #settings-page
+  .settings-category.is-active
+  > .settings-category-link {
+  background: var(--ui-accent-soft);
+  border-bottom-color: var(--ui-accent);
+  font-weight: inherit;
+}
+
+[data-ui-theme="editorial"] #settings-page .settings-nav-identity strong {
+  font-family: var(--ui-font-display);
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+[data-ui-theme="editorial"] #settings-page .settings-nav-identity div > span {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+[data-ui-theme="editorial"] #settings-page .settings-sidebar-note {
+  background: var(--ui-text);
+  border-color: var(--ui-text);
+  color: #cfc4b4;
+}
+
+[data-ui-theme="editorial"] #settings-page .settings-sidebar-note > span {
+  color: #e9b98a;
+}
+
+[data-ui-theme="editorial"] #settings-page .settings-sidebar-note strong {
+  font-family: var(--ui-font-display);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ui-bg);
+}
+
+[data-ui-theme="editorial"] #settings-page .settings-section-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0.5;
+  mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='matrix' values='0 0 0 0 0.42 0 0 0 0 0.34 0 0 0 0 0.26 0 0 0 0.06 0'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23g)'/%3E%3C/svg%3E");
+}
+
+/* ---- Workspace board: display headers + plate voices (layout untouched) ---- */
+[data-ui-theme="editorial"] #kanban-page-header {
+  border-bottom: 1px solid var(--ui-border);
+  padding-bottom: 12px;
+}
+
+[data-ui-theme="editorial"]
+  .orbital-workspace
+  .studio-kanban-column
+  > div:first-child
+  span.uppercase {
+  font-family: var(--ui-font-display);
+  font-size: 14px;
+  letter-spacing: 0.02em;
+}
+
+[data-ui-theme="editorial"] .orbital-workspace .studio-task-card h4 {
+  font-family: var(--ui-font-display);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* ---- Single-column collapse under 1000px (mockup breakpoint) ---- */
+@media (max-width: 1000px) {
+  [data-ui-theme="editorial"] .ed-hero {
+    padding: 24px 0 4px;
+  }
+
+  [data-ui-theme="editorial"] .ed-hero-kicker,
+  [data-ui-theme="editorial"] .ed-hero-title,
+  [data-ui-theme="editorial"] .ed-hero-standfirst,
+  [data-ui-theme="editorial"] .ed-hero-meta {
+    grid-column: 1 / -1;
+  }
+
+  [data-ui-theme="editorial"] .ed-marginalia {
+    display: none;
+  }
+
+  [data-ui-theme="editorial"] #workflows-gallery > * {
+    grid-column: 1 / -1;
+    margin-top: 0;
+    margin-block-start: 0;
+    transform: none;
+  }
+
+  [data-ui-theme="editorial"] #workflows-library-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  [data-ui-theme="editorial"]
+    #workflows-library-grid
+    > [id^="workflow-card-"]:nth-child(3n + 2) {
+    margin-top: 0;
+  }
+
+  [data-ui-theme="editorial"] #settings-page .settings-shell {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  [data-ui-theme="editorial"] #settings-page .settings-sidebar {
+    display: block;
+    overflow: visible;
+    padding: 0.5rem 0.75rem;
+    border-right: 0;
+    border-bottom: 1px solid var(--ui-border);
+  }
+
+  [data-ui-theme="editorial"] #settings-page .settings-category-list {
+    flex-direction: row;
+    gap: 0.3rem;
+    overflow-x: auto;
+  }
+
+  [data-ui-theme="editorial"] #settings-page .settings-category {
+    flex: none;
+  }
+
+  [data-ui-theme="editorial"] #settings-page .settings-category-link {
+    grid-template-columns: 2rem minmax(0, 1fr);
+    white-space: nowrap;
+  }
+
+  [data-ui-theme="editorial"]
+    #settings-page
+    .settings-category-link
+    > span:nth-child(2) {
+    font-size: 16px;
+  }
+
+  [data-ui-theme="editorial"] #settings-page .settings-category.is-active .settings-category-sections,
+  [data-ui-theme="editorial"] #settings-page .settings-sidebar-note,
+  [data-ui-theme="editorial"] #settings-page .settings-nav-identity {
+    display: none;
+  }
+
+  [data-ui-theme="editorial"] #settings-page .settings-main {
+    margin: 0.6rem;
+  }
+}
+
+/* ---- B4 states + motion: hover/active/focus, skeletons, empty states, stagger ----
+ *
+ * Motion contract: transform/opacity ONLY.
+ * - entries rise once (spring easing) and end at transform:none, so
+ *   LiveView-morphed lists reflow instead of sticking;
+ * - table rows (transforms don't apply to <tr>) fade opacity-only;
+ * - skeleton shimmer sweeps via ::after translateX;
+ * - tilted static shells (overview, note) take shadow-only hover so the hover
+ *   transform never overrides their B3 rotate();
+ * - draggable cards are excluded from press-scale so DnD geometry holds.
+ * The reduced-motion guard at the bottom of this file collapses all of it.
+ */
+
+@keyframes ed-rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes ed-fade {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes ed-shimmer {
+  from {
+    transform: translateX(-100%);
+  }
+
+  to {
+    transform: translateX(100%);
+  }
+}
+
+/* Smooth scroll under the editorial theme (the mockup's html rule). The
+ * reduced-motion guard below resets this to auto. Sticky-masthead offset for
+ * in-page jumps. */
+[data-ui-theme="editorial"] {
+  --ed-spring: cubic-bezier(0.22, 1.2, 0.36, 1);
+  scroll-behavior: smooth;
+  scroll-padding-top: 120px;
+}
+
+/* ---- Staggered entries: spring easing, transform/opacity only ---- */
+[data-ui-theme="editorial"] .ed-stagger > * {
+  animation: ed-rise 520ms var(--ed-spring) backwards;
+}
+
+[data-ui-theme="editorial"] .ed-stagger > *:nth-child(2) { animation-delay: 45ms; }
+[data-ui-theme="editorial"] .ed-stagger > *:nth-child(3) { animation-delay: 90ms; }
+[data-ui-theme="editorial"] .ed-stagger > *:nth-child(4) { animation-delay: 135ms; }
+[data-ui-theme="editorial"] .ed-stagger > *:nth-child(5) { animation-delay: 180ms; }
+[data-ui-theme="editorial"] .ed-stagger > *:nth-child(6) { animation-delay: 225ms; }
+[data-ui-theme="editorial"] .ed-stagger > *:nth-child(7) { animation-delay: 270ms; }
+[data-ui-theme="editorial"] .ed-stagger > *:nth-child(8) { animation-delay: 315ms; }
+[data-ui-theme="editorial"] .ed-stagger > *:nth-child(n + 9) { animation-delay: 360ms; }
+
+/* Opacity-only variant for table rows. */
+[data-ui-theme="editorial"] .ed-stagger-fade > * {
+  animation: ed-fade 400ms ease-out backwards;
+}
+
+[data-ui-theme="editorial"] .ed-stagger-fade > *:nth-child(2) { animation-delay: 30ms; }
+[data-ui-theme="editorial"] .ed-stagger-fade > *:nth-child(3) { animation-delay: 60ms; }
+[data-ui-theme="editorial"] .ed-stagger-fade > *:nth-child(4) { animation-delay: 90ms; }
+[data-ui-theme="editorial"] .ed-stagger-fade > *:nth-child(5) { animation-delay: 120ms; }
+[data-ui-theme="editorial"] .ed-stagger-fade > *:nth-child(6) { animation-delay: 150ms; }
+[data-ui-theme="editorial"] .ed-stagger-fade > *:nth-child(7) { animation-delay: 180ms; }
+[data-ui-theme="editorial"] .ed-stagger-fade > *:nth-child(8) { animation-delay: 210ms; }
+[data-ui-theme="editorial"] .ed-stagger-fade > *:nth-child(n + 9) { animation-delay: 240ms; }
+
+/* Display heroes enter in reading order. */
+[data-ui-theme="editorial"] .ed-hero > * {
+  animation: ed-rise 560ms var(--ed-spring) backwards;
+}
+
+[data-ui-theme="editorial"] .ed-hero > *:nth-child(2) { animation-delay: 70ms; }
+[data-ui-theme="editorial"] .ed-hero > *:nth-child(3) { animation-delay: 140ms; }
+[data-ui-theme="editorial"] .ed-hero > *:nth-child(4) { animation-delay: 210ms; }
+[data-ui-theme="editorial"] .ed-hero > *:nth-child(5) { animation-delay: 280ms; }
+
+/* ---- Focus-visible everywhere: one copper ring as the fallback ---- */
+[data-ui-theme="editorial"] :where(a, button, input, select, textarea, summary, [role="button"]):focus-visible {
+  outline: 2px solid var(--ui-focus);
+  outline-offset: 2px;
+}
+
+/* ---- Pressed feedback everywhere; draggable cards hold geometry ---- */
+[data-ui-theme="editorial"] :where(a, button):active {
+  transform: scale(0.99);
+}
+
+[data-ui-theme="editorial"] :where(a, button)[draggable="true"]:active {
+  transform: none;
+}
+
+/* ---- Masthead: wordmark + pill + topnav complete their triads ---- */
+[data-ui-theme="editorial"] .ed-wordmark {
+  transition: color var(--ui-transition-fast), transform var(--ui-transition-fast);
+}
+
+[data-ui-theme="editorial"] .ed-wordmark:hover {
+  color: var(--ui-accent-strong);
+}
+
+[data-ui-theme="editorial"] .ed-wordmark:active {
+  transform: scale(0.99);
+}
+
+[data-ui-theme="editorial"] .ed-pill {
+  transition:
+    border-color var(--ui-transition-fast),
+    box-shadow var(--ui-transition-fast),
+    transform var(--ui-transition-fast);
+}
+
+[data-ui-theme="editorial"] .ed-pill:active {
+  transform: scale(0.99);
+  border-color: var(--ui-accent);
+}
+
+[data-ui-theme="editorial"] .ed-topnav-link {
+  transition: color var(--ui-transition-fast), border-color var(--ui-transition-fast);
+}
+
+[data-ui-theme="editorial"] .ed-topnav-link:active {
+  color: var(--ui-accent-strong);
+}
+
+/* ---- Plates: shadow-only hover keeps the B3 tilts intact ---- */
+[data-ui-theme="editorial"] .ed-plate {
+  transition: box-shadow var(--ui-transition-fast), transform var(--ui-transition-fast);
+}
+
+[data-ui-theme="editorial"] .ed-plate:hover {
+  box-shadow: var(--ui-shadow-modal);
+}
+
+/* ---- Workflow cards: copper border + voice on hover, press settles ---- */
+[data-ui-theme="editorial"] [id^="workflow-card-"]:hover {
+  border-color: color-mix(in srgb, var(--ui-accent) 45%, var(--ui-border));
+}
+
+[data-ui-theme="editorial"] [id^="workflow-card-"] a:hover {
+  color: var(--ui-accent-strong);
+}
+
+/* Launch buttons speak copper under the editorial theme. */
+[data-ui-theme="editorial"] [id^="btn-launch-"] {
+  background: var(--ui-accent);
+  border: 1px solid var(--ui-accent);
+  color: #fff;
+  box-shadow: var(--ui-shadow-control);
+  transition:
+    background-color var(--ui-transition-fast),
+    box-shadow var(--ui-transition-fast),
+    transform var(--ui-transition-fast);
+}
+
+[data-ui-theme="editorial"] [id^="btn-launch-"]:hover {
+  background: var(--ui-accent-strong);
+  border-color: var(--ui-accent-strong);
+  filter: none;
+  transform: translateY(-1px);
+}
+
+[data-ui-theme="editorial"] [id^="btn-launch-"]:active {
+  transform: translateY(0) scale(0.99);
+}
+
+/* ---- Header controls: primary CTAs lift like the mockup copper button ---- */
+[data-ui-theme="editorial"] :where(.page-header, .page-toolbar) .header-control {
+  transition:
+    background-color var(--ui-transition-fast),
+    border-color var(--ui-transition-fast),
+    color var(--ui-transition-fast),
+    transform var(--ui-transition-fast);
+}
+
+[data-ui-theme="editorial"] :where(.page-header, .page-toolbar) .header-control--primary:hover:not(:disabled):not([aria-disabled="true"]) {
+  transform: translateY(-1px);
+}
+
+[data-ui-theme="editorial"] :where(.page-header, .page-toolbar) .header-control:active:not(:disabled):not([aria-disabled="true"]) {
+  transform: scale(0.98);
+}
+
+/* ---- Gallery filters: wash on hover (no border-width shifts), press pops ---- */
+[data-ui-theme="editorial"] [id^="workflows-filter-"] {
+  transition:
+    background-color var(--ui-transition-fast),
+    color var(--ui-transition-fast),
+    transform var(--ui-transition-fast);
+}
+
+[data-ui-theme="editorial"] [id^="workflows-filter-"]:hover {
+  background: var(--ui-accent-soft);
+  color: var(--ui-text);
+}
+
+[data-ui-theme="editorial"] [id^="workflows-filter-"]:active {
+  transform: scale(0.96);
+}
+
+/* ---- Recent runs: copper wash + inset tick on hover ---- */
+[data-ui-theme="editorial"] #workflows-recent-runs tbody tr {
+  transition: background-color var(--ui-transition-fast), box-shadow var(--ui-transition-fast);
+}
+
+[data-ui-theme="editorial"] #workflows-recent-runs tbody tr:hover {
+  background: var(--ui-accent-soft);
+  box-shadow: inset 2px 0 0 var(--ui-accent);
+}
+
+/* ---- Settings index: rows complete hover/active/focus ---- */
+[data-ui-theme="editorial"] #settings-page .settings-category-link {
+  transition: background-color var(--ui-transition-fast);
+}
+
+[data-ui-theme="editorial"] #settings-page .settings-category-link:active {
+  background: var(--ui-accent-soft);
+}
+
+[data-ui-theme="editorial"] #settings-page .settings-section-link:active {
+  background: var(--ui-accent-soft);
+  color: var(--ui-accent-strong);
+}
+
+/* ---- Kanban rails: copper wash on hover, settled press ---- */
+[data-ui-theme="editorial"] .studio-kanban-rail:hover {
+  background: var(--ui-accent-soft);
+}
+
+[data-ui-theme="editorial"] .studio-kanban-rail:active {
+  background: var(--ui-accent-soft);
+}
+
+[data-ui-theme="editorial"] #kanban-clear-filters:hover {
+  border-color: var(--ui-accent);
+}
+
+/* ---- Skeleton loaders: layout-shaped shimmer, transform/opacity only ---- */
+[data-ui-theme="editorial"] .ed-skeleton-host {
+  display: grid;
+  gap: 16px;
+}
+
+[data-ui-theme="editorial"] .ed-skeleton-host[data-ed-skeleton="workflow_grid"] {
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 24px;
+}
+
+[data-ui-theme="editorial"] .ed-skeleton-host[data-ed-skeleton="run_rows"],
+[data-ui-theme="editorial"] .ed-skeleton-host[data-ed-skeleton="steps"],
+[data-ui-theme="editorial"] .ed-skeleton-host[data-ed-skeleton="index"],
+[data-ui-theme="editorial"] .ed-skeleton-host[data-ed-skeleton="kanban"] {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+[data-ui-theme="editorial"] .ed-skeleton {
+  position: relative;
+  overflow: hidden;
+  background: var(--ui-surface);
+  border: 1px solid var(--ui-border);
+  border-radius: 14px;
+  padding: 18px;
+}
+
+[data-ui-theme="editorial"] .ed-skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    100deg,
+    transparent 20%,
+    var(--ui-accent-soft) 50%,
+    transparent 80%
+  );
+  animation: ed-shimmer 1.6s ease-in-out infinite;
+}
+
+[data-ui-theme="editorial"] .ed-skeleton-bar {
+  display: block;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--ui-surface-inset);
+}
+
+[data-ui-theme="editorial"] .ed-skeleton-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+[data-ui-theme="editorial"] .ed-skeleton-title {
+  height: 16px;
+  width: 55%;
+}
+
+[data-ui-theme="editorial"] .ed-skeleton-line--short {
+  width: 70%;
+}
+
+[data-ui-theme="editorial"] .ed-skeleton-line--grow {
+  flex: 1 1 auto;
+}
+
+[data-ui-theme="editorial"] .ed-skeleton-pills {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+[data-ui-theme="editorial"] .ed-skeleton-pills i {
+  width: 56px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--ui-surface-inset);
+}
+
+[data-ui-theme="editorial"] .ed-skeleton-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--ui-border);
+}
+
+[data-ui-theme="editorial"] .ed-skeleton-foot i {
+  width: 84px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--ui-surface-inset);
+}
+
+[data-ui-theme="editorial"] .ed-skeleton-foot b {
+  width: 76px;
+  height: 28px;
+  border-radius: 12px;
+  background: var(--ui-surface-inset);
+}
+
+[data-ui-theme="editorial"] .ed-skeleton-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+[data-ui-theme="editorial"] .ed-skeleton-chip {
+  width: 64px;
+  flex: none;
+}
+
+[data-ui-theme="editorial"] .ed-skeleton-pill {
+  width: 72px;
+  flex: none;
+}
+
+[data-ui-theme="editorial"] .ed-skeleton-meter {
+  width: 96px;
+  height: 6px;
+  flex: none;
+}
+
+[data-ui-theme="editorial"] .ed-skeleton-step {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+}
+
+[data-ui-theme="editorial"] .ed-skeleton-orb {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--ui-surface-inset);
+}
+
+[data-ui-theme="editorial"] .ed-skeleton-step-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+[data-ui-theme="editorial"] .ed-skeleton-tag {
+  width: 56px;
+  flex: none;
+}
+
+[data-ui-theme="editorial"] .ed-skeleton-index {
+  display: grid;
+  grid-template-columns: 2.75rem minmax(0, 1fr);
+  column-gap: 0.75rem;
+  align-items: center;
+  border: 0;
+  border-bottom: 1px solid var(--ui-border);
+  border-radius: 0;
+  padding: 0.8rem 0.4rem;
+}
+
+[data-ui-theme="editorial"] .ed-skeleton-numeral {
+  width: 2rem;
+}
+
+[data-ui-theme="editorial"] .ed-skeleton-chapter {
+  height: 16px;
+  width: 40%;
+}
+
+[data-ui-theme="editorial"] .ed-skeleton-hint {
+  width: 55%;
+}
+
+[data-ui-theme="editorial"] .ed-skeleton-kanban {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+[data-ui-theme="editorial"] .ed-skeleton-kanban-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+[data-ui-theme="editorial"] .ed-skeleton-kanban-meta i {
+  width: 52px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--ui-surface-inset);
+}
+
+[data-ui-theme="editorial"] .ed-skeleton-kanban-meta b {
+  width: 44px;
+  height: 16px;
+  border-radius: 6px;
+  background: var(--ui-surface-inset);
+}
+
+/* Blueprint synthesis shelf: hidden until the form's submit round-trip. */
+[data-ui-theme="editorial"] .ed-submit-shelf {
+  display: none;
+  margin-top: 12px;
+}
+
+[data-ui-theme="editorial"] #blueprint-prompt-form.phx-submit-loading + .ed-submit-shelf {
+  display: block;
+}
+
+/* The existing agent-fleet skeleton takes the paper shimmer voice. */
+[data-ui-theme="editorial"] [id^="run-agent-fleet-skeleton-"] {
+  position: relative;
+  overflow: hidden;
+  background: var(--ui-surface);
+  border: 1px solid var(--ui-border);
+  border-radius: 12px;
+  animation: none;
+}
+
+[data-ui-theme="editorial"] [id^="run-agent-fleet-skeleton-"] > div {
+  background: var(--ui-surface-inset);
+  border-radius: 999px;
+}
+
+[data-ui-theme="editorial"] [id^="run-agent-fleet-skeleton-"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    100deg,
+    transparent 20%,
+    var(--ui-accent-soft) 50%,
+    transparent 80%
+  );
+  animation: ed-shimmer 1.6s ease-in-out infinite;
+}
+
+/* ---- Composed empty states: eyebrow, display title, lede, copper row ---- */
+[data-ui-theme="editorial"] .ed-empty-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ui-accent);
+  margin: 0 0 10px;
+}
+
+[data-ui-theme="editorial"] .ed-empty-title {
+  font-family: var(--ui-font-display);
+  font-weight: 600;
+  font-size: 24px;
+  letter-spacing: -0.01em;
+  color: var(--ui-text);
+  margin: 0 0 8px;
+  text-wrap: balance;
+}
+
+[data-ui-theme="editorial"] .ed-empty-body {
+  font-size: 14px;
+  color: var(--ui-muted);
+  max-width: 52ch;
+  margin: 0 0 18px;
+}
+
+[data-ui-theme="editorial"] .ed-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+/* Gallery empty shelf: paper plate, display title, copper CTA. */
+[data-ui-theme="editorial"] #workflows-live-container #workflows-empty-state {
+  background: var(--ui-surface);
+  border: 1px solid color-mix(in srgb, var(--ui-accent) 28%, var(--ui-border));
+  border-radius: 18px;
+  box-shadow: var(--ui-shadow-card);
+}
+
+[data-ui-theme="editorial"] #workflows-live-container #workflows-empty-state h3 {
+  font-family: var(--ui-font-display);
+  font-size: 25px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+[data-ui-theme="editorial"] #workflows-empty-create {
+  transition:
+    background-color var(--ui-transition-fast),
+    transform var(--ui-transition-fast),
+    box-shadow var(--ui-transition-fast);
+}
+
+[data-ui-theme="editorial"] #workflows-empty-create:hover {
+  transform: translateY(-1px);
+}
+
+[data-ui-theme="editorial"] #workflows-empty-create:active {
+  transform: translateY(0) scale(0.99);
+}
+
+/* Workspace workflows empty: the CTA speaks copper. */
+[data-ui-theme="editorial"] .orbital-workspace #workflows-empty-state.orbital-panel-empty a {
+  background: var(--ui-accent);
+  border-color: var(--ui-accent);
+  color: #fff;
+  box-shadow: var(--ui-shadow-control);
+  transition:
+    background-color var(--ui-transition-fast),
+    transform var(--ui-transition-fast);
+}
+
+[data-ui-theme="editorial"] .orbital-workspace #workflows-empty-state.orbital-panel-empty a:hover {
+  background: var(--ui-accent-strong);
+  border-color: var(--ui-accent-strong);
+  transform: translateY(-1px);
+}
+
+/* Kanban filter empty: display title over the paper bar. */
+[data-ui-theme="editorial"] #kanban-filter-empty-state p:first-of-type {
+  font-family: var(--ui-font-display);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* Fleet empty: display title, copper icon chip. */
+[data-ui-theme="editorial"] #run-agent-fleet-empty p:first-child {
+  font-family: var(--ui-font-display);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+[data-ui-theme="editorial"] #run-agent-fleet-empty .mission-empty-icon {
+  border-color: color-mix(in srgb, var(--ui-accent) 30%, var(--ui-border));
+  background: var(--ui-accent-soft);
+  color: var(--ui-accent-strong);
+}
+
+/* ---- Inline form errors: danger voice, copper-free for unmistakable state ---- */
+[data-ui-theme="editorial"] .form-error {
+  color: var(--ui-danger);
+  font-size: 13px;
+}
+
+[data-ui-theme="editorial"] .form-error svg {
+  flex: none;
+  color: var(--ui-danger);
+}
+
+[data-ui-theme="editorial"] :is(input, select, textarea)[aria-invalid="true"] {
+  border-color: var(--ui-danger);
+  background-color: color-mix(in srgb, var(--ui-danger) 8%, var(--ui-surface));
+}
+
+[data-ui-theme="editorial"] :is(input, select, textarea)[aria-invalid="true"]:focus {
+  box-shadow: 0 0 0 3px var(--ui-danger-soft);
+}
+
+[data-ui-theme="editorial"] :is(input, select, textarea)[aria-invalid="true"]:focus-visible {
+  outline: 2px solid var(--ui-danger);
+  outline-offset: 1px;
+}
+
+/* Editorial reduced-motion guards: grain stays off and motion collapses. */
+@media (prefers-reduced-motion: reduce) {
+  [data-ui-theme="editorial"] {
+    scroll-behavior: auto;
+  }
+
+  [data-ui-theme="editorial"] body::before {
+    display: none;
+  }
+
+  [data-ui-theme="editorial"] :where(*, *::before, *::after) {
+    animation: none !important;
+    transition-duration: 0.01ms !important;
+  }
+}

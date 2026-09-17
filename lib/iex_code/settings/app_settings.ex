@@ -108,7 +108,7 @@ defmodule IexCode.Settings.AppSettings do
   @chimes ~w(hero sosumi basso ping glass bottle funk)
   @theme_accents ~w(cyan emerald violet amber rose carbon)
   @layout_densities ~w(comfortable compact)
-  @ui_themes ~w(obsidian midnight graphite aurora porcelain sandstone)
+  @ui_themes ~w(obsidian midnight graphite aurora porcelain sandstone editorial)
 
   @required_fields [
     :anthropic_base_url,

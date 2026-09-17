@@ -4,7 +4,7 @@ defmodule IexCodeWeb.Appearance do
   import Phoenix.Component, only: [assign: 3]
   import Phoenix.LiveView, only: [attach_hook: 4, connected?: 1, push_event: 3]
 
-  @themes ~w(obsidian midnight graphite aurora porcelain sandstone)
+  @themes ~w(obsidian midnight graphite aurora porcelain sandstone editorial)
 
   def themes, do: @themes
 
@@ -18,7 +18,10 @@ defmodule IexCodeWeb.Appearance do
     }
   end
 
-  def color_scheme(%{ui_theme: theme}) when theme in ["porcelain", "sandstone"], do: "light"
+  def color_scheme(%{ui_theme: theme})
+      when theme in ["porcelain", "sandstone", "editorial"],
+      do: "light"
+
   def color_scheme(_), do: "dark"
 
   def on_mount(:default, _params, _session, socket) do
