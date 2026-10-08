@@ -245,6 +245,7 @@ defmodule IexCodeWeb.SwarmConsensusComponents do
   attr :id, :string, default: "peer-message-stream"
   attr :messages, :list, default: []
   attr :active_role_filter, :any, default: nil
+  attr :total, :integer, default: nil
   attr :class, :string, default: ""
 
   def peer_message_timeline(assigns) do
@@ -282,7 +283,7 @@ defmodule IexCodeWeb.SwarmConsensusComponents do
           </h4>
         </div>
         <span class="text-[10px] font-mono px-2 py-0.5 rounded-full bg-cyan-950/60 border border-cyan-800/40 text-cyan-300 font-bold">
-          {length(@filtered_messages)} Exchanges
+          {@total || length(@filtered_messages)} Exchanges
         </span>
       </div>
 
@@ -302,7 +303,7 @@ defmodule IexCodeWeb.SwarmConsensusComponents do
             <% payload = msg[:payload] || msg["payload"] || %{} %>
 
             <div
-              id={"peer-msg-#{idx}"}
+              id={"peer-msg-#{msg[:id] || msg["id"] || idx}"}
               class="rounded-xl border border-white/5 bg-surface p-3 space-y-2 text-xs font-mono transition hover:border-white/10"
             >
               <div class="flex items-center justify-between">
@@ -331,10 +332,21 @@ defmodule IexCodeWeb.SwarmConsensusComponents do
                 </div>
               </div>
 
-              <%= if map_size(payload) > 0 do %>
-                <div class="rounded-lg bg-inset border border-white/5 p-2 text-[11px] text-muted overflow-x-auto">
-                  <pre class="whitespace-pre-wrap"><code phx-no-curly-interpolation><%= Jason.encode!(payload, pretty: true) %></code></pre>
-                </div>
+              <%= if is_binary(payload) do %>
+                <span class="text-[10px] text-subtle">Payload preview · up to 2 KiB</span>
+                <pre class="whitespace-pre-wrap text-[11px] text-muted">{payload}</pre>
+                <button
+                  id={"peer-detail-#{msg[:id]}"}
+                  phx-click="peer_detail"
+                  phx-value-id={msg[:id]}
+                  class="text-subtle hover:text-content"
+                >Inspect full exchange</button>
+              <% else %>
+                <%= if map_size(payload) > 0 do %>
+                  <div class="rounded-lg bg-inset border border-white/5 p-2 text-[11px] text-muted overflow-x-auto">
+                    <pre class="whitespace-pre-wrap"><code phx-no-curly-interpolation><%= Jason.encode!(payload, pretty: true) %></code></pre>
+                  </div>
+                <% end %>
               <% end %>
             </div>
           <% end %>

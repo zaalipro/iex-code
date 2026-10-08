@@ -45,6 +45,42 @@ defmodule IexCode.SessionsBoundedHistoryTest do
     assert_raise ArgumentError, fn -> Sessions.list_recent_messages(context.session.id, 201) end
   end
 
+  test "display previews bound SQL content and reasoning at increasing history sizes",
+       context do
+    body = String.duplicate("🙂λ", 20_000)
+    seed(context.session.id, 1..60)
+
+    Repo.update_all(from(m in Message, where: m.session_id == ^context.session.id),
+      set: [content: body, metadata: %{"reasoning" => body}, tool_calls: [%{"body" => body}]]
+    )
+
+    for size <- [60, 2_000] do
+      if size > 60, do: seed(context.session.id, 61..size, ~U[2025-01-01 00:00:00Z])
+
+      {result, metrics} =
+        LeanHarnessCollector.measure(fn ->
+          Sessions.fetch_message_preview_page(context.session.id)
+        end)
+
+      assert {:ok, page} = result
+      assert length(page.messages) == 50
+      assert metrics.loaded_message_rows <= 52
+      assert metrics.query_count == 3
+      assert Enum.all?(page.messages, &(&1.truncated? and &1.metadata["reasoning_truncated"]))
+      assert Enum.all?(page.messages, &(byte_size(&1.metadata["reasoning"]) <= 2048))
+
+      assert Enum.all?(
+               page.messages,
+               &(String.valid?(&1.content) and byte_size(&1.content) <= 4096)
+             )
+
+      assert Enum.all?(page.messages, &(:binary.referenced_byte_size(&1.content) <= 4096))
+      refute Enum.any?(page.messages, &Map.has_key?(&1, :tool_calls))
+    end
+
+    assert Sessions.get_message(context.session.id, id(60)).content == body
+  end
+
   test "exclusive cursor pages traverse tied timestamps without gaps in both directions",
        context do
     seed(context.session.id, 1..17)

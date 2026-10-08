@@ -89,6 +89,17 @@ defmodule IexCode.Sessions do
     to: IexCode.Sessions.MessageHistory,
     as: :page
 
+  @doc """
+  Cursor-paged display projection with the same navigation rules as
+  `fetch_message_page/2`. SQL bounds content to 4096 UTF-8 bytes and agent names
+  to 128 bytes. Reasoning is projected to 2048 bytes with numeric trace metrics;
+  arbitrary metadata/tool bodies are not loaded. `truncated?` marks partial
+  content. Use scoped `get_message/2` for one requested full detail or copy.
+  """
+  defdelegate fetch_message_preview_page(session_id, opts \\ []),
+    to: IexCode.Sessions.MessageHistory,
+    as: :preview_page
+
   @doc "Returns one complete stored message scoped to a session, or nil."
   defdelegate get_message(session_id, message_id), to: IexCode.Sessions.MessageHistory, as: :get
 
@@ -261,6 +272,32 @@ defmodule IexCode.Sessions do
   def get_operation!(id), do: Repo.get!(Operation, id)
 
   def get_operation(id), do: Repo.get(Operation, id)
+
+  @doc """
+  Returns a bounded terminal-operation window plus every pending/running row and
+  its same-session ancestors. Options: `:limit` (default 50, maximum 200), and
+  either `:before` or `:after` (exclusive, same-session operation IDs).
+
+  Returns `{:ok, %{operations: rows, first_cursor: id, last_cursor: id,
+  has_older?: boolean, has_newer?: boolean, stats: map}}`. Cursors and flags
+  describe terminal rows only, not the active/ancestor exceptions. Stats cover
+  the entire session. Rows have empty params and UTF-8 previews capped at 2048
+  bytes per text field, projected in SQL. Full bodies remain available through
+  `get_operation/2`. Invalid options/cursors return a tagged error.
+  """
+  defdelegate fetch_operation_page(session_id, opts \\ []),
+    to: IexCode.Sessions.OperationHistory,
+    as: :page
+
+  @doc "Returns one complete operation in the supplied session, or nil."
+  defdelegate get_operation(session_id, operation_id),
+    to: IexCode.Sessions.OperationHistory,
+    as: :get
+
+  @doc false
+  defdelegate operation_statuses(session_id, ids),
+    to: IexCode.Sessions.OperationHistory,
+    as: :statuses
 
   def create_operation(attrs \\ %{}) do
     Repo.retry_on_busy(fn ->

@@ -38,7 +38,10 @@ defmodule IexCodeWeb.EmpiricalDeadAssignChallengeTest do
       assert is_boolean(assigns.show_time_picker)
       assert is_boolean(assigns.show_settings_modal)
       assert is_list(assigns.tasks)
-      assert is_list(assigns.messages)
+      assert is_list(assigns.message_previews)
+      assert length(assigns.message_previews) <= 50
+      refute Map.has_key?(assigns, :messages)
+      refute Map.has_key?(assigns, :all_messages)
       assert is_list(assigns.operations)
 
       # 3. Rapid fire of time-picker & date events (formerly updating dead assigns)

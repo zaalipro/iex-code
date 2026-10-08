@@ -47,7 +47,10 @@ defmodule IexCode.Sessions.MessageHistory do
     end
   end
 
-  def page(session_id, opts) when is_list(opts) do
+  def page(session_id, opts), do: page(session_id, opts, :full)
+  def preview_page(session_id, opts), do: page(session_id, opts, :preview)
+
+  defp page(session_id, opts, projection) when is_list(opts) do
     with true <- Keyword.keyword?(opts),
          {:ok, session_id} <- Ecto.UUID.cast(session_id),
          limit = Keyword.get(opts, :limit, @default_window),
@@ -65,7 +68,9 @@ defmodule IexCode.Sessions.MessageHistory do
         window
         |> ordered(direction)
         |> limit(^limit)
+        |> projection(projection)
         |> Repo.all()
+        |> Enum.map(&repair_preview(&1, projection))
         |> chronological(direction)
 
       first = List.first(messages)
@@ -85,7 +90,52 @@ defmodule IexCode.Sessions.MessageHistory do
     end
   end
 
-  def page(_session_id, _opts), do: {:error, :invalid_arguments}
+  defp page(_session_id, _opts, _projection), do: {:error, :invalid_arguments}
+
+  defp projection(query, :full), do: query
+
+  defp projection(query, :preview) do
+    select(query, [m], %{
+      id: m.id,
+      session_id: m.session_id,
+      role: m.role,
+      agent_name: fragment("substr(CAST(? AS BLOB), 1, 128)", m.agent_name),
+      content: fragment("substr(CAST(? AS BLOB), 1, 4096)", m.content),
+      truncated?: type(fragment("length(CAST(? AS BLOB)) > 4096", m.content), :boolean),
+      metadata: %{
+        "reasoning" =>
+          fragment("substr(CAST(json_extract(?, '$.reasoning') AS BLOB), 1, 2048)", m.metadata),
+        "reasoning_truncated" =>
+          type(
+            fragment("length(CAST(json_extract(?, '$.reasoning') AS BLOB)) > 2048", m.metadata),
+            :boolean
+          ),
+        "duration_ms" =>
+          fragment("CAST(json_extract(?, '$.duration_ms') AS INTEGER)", m.metadata),
+        "thinking_tokens" =>
+          fragment("CAST(json_extract(?, '$.thinking_tokens') AS INTEGER)", m.metadata)
+      },
+      inserted_at: m.inserted_at
+    })
+  end
+
+  defp repair_preview(row, :full), do: row
+
+  defp repair_preview(row, :preview) do
+    row
+    |> Map.update!(:content, &valid_utf8/1)
+    |> Map.update!(:agent_name, &valid_utf8/1)
+    |> Map.update!(:metadata, &Map.update!(&1, "reasoning", fn reason -> valid_utf8(reason) end))
+  end
+
+  defp valid_utf8(nil), do: nil
+
+  defp valid_utf8(binary) do
+    case :unicode.characters_to_binary(binary, :utf8, :utf8) do
+      valid when is_binary(valid) -> valid
+      {_kind, valid, _rest} -> valid
+    end
+  end
 
   defp session_messages(session_id), do: from(m in Message, where: m.session_id == ^session_id)
 

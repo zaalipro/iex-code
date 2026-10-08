@@ -11,6 +11,10 @@ defmodule IexCode.Swarm.PeerStream do
   @pubsub IexCode.PubSub
   @table :iex_code_swarm_peer_stream_history
   @telemetry_topic "swarm:telemetry"
+  @history_select_chunk 64
+  @history_default_window 50
+  @history_maximum_window 200
+  @history_preview_bytes 2048
 
   # ============================================================================
   # CLIENT API
@@ -170,6 +174,205 @@ defmodule IexCode.Swarm.PeerStream do
     end
   rescue
     _ -> []
+  end
+
+  @doc """
+  Returns a chronological bounded peer window from the existing ETS lifetime.
+
+  Options are `:limit` (default 50, maximum 200), and either `:before` or `:after`
+  (an exclusive message ID in this swarm). Without a cursor returns latest.
+  Result: `{:ok, %{messages: rows, first_cursor: id, last_cursor: id,
+  has_older?: boolean, has_newer?: boolean, total: integer}}`.
+
+  Payloads are encoded UTF-8 preview strings of at most 2048 bytes. Detail is
+  available through `get_message/2`. Duplicate IDs use their earliest retained
+  `{order, id}` position; `total` counts retained records, including duplicates,
+  just like `length(get_history(swarm_id))`. No records are changed or persisted.
+  Foreign/missing/malformed cursors return `{:error, :invalid_cursor}`; invalid
+  options return `{:error, :invalid_arguments}`.
+  """
+  def fetch_history_page(swarm_id, opts \\ [])
+
+  def fetch_history_page(swarm_id, opts) when is_binary(swarm_id) and is_list(opts) do
+    with true <- swarm_id != "" and Keyword.keyword?(opts),
+         true <- Enum.all?(Keyword.keys(opts), &(&1 in [:limit, :before, :after])),
+         true <- length(Keyword.keys(opts)) == length(Enum.uniq(Keyword.keys(opts))),
+         limit = Keyword.get(opts, :limit, @history_default_window),
+         true <- is_integer(limit) and limit in 1..@history_maximum_window,
+         before = Keyword.get(opts, :before),
+         after_cursor = Keyword.get(opts, :after),
+         false <- not is_nil(before) and not is_nil(after_cursor) do
+      ensure_table_exists()
+      cursor_id = if is_nil(before), do: after_cursor, else: before
+
+      with {:ok, cursor} <- history_cursor(swarm_id, cursor_id) do
+        direction = if is_nil(after_cursor), do: :older, else: :newer
+        candidates = history_candidates(swarm_id, cursor, direction, limit)
+
+        # Only the selected rows cross ETS with a payload, one at a time, and
+        # each is immediately reduced to a preview. Scans retain metadata only.
+        rows =
+          Enum.flat_map(candidates, fn key ->
+            case history_message(swarm_id, key) do
+              nil -> []
+              message -> [{key, history_preview(message)}]
+            end
+          end)
+
+        first = List.first(rows)
+        last = List.last(rows)
+        first_key = if first, do: elem(first, 0), else: cursor
+        last_key = if last, do: elem(last, 0), else: cursor
+
+        {:ok,
+         %{
+           messages: Enum.map(rows, &elem(&1, 1)),
+           first_cursor: first && elem(first_key, 1),
+           last_cursor: last && elem(last_key, 1),
+           has_older?: history_boundary?(swarm_id, first_key, :older),
+           has_newer?: history_boundary?(swarm_id, last_key, :newer),
+           total: :ets.select_count(@table, [{{swarm_id, :_, :_}, [], [true]}])
+         }}
+      end
+    else
+      _ -> {:error, :invalid_arguments}
+    end
+  end
+
+  def fetch_history_page(_swarm_id, _opts), do: {:error, :invalid_arguments}
+
+  @doc "Returns one full peer message in this swarm's existing lifetime, or nil."
+  def get_message(swarm_id, message_id) when is_binary(swarm_id) and is_binary(message_id) do
+    ensure_table_exists()
+
+    case history_cursor(swarm_id, message_id) do
+      {:ok, cursor} -> history_message(swarm_id, cursor)
+      _ -> nil
+    end
+  end
+
+  def get_message(_swarm_id, _message_id), do: nil
+
+  defp history_cursor(_swarm_id, nil), do: {:ok, nil}
+
+  defp history_cursor(swarm_id, message_id) when is_binary(message_id) and message_id != "" do
+    match_spec = history_metadata_spec(swarm_id, [{:==, :"$2", {:const, message_id}}])
+
+    case history_reduce(match_spec, nil, fn key, earliest ->
+           if is_nil(earliest) or key < earliest, do: key, else: earliest
+         end) do
+      nil -> {:error, :invalid_cursor}
+      key -> {:ok, key}
+    end
+  end
+
+  defp history_cursor(_swarm_id, _message_id), do: {:error, :invalid_cursor}
+
+  defp history_candidates(swarm_id, cursor, direction, limit) do
+    swarm_id
+    |> history_metadata_spec([])
+    |> history_reduce([], fn key, retained ->
+      eligible? =
+        (is_nil(cursor) or history_relative?(key, cursor, direction)) and
+          key not in retained and
+          (length(retained) < limit or
+             history_relative?(key, List.last(retained), opposite(direction)))
+
+      if eligible? and history_canonical?(swarm_id, key) do
+        [key | retained]
+        |> Enum.sort(if(direction == :older, do: :desc, else: :asc))
+        |> Enum.take(limit)
+      else
+        retained
+      end
+    end)
+    |> Enum.sort()
+  end
+
+  # An unordered duplicate_bag has no secondary ID index. Check only competitive
+  # candidates for earlier duplicates, using a one-result metadata-only select,
+  # rather than retaining an ever-growing "seen IDs" set or changing the table.
+  defp history_canonical?(swarm_id, {order, id}) do
+    spec =
+      history_metadata_spec(swarm_id, [
+        {:==, :"$2", {:const, id}},
+        {:<, :"$1", {:const, order}}
+      ])
+
+    :ets.select(@table, spec, 1) == :"$end_of_table"
+  end
+
+  defp history_boundary?(_swarm_id, nil, _direction), do: false
+
+  defp history_boundary?(swarm_id, key, direction),
+    do: history_candidates(swarm_id, key, direction, 1) != []
+
+  defp history_relative?(key, cursor, :older), do: key < cursor
+  defp history_relative?(key, cursor, :newer), do: key > cursor
+  defp opposite(:older), do: :newer
+  defp opposite(:newer), do: :older
+
+  defp history_metadata_spec(swarm_id, guards) do
+    [
+      {{swarm_id, :"$1", %{id: :"$2"}}, [{:is_binary, :"$2"} | guards], [{{:"$1", :"$2"}}]},
+      {{swarm_id, :"$1", %{"id" => :"$2"}}, [{:is_binary, :"$2"} | guards], [{{:"$1", :"$2"}}]}
+    ]
+  end
+
+  defp history_reduce(spec, acc, fun) do
+    history_continue(:ets.select(@table, spec, @history_select_chunk), acc, fun)
+  end
+
+  defp history_continue(:"$end_of_table", acc, _fun), do: acc
+
+  defp history_continue({rows, continuation}, acc, fun) do
+    acc = Enum.reduce(rows, acc, fun)
+    history_continue(:ets.select(continuation), acc, fun)
+  end
+
+  defp history_message(swarm_id, {order, id}) do
+    spec = [
+      {{swarm_id, order, :"$1"},
+       [
+         {:==, {:map_get, :id, :"$1"}, {:const, id}}
+       ], [:"$1"]},
+      {{swarm_id, order, :"$1"},
+       [
+         {:==, {:map_get, "id", :"$1"}, {:const, id}}
+       ], [:"$1"]}
+    ]
+
+    case :ets.select(@table, spec, 1) do
+      {[message], _continuation} -> message
+      :"$end_of_table" -> nil
+    end
+  end
+
+  defp history_preview(message) do
+    Map.new(
+      [:id, :swarm_id, :from_agent, :to_agent, :role, :type, :payload, :timestamp],
+      fn key ->
+        value = Map.get(message, key) || Map.get(message, Atom.to_string(key))
+
+        preview =
+          cond do
+            key == :payload -> value |> Jason.encode!() |> history_text_preview()
+            is_binary(value) -> history_text_preview(value)
+            true -> value
+          end
+
+        {key, preview}
+      end
+    )
+  end
+
+  defp history_text_preview(binary) do
+    prefix = binary_part(binary, 0, min(byte_size(binary), @history_preview_bytes))
+
+    case :unicode.characters_to_binary(prefix, :utf8, :utf8) do
+      valid when is_binary(valid) -> :binary.copy(valid)
+      {_kind, valid, _rest} -> :binary.copy(valid)
+    end
   end
 
   @doc """

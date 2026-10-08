@@ -22,14 +22,14 @@ defmodule IexCodeWeb.WorkspaceLiveFunctionalStateTest do
 
     assert Enum.map(assigns.sessions, & &1.id) == [second_session.id]
     assert assigns.projects == []
-    assert Enum.map(assigns.messages, & &1.id) == [message.id]
+    assert Enum.map(assigns.message_previews, & &1.id) == [message.id]
 
     render_change(view, "search_workspace", %{"query" => "needle only"})
     assigns = live_assigns(view)
 
     assert assigns.projects == []
     assert assigns.sessions == []
-    assert Enum.map(assigns.messages, & &1.id) == [message.id]
+    assert Enum.map(assigns.message_previews, & &1.id) == [message.id]
 
     render_click(view, "toggle_command_palette")
     assert has_element?(view, "#command-palette-results", "Payments Refactor")

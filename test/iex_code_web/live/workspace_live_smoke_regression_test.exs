@@ -127,7 +127,7 @@ defmodule IexCodeWeb.WorkspaceLiveSmokeRegressionTest do
     assert Enum.map(assigns.projects, & &1.id) == [beta_project.id]
     assert Enum.map(assigns.sessions, & &1.id) == [beta_session.id]
 
-    assert MapSet.new(Enum.map(assigns.messages, & &1.id)) ==
+    assert MapSet.new(Enum.map(assigns.message_previews, & &1.id)) ==
              MapSet.new([alpha_message.id, beta_message.id])
 
     render_click(view, "toggle_workspace_menu")

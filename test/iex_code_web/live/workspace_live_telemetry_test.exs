@@ -340,6 +340,7 @@ defmodule IexCodeWeb.WorkspaceLiveTelemetryTest do
       assert render(view) =~ "Scan project tree"
 
       # Send PubSub broadcast
+      Sessions.clear_session_operations(session.id)
       send(view.pid, :operations_cleared)
       assert render(view) =~ "No operations recorded in this session"
     end

@@ -171,8 +171,16 @@ const Hooks = {
         }, 2000)
       }
       this.el.addEventListener("click", async () => {
-        const text = this.el.getAttribute("data-code") || ""
         try {
+          const messageId = this.el.getAttribute("data-message-id")
+          const text = messageId
+            ? await new Promise((resolve, reject) => {
+                this.pushEvent("copy_message", {id: messageId}, reply => {
+                  if (typeof reply.content === "string") resolve(reply.content)
+                  else reject(new Error("Message unavailable"))
+                })
+              })
+            : this.el.getAttribute("data-code") || ""
           await navigator.clipboard.writeText(text)
           this.showCopyStatus("Copied")
         } catch (_error) {

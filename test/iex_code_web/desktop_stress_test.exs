@@ -279,33 +279,19 @@ defmodule IexCodeWeb.DesktopStressTest do
   end
 
   describe "WorkspaceLive Socket Level Desktop Event Stress Testing" do
-    test "WorkspaceLive.handle_info/2 handles valid tabs and ignores invalid tabs safely" do
-      initial_socket = %Phoenix.LiveView.Socket{
-        assigns: %{
-          __changed__: %{},
-          active_tab: "kanban",
-          live_action: :index,
-          show_workspace_menu: false,
-          show_command_palette: false,
-          show_settings_modal: false,
-          selected_run: nil,
-          project_files: [],
-          project: %{root_path: System.tmp_dir!()},
-          session: %{id: "test-session-123"}
-        }
-      }
+    test "WorkspaceLive.handle_info/2 handles valid tabs and ignores invalid tabs safely", %{
+      conn: conn,
+      workspace_path: path
+    } do
+      project = create_project_fixture(%{root_path: path})
+      session = create_session_fixture(project)
+      {:ok, view, _} = live(conn, ~p"/sessions/#{session.id}")
 
       # Test tabs that do not require running servers
       for tab <- ~w(kanban calendar tests ast chat) do
-        socket = %{
-          initial_socket
-          | assigns: Map.put(initial_socket.assigns, :active_tab, "initial")
-        }
-
-        assert {:noreply, updated_socket} =
-                 WorkspaceLive.handle_info({:desktop_switch_tab, tab}, socket)
-
-        assert updated_socket.assigns.active_tab == tab
+        send(view.pid, {:desktop_switch_tab, tab})
+        render(view)
+        assert :sys.get_state(view.pid).socket.assigns.active_tab == tab
       end
 
       # Test invalid tab inputs (should be ignored with active_tab preserved)
@@ -322,15 +308,9 @@ defmodule IexCodeWeb.DesktopStressTest do
       ]
 
       for invalid_tab <- invalid_tabs do
-        socket = %{
-          initial_socket
-          | assigns: Map.put(initial_socket.assigns, :active_tab, "kanban")
-        }
-
-        assert {:noreply, updated_socket} =
-                 WorkspaceLive.handle_info({:desktop_switch_tab, invalid_tab}, socket)
-
-        assert updated_socket.assigns.active_tab == "kanban"
+        send(view.pid, {:desktop_switch_tab, invalid_tab})
+        render(view)
+        assert :sys.get_state(view.pid).socket.assigns.active_tab == "chat"
       end
     end
 

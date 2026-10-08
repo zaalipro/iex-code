@@ -31,6 +31,7 @@ defmodule IexCodeWeb.WorkspaceLive do
   alias IexCode.Tools.{TerminalServer, TerminalSession}
   alias IexCode.Observability.MemoryPoller
   alias IexCodeWeb.CommandPalette
+  alias IexCodeWeb.WorkspaceHistory
   alias IexCodeWeb.Components.SwarmCanvas
   alias Phoenix.PubSub
   import IexCodeWeb.WorkspaceComponents, except: [thinking_trace: 1]
@@ -114,9 +115,6 @@ defmodule IexCodeWeb.WorkspaceLive do
       _ = TerminalServer.ensure_started(session.id, workspace_path: project.root_path)
     end
 
-    messages = Sessions.list_messages(session.id)
-
-    operations = Sessions.list_operations(session.id)
     durable_runs = Runs.list_runs(session_id: session.id, limit: 100)
     selected_run = List.first(durable_runs)
     run_events = if selected_run, do: Runs.list_latest_events(selected_run, limit: 500), else: []
@@ -180,9 +178,9 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:session, session)
       |> assign(:sessions, sessions)
       |> assign(:all_sessions, sessions)
-      |> assign(:messages, messages)
-      |> assign(:all_messages, messages)
-      |> assign(:operations, operations)
+      |> stream_configure(:chat_messages, dom_id: &"chat-msg-#{&1.id}")
+      |> WorkspaceHistory.chat()
+      |> WorkspaceHistory.operations()
       |> assign(:selected_run, selected_run)
       |> assign(:run_steps, run_steps)
       |> assign(:run_approvals, run_approvals)
@@ -230,7 +228,6 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:research_results, ready_research_results)
       |> assign(:research_attachments, MapSet.new())
       |> assign(:research_attachment_picker_open?, false)
-      |> assign(:expanded_ops, MapSet.new())
       |> assign(:active_agent, nil)
       |> assign(:active_stage, :init)
       |> assign(:settings, settings)
@@ -510,6 +507,11 @@ defmodule IexCodeWeb.WorkspaceLive do
         socket.assigns[:selected_checkpoint] || List.first(checkpoints)
       )
 
+    socket =
+      if active_tab == "chat" and params["id"] in [nil, socket.assigns.session.id],
+        do: WorkspaceHistory.chat(socket),
+        else: socket
+
     if params["id"] && params["id"] != socket.assigns.session.id do
       old_id = socket.assigns.session.id
       old_project_id = socket.assigns.project.id
@@ -554,8 +556,6 @@ defmodule IexCodeWeb.WorkspaceLive do
                   TerminalServer.ensure_started(new_session.id, workspace_path: project.root_path)
               end
 
-              messages = Sessions.list_messages(new_session.id)
-              operations = Sessions.list_operations(new_session.id)
               projects = Projects.list_projects()
               sessions = Sessions.list_sessions_for_project(project.id)
               files = list_project_files(project.root_path)
@@ -584,13 +584,13 @@ defmodule IexCodeWeb.WorkspaceLive do
                 |> assign(:project_files, files)
                 |> assign(:tasks, tasks)
                 |> assign(:page_title, "#{new_session.title} · #{project.name}")
-                |> assign(:messages, messages)
-                |> assign(:all_messages, messages)
+                |> WorkspaceHistory.chat()
+                |> WorkspaceHistory.operations()
+                |> WorkspaceHistory.peers()
                 |> assign(:workspace_search, "")
                 |> assign(:workspace_search_form, to_form(%{"query" => ""}))
                 |> assign(:file_filter, "")
                 |> assign(:file_filter_form, to_form(%{"filter" => ""}))
-                |> assign(:operations, operations)
                 |> assign(:terminal_running?, terminal_status in [:ready, :running])
                 |> assign(:terminal_status, terminal_status)
                 |> assign(:terminal_shell, terminal_shell)
@@ -629,6 +629,7 @@ defmodule IexCodeWeb.WorkspaceLive do
   @impl true
   def handle_event("switch_tab", %{"tab" => tab}, socket) when tab in @workspace_tabs do
     socket = assign(socket, :active_tab, tab)
+    socket = if tab == "chat", do: WorkspaceHistory.chat(socket), else: socket
 
     socket = if tab == "changes", do: refresh_git_state(socket), else: socket
 
@@ -654,26 +655,7 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   def handle_event("switch_tab", %{"sidebar_tab" => tab}, socket)
       when tab in @workspace_tabs do
-    socket = assign(socket, :active_tab, tab)
-
-    socket = if tab == "changes", do: refresh_git_state(socket), else: socket
-
-    socket =
-      if tab == "files",
-        do: assign(socket, :project_files, list_project_files(socket.assigns.project.root_path)),
-        else: socket
-
-    socket = if tab == "swarm", do: refresh_run_fleet(socket), else: socket
-    socket = if tab == "research", do: refresh_research_results(socket), else: socket
-
-    socket =
-      if socket.assigns.live_action == :research and tab != "research" do
-        push_patch(socket, to: ~p"/sessions/#{socket.assigns.session.id}")
-      else
-        socket
-      end
-
-    {:noreply, socket}
+    handle_event("switch_tab", %{"tab" => tab}, socket)
   end
 
   def handle_event("switch_tab", %{"sidebar_tab" => _invalid}, socket), do: {:noreply, socket}
@@ -965,13 +947,60 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("expand_message", %{"id" => id}, socket) do
-    {:noreply, assign(socket, :expanded_message_id, id)}
+    case Sessions.get_message(socket.assigns.session.id, id) do
+      nil ->
+        {:noreply, socket}
+
+      message ->
+        {:noreply,
+         assign(socket,
+           expanded_message_id: id,
+           message_detail: message,
+           operation_detail: nil,
+           peer_detail: nil
+         )}
+    end
   end
 
   @impl true
   def handle_event("close_expand_message", _params, socket) do
-    {:noreply, assign(socket, :expanded_message_id, nil)}
+    {:noreply, assign(socket, expanded_message_id: nil, message_detail: nil)}
   end
+
+  def handle_event("copy_message", %{"id" => id}, socket) do
+    case Sessions.get_message(socket.assigns.session.id, id) do
+      nil -> {:reply, %{error: "not_found"}, socket}
+      message -> {:reply, %{content: message.content}, socket}
+    end
+  end
+
+  def handle_event("chat_history", params, socket),
+    do: {:noreply, WorkspaceHistory.navigate(socket, :chat, params)}
+
+  def handle_event("operation_history", params, socket),
+    do: {:noreply, WorkspaceHistory.navigate(socket, :operations, params)}
+
+  def handle_event("peer_history", params, socket),
+    do: {:noreply, WorkspaceHistory.navigate(socket, :peers, params)}
+
+  def handle_event("peer_detail", %{"id" => id}, socket) do
+    case IexCode.Swarm.PeerStream.get_message(socket.assigns.session.id, id) do
+      nil ->
+        {:noreply, socket}
+
+      message ->
+        {:noreply,
+         assign(socket,
+           peer_detail: message,
+           message_detail: nil,
+           expanded_message_id: nil,
+           operation_detail: nil
+         )}
+    end
+  end
+
+  def handle_event("close_peer_detail", _params, socket),
+    do: {:noreply, assign(socket, :peer_detail, nil)}
 
   @impl true
   def handle_event("select_kanban_filter", %{"key" => key, "value" => val}, socket) do
@@ -1574,7 +1603,9 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("scroll_to_msg", %{"id" => id}, socket) do
-    {:noreply, push_event(socket, "scroll_to_msg", %{id: id})}
+    if Enum.any?(socket.assigns.message_previews, &(&1.id == id)),
+      do: {:noreply, push_event(socket, "scroll_to_msg", %{id: id})},
+      else: {:noreply, socket}
   end
 
   # ============================================================================
@@ -4149,13 +4180,31 @@ defmodule IexCodeWeb.WorkspaceLive do
         MapSet.put(expanded, op_id)
       end
 
-    {:noreply, assign(socket, :expanded_ops, new_expanded)}
+    detail =
+      if MapSet.member?(new_expanded, op_id),
+        do: Sessions.get_operation(socket.assigns.session.id, op_id)
+
+    new_expanded =
+      MapSet.intersection(new_expanded, MapSet.new(socket.assigns.operations, & &1.id))
+
+    if detail || MapSet.member?(expanded, op_id) do
+      {:noreply,
+       assign(socket,
+         expanded_ops: new_expanded,
+         operation_detail: detail,
+         message_detail: nil,
+         expanded_message_id: nil,
+         peer_detail: nil
+       )}
+    else
+      {:noreply, socket}
+    end
   end
 
   @impl true
   def handle_event("clear_operations", _params, socket) do
     SessionServer.clear_operations(socket.assigns.session.id)
-    {:noreply, assign(socket, :operations, [])}
+    {:noreply, WorkspaceHistory.clear_operations(socket)}
   end
 
   @impl true
@@ -4603,24 +4652,30 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_info({:swarm_peer_message, msg}, socket) do
-    existing = socket.assigns[:peer_messages] || []
-    updated = [msg | existing]
-    {:noreply, assign(socket, :peer_messages, updated)}
+    if (msg[:swarm_id] || msg["swarm_id"]) == socket.assigns.session.id do
+      socket =
+        if socket.assigns.peer_latest?,
+          do: WorkspaceHistory.peers(socket),
+          else: socket
+
+      {:noreply, socket}
+    else
+      {:noreply, socket}
+    end
   end
 
   @impl true
   def handle_info({:swarm_telemetry, telemetry}, socket) do
-    {:noreply, assign(socket, :swarm_telemetry, telemetry)}
+    if (telemetry[:swarm_id] || telemetry["swarm_id"]) == socket.assigns.session.id,
+      do: {:noreply, assign(socket, :swarm_telemetry, telemetry)},
+      else: {:noreply, socket}
   end
 
   @impl true
   def handle_info({:message_created, message}, socket) do
-    all_messages = socket.assigns.all_messages ++ [message]
-
-    {:noreply,
-     socket
-     |> assign(:all_messages, all_messages)
-     |> assign(:messages, all_messages)}
+    if message.session_id == socket.assigns.session.id and socket.assigns.chat_latest?,
+      do: {:noreply, WorkspaceHistory.chat(socket)},
+      else: {:noreply, socket}
   end
 
   @impl true
@@ -4663,29 +4718,29 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_info({:operation_started, op}, socket) do
-    operations = [op | Enum.reject(socket.assigns.operations, &(&1.id == op.id))]
-
-    {:noreply,
-     socket
-     |> assign(:operations, operations)
-     |> assign(:active_agent, op.agent_name)
-     |> assign(:active_worker_pid, op.pid_str || socket.assigns.active_worker_pid)}
+    if op.session_id == socket.assigns.session.id do
+      {:noreply,
+       socket
+       |> WorkspaceHistory.operation_event(op)
+       |> assign(:active_agent, op.agent_name)
+       |> assign(:active_worker_pid, op.pid_str || socket.assigns.active_worker_pid)}
+    else
+      {:noreply, socket}
+    end
   end
 
   @impl true
   def handle_info({:operation_created, op}, socket) do
-    operations = [op | Enum.reject(socket.assigns.operations, &(&1.id == op.id))]
-    {:noreply, assign(socket, :operations, operations)}
+    if op.session_id == socket.assigns.session.id,
+      do: {:noreply, WorkspaceHistory.operation_event(socket, op)},
+      else: {:noreply, socket}
   end
 
   @impl true
   def handle_info({:operation_updated, updated_op}, socket) do
-    operations =
-      Enum.map(socket.assigns.operations, fn op ->
-        if op.id == updated_op.id, do: updated_op, else: op
-      end)
-
-    {:noreply, assign(socket, :operations, operations)}
+    if updated_op.session_id == socket.assigns.session.id,
+      do: {:noreply, WorkspaceHistory.operation_event(socket, updated_op)},
+      else: {:noreply, socket}
   end
 
   @impl true
@@ -4693,7 +4748,9 @@ defmodule IexCodeWeb.WorkspaceLive do
     operations =
       Enum.map(socket.assigns.operations, fn op ->
         if op.id == op_id do
-          %{op | progress: pct, result: msg || op.result, status: "running"}
+          if op.status in ["pending", "running"],
+            do: %{op | progress: pct, result: WorkspaceHistory.preview(msg) || op.result},
+            else: op
         else
           op
         end
@@ -4713,12 +4770,14 @@ defmodule IexCodeWeb.WorkspaceLive do
 
     operations =
       Enum.map(socket.assigns.operations, fn op ->
-        if op.id == op_id do
+        if op.id == op_id and op.status in ["pending", "running"] do
           op
           |> Map.put(:progress, pct)
           |> Map.put(:status, status)
           |> then(fn o -> if latency, do: Map.put(o, :duration_ms, latency), else: o end)
-          |> then(fn o -> if msg, do: Map.put(o, :result, msg), else: o end)
+          |> then(fn o ->
+            if msg, do: Map.put(o, :result, WorkspaceHistory.preview(msg)), else: o
+          end)
         else
           op
         end
@@ -4743,6 +4802,9 @@ defmodule IexCodeWeb.WorkspaceLive do
   def handle_info({:operation_failed, op}, socket) do
     handle_info({:operation_updated, op}, socket)
   end
+
+  def handle_info({:reconcile_operation_history, session_id, token, attempts}, socket),
+    do: {:noreply, WorkspaceHistory.reconcile_tick(socket, session_id, token, attempts)}
 
   @impl true
   def handle_info({:swarm_stage_changed, metadata}, socket) do
@@ -4982,13 +5044,15 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_info(:operations_cleared, socket) do
-    {:noreply, assign(socket, :operations, [])}
+    {:noreply, WorkspaceHistory.clear_operations(socket)}
   end
 
   @impl true
   def handle_info({:session_status_changed, status}, socket) do
     updated_session = %{socket.assigns.session | status: to_string(status)}
-    {:noreply, assign(socket, :session, updated_session)}
+
+    {:noreply,
+     socket |> assign(:session, updated_session) |> WorkspaceHistory.refresh_operations()}
   end
 
   @impl true
@@ -5742,7 +5806,7 @@ defmodule IexCodeWeb.WorkspaceLive do
 
     case item.category do
       :view ->
-        {:noreply, assign(socket, :active_tab, item.tab)}
+        handle_event("switch_tab", %{"tab" => item.tab}, socket)
 
       :file ->
         path = item.path
@@ -6411,7 +6475,7 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   defp route_composer_intent(socket, %Intent{kind: :navigate, objective: tab}, _params)
        when tab in @workspace_tabs do
-    {:noreply, socket |> assign(:active_tab, tab) |> reset_prompt_form()}
+    handle_event("switch_tab", %{"tab" => tab}, reset_prompt_form(socket))
   end
 
   defp route_composer_intent(socket, %Intent{kind: :help}, _params) do
@@ -7571,7 +7635,7 @@ defmodule IexCodeWeb.WorkspaceLive do
     |> assign(:consensus_rejection_reason, nil)
     |> assign(:dynamic_roster, [])
     |> assign(:swarm_roster, [])
-    |> assign(:peer_messages, [])
+    |> WorkspaceHistory.peers()
   end
 
   defp refresh_swarm_canvas(socket) do

@@ -514,15 +514,15 @@ defmodule IexCodeWeb.AdversarialUiStressTest do
 
       # 4. Blast 100 message events. Token counters are real telemetry now —
       # they are not derived from message events, so they stay at their
-      # initial value while the messages themselves accumulate.
+      # initial value while the display reloads a bounded persisted window.
       for i <- 1..100 do
-        msg = %Sessions.Message{
-          id: "burst-msg-#{i}",
-          session_id: session.id,
-          role: if(rem(i, 2) == 0, do: "assistant", else: "user"),
-          content: "Burst content ##{i}",
-          inserted_at: DateTime.utc_now() |> DateTime.truncate(:second)
-        }
+        {:ok, msg} =
+          Sessions.create_message(%{
+            session_id: session.id,
+            role: if(rem(i, 2) == 0, do: "assistant", else: "user"),
+            content: "Burst content ##{i}",
+            inserted_at: DateTime.utc_now() |> DateTime.truncate(:second)
+          })
 
         send(view.pid, {:message_created, msg})
       end
@@ -536,7 +536,8 @@ defmodule IexCodeWeb.AdversarialUiStressTest do
       assigns = state.socket.assigns
 
       assert assigns.session_tokens >= 0
-      assert length(assigns.messages) >= 100
+      assert length(assigns.message_previews) == 50
+      assert length(Sessions.list_messages(session.id)) == 100
       assert Process.alive?(view.pid)
     end
   end

@@ -237,10 +237,19 @@ defmodule IexCodeWeb.WorkspaceComponents do
   defp latest_op_for_agent(operations, agent_name) do
     short_name = String.replace(agent_name, "Agent", "")
 
-    Enum.find(operations, fn op ->
+    operations
+    |> Enum.filter(fn op ->
       op_agent = to_string(op.agent_name || "")
       op_agent == agent_name or String.contains?(op_agent, short_name)
     end)
+    |> Enum.max_by(
+      fn op ->
+        timestamp = Map.get(op, :inserted_at) || Map.get(op, :started_at)
+        time = if timestamp, do: DateTime.to_unix(timestamp, :microsecond), else: 0
+        {op.status in ["pending", "running"], time, op.id}
+      end,
+      fn -> nil end
+    )
   end
 
   # ============================================================================
@@ -253,10 +262,12 @@ defmodule IexCodeWeb.WorkspaceComponents do
   """
   attr :operations, :list, default: []
   attr :expanded_ops, :any, default: %MapSet{}
+  attr :stats, :map, default: nil
+  attr :detail, :any, default: nil
 
   def operation_tree(assigns) do
     tree = OperationManager.build_tree(assigns.operations)
-    stats = OperationManager.tree_stats(assigns.operations)
+    stats = assigns.stats || OperationManager.tree_stats(assigns.operations)
     assigns = assign(assigns, tree: tree, stats: stats)
 
     ~H"""
@@ -302,7 +313,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
       <% else %>
         <div class="space-y-2 font-mono text-xs">
           <%= for root_op <- @tree do %>
-            <.tree_node op={root_op} depth={0} expanded_ops={@expanded_ops} />
+            <.tree_node op={root_op} depth={0} expanded_ops={@expanded_ops} detail={@detail} />
           <% end %>
         </div>
       <% end %>
@@ -316,14 +327,25 @@ defmodule IexCodeWeb.WorkspaceComponents do
   attr :op, :map, required: true
   attr :depth, :integer, default: 0
   attr :expanded_ops, :any, default: %MapSet{}
+  attr :detail, :any, default: nil
 
   def tree_node(assigns) do
     has_children = length(assigns.op.children || []) > 0
     is_expanded = MapSet.member?(assigns.expanded_ops, assigns.op.id)
     assigns = assign(assigns, has_children: has_children, is_expanded: is_expanded)
 
+    detail =
+      if assigns.detail && assigns.detail.id == assigns.op.id,
+        do: assigns.detail,
+        else: assigns.op
+
+    assigns = assign(assigns, :display_detail, detail)
+
     ~H"""
-    <div class={["relative", @depth > 0 && "pl-6 tree-node-connector"]}>
+    <div
+      id={"operation-node-#{@op.id}"}
+      class={["relative", @depth > 0 && "pl-6 tree-node-connector"]}
+    >
       <div class={[
         "p-3 rounded-xl border transition-smooth",
         @op.status == "running" && "bg-raised border-warning/40 shadow-sm",
@@ -400,22 +422,22 @@ defmodule IexCodeWeb.WorkspaceComponents do
         <%!-- Detail Drawer (Parameters, Error, Result) --%>
         <%= if @is_expanded do %>
           <div class="mt-3 pt-3 border-t border-line space-y-2 text-[11px] font-mono animate-in fade-in">
-            <%= if @op.error_message do %>
+            <%= if @display_detail.error_message do %>
               <div class="p-2.5 rounded-lg bg-danger/10 border border-danger/30 text-danger whitespace-pre-wrap">
-                <strong class="text-danger">Error:</strong> {@op.error_message}
+                <strong class="text-danger">Error:</strong> {@display_detail.error_message}
               </div>
             <% end %>
 
-            <%= if @op.result do %>
+            <%= if @display_detail.result do %>
               <div class="p-2.5 rounded-lg bg-inset border border-line text-muted whitespace-pre-wrap max-h-48 overflow-y-auto">
                 <strong class="text-muted block mb-1">Result:</strong>
-                {@op.result}
+                {@display_detail.result}
               </div>
             <% end %>
 
-            <%= if @op.params && @op.params != %{} do %>
+            <%= if @display_detail.params && @display_detail.params != %{} do %>
               <div class="p-2 rounded bg-inset border border-line text-muted">
-                <span class="text-subtle">Params:</span> {inspect(@op.params)}
+                <span class="text-subtle">Params:</span> {inspect(@display_detail.params)}
               </div>
             <% end %>
           </div>
@@ -426,11 +448,46 @@ defmodule IexCodeWeb.WorkspaceComponents do
       <%= if @has_children and @is_expanded do %>
         <div class="space-y-2 mt-2">
           <%= for child <- @op.children do %>
-            <.tree_node op={child} depth={@depth + 1} expanded_ops={@expanded_ops} />
+            <.tree_node op={child} depth={@depth + 1} expanded_ops={@expanded_ops} detail={@detail} />
           <% end %>
         </div>
       <% end %>
     </div>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :event, :string, required: true
+  attr :page, :map, required: true
+
+  def history_navigation(assigns) do
+    ~H"""
+    <nav
+      id={@id}
+      aria-label="History navigation"
+      class="flex items-center justify-end gap-3 border-b border-line px-4 py-2 text-[10px] font-mono text-muted"
+    >
+      <button
+        id={"#{@id}-older"}
+        phx-click={@event}
+        phx-value-direction="older"
+        disabled={!@page.has_older?}
+        class="hover:text-content disabled:opacity-30"
+      >Older</button>
+      <button
+        id={"#{@id}-newer"}
+        phx-click={@event}
+        phx-value-direction="newer"
+        disabled={!@page.has_newer?}
+        class="hover:text-content disabled:opacity-30"
+      >Newer</button>
+      <button
+        id={"#{@id}-latest"}
+        phx-click={@event}
+        phx-value-direction="latest"
+        class="hover:text-content"
+      >Latest</button>
+    </nav>
     """
   end
 
@@ -1842,7 +1899,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
         />
       <% end %>
       <div class="space-y-2.5 font-sans text-sm leading-relaxed text-muted">
-        <%= for chunk <- @chunks do %>
+        <%= for {chunk, index} <- Enum.with_index(@chunks) do %>
           <%= case chunk do %>
             <% {:text, text} -> %>
               <div class="whitespace-pre-wrap">
@@ -1867,7 +1924,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
                       type="button"
                       phx-hook="CodeCopy"
                       data-code={code}
-                      id={"copy-code-" <> to_string(:erlang.phash2({lang, code}))}
+                      id={"copy-code-#{@id || @message_id || :erlang.phash2(@content)}-#{index}"}
                       class="flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded bg-raised hover:bg-raised text-muted transition-smooth"
                       title="Copy code"
                     >
@@ -1898,19 +1955,19 @@ defmodule IexCodeWeb.WorkspaceComponents do
             [{start, len}, {lang_start, lang_len}, {code_start, code_len}], {acc, prev} ->
               before_text =
                 if start > prev do
-                  String.slice(text, prev, start - prev)
+                  binary_part(text, prev, start - prev)
                 else
                   nil
                 end
 
               lang =
                 if lang_len > 0 do
-                  String.slice(text, lang_start, lang_len) |> String.trim()
+                  binary_part(text, lang_start, lang_len) |> String.trim()
                 else
                   "code"
                 end
 
-              code = String.slice(text, code_start, code_len) |> String.trim_trailing()
+              code = binary_part(text, code_start, code_len) |> String.trim_trailing()
 
               acc =
                 if before_text && before_text != "" do
@@ -1923,7 +1980,7 @@ defmodule IexCodeWeb.WorkspaceComponents do
               {acc, start + len}
           end)
 
-        remaining = String.slice(text, last_idx..-1)
+        remaining = binary_part(text, last_idx, byte_size(text) - last_idx)
 
         final_chunks =
           if remaining && remaining != "" do
