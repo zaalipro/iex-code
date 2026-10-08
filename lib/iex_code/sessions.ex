@@ -64,6 +64,41 @@ defmodule IexCode.Sessions do
     |> Repo.all()
   end
 
+  @doc """
+  Returns at most `limit` recent stored messages, oldest first, using stable
+  `(inserted_at, id)` ordering. The SQL limit is applied before any caller filters.
+  Accepts limits in 1..200; invalid limits raise `ArgumentError`.
+  """
+  defdelegate list_recent_messages(session_id, limit),
+    to: IexCode.Sessions.MessageHistory,
+    as: :recent
+
+  @doc """
+  Returns a chronological message window and navigation boundaries.
+
+  Options: `:limit` (default 50, maximum 200), and either `:before` or `:after`
+  (an exclusive message ID cursor belonging to this session). Without a cursor,
+  returns the latest window. Returns `{:ok, %{messages: rows, first_cursor: id,
+  last_cursor: id, has_older?: boolean, has_newer?: boolean}}`.
+
+  Foreign/missing/malformed cursors return `{:error, :invalid_cursor}`; invalid
+  options return `{:error, :invalid_arguments}`. Pages replace, not accumulate,
+  caller state. This bounds row counts, not individual message body sizes.
+  """
+  defdelegate fetch_message_page(session_id, opts \\ []),
+    to: IexCode.Sessions.MessageHistory,
+    as: :page
+
+  @doc "Returns one complete stored message scoped to a session, or nil."
+  defdelegate get_message(session_id, message_id), to: IexCode.Sessions.MessageHistory, as: :get
+
+  @doc """
+  Returns the canonical `run-final:<run_id>` assistant receipt in the run's
+  session, only when its run ID and coding-agent metadata match. Returns nil
+  for absent or mismatched receipts; never enumerates conversation history.
+  """
+  defdelegate get_run_final_message(run), to: IexCode.Sessions.MessageHistory, as: :run_final
+
   def create_message(attrs \\ %{}) do
     Repo.retry_on_busy(fn ->
       %Message{}

@@ -79,6 +79,7 @@ defmodule IexCode.LeanHarnessBenchTest do
       assert callbacks.text_callback_count == chunks
       assert callbacks.request_message_rows <= 20
       assert metrics.loaded_message_rows > 0
+      assert metrics.loaded_message_rows <= 20
 
       LeanHarnessCollector.emit(
         unquote(scenario),
@@ -107,6 +108,7 @@ defmodule IexCode.LeanHarnessBenchTest do
 
       assert {:ok, %{replayed?: true, message_id: message_id}} = replay
       assert message_id == elem(result, 1).message_id
+      assert replay_metrics.loaded_message_rows == 2
       refute_receive {:lean_request, _request}
 
       LeanHarnessCollector.emit(

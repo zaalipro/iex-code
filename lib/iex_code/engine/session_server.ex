@@ -24,6 +24,7 @@ defmodule IexCode.Engine.SessionServer do
 
   @cancel_session_attempts 5
   @session_call_attempts 5
+  @interactive_history_limit 50
 
   # Client API
 
@@ -967,10 +968,10 @@ defmodule IexCode.Engine.SessionServer do
           settings = IexCode.Settings.get_settings()
           model_name = session.model_name
 
-          # Fetch previous messages
+          # Bound stored history before compaction, including the current user turn.
           prev_messages =
             try do
-              Sessions.list_messages(session_id)
+              Sessions.list_recent_messages(session_id, @interactive_history_limit)
               |> Enum.map(fn m -> %{role: m.role, content: m.content} end)
             rescue
               _ -> []

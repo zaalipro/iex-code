@@ -43,9 +43,10 @@ defmodule IexCode.Engine.AgentLoop do
   def execute(%Run{} = run, project_root, progress, opts)
       when is_binary(project_root) and is_function(progress, 2) and is_list(opts) do
     case init_execution(run, project_root, progress, opts) do
-      {:ok, state, messages} ->
+      {:ok, state} ->
         case replay_final_message(state) do
           {:ok, nil} ->
+            messages = initial_messages(run, state.session.id)
             record_event(state, "user", %{"content" => run.objective, "run_id" => run.id})
             finish_execution(run, loop(messages, 1, state))
 
@@ -85,7 +86,7 @@ defmodule IexCode.Engine.AgentLoop do
   def resume(%Run{} = run, project_root, progress, answer, opts)
       when is_binary(project_root) and is_function(progress, 2) and is_binary(answer) and
              is_list(opts) do
-    with {:ok, state, _messages} <- init_execution(run, project_root, progress, opts),
+    with {:ok, state} <- init_execution(run, project_root, progress, opts),
          %{} = bundle <- IexCode.Engine.PlanStore.take_pause(run.id) do
       _ = IexCode.Engine.PlanStore.take_input_request(run.id)
       restored = restore_paused_state(state, bundle)
@@ -129,8 +130,6 @@ defmodule IexCode.Engine.AgentLoop do
 
       progress.(10, "Single agent preparing bounded #{max_turns}-turn loop")
 
-      messages = initial_messages(run, session.id)
-
       state = %{
         run: run,
         session: effective_session,
@@ -153,7 +152,7 @@ defmodule IexCode.Engine.AgentLoop do
         rollout_path: rollout_path(opts, session)
       }
 
-      {:ok, state, messages}
+      {:ok, state}
     else
       nil -> {:error, :session_not_found}
       false -> {:error, :run_session_scope_mismatch}
@@ -935,9 +934,8 @@ defmodule IexCode.Engine.AgentLoop do
   # receipt so a retry does not repeat provider usage or create a second answer.
   defp replay_final_message(state) do
     with :ok <- checkpoint(state.run.id, state.authority) do
-      state.session.id
-      |> Sessions.list_messages()
-      |> Enum.find(&final_run_message?(&1, state.run.id))
+      state.run
+      |> Sessions.get_run_final_message()
       |> case do
         nil ->
           {:ok, nil}
@@ -960,13 +958,6 @@ defmodule IexCode.Engine.AgentLoop do
            }}
       end
     end
-  end
-
-  defp final_run_message?(message, run_id) do
-    metadata = message.metadata || %{}
-
-    message.role == "assistant" and value(metadata, "run_id") == run_id and
-      value(metadata, "kind") == "coding_agent"
   end
 
   defp normalize_response(response, turn) when is_map(response) do
@@ -1036,8 +1027,7 @@ defmodule IexCode.Engine.AgentLoop do
   defp initial_messages(run, session_id) do
     history =
       session_id
-      |> Sessions.list_messages()
-      |> Enum.take(-@history_limit)
+      |> Sessions.list_recent_messages(@history_limit)
       |> Enum.filter(&(&1.role in ["user", "assistant"] and not run_message?(&1, run.id)))
       |> Enum.map(&%{role: &1.role, content: bounded_text(&1.content, 20_000)})
 

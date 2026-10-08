@@ -5,6 +5,7 @@ defmodule IexCode.Engine.AgentLoopTest do
   alias IexCode.Execution.Router
   alias IexCode.{Projects, Runs, Sessions, Settings}
   alias IexCode.Runs.Executor
+  alias IexCode.Test.LeanHarnessCollector
 
   setup do
     root = Path.join(System.tmp_dir!(), "iex-agent-loop-#{System.unique_integer([:positive])}")
@@ -210,16 +211,38 @@ defmodule IexCode.Engine.AgentLoopTest do
     assert first.content == "Persisted completion"
     assert_receive {:agent_loop_llm_call, _messages, _system, _policy}
 
+    # The answer is now older than the model-history window.
+    timestamp = DateTime.utc_now() |> DateTime.add(60, :second) |> DateTime.truncate(:second)
+
+    for n <- 1..60 do
+      IexCode.Repo.insert!(%Sessions.Message{
+        session_id: context.session.id,
+        role: "user",
+        content: "Later history #{n}",
+        inserted_at: timestamp,
+        updated_at: timestamp
+      })
+    end
+
+    saved = Sessions.get_message(context.session.id, first.message_id)
+    commands = Runs.list_commands(run)
+    assert {:ok, _} = Settings.update_settings(%{default_model: "changed-after-completion"})
+
     Process.put(:agent_loop_responses, [
       {:ok, %{text: "must not run", tool_calls: [], usage: %{input_tokens: 100}}}
     ])
 
-    assert {:ok, replay} = execute(run, context.root)
+    {result, metrics} = LeanHarnessCollector.measure(fn -> execute(run, context.root) end)
+    assert {:ok, replay} = result
     assert replay.message_id == first.message_id
     assert replay.content == "Persisted completion"
     assert replay.usage == %{input_tokens: 7, output_tokens: 11, cost_cents: 2}
     assert replay.replayed?
+    assert metrics.loaded_message_rows == 2
     refute_receive {:agent_loop_llm_call, _messages, _system, _policy}
+    refute_receive {:agent_loop_tool_call, _name, _arguments, _root}
+    assert Sessions.get_message(context.session.id, first.message_id) == saved
+    assert Runs.list_commands(run) == commands
 
     persisted = Runs.get_run!(run.id)
     assert persisted.input_tokens == 7
@@ -230,6 +253,76 @@ defmodule IexCode.Engine.AgentLoopTest do
              (message.role == "assistant" and message.metadata) &&
                message.metadata["run_id"] == run.id
            end) == 1
+  end
+
+  test "recent selection takes the latest 20 before role and current-run filtering", context do
+    run = running_run(context)
+    timestamp = ~U[2026-01-01 00:00:00Z]
+
+    id = fn n ->
+      "00000000-0000-0000-0000-#{String.pad_leading(Integer.to_string(n), 12, "0")}"
+    end
+
+    rows =
+      for n <- 1..25 do
+        %{
+          id: id.(n),
+          session_id: context.session.id,
+          role: Enum.at(["tool", "user", "assistant"], rem(n, 3)),
+          content: "history #{n}",
+          metadata: if(n == 10, do: %{"run_id" => run.id}, else: %{}),
+          inserted_at: timestamp,
+          updated_at: timestamp
+        }
+      end
+
+    IexCode.Repo.insert_all(Sessions.Message, rows)
+
+    IexCode.Repo.insert!(%Sessions.Message{
+      id: id.(26),
+      session_id: context.session.id,
+      role: "user",
+      agent_name: "User (Durable Run)",
+      content: run.objective,
+      metadata: %{"run_id" => run.id},
+      idempotency_key: "run-user:#{run.id}",
+      inserted_at: timestamp,
+      updated_at: timestamp
+    })
+
+    Process.put(:agent_loop_responses, [
+      {:ok, %{text: "Selection complete", tool_calls: [], usage: %{}}}
+    ])
+
+    {result, metrics} = LeanHarnessCollector.measure(fn -> execute(run, context.root) end)
+    assert {:ok, _} = result
+    assert metrics.loaded_message_rows == 21
+    assert_receive {:agent_loop_llm_call, messages, _system, _policy}
+
+    assert Enum.map(messages, & &1.content) ==
+             Enum.map([7, 8, 11, 13, 14, 16, 17, 19, 20, 22, 23, 25], &"history #{&1}") ++
+               [run.objective]
+  end
+
+  test "bounded history appends the effective objective once without changing its stored user turn",
+       context do
+    run = running_run(context, metadata: %{"prompt_enhancement" => "Retain the boost context"})
+
+    Process.put(:agent_loop_responses, [
+      {:ok, %{text: "Effective objective complete", tool_calls: [], usage: %{}}}
+    ])
+
+    assert {:ok, _} = execute(run, context.root)
+    assert_receive {:agent_loop_llm_call, messages, _system, _policy}
+
+    assert messages == [
+             %{role: "user", content: run.objective <> "\n\nRetain the boost context"}
+           ]
+
+    assert [%{content: objective}] =
+             Sessions.list_messages(context.session.id) |> Enum.filter(&(&1.role == "user"))
+
+    assert objective == run.objective
   end
 
   test "normalizes an OpenAI function-shaped tool call through the real loop", context do
@@ -628,7 +721,11 @@ defmodule IexCode.Engine.AgentLoopTest do
       kind: "coding_agent",
       mode: "single",
       token_budget: Keyword.get(options, :token_budget),
-      metadata: %{"source" => "agent_loop_test", "execution_policy" => policy}
+      metadata:
+        Map.merge(Keyword.get(options, :metadata, %{}), %{
+          "source" => "agent_loop_test",
+          "execution_policy" => policy
+        })
     }
 
     {:ok, _queued} = Runs.create_run(attrs)
