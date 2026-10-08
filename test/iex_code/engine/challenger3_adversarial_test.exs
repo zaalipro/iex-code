@@ -122,6 +122,9 @@ defmodule IexCode.Engine.Challenger3AdversarialTest do
       File.mkdir_p!(Path.join(project.root_path, "lib"))
 
       File.write!(Path.join(project.root_path, "mix.exs"), """
+      System.delete_env("MIX_BUILD_PATH")
+      System.delete_env("MIX_BUILD_ROOT")
+
       defmodule LargePayloadFixture.MixProject do
         use Mix.Project
         def project, do: [app: :large_payload_fixture, version: "0.1.0", deps: []]

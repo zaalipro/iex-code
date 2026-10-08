@@ -226,7 +226,20 @@ defmodule IexCode.Desktop.PackageChallengerTest do
       assert Bitwise.band(stat.mode, 0o111) != 0, "Launcher script must be executable"
 
       # Execute launcher script
-      {output, exit_code} = System.cmd("bash", [launcher_file], stderr_to_stdout: true)
+      {output, exit_code} =
+        System.cmd("bash", [launcher_file],
+          env: [
+            {"DESKTOP_WINDOW", nil},
+            {"PHX_SERVER", nil},
+            {"PORT", nil},
+            {"IEX_CODE_BIND", nil},
+            {"HOME", Path.join(tmp_dir, "home")},
+            {"DATABASE_PATH", Path.join(tmp_dir, "mock.db")},
+            {"SECRET_KEY_BASE", String.duplicate("synthetic-fixture-", 5)}
+          ],
+          stderr_to_stdout: true
+        )
+
       assert exit_code == 0, "Launcher execution failed: #{output}"
       assert output =~ "MOCK_EXECUTED:"
       assert output =~ "DESKTOP_WINDOW=true"
@@ -260,6 +273,7 @@ defmodule IexCode.Desktop.PackageChallengerTest do
       File.chmod!(launcher_file, 0o755)
 
       custom_env = [
+        {"HOME", Path.join(tmp_dir, "home")},
         {"PORT", "5555"},
         {"DESKTOP_WINDOW", "false"},
         {"IEX_CODE_BIND", "0.0.0.0"},

@@ -3,6 +3,15 @@ defmodule IexCode.Observability.ETSPrunerTest do
 
   alias IexCode.Observability.ETSPruner
 
+  @managed_tables [
+    :iex_code_swarm_peer_stream_history,
+    :iex_code_multipatch_snapshots,
+    IexCode.LLM.Resilience,
+    :iex_code_terminal_command_history,
+    :iex_code_web_admin_auth_throttle,
+    :iex_code_semantic_cache
+  ]
+
   setup do
     # Ensure tables exist
     ensure_table(:iex_code_swarm_peer_stream_history, [:duplicate_bag, :public, :named_table])
@@ -12,13 +21,16 @@ defmodule IexCode.Observability.ETSPrunerTest do
     ensure_table(:iex_code_web_admin_auth_throttle, [:set, :public, :named_table])
     ensure_table(:iex_code_semantic_cache, [:set, :public, :named_table])
 
-    # Clean up managed tables
-    :ets.delete_all_objects(:iex_code_swarm_peer_stream_history)
-    :ets.delete_all_objects(:iex_code_multipatch_snapshots)
-    :ets.delete_all_objects(IexCode.LLM.Resilience)
-    :ets.delete_all_objects(:iex_code_terminal_command_history)
-    :ets.delete_all_objects(:iex_code_web_admin_auth_throttle)
-    :ets.delete_all_objects(:iex_code_semantic_cache)
+    saved = Enum.map(@managed_tables, &{&1, :ets.tab2list(&1)})
+
+    on_exit(fn ->
+      for {table, entries} <- saved, :ets.info(table) != :undefined do
+        :ets.delete_all_objects(table)
+        :ets.insert(table, entries)
+      end
+    end)
+
+    Enum.each(@managed_tables, &:ets.delete_all_objects/1)
 
     :ok
   end

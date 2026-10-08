@@ -7,6 +7,16 @@ defmodule IexCode.LeanHarnessBenchTest do
   alias IexCode.Engine.AgentLoop
 
   setup do
+    handlers = collector_handlers()
+
+    on_exit(fn ->
+      assert collector_handlers() -- handlers == []
+    end)
+
+    on_exit(fn ->
+      Enum.each(collector_handlers() -- handlers, &:telemetry.detach/1)
+    end)
+
     suffix =
       System.unique_integer([:positive]) |> Integer.to_string() |> String.pad_leading(20, "0")
 
@@ -247,6 +257,34 @@ defmodule IexCode.LeanHarnessBenchTest do
     end
 
     assert :telemetry.list_handlers([:iex_code, :repo, :query]) == before_handlers
+  end
+
+  test "benchmark teardown detaches a collector whose owner is killed" do
+    supervisor = start_supervised!({Task.Supervisor, []})
+    receiver = self()
+
+    {:ok, owner} =
+      Task.Supervisor.start_child(supervisor, fn ->
+        LeanHarnessCollector.measure(fn ->
+          send(receiver, {:collector_started, self()})
+
+          receive do
+            :release -> :ok
+          end
+        end)
+      end)
+
+    monitor = Process.monitor(owner)
+    assert_receive {:collector_started, ^owner}
+    assert [_handler] = collector_handlers()
+    Process.exit(owner, :kill)
+    assert_receive {:DOWN, ^monitor, :process, ^owner, :killed}
+  end
+
+  defp collector_handlers do
+    for %{id: {LeanHarnessCollector, _} = id} <-
+          :telemetry.list_handlers([:iex_code, :repo, :query]),
+        do: id
   end
 
   defp provider(opts) do
