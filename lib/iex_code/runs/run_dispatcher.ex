@@ -924,7 +924,8 @@ defmodule IexCode.Runs.RunDispatcher do
                     run_attempt: run.attempt,
                     run_lease_generation: run.lease_generation,
                     run_lease_ms: state.lease_ms,
-                    run_terminal_lease_ms: terminal_lease_ms(state)
+                    run_terminal_lease_ms: terminal_lease_ms(state),
+                    control_cancel_grace_ms: state.cancel_grace_ms
                   )
 
                 {:error, reason} ->

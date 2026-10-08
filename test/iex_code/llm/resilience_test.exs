@@ -69,6 +69,29 @@ defmodule IexCode.LLM.ResilienceTest do
   end
 
   describe "with_fallback/2" do
+    test "a fenced request stops the chain without opening the provider circuit" do
+      receiver = self()
+      provider = "fenced-fixture"
+      denied = fn -> {:error, {:request_fenced, :cancelled}} end
+
+      effect = fn ->
+        send(receiver, :provider_effect)
+        {:ok, :completed}
+      end
+
+      for _ <- 1..3 do
+        assert {:error, :cancelled} =
+                 Resilience.with_fallback([{provider, denied}, {"fallback-fixture", effect}])
+      end
+
+      refute_receive :provider_effect
+
+      assert {:ok, :completed, %{fallback_used?: false}} =
+               Resilience.with_fallback([{provider, effect}])
+
+      assert_receive :provider_effect
+    end
+
     test "falls back to secondary provider when primary provider fails" do
       primary_fn = fn -> {:error, %{status: 404, message: "Model not found"}} end
       secondary_fn = fn -> {:ok, "Response from fallback"} end

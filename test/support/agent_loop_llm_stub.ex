@@ -16,6 +16,7 @@ defmodule IexCode.AgentLoopLLMStub do
 
     case Process.get(:agent_loop_before_chat) do
       callback when is_function(callback, 0) -> callback.()
+      callback when is_function(callback, 1) -> callback.(opts)
       _missing -> :ok
     end
 

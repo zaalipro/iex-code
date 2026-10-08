@@ -9,6 +9,7 @@ defmodule IexCode.Engine.AgentLoop do
   """
 
   alias IexCode.LLM.ContextCompactor
+  alias IexCode.Engine.{AttemptControl, FleetControlToken}
   alias IexCode.Runs
   alias IexCode.Execution.{BoostEngine, Limits, ModelRoute}
   alias IexCode.Runs.{DagPayload, Run, RunCommand}
@@ -42,6 +43,20 @@ defmodule IexCode.Engine.AgentLoop do
 
   def execute(%Run{} = run, project_root, progress, opts)
       when is_binary(project_root) and is_function(progress, 2) and is_list(opts) do
+    with {:ok, authority} <- authority(run, opts) do
+      AttemptControl.with_control(run, authority, opts, fn _guard, token ->
+        execute_guarded(run, project_root, progress, Keyword.put(opts, :control_token, token))
+      end)
+    end
+  rescue
+    error -> {:error, {error, __STACKTRACE__}}
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  def execute(_run, _project_root, _progress, _opts), do: {:error, :invalid_agent_loop}
+
+  defp execute_guarded(run, project_root, progress, opts) do
     case init_execution(run, project_root, progress, opts) do
       {:ok, state} ->
         case replay_final_message(state) do
@@ -66,8 +81,6 @@ defmodule IexCode.Engine.AgentLoop do
     kind, reason -> {:error, {kind, reason}}
   end
 
-  def execute(_run, _project_root, _progress, _opts), do: {:error, :invalid_agent_loop}
-
   @doc """
   Resumes a run paused by `request_input` with the user's answer.
 
@@ -86,6 +99,26 @@ defmodule IexCode.Engine.AgentLoop do
   def resume(%Run{} = run, project_root, progress, answer, opts)
       when is_binary(project_root) and is_function(progress, 2) and is_binary(answer) and
              is_list(opts) do
+    with {:ok, authority} <- authority(run, opts) do
+      AttemptControl.with_control(run, authority, opts, fn _guard, token ->
+        resume_guarded(
+          run,
+          project_root,
+          progress,
+          answer,
+          Keyword.put(opts, :control_token, token)
+        )
+      end)
+    end
+  rescue
+    error -> {:error, {error, __STACKTRACE__}}
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  def resume(_run, _project_root, _progress, _answer, _opts), do: {:error, :invalid_agent_loop}
+
+  defp resume_guarded(run, project_root, progress, answer, opts) do
     with {:ok, state} <- init_execution(run, project_root, progress, opts),
          %{} = bundle <- IexCode.Engine.PlanStore.take_pause(run.id) do
       _ = IexCode.Engine.PlanStore.take_input_request(run.id)
@@ -109,8 +142,6 @@ defmodule IexCode.Engine.AgentLoop do
   catch
     kind, reason -> {:error, {kind, reason}}
   end
-
-  def resume(_run, _project_root, _progress, _answer, _opts), do: {:error, :invalid_agent_loop}
 
   defp init_execution(run, project_root, progress, opts) do
     llm = Keyword.get(opts, :llm, IexCode.LLM)
@@ -136,6 +167,7 @@ defmodule IexCode.Engine.AgentLoop do
         project_root: project_root,
         progress: progress,
         authority: authority,
+        control_token: opts[:control_token],
         llm: llm,
         tool_executor: tool_executor,
         execution_policy:
@@ -516,7 +548,7 @@ defmodule IexCode.Engine.AgentLoop do
     do: "agent-loop:model:#{state.authority.run_attempt}:turn:#{turn}"
 
   defp chat(state, messages, route) do
-    cancelled? = fn -> cancelled?(state.run.id, state.authority) end
+    cancelled? = fn -> FleetControlToken.cancelled?(state.control_token) end
 
     settings = Settings.get_settings()
     model_name = (route && (route["model"] || route[:model])) || state.session.model_name
@@ -527,6 +559,7 @@ defmodule IexCode.Engine.AgentLoop do
 
     opts = [
       cancelled?: cancelled?,
+      before_request: fn -> checkpoint(state.run.id, state.authority) end,
       allowed_tools: state.allowed_tools,
       temperature:
         (route && (route["temperature"] || route[:temperature])) || state.session.temperature,
@@ -781,12 +814,14 @@ defmodule IexCode.Engine.AgentLoop do
             result =
               run_with_retries(
                 fn ->
-                  updated_state.tool_executor.execute(
-                    name,
-                    executor_arguments,
-                    state.project_root,
-                    progress
-                  )
+                  with :ok <- checkpoint(state.run.id, state.authority) do
+                    updated_state.tool_executor.execute(
+                      name,
+                      executor_arguments,
+                      state.project_root,
+                      progress
+                    )
+                  end
                 end,
                 retry_attempts(updated_state)
               )
@@ -1154,7 +1189,8 @@ defmodule IexCode.Engine.AgentLoop do
       lease_owner: Keyword.get(opts, :run_lease_owner, run.lease_owner),
       run_attempt: Keyword.get(opts, :run_attempt, run.attempt),
       lease_generation: Keyword.get(opts, :run_lease_generation, run.lease_generation),
-      terminal_lease_ms: Keyword.get(opts, :run_terminal_lease_ms)
+      terminal_lease_ms: Keyword.get(opts, :run_terminal_lease_ms),
+      control_token: opts[:control_token]
     }
 
     if is_binary(authority.lease_owner) and authority.lease_owner != "" and
@@ -1177,6 +1213,21 @@ defmodule IexCode.Engine.AgentLoop do
   end
 
   defp checkpoint(run_id, authority) do
+    with :ok <- local_checkpoint(authority),
+         :ok <- durable_checkpoint(run_id, authority),
+         :ok <- local_checkpoint(authority),
+         do: :ok
+  end
+
+  defp local_checkpoint(authority) do
+    if authority.control_token && FleetControlToken.cancelled?(authority.control_token) do
+      {:error, :cancelled}
+    else
+      :ok
+    end
+  end
+
+  defp durable_checkpoint(run_id, authority) do
     case Runs.get_run(run_id) do
       %Run{
         status: "running",
@@ -1225,26 +1276,6 @@ defmodule IexCode.Engine.AgentLoop do
 
       nil ->
         {:error, :run_not_found}
-    end
-  end
-
-  defp cancelled?(run_id, authority) do
-    case Runs.get_run(run_id) do
-      %Run{
-        status: status,
-        attempt: attempt,
-        lease_generation: generation,
-        lease_owner: owner,
-        lease_expires_at: expires_at,
-        cancellation_requested_at: cancellation
-      } ->
-        status not in ["running", "paused"] or not is_nil(cancellation) or
-          attempt != authority.run_attempt or generation != authority.lease_generation or
-          owner != authority.lease_owner or not is_struct(expires_at, DateTime) or
-          DateTime.compare(expires_at, DateTime.utc_now()) != :gt
-
-      nil ->
-        true
     end
   end
 

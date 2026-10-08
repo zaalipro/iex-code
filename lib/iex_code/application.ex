@@ -21,6 +21,8 @@ defmodule IexCode.Application do
         {Registry, keys: :unique, name: IexCode.Workflows.EngineRegistry},
         {DynamicSupervisor, strategy: :one_for_one, name: IexCode.Workflows.EngineSupervisor},
         {Task.Supervisor, name: IexCode.TaskSupervisor},
+        {DynamicSupervisor,
+         strategy: :one_for_one, name: IexCode.Engine.AttemptControlSupervisor},
         IexCode.LLM.Discovery.Server,
         IexCode.WorkspaceLocks,
         IexCode.Engine.SessionSupervisor,

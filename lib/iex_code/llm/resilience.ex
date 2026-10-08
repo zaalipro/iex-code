@@ -81,7 +81,8 @@ defmodule IexCode.LLM.Resilience do
   Executes a sequence of provider functions in fallback order.
   Each provider is attempted with `with_retry/2`. The `:deadline_ms` budget is
   shared across the whole chain, and per-provider circuit-breaker state is
-  tracked by provider name.
+  tracked by provider name. A trusted `{:request_fenced, reason}` error stops
+  the chain immediately without treating revoked authority as provider failure.
 
   ## Options
   Same as `with_retry/2`, plus `:on_chunk` is also used to emit the
@@ -223,6 +224,9 @@ defmodule IexCode.LLM.Resilience do
           {:ok, result} ->
             record_success(provider_name)
             {:ok, result, %{provider: provider_name, fallback_used?: errors != []}}
+
+          {:error, {:request_fenced, reason}} ->
+            {:error, reason}
 
           {:error, reason} ->
             record_failure(provider_name)

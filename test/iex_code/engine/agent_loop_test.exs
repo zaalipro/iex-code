@@ -385,7 +385,7 @@ defmodule IexCode.Engine.AgentLoopTest do
     assert Runs.list_commands(run) == []
   end
 
-  test "provider cancellation callback detects lease expiry during a turn", context do
+  test "durable usage fence rejects revocation after a locally permitted callback", context do
     run = running_run(context)
 
     Process.put(:agent_loop_probe_cancelled?, true)
@@ -404,7 +404,11 @@ defmodule IexCode.Engine.AgentLoopTest do
     ])
 
     assert {:error, :lease_not_owned} = execute(run, context.root)
-    assert_receive {:agent_loop_cancelled_probe, true}
+    # Direct storage changes are observed on the refresh cadence, not per chunk.
+    # Even in that window the usage/settlement fence rejects expired authority.
+    assert_receive {:agent_loop_cancelled_probe, false}
+    assert [%{status: "running"}] = Runs.list_commands(run)
+    assert Sessions.get_run_final_message(run) == nil
   end
 
   test "cancellation after a native effect leaves an ambiguous command unreplayable", context do
@@ -424,6 +428,29 @@ defmodule IexCode.Engine.AgentLoopTest do
     authority = authority_opts(run)
     assert {:ok, cancelled} = Runs.finalize_run_worker(run, "cancelled", %{}, authority)
     assert {:error, :command_effect_requires_review} = Runs.retry_run(cancelled)
+  end
+
+  test "each native retry checks durable authority before another effect", context do
+    run = running_run(context, execution_policy: %{"allowed_tools" => ["read_file"]})
+
+    Process.put(:agent_loop_tool_result, fn _name, _arguments, _root ->
+      run
+      |> Ecto.Changeset.change(
+        lease_expires_at:
+          DateTime.utc_now() |> DateTime.add(-1, :second) |> DateTime.truncate(:second)
+      )
+      |> IexCode.Repo.update!()
+
+      {:error, {:retriable, :synthetic_failure}}
+    end)
+
+    Process.put(:agent_loop_responses, [tool_response("retry-after-revocation", 1)])
+
+    assert {:error, :run_lease_expired} = execute(run, context.root)
+    assert_receive {:agent_loop_tool_call, "read_file", _, _}
+    refute_receive {:agent_loop_tool_call, "read_file", _, _}
+    assert [%{status: "running"}] = tool_commands(run)
+    assert Sessions.get_run_final_message(run) == nil
   end
 
   test "production executor routes legacy single coding runs through the agent loop", context do

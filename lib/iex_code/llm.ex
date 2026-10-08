@@ -22,6 +22,8 @@ defmodule IexCode.LLM do
   - `:on_retry` - fn (attempt, reason, sleep_ms) invoked by the resilience engine
     on every retry
   - `:receive_timeout` - HTTP receive timeout in ms forwarded to providers
+  - `:before_request` - trusted zero-arg effect fence returning `:ok` or an
+    error before each provider attempt, including resilience retries
   - `:resolved_route` - trusted execution-only provider/model/credential/endpoint
     route. When present, the gateway does not reread global settings.
   """
@@ -195,7 +197,7 @@ defmodule IexCode.LLM do
         {^primary_provider, _fn, _key} -> 0
         {_other, _fn, _key} -> 1
       end)
-      |> Enum.map(fn {name, fn_, _key} -> {name, fn_} end)
+      |> Enum.map(fn {name, fn_, _key} -> {name, fenced_provider(fn_, opts)} end)
 
     cond do
       providers == [] ->
@@ -296,7 +298,7 @@ defmodule IexCode.LLM do
         )
       end
 
-      case Resilience.with_fallback([{provider, callback}],
+      case Resilience.with_fallback([{provider, fenced_provider(callback, opts)}],
              on_chunk: on_chunk,
              on_retry: Keyword.get(opts, :on_retry, fn _attempt, _reason, _sleep -> :ok end)
            ) do
@@ -313,6 +315,29 @@ defmodule IexCode.LLM do
 
   defp do_resolved_chat(_messages, _system_prompt, _on_chunk, _opts, _route),
     do: {:error, :invalid_resolved_route}
+
+  defp fenced_provider(callback, opts) do
+    fence = Keyword.get(opts, :before_request, fn -> :ok end)
+
+    fn ->
+      case check_request_fence(fence) do
+        :ok -> callback.()
+        {:error, reason} -> {:error, {:request_fenced, reason}}
+      end
+    end
+  end
+
+  defp check_request_fence(fence) do
+    case fence.() do
+      :ok -> :ok
+      {:error, _} = error -> error
+      _ -> {:error, :run_control_unavailable}
+    end
+  rescue
+    _ -> {:error, :run_control_unavailable}
+  catch
+    _, _ -> {:error, :run_control_unavailable}
+  end
 
   defp blank?(key), do: is_nil(key) or key == ""
   defp present?(key), do: not blank?(key)
