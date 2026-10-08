@@ -424,20 +424,34 @@ defmodule IexCode.Tools do
   instead of propagating to callers.
   """
   def execute(tool_name, args, root_path, on_progress \\ fn _p, _msg -> :ok end) do
-    with_mutation_locks(tool_name, args, root_path, fn identity_opts, remaining_timeout_ms ->
-      trusted_args =
-        args
-        |> Map.put("__workspace_lock_identity__", identity_opts)
-        |> put_remaining_command_timeout(tool_name, remaining_timeout_ms)
+    result =
+      with_mutation_locks(tool_name, args, root_path, fn identity_opts, remaining_timeout_ms ->
+        trusted_args =
+          args
+          |> Map.put("__workspace_lock_identity__", identity_opts)
+          |> put_remaining_command_timeout(tool_name, remaining_timeout_ms)
 
-      do_execute(tool_name, trusted_args, root_path, on_progress)
-    end)
+        do_execute(tool_name, trusted_args, root_path, on_progress)
+      end)
+
+    if tool_name in ["read_file", "grep_search"],
+      do: IexCode.Tools.NativeResponse.envelope(result),
+      else: result
   rescue
-    exception -> {:error, "Tool #{tool_name} crashed: #{Exception.message(exception)}"}
+    exception ->
+      message = Exception.message(exception)
+
+      message =
+        if tool_name in ["read_file", "grep_search"],
+          do: IexCode.Tools.NativeResponse.preview(message),
+          else: message
+
+      {:error, "Tool #{tool_name} crashed: #{message}"}
   end
 
   defp do_execute("read_file", %{"path" => path} = args, root_path, on_progress) do
-    on_progress.(10, "Resolving path: #{path}")
+    display_path = IexCode.Tools.NativeResponse.preview(path)
+    on_progress.(10, "Resolving path: #{display_path}")
 
     case resolve_path(root_path, path) do
       {:ok, full_path} ->
@@ -450,14 +464,14 @@ defmodule IexCode.Tools do
               {:ok, numbered}
 
             {:error, reason} ->
-              {:error, "Failed to read file #{path}: #{inspect(reason)}"}
+              {:error, "Failed to read file #{display_path}: #{inspect(reason)}"}
           end
         else
-          {:error, "File does not exist: #{path}"}
+          {:error, "File does not exist: #{display_path}"}
         end
 
       {:error, :outside_workspace} ->
-        {:error, "Path escapes the workspace: #{path}"}
+        {:error, "Path escapes the workspace: #{display_path}"}
     end
   end
 
@@ -846,21 +860,30 @@ defmodule IexCode.Tools do
   end
 
   defp do_execute("grep_search", %{"query" => query} = args, root_path, on_progress) do
-    sub_path = Map.get(args, "path", "") || ""
-    case_sensitive? = Map.get(args, "case_sensitive", false)
+    with :ok <- IexCode.Tools.NativeGrep.validate_query(query) do
+      sub_path = Map.get(args, "path", "") || ""
+      case_sensitive? = Map.get(args, "case_sensitive", false)
 
-    case resolve_path(root_path, sub_path) do
-      {:ok, search_dir} ->
-        on_progress.(30, "Scanning files in #{search_dir} for query '#{query}'...")
+      case resolve_path(root_path, sub_path) do
+        {:ok, search_dir} ->
+          on_progress.(
+            30,
+            "Scanning files in #{IexCode.Tools.NativeResponse.preview(search_dir)} for query '#{IexCode.Tools.NativeResponse.preview(query)}'..."
+          )
 
-        {:ok, output, count} =
-          IexCode.Tools.NativeGrep.search(root_path, search_dir, query, case_sensitive?)
+          case IexCode.Tools.NativeGrep.search(root_path, search_dir, query, case_sensitive?) do
+            {:ok, output, count} ->
+              on_progress.(100, "Search finished (#{count} returned matches)")
+              {:ok, output}
 
-        on_progress.(100, "Search finished (#{count} returned matches)")
-        {:ok, output}
+            {:error, message} ->
+              {:error, message}
+          end
 
-      {:error, :outside_workspace} ->
-        {:error, "Path escapes the workspace: #{sub_path}"}
+        {:error, :outside_workspace} ->
+          {:error,
+           "Path escapes the workspace: #{IexCode.Tools.NativeResponse.preview(sub_path)}"}
+      end
     end
   end
 

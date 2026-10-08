@@ -3,7 +3,17 @@ defmodule IexCode.Tools.BoundedFileToolsTest do
 
   alias IexCode.Tools
 
-  @moduletag :tmp_dir
+  setup do
+    root =
+      Path.join(
+        "/tmp/iex-code-readiness-_5wuredz/tmp",
+        "bounded-files-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(root)
+    on_exit(fn -> File.rm_rf!(root) end)
+    %{tmp_dir: root}
+  end
 
   test "ordinary reads preserve newline, range and Unicode behavior", %{tmp_dir: root} do
     for {name, content, expected} <- [
@@ -111,6 +121,141 @@ defmodule IexCode.Tools.BoundedFileToolsTest do
     assert {:ok, "No matches found for 'needle'"} = grep(root, "needle")
   end
 
+  test "grep validates later chunks and incomplete UTF8 after collecting ten matches", %{
+    tmp_dir: root
+  } do
+    prefix = String.duplicate("needle\n", 10) <> String.duplicate("padding\n", 5_000)
+
+    for tail <- [<<255>>, <<226, 130>>] do
+      File.write!(Path.join(root, "invalid"), prefix <> tail)
+      assert {:ok, "No matches found for 'needle'"} = grep(root, "needle")
+    end
+
+    File.write!(Path.join(root, "invalid"), prefix <> "valid")
+    assert {:ok, output} = grep(root, "needle")
+    assert length(Regex.scan(~r/^invalid:\d+:/m, output)) == 10
+    assert output =~ "incomplete"
+    refute output =~ "unvalidated"
+  end
+
+  test "invalid provisional hundredth match does not stop the next valid candidate", %{
+    tmp_dir: root
+  } do
+    for n <- 1..9 do
+      File.write!(Path.join(root, "a#{n}"), String.duplicate("needle\n", 10))
+    end
+
+    File.write!(
+      Path.join(root, "b"),
+      String.duplicate("needle\n", 10) <> String.duplicate("padding\n", 5_000) <> <<255>>
+    )
+
+    File.write!(Path.join(root, "c"), "needle")
+    assert {:ok, output} = grep(root, "needle")
+    assert output =~ "c:1: needle"
+    refute output =~ "b:1:"
+  end
+
+  test "oversized validation tails remain bounded and explicitly unvalidated", %{tmp_dir: root} do
+    File.write!(
+      Path.join(root, "large"),
+      String.duplicate("needle\n", 10) <> String.duplicate("padding\n", 400_000) <> <<255>>
+    )
+
+    assert {:ok, output} = grep(root, "needle")
+    assert output =~ "unvalidated"
+    assert output =~ "scan byte limit"
+    assert length(Regex.scan(~r/^large:\d+:/m, output)) == 10
+  end
+
+  test "excluded yielded names consume the shared traversal budget", %{tmp_dir: root} do
+    observe_scans()
+
+    for directory <- ["a", "b", "c"] do
+      File.mkdir_p!(Path.join(root, directory))
+      for n <- 1..2_001, do: File.write!(Path.join(root, "#{directory}/#{n}.png"), "")
+    end
+
+    assert {:ok, output} = grep(root, "needle")
+    assert output =~ "traversal"
+    assert output =~ "incomplete"
+    refute output =~ "No matches found"
+    assert_receive {:scan, %{traversal_entries: 5_000, eligible_files: 0}, _}
+  end
+
+  test "output ceiling commits after bounded validation and opens no next candidate", %{
+    tmp_dir: root
+  } do
+    observe_scans()
+
+    File.write!(
+      Path.join(root, "a"),
+      String.duplicate("needle" <> String.duplicate("x", 60_000) <> "\n", 5) <>
+        String.duplicate("padding\n", 400_000)
+    )
+
+    File.write!(Path.join(root, "b"), "needle")
+    assert {:ok, output} = grep(root, "needle")
+    assert output =~ "output byte limit"
+    assert output =~ "unvalidated"
+    refute output =~ "b:1:"
+    assert byte_size(output) <= 256_000
+    assert_receive {:scan, %{eligible_files: 1, scanned_bytes: 2_097_152}, _}
+  end
+
+  test "exact retained output ceiling opens no next candidate", %{tmp_dir: root} do
+    observe_scans()
+
+    content =
+      Enum.map_join([64_000, 64_000, 64_000, 63_464], fn size ->
+        "needle" <> String.duplicate("x", size - 6) <> "\n"
+      end)
+
+    File.write!(Path.join(root, "a"), content)
+    File.write!(Path.join(root, "b"), "not a match")
+    assert {:ok, output} = grep(root, "needle")
+    assert output =~ "output byte limit"
+    assert_receive {:scan, %{eligible_files: 1, scanned_bytes: 255_468}, _}
+  end
+
+  test "oversized queries fail before progress and complete responses include notices within cap",
+       %{
+         tmp_dir: root
+       } do
+    owner = self()
+    progress = fn _, text -> send(owner, {:progress, text}) end
+
+    for size <- [4_097, 300_000] do
+      assert {:error, error} =
+               Tools.execute(
+                 "grep_search",
+                 %{"query" => String.duplicate("q", size)},
+                 root,
+                 progress
+               )
+
+      assert byte_size(error) <= 256_000
+      refute_receive {:progress, _}
+    end
+
+    assert {:ok, accepted} = grep(root, String.duplicate("q", 4_096))
+    assert byte_size(accepted) <= 256_000
+
+    File.write!(
+      Path.join(root, "wide"),
+      String.duplicate(String.duplicate("界", 333) <> "\n", 500)
+    )
+
+    assert {:ok, output} = read(root, "wide", %{"start_line" => 1})
+    assert byte_size(output) <= 256_000
+    assert String.valid?(output)
+    assert output =~ "incomplete"
+
+    assert {:error, error} = read(root, "../" <> String.duplicate("界", 100_000))
+    assert byte_size(error) <= 256_000
+    assert String.valid?(error)
+  end
+
   test "grep preserves newline and Unicode across chunks", %{tmp_dir: root} do
     File.write!(Path.join(root, "split"), String.duplicate("a", 16_383) <> "界\r\nneedle")
     assert {:ok, "split:2: needle"} = grep(root, "^needle$")
@@ -176,6 +321,35 @@ defmodule IexCode.Tools.BoundedFileToolsTest do
     assert result.bytes == 2_097_152
   end
 
+  test "validation-only scanning never calls the collector again and keeps line bounds", %{
+    tmp_dir: root
+  } do
+    alias IexCode.Tools.BoundedFile
+    owner = self()
+
+    callback = fn _, _, acc ->
+      send(owner, :collected)
+      {:validate, :matches, acc + 1}
+    end
+
+    path = Path.join(root, "tail")
+    File.write!(path, "needle\n" <> String.duplicate("padding\n", 5_000))
+
+    assert {:ok, %{acc: 1, bytes: 40_007, reason: :matches}} =
+             BoundedFile.scan(path, 0, callback, valid_utf8: true)
+
+    assert_receive :collected
+    refute_receive :collected
+
+    File.write!(path, "needle\n" <> String.duplicate("x", 4_000_000))
+
+    assert {:ok, %{acc: 1, bytes: 81_920, reason: :giant_line}} =
+             BoundedFile.scan(path, 0, callback, valid_utf8: true)
+
+    assert_receive :collected
+    refute_receive :collected
+  end
+
   test "native scan observations report aggregate bounds without content or paths", %{
     tmp_dir: root
   } do
@@ -198,11 +372,13 @@ defmodule IexCode.Tools.BoundedFileToolsTest do
     assert_receive {:scan, %{scanned_bytes: 16_384, output_lines: 800}, %{tool: :read_file}}
     assert {:ok, _} = grep(root, "line")
 
-    assert_receive {:scan, %{scanned_bytes: 16_384, output_matches: 10, eligible_files: 1},
+    assert_receive {:scan, %{scanned_bytes: 100_000, output_matches: 10, eligible_files: 1},
                     %{tool: :grep_search}}
   end
 
   test "grep is ordered and prunes excluded directories and extensions", %{tmp_dir: root} do
+    observe_scans()
+
     for name <- ["z.txt", "a/b.txt", "a.txt", "a/c.txt"] do
       File.mkdir_p!(Path.dirname(Path.join(root, name)))
       File.write!(Path.join(root, name), "needle\n")
@@ -217,6 +393,22 @@ defmodule IexCode.Tools.BoundedFileToolsTest do
     expected = "a.txt:1: needle\na/b.txt:1: needle\na/c.txt:1: needle\nz.txt:1: needle"
     assert {:ok, ^expected} = grep(root, "needle")
     assert {:ok, ^expected} = grep(root, "needle")
+    assert_receive {:scan, %{traversal_entries: 10, eligible_files: 4}, _}
+    assert_receive {:scan, %{traversal_entries: 10, eligible_files: 4}, _}
+  end
+
+  test "unfinished root directories at two sizes discard arbitrary prefixes", %{tmp_dir: root} do
+    observe_scans()
+
+    for size <- [5_000, 6_000] do
+      directory = Path.join(root, "wide#{size}")
+      File.mkdir_p!(directory)
+      for n <- 1..size, do: File.write!(Path.join(directory, "#{n}.png"), "")
+      assert {:ok, output} = grep(root, "needle", %{"path" => directory})
+      assert output =~ "incomplete"
+      assert output =~ "traversal entry limit"
+      assert_receive {:scan, %{traversal_entries: 5_000, eligible_files: 0}, _}
+    end
   end
 
   test "grep result and eligible file limits identify unfinished work", %{tmp_dir: root} do
@@ -293,5 +485,21 @@ defmodule IexCode.Tools.BoundedFileToolsTest do
 
   defp grep(root, query, args \\ %{}) do
     Tools.execute("grep_search", Map.put(args, "query", query), root)
+  end
+
+  defp observe_scans do
+    handler = {__MODULE__, make_ref()}
+    owner = self()
+
+    :telemetry.attach(
+      handler,
+      [:iex_code, :tools, :native_scan],
+      fn _, measurements, metadata, _ ->
+        send(owner, {:scan, measurements, metadata})
+      end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
   end
 end

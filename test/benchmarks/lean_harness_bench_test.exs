@@ -159,6 +159,9 @@ defmodule IexCode.LeanHarnessBenchTest do
       assert read_metrics.scanned_bytes == 32_768
       assert grep_metrics.eligible_files == 10
       assert grep_metrics.scanned_bytes == 4_600
+      assert grep_metrics.helper_launches == 1
+      assert grep_metrics.helper_peak_rss_bytes > 0
+      assert grep_metrics.directory_wire_bytes <= 2_097_152
 
       parameters = %{
         large_file_lines: lines,

@@ -1,6 +1,8 @@
 defmodule IexCode.Tools.NativeGrep do
   @moduledoc false
   alias IexCode.Tools.BoundedFile
+  alias IexCode.Tools.BoundedDirectory
+  alias IexCode.Tools.NativeResponse
   alias IexCode.WorkspacePath
 
   @excluded_dirs ["_build", "deps", "node_modules", ".git"]
@@ -10,9 +12,38 @@ defmodule IexCode.Tools.NativeGrep do
   @matches 100
   @scan_bytes 8_388_608
   @depth 64
+  @query_bytes 4_096
+  @pending_bytes 2_097_152
+
+  def validate_query(query) when is_binary(query) and byte_size(query) <= @query_bytes, do: :ok
+  def validate_query(_), do: {:error, "Query exceeds 4096 bytes; use a shorter query."}
 
   def search(root, directory, query, case_sensitive?) do
+    with :ok <- validate_query(query),
+         {:ok, root} <- WorkspacePath.resolve(root, "") do
+      do_search(root, directory, query, case_sensitive?)
+    end
+  end
+
+  defp do_search(root, directory, query, case_sensitive?) do
+    case BoundedDirectory.open() do
+      {:ok, helper} ->
+        try do
+          run_search(root, directory, query, case_sensitive?, helper)
+        after
+          BoundedDirectory.close(helper)
+        end
+
+      {:error, _} ->
+        {:error, "Directory helper unavailable; cannot complete bounded search."}
+    end
+  end
+
+  defp run_search(root, directory, query, case_sensitive?, helper) do
     state = %{
+      helper: helper,
+      wire: 0,
+      helper_rss: 0,
       results: [],
       matches: 0,
       output: 0,
@@ -50,7 +81,7 @@ defmodule IexCode.Tools.NativeGrep do
           "#{state.bytes} bytes. Use a narrower path/query or split oversized files/lines.]"
       end
 
-    output = body <> suffix
+    output = NativeResponse.compose(body, suffix)
 
     :telemetry.execute(
       [:iex_code, :tools, :native_scan],
@@ -59,7 +90,10 @@ defmodule IexCode.Tools.NativeGrep do
         output_bytes: byte_size(output),
         output_matches: state.matches,
         eligible_files: state.files,
-        traversal_entries: state.entries
+        traversal_entries: state.entries,
+        directory_wire_bytes: state.wire,
+        helper_peak_rss_bytes: state.helper_rss,
+        helper_launches: 1
       },
       %{tool: :grep_search}
     )
@@ -83,8 +117,6 @@ defmodule IexCode.Tools.NativeGrep do
     do: incomplete(state, "global scan byte limit")
 
   defp walk([{path, type, depth} | rest], root, matcher, case_sensitive?, state) do
-    state = %{state | entries: state.entries + 1}
-
     with {:ok, canonical} <- WorkspacePath.resolve(root, path),
          {:ok, %{type: actual}} <- File.stat(canonical) do
       case {type, actual} do
@@ -92,20 +124,31 @@ defmodule IexCode.Tools.NativeGrep do
           if depth >= @depth do
             walk(rest, root, matcher, case_sensitive?, incomplete(state, "traversal depth limit"))
           else
-            case File.ls(canonical) do
-              {:ok, names} ->
-                remaining = @entries - state.entries - length(rest)
+            case BoundedDirectory.list(
+                   state.helper,
+                   canonical,
+                   @entries - state.entries,
+                   BoundedDirectory.wire_bytes() - state.wire
+                 ) do
+              {:ok, names, stats} ->
+                state = charge_directory(state, stats)
 
-                if length(names) > remaining do
-                  incomplete(state, "traversal entry limit")
-                else
-                  children = Enum.flat_map(names, &candidate(path, &1, depth + 1))
-                  pending = Enum.sort_by(children ++ rest, &order/1)
-                  walk(pending, root, matcher, case_sensitive?, state)
+                case add_candidates(names, path, depth + 1, rest) do
+                  {:ok, pending} ->
+                    walk(Enum.sort_by(pending, &order/1), root, matcher, case_sensitive?, state)
+
+                  :overflow ->
+                    incomplete(state, "pending path byte limit")
                 end
 
+              {:incomplete, reason, stats} ->
+                state |> charge_directory(stats) |> incomplete(directory_reason(reason))
+
+              {:skip, stats} ->
+                walk(rest, root, matcher, case_sensitive?, charge_directory(state, stats))
+
               {:error, _} ->
-                walk(rest, root, matcher, case_sensitive?, state)
+                incomplete(state, "directory helper timeout/failure")
             end
           end
 
@@ -123,6 +166,41 @@ defmodule IexCode.Tools.NativeGrep do
       end
     else
       _ -> walk(rest, root, matcher, case_sensitive?, state)
+    end
+  end
+
+  defp charge_directory(state, stats) do
+    %{
+      state
+      | entries: state.entries + stats.entries,
+        wire: state.wire + stats.wire_bytes,
+        helper_rss: max(state.helper_rss, stats.helper_peak_rss_bytes)
+    }
+  end
+
+  defp directory_reason(:entries), do: "traversal entry limit"
+  defp directory_reason(:wire), do: "directory wire byte limit"
+  defp directory_reason(:name), do: "directory name byte limit"
+
+  defp add_candidates(names, path, depth, rest) do
+    bytes = Enum.reduce(rest, 0, fn {name, _, _}, size -> size + byte_size(name) end)
+
+    Enum.reduce_while(names, {:ok, rest, bytes}, fn name, {:ok, pending, bytes} ->
+      case candidate(path, name, depth) do
+        [] ->
+          {:cont, {:ok, pending, bytes}}
+
+        [{child, _, _} = candidate] ->
+          bytes = bytes + byte_size(child)
+
+          if bytes > @pending_bytes,
+            do: {:halt, :overflow},
+            else: {:cont, {:ok, [candidate | pending], bytes}}
+      end
+    end)
+    |> case do
+      {:ok, pending, _bytes} -> {:ok, pending}
+      :overflow -> :overflow
     end
   end
 
@@ -154,8 +232,8 @@ defmodule IexCode.Tools.NativeGrep do
         text = "#{relative}:#{index}: #{String.trim(line)}"
         bytes = byte_size(text) + 1
 
-        if state.output + acc.bytes + bytes > BoundedFile.limits().output_bytes do
-          {:halt, :output, acc}
+        if state.output + acc.bytes + bytes > NativeResponse.body_bytes() do
+          {:validate, :output, acc}
         else
           acc = %{
             results: [text | acc.results],
@@ -163,9 +241,11 @@ defmodule IexCode.Tools.NativeGrep do
             bytes: acc.bytes + bytes
           }
 
-          if acc.matches == min(10, @matches - state.matches),
-            do: {:halt, :matches, acc},
-            else: {:cont, acc}
+          cond do
+            state.output + acc.bytes == NativeResponse.body_bytes() -> {:validate, :output, acc}
+            acc.matches == min(10, @matches - state.matches) -> {:validate, :matches, acc}
+            true -> {:cont, acc}
+          end
         end
       else
         {:cont, acc}
@@ -183,12 +263,19 @@ defmodule IexCode.Tools.NativeGrep do
             output: state.output + result.acc.bytes
         }
 
+        state =
+          case result.collection_reason do
+            :output -> incomplete(state, "output byte limit")
+            :matches -> incomplete(state, "10 matches/file or total match limit")
+            nil -> state
+          end
+
         case result.reason do
           nil -> state
           :matches -> incomplete(state, "10 matches/file or total match limit")
           :output -> incomplete(state, "output byte limit")
-          :scan -> incomplete(state, "file scan byte limit")
-          :giant_line -> incomplete(state, "giant line limit")
+          :scan -> incomplete(state, "file scan byte limit; tail unvalidated")
+          :giant_line -> incomplete(state, "giant line limit; tail unvalidated")
         end
 
       {:error, _reason, bytes} ->

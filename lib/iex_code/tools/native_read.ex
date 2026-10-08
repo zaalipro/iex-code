@@ -1,6 +1,7 @@
 defmodule IexCode.Tools.NativeRead do
   @moduledoc false
   alias IexCode.Tools.BoundedFile
+  alias IexCode.Tools.NativeResponse
 
   def read(path, args) do
     start = Map.get(args, "start_line")
@@ -29,7 +30,7 @@ defmodule IexCode.Tools.NativeRead do
           text = "#{first_number + acc.count}: #{line}"
           bytes = byte_size(text) + if(acc.count > 0, do: 1, else: 0)
 
-          if acc.bytes + bytes > BoundedFile.limits().output_bytes do
+          if acc.bytes + bytes > NativeResponse.body_bytes() do
             {:halt, :output, acc}
           else
             acc = %{lines: [text | acc.lines], count: acc.count + 1, bytes: acc.bytes + bytes}
@@ -59,7 +60,7 @@ defmodule IexCode.Tools.NativeRead do
               "split oversized files or giant lines when the scan cannot reach it.]"
         end
 
-      output = body <> suffix
+      output = NativeResponse.compose(body, suffix)
 
       :telemetry.execute(
         [:iex_code, :tools, :native_scan],

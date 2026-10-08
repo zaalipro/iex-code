@@ -72,7 +72,11 @@ defmodule IexCode.Test.LeanHarnessCollector do
       reductions: after_sample.reductions - collector.before.reductions,
       scanned_bytes: sum(scans, :scanned_bytes),
       eligible_files: sum(scans, :eligible_files),
-      traversal_entries: sum(scans, :traversal_entries)
+      traversal_entries: sum(scans, :traversal_entries),
+      directory_wire_bytes: sum(scans, :directory_wire_bytes),
+      helper_launches: sum(scans, :helper_launches),
+      helper_peak_rss_bytes:
+        Enum.reduce(scans, 0, &max(Map.get(&1, :helper_peak_rss_bytes, 0), &2))
     }
   end
 

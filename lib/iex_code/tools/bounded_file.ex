@@ -2,7 +2,8 @@ defmodule IexCode.Tools.BoundedFile do
   @moduledoc """
   Fixed-chunk line scanning for native tools. Carries at most 64 KiB of one
   line plus a 16 KiB chunk; byte ceilings include read-ahead. Callbacks stop
-  scanning immediately, and descriptors close on every exit.
+  scanning immediately unless they request bounded validation-only continuation.
+  Descriptors close on every exit.
   """
 
   @chunk_bytes 16_384
@@ -22,7 +23,14 @@ defmodule IexCode.Tools.BoundedFile do
   def scan(path, acc, callback, opts \\ []) do
     with {:ok, file} <- File.open(path, [:read, :binary, :raw]) do
       try do
-        state = %{acc: acc, bytes: 0, lines: 0, reason: nil}
+        state = %{
+          acc: acc,
+          bytes: 0,
+          lines: 0,
+          reason: nil,
+          collecting?: true,
+          collection_reason: nil
+        }
 
         read(
           file,
@@ -46,7 +54,10 @@ defmodule IexCode.Tools.BoundedFile do
   defp read(file, carry, unicode_carry, state, callback, limit, utf8) do
     case IO.binread(file, min(@chunk_bytes, limit - state.bytes)) do
       :eof ->
-        case line(carry, state, callback, utf8) do
+        case if(utf8 and unicode_carry != "",
+               do: {:error, :invalid_utf8},
+               else: line(carry, state, callback, utf8)
+             ) do
           {:cont, state} ->
             {:ok, state}
 
@@ -122,9 +133,21 @@ defmodule IexCode.Tools.BoundedFile do
     else
       state = %{state | lines: state.lines + 1}
 
-      case callback.(text, state.lines, state.acc) do
-        {:cont, acc} -> {:cont, %{state | acc: acc}}
-        {:halt, reason, acc} -> {:halt, %{state | acc: acc, reason: reason}}
+      result =
+        if state.collecting?,
+          do: callback.(text, state.lines, state.acc),
+          else: {:cont, state.acc}
+
+      case result do
+        {:cont, acc} ->
+          {:cont, %{state | acc: acc}}
+
+        {:halt, reason, acc} ->
+          {:halt, %{state | acc: acc, reason: reason}}
+
+        {:validate, reason, acc} ->
+          {:cont,
+           %{state | acc: acc, reason: reason, collecting?: false, collection_reason: reason}}
       end
     end
   end
