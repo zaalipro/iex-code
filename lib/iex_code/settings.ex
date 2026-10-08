@@ -257,7 +257,7 @@ defmodule IexCode.Settings do
       default_thinking_budget: 4096,
       model_overrides: %{},
       default_dispatch_mode: "background",
-      default_run_mode: "swarm",
+      default_run_mode: "single",
       default_run_priority: "normal",
       default_run_max_attempts: 3,
       default_run_token_budget: nil,
@@ -482,7 +482,7 @@ defmodule IexCode.Settings do
             else: true
           ),
         default_dispatch_mode: settings.default_dispatch_mode || "background",
-        default_run_mode: settings.default_run_mode || "swarm",
+        default_run_mode: settings.default_run_mode || "single",
         default_run_priority: settings.default_run_priority || "normal",
         default_run_max_attempts: settings.default_run_max_attempts || 3,
         goal_auto_start:

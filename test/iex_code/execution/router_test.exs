@@ -22,6 +22,60 @@ defmodule IexCode.Execution.RouterTest do
      }}
   end
 
+  test "fresh and separately missing mission preferences create durable single runs", %{
+    context: context
+  } do
+    for settings <- [
+          context.settings,
+          %{context.settings | default_run_mode: nil},
+          context.settings |> Map.from_struct() |> Map.delete(:default_run_mode)
+        ] do
+      assert {:ok, %{action: {:run, run}}} =
+               Router.route("Inspect the parser", %{
+                 context
+                 | settings: settings,
+                   request_key: Ecto.UUID.generate()
+               })
+
+      assert run.kind == "coding_agent"
+      assert run.mode == "single"
+      assert run.status == "queued"
+      assert Runs.get_run!(run.id).metadata["execution_policy"]["run_mode"] == "single"
+    end
+  end
+
+  test "opting into single leaves existing sessions drafts and queued snapshots unchanged", %{
+    context: context,
+    project: project
+  } do
+    assert {:ok, saved} = Settings.update_settings(%{default_run_mode: "swarm"})
+    existing = create_session_fixture(project, %{swarm_mode: true})
+    context = %{context | settings: saved, session_id: existing.id}
+
+    assert {:ok, %{action: {:run, queued}}} = Router.route("Keep queued swarm", context)
+
+    assert {:ok, %{action: {:draft, draft}}} =
+             Router.route("/goal --draft Keep reviewed swarm", context)
+
+    snapshots = Enum.map([queued, draft], &{&1.id, &1.mode, &1.status, &1.metadata})
+
+    assert {:ok, single} = Settings.update_settings(%{default_run_mode: "single"})
+    assert Settings.get_settings().default_run_mode == "single"
+    assert Sessions.get_session(existing.id).swarm_mode
+
+    assert Enum.map([queued, draft], fn run ->
+             persisted = Runs.get_run!(run.id)
+             {persisted.id, persisted.mode, persisted.status, persisted.metadata}
+           end) == snapshots
+
+    assert {:ok, %{action: {:run, subsequent}}} =
+             Router.route("Use single for subsequent work", %{context | settings: single})
+
+    assert subsequent.kind == "coding_agent"
+    assert subsequent.mode == "single"
+    assert subsequent.metadata["execution_policy"]["run_mode"] == "single"
+  end
+
   test "ordinary policy dispatch and explicit chat share one typed intake", %{context: context} do
     assert {:ok, interactive} =
              Router.route("explain this project", %{
@@ -349,6 +403,8 @@ defmodule IexCode.Execution.RouterTest do
                Router.route("/boost Refactor connection pooling in PostgreSQL adapter", context)
 
       assert run.metadata["boost"] == true
+      assert run.kind == "coding_agent"
+      assert run.mode == "single"
       assert run.metadata["boost_reasoning_effort"] == "high"
       assert run.metadata["boost_hierarchy"] == ["orchestrator", "deep_coder", "verifier"]
       assert is_map(run.metadata["boost_context"])

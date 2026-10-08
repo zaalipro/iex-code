@@ -74,7 +74,7 @@ defmodule IexCode.Execution.Policy do
 
   @defaults %{
     "dispatch_mode" => "background",
-    "run_mode" => "swarm",
+    "run_mode" => "single",
     "run_priority" => "normal",
     "run_max_attempts" => 3,
     "run_token_budget" => nil,

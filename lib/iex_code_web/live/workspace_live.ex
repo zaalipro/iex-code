@@ -208,7 +208,7 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:run_dispatcher_stats, safe_dispatcher_stats())
       |> assign(:dispatch_mode, settings.default_dispatch_mode || "background")
       |> assign(:run_setup_open?, false)
-      |> assign(:run_setup_mode, settings.default_run_mode || "swarm")
+      |> assign(:run_setup_mode, settings.default_run_mode || "single")
       |> assign(:run_setup_priority, settings.default_run_priority || "normal")
       |> assign(:run_setup_max_attempts, settings.default_run_max_attempts || 3)
       |> assign(:run_setup_token_budget, settings.default_run_token_budget)
@@ -6609,7 +6609,8 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   defp composer_policy_mode(mode) when mode in ["single", "swarm"], do: mode
   defp composer_policy_mode("code"), do: "swarm"
-  defp composer_policy_mode(_mode), do: "swarm"
+  defp composer_policy_mode(mode) when mode in ["dag", "research"], do: "swarm"
+  defp composer_policy_mode(_mode), do: "single"
 
   defp maybe_restore_goal_tools(context, %Intent{kind: :goal}, socket),
     do: put_in(context, [:overrides, :allowed_tools], enabled_tools(socket.assigns.active_tools))
@@ -7166,7 +7167,7 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   defp run_setup_defaults(settings) do
     %{
-      "mode" => settings.default_run_mode || "swarm",
+      "mode" => settings.default_run_mode || "single",
       "priority" => settings.default_run_priority || "normal",
       "max_attempts" => to_string(settings.default_run_max_attempts || 3),
       "token_budget" => settings.default_run_token_budget || "",

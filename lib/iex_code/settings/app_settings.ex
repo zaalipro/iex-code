@@ -18,7 +18,7 @@ defmodule IexCode.Settings.AppSettings do
     field :temperature, :float, default: 0.2
     field :max_tokens, :integer, default: 4096
     field :default_dispatch_mode, :string, default: "background"
-    field :default_run_mode, :string, default: "swarm"
+    field :default_run_mode, :string, default: "single"
     field :default_run_priority, :string, default: "normal"
     field :default_run_max_attempts, :integer, default: 3
     field :default_run_token_budget, :integer

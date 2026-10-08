@@ -3,6 +3,58 @@ defmodule IexCodeWeb.WorkspaceLiveExecutionModesTest do
 
   alias IexCode.{Runs, Settings}
 
+  test "fresh workspace setup and ordinary prompts default to durable single", %{
+    conn: conn,
+    workspace_path: path
+  } do
+    project = create_project_fixture(%{root_path: path})
+
+    assert {:ok, session} =
+             IexCode.Sessions.create_session(%{project_id: project.id, title: "Fresh defaults"})
+
+    refute session.swarm_mode
+
+    {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+    assert has_element?(view, "#dispatch-mode-background[aria-pressed='true']")
+
+    view |> element("#toggle-run-setup") |> render_click()
+    assert has_element?(view, "#run-setup-mode option[value='single'][selected]")
+
+    view
+    |> form("#prompt-form", %{"prompt" => "Inspect the parser without a mode override"})
+    |> render_submit()
+
+    assert [run] = Runs.list_runs(session_id: session.id)
+    assert run.kind == "coding_agent"
+    assert run.mode == "single"
+    assert run.status == "queued"
+    assert run.metadata["execution_policy"]["run_mode"] == "single"
+  end
+
+  test "explicit workspace swarm selection overrides the fresh single default", %{
+    conn: conn,
+    workspace_path: path
+  } do
+    project = create_project_fixture(%{root_path: path})
+    session = create_session_fixture(project)
+    {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+    view |> element("#toggle-run-setup") |> render_click()
+
+    view
+    |> form("#run-setup-panel", %{"run_setup" => %{"mode" => "swarm"}})
+    |> render_change()
+
+    view
+    |> form("#prompt-form", %{"prompt" => "Review this with the explicit fleet"})
+    |> render_submit()
+
+    assert [%{kind: "coding_swarm", mode: "swarm"} = run] =
+             Runs.list_runs(session_id: session.id)
+
+    assert run.metadata["execution_policy"]["run_mode"] == "swarm"
+  end
+
   test "/goal and /goal --draft use the canonical durable goal intake", %{
     conn: conn,
     workspace_path: path

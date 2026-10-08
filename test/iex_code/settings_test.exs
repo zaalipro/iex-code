@@ -12,6 +12,33 @@ defmodule IexCode.SettingsTest do
   end
 
   describe "get_settings/0 and update_settings/1" do
+    test "fresh and missing execution preferences select background single" do
+      persisted = Settings.get_settings()
+      assert persisted.default_dispatch_mode == "background"
+      assert persisted.default_run_mode == "single"
+      assert Repo.get!(AppSettings, persisted.id).default_run_mode == "single"
+
+      for settings <- [
+            %AppSettings{},
+            %AppSettings{default_run_mode: nil},
+            nil
+          ] do
+        policy = Settings.execution_policy(settings)
+        assert policy["dispatch_mode"] == "background"
+        assert policy["run_mode"] == "single"
+      end
+    end
+
+    test "stored swarm and single choices survive reload and unrelated updates" do
+      for mode <- ["swarm", "single"] do
+        assert {:ok, saved} = Settings.update_settings(%{default_run_mode: mode})
+        assert Settings.get_settings().default_run_mode == mode
+        assert {:ok, updated} = Settings.update_settings(%{auto_save: false})
+        assert updated.id == saved.id
+        assert Repo.get!(AppSettings, saved.id).default_run_mode == mode
+      end
+    end
+
     test "schema, persisted, and execution-policy defaults use one canonical model profile" do
       schema_defaults = %AppSettings{}
       persisted = Settings.get_settings()

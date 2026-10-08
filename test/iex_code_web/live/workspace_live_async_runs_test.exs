@@ -12,6 +12,7 @@ defmodule IexCodeWeb.WorkspaceLiveAsyncRunsTest do
     conn: conn,
     workspace_path: path
   } do
+    assert {:ok, _settings} = IexCode.Settings.update_settings(%{default_run_mode: "swarm"})
     project = create_project_fixture(%{root_path: path})
     session = create_session_fixture(project)
     {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")

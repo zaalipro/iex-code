@@ -289,6 +289,7 @@ defmodule IexCodeWeb.WorkspaceLiveDeepResearchTest do
          conn: conn,
          workspace_path: path
        } do
+    assert {:ok, _settings} = IexCode.Settings.update_settings(%{default_run_mode: "swarm"})
     project = create_project_fixture(%{root_path: path})
     session = create_session_fixture(project)
     result = ready_result(project, session, "Prior design audit", "# Verified private evidence")

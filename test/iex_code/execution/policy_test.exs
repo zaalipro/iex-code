@@ -25,7 +25,7 @@ defmodule IexCode.Execution.PolicyTest do
     assert policy == %{
              "version" => 1,
              "dispatch_mode" => "background",
-             "run_mode" => "swarm",
+             "run_mode" => "single",
              "run_priority" => "normal",
              "run_max_attempts" => 3,
              "run_token_budget" => nil,
@@ -267,7 +267,7 @@ defmodule IexCode.Execution.PolicyTest do
 
     assert {:ok, policy} = Policy.from_settings(invalid_settings)
     assert policy["dispatch_mode"] == "background"
-    assert policy["run_mode"] == "swarm"
+    assert policy["run_mode"] == "single"
     assert policy["run_priority"] == "normal"
     assert policy["run_max_attempts"] == 3
     assert policy["run_token_budget"] == nil

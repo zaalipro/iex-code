@@ -4,6 +4,23 @@ defmodule IexCodeWeb.SettingsLiveTest do
   alias IexCode.{Repo, Sessions, Settings}
   alias IexCode.Settings.AppSettings
 
+  test "saved swarm can opt into single using the existing mission setting", %{conn: conn} do
+    assert {:ok, saved} = Settings.update_settings(%{default_run_mode: "swarm"})
+    {:ok, view, _html} = live(conn, ~p"/settings")
+    assert has_element?(view, "#settings-default-run-mode option[value='swarm'][selected]")
+
+    selection = form(view, "#settings-form", %{"settings" => %{"default_run_mode" => "single"}})
+    render_change(selection)
+    render_submit(selection)
+
+    assert has_element?(view, "#settings-default-run-mode option[value='single'][selected]")
+    assert Settings.get_settings().id == saved.id
+    assert Settings.get_settings().default_run_mode == "single"
+
+    {:ok, reloaded, _html} = live(conn, ~p"/settings")
+    assert has_element?(reloaded, "#settings-default-run-mode option[value='single'][selected]")
+  end
+
   test "global route renders every settings section and accessible save controls", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/settings")
 
