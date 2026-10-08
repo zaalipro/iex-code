@@ -153,8 +153,12 @@ defmodule IexCode.LeanHarnessBenchTest do
           Tools.execute("grep_search", %{"query" => "needle", "path" => "search"}, context.root)
         end)
 
-      assert length(String.split(grep, "\n")) == 100
+      assert length(Regex.scan(~r/^search\/\d+\.txt:\d+:/m, grep)) == 100
+      assert grep =~ "incomplete"
       refute grep =~ "ignored.txt"
+      assert read_metrics.scanned_bytes == 32_768
+      assert grep_metrics.eligible_files == 10
+      assert grep_metrics.scanned_bytes == 4_600
 
       parameters = %{
         large_file_lines: lines,
@@ -170,8 +174,8 @@ defmodule IexCode.LeanHarnessBenchTest do
         Map.merge(read_metrics, %{
           output_bytes: byte_size(read),
           output_lines: length(String.split(read, "\n")),
-          scanned_bytes: nil,
-          scan_availability: "unavailable: no production scan counter"
+          scanned_bytes: read_metrics.scanned_bytes,
+          scan_availability: "aggregate native scan telemetry; includes fixed chunk read-ahead"
         })
       )
 
@@ -180,10 +184,10 @@ defmodule IexCode.LeanHarnessBenchTest do
         parameters,
         Map.merge(grep_metrics, %{
           output_bytes: byte_size(grep),
-          output_matches: length(String.split(grep, "\n")),
-          scanned_bytes: nil,
-          visited_files: nil,
-          scan_availability: "unavailable: no production traversal/scan counters"
+          output_matches: length(Regex.scan(~r/^search\/\d+\.txt:\d+:/m, grep)),
+          scanned_bytes: grep_metrics.scanned_bytes,
+          visited_files: grep_metrics.eligible_files,
+          scan_availability: "aggregate native scan telemetry; no paths or content"
         })
       )
     end
@@ -278,14 +282,16 @@ defmodule IexCode.LeanHarnessBenchTest do
 
     monitor = Process.monitor(owner)
     assert_receive {:collector_started, ^owner}
-    assert [_handler] = collector_handlers()
+    assert length(collector_handlers()) == 2
     Process.exit(owner, :kill)
     assert_receive {:DOWN, ^monitor, :process, ^owner, :killed}
   end
 
   defp collector_handlers do
-    for %{id: {LeanHarnessCollector, _} = id} <-
-          :telemetry.list_handlers([:iex_code, :repo, :query]),
+    for %{id: id} <-
+          :telemetry.list_handlers([:iex_code, :repo, :query]) ++
+            :telemetry.list_handlers([:iex_code, :tools, :native_scan]),
+        is_tuple(id) and elem(id, 0) == LeanHarnessCollector,
         do: id
   end
 

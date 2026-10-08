@@ -444,41 +444,10 @@ defmodule IexCode.Tools do
         if File.exists?(full_path) do
           on_progress.(50, "Reading file bytes...")
 
-          case File.read(full_path) do
-            {:ok, content} ->
-              lines = String.split(content, ~r/\r?\n/)
-              start_l = Map.get(args, "start_line")
-              end_l = Map.get(args, "end_line")
-
-              sliced_lines =
-                cond do
-                  is_integer(start_l) and is_integer(end_l) and start_l <= end_l ->
-                    Enum.slice(lines, max(0, start_l - 1), max(1, end_l - start_l + 1))
-
-                  is_integer(start_l) ->
-                    Enum.slice(lines, max(0, start_l - 1)..-1//1)
-
-                  true ->
-                    capped = Enum.take(lines, 800)
-
-                    if length(lines) > 800 do
-                      capped ++
-                        [
-                          "... [truncated: showing 800 of #{length(lines)} lines, use start_line/end_line for more]"
-                        ]
-                    else
-                      capped
-                    end
-                end
-
-              numbered =
-                sliced_lines
-                |> Enum.with_index(if is_integer(start_l), do: start_l, else: 1)
-                |> Enum.map(fn {line, idx} -> "#{idx}: #{line}" end)
-                |> Enum.join("\n")
-
-              on_progress.(100, "Read complete (#{length(sliced_lines)} lines)")
-              {:ok, IexCode.Sessions.sanitize_utf8(numbered)}
+          case IexCode.Tools.NativeRead.read(full_path, args) do
+            {:ok, numbered, count} ->
+              on_progress.(100, "Read finished (#{count} returned lines)")
+              {:ok, numbered}
 
             {:error, reason} ->
               {:error, "Failed to read file #{path}: #{inspect(reason)}"}
@@ -884,64 +853,11 @@ defmodule IexCode.Tools do
       {:ok, search_dir} ->
         on_progress.(30, "Scanning files in #{search_dir} for query '#{query}'...")
 
-        matcher = build_matcher(query, case_sensitive?)
+        {:ok, output, count} =
+          IexCode.Tools.NativeGrep.search(root_path, search_dir, query, case_sensitive?)
 
-        results =
-          Path.wildcard(Path.join(search_dir, "**/*"))
-          |> Enum.reject(fn p ->
-            ext = Path.extname(p) |> String.downcase()
-
-            File.dir?(p) or
-              ext in [
-                ".db",
-                ".db-wal",
-                ".db-shm",
-                ".beam",
-                ".png",
-                ".jpg",
-                ".jpeg",
-                ".ico",
-                ".svg",
-                ".lock",
-                ".dump",
-                ".gz",
-                ".zip"
-              ] or
-              String.contains?(p, "/_build/") or
-              String.contains?(p, "/deps/") or
-              String.contains?(p, "/.git/") or
-              String.contains?(p, "/node_modules/")
-          end)
-          |> Enum.take(500)
-          |> Enum.flat_map(fn file_path ->
-            case File.read(file_path) do
-              {:ok, content} ->
-                if String.valid?(content) do
-                  rel = Path.relative_to(file_path, root_path)
-
-                  content
-                  |> String.split("\n")
-                  |> Enum.with_index(1)
-                  |> Enum.filter(fn {line, _idx} ->
-                    line_matches?(line, matcher, case_sensitive?)
-                  end)
-                  |> Enum.take(10)
-                  |> Enum.map(fn {line, idx} -> "#{rel}:#{idx}: #{String.trim(line)}" end)
-                else
-                  []
-                end
-
-              # Explicitly skip unreadable files (permissions, broken symlinks, races).
-              {:error, _reason} ->
-                []
-            end
-          end)
-          |> Enum.take(100)
-
-        on_progress.(100, "Found #{length(results)} matches")
-
-        {:ok,
-         if(results == [], do: "No matches found for '#{query}'", else: Enum.join(results, "\n"))}
+        on_progress.(100, "Search finished (#{count} returned matches)")
+        {:ok, output}
 
       {:error, :outside_workspace} ->
         {:error, "Path escapes the workspace: #{sub_path}"}
@@ -1577,27 +1493,6 @@ defmodule IexCode.Tools do
         # Unreadable file or broken symlink — report without crashing.
         {:error, _reason} -> {"file", "?"}
       end
-    end
-  end
-
-  defp build_matcher(query, case_sensitive?) do
-    case Regex.compile(query, if(case_sensitive?, do: "", else: "i")) do
-      {:ok, regex} ->
-        {:regex, regex}
-
-      {:error, _invalid} ->
-        needle = if case_sensitive?, do: query, else: String.downcase(query)
-        {:text, needle}
-    end
-  end
-
-  defp line_matches?(line, {:regex, regex}, _case_sensitive?), do: Regex.match?(regex, line)
-
-  defp line_matches?(line, {:text, needle}, case_sensitive?) do
-    if case_sensitive? do
-      String.contains?(line, needle)
-    else
-      String.contains?(String.downcase(line), needle)
     end
   end
 
