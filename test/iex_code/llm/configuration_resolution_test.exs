@@ -5,6 +5,45 @@ defmodule IexCode.LLM.ConfigurationResolutionTest do
   alias IexCode.LLM
   alias IexCode.Settings
 
+  test "effective output override is budgeted and preparation does not call retries or effect fence on overflow" do
+    provider = start_supervised!({MockLLMServer, scenario: :sse_chunks})
+    url = GenServer.call(provider, :get_info).url
+
+    {:ok, _} =
+      Settings.update_settings(%{
+        default_model_provider: "openai",
+        default_model: "o3-mini",
+        openai_api_key: "fixture",
+        openai_base_url: url <> "/v1",
+        context_window_tokens: 1_000,
+        max_tokens: 100
+      })
+
+    session = %{model_provider: "openai", model_name: "o3-mini", temperature: 0.2}
+
+    assert {:error, %IexCode.LLM.RequestBudgetError{reserve: 1_000}} =
+             LLM.chat([%{role: "user", content: "hi"}], "", session, fn _ -> :ok end,
+               allowed_tools: [],
+               max_completion_tokens: 1_000,
+               before_request: fn -> flunk("overflow must precede effect fence") end,
+               on_retry: fn _, _, _ -> flunk("budget failures must not retry") end
+             )
+
+    assert MockLLMServer.get_requests(provider) == []
+
+    assert {:ok, _} =
+             LLM.chat([%{role: "user", content: "hi"}], "", session, fn _ -> :ok end,
+               allowed_tools: [],
+               max_tokens: 100,
+               max_completion_tokens: 700
+             )
+
+    assert [%{body: %{"max_completion_tokens" => 700} = body}] =
+             MockLLMServer.get_requests(provider)
+
+    assert div(byte_size(Jason.encode!(body)) * 5 + 15, 16) + 128 + 700 <= 1_000
+  end
+
   test "nil-session requests use the configured global temperature" do
     {:ok, server_pid, server} = MockLLMServer.start(scenario: :standard_completion)
     on_exit(fn -> MockLLMServer.stop(server_pid) end)

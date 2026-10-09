@@ -966,19 +966,21 @@ defmodule IexCode.Engine.SessionServer do
 
         :go ->
           settings = IexCode.Settings.get_settings()
-          model_name = session.model_name
 
           # Bound stored history before compaction, including the current user turn.
           prev_messages =
             try do
               Sessions.list_recent_messages(session_id, @interactive_history_limit)
-              |> Enum.map(fn m -> %{role: m.role, content: m.content} end)
+              |> Enum.map(fn m ->
+                %{
+                  role: m.role,
+                  content: m.content,
+                  budget_objective: m.role == "user" and m.content == user_prompt
+                }
+              end)
             rescue
               _ -> []
             end
-
-          compacted_messages =
-            IexCode.LLM.ContextCompactor.compact(prev_messages, settings, model_name)
 
           base_system_prompt = """
           You are an intelligent, proactive coding assistant in IexCode desktop environment.
@@ -1004,7 +1006,7 @@ defmodule IexCode.Engine.SessionServer do
                   "Querying model (#{session.model_provider}: #{session.model_name})..."
                 )
 
-                LLM.chat(compacted_messages, system_prompt, session, fn _c -> :ok end,
+                LLM.chat(prev_messages, system_prompt, session, fn _c -> :ok end,
                   cancelled?: cancelled?,
                   allowed_tools: allowed_tools
                 )
@@ -1119,11 +1121,14 @@ defmodule IexCode.Engine.SessionServer do
                      session_id: session_id,
                      role: "assistant",
                      agent_name: "Assistant",
-                     content: "⚠️ Error during execution: #{inspect(reason)}"
+                     content: "⚠️ Error during execution: #{format_execution_error(reason)}"
                    }) do
                 {:ok, err_msg} -> broadcast(session_id, {:message_created, err_msg})
                 _ -> :ok
               end
+
+              if match?(%IexCode.LLM.RequestBudgetError{}, reason),
+                do: throw({:request_budget_failed, reason})
           end
 
           update_db_session_status(session_id, "idle")
@@ -1153,6 +1158,9 @@ defmodule IexCode.Engine.SessionServer do
           _ -> :ok
         end
     catch
+      :throw, {:request_budget_failed, error} ->
+        exit({:request_budget_failed, error})
+
       :throw, {:session_cancelled, ^session_id} ->
         finish_cancelled(session_id)
     after
@@ -1406,6 +1414,12 @@ defmodule IexCode.Engine.SessionServer do
 
   defp normalize_steering(_value), do: ""
 
+  defp format_execution_error(%{__struct__: module} = error)
+       when module == IexCode.LLM.RequestBudgetError,
+       do: Exception.message(error)
+
+  defp format_execution_error(reason), do: inspect(reason)
+
   defp cancel_interactive_run(
          opts,
          %{session_id: session_id, session: session} = state
@@ -1551,6 +1565,18 @@ defmodule IexCode.Engine.SessionServer do
       _none ->
         :ok
     end
+  end
+
+  defp finish_task_down(state, {:request_budget_failed, error}) do
+    update_db_session_status(state.session_id, "failed")
+    broadcast(state.session_id, {:session_status_changed, "failed"})
+
+    broadcast(
+      state.session_id,
+      {:run_failed, %{session_id: state.session_id, reason: Exception.message(error)}}
+    )
+
+    {:noreply, %{state | status: :failed, current_task: nil, task_ref: nil, run_mode: nil}}
   end
 
   defp finish_task_down(state, reason) do

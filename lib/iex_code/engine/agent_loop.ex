@@ -229,7 +229,7 @@ defmodule IexCode.Engine.AgentLoop do
          {:ok, messages, steering_controls} <- pending_steering(messages, state, turn),
          :ok <- report_turn_progress(state, turn),
          {:ok, text, tool_calls, state} <-
-           execute_model_turn(state, bounded_context(messages), steering_controls, turn),
+           execute_model_turn(state, messages, steering_controls, turn),
          :ok <- record_turn(state, turn, text, tool_calls),
          :ok <- resolve_consumed_steering(steering_controls, turn, state),
          :ok <- checkpoint(state.run.id, state.authority) do
@@ -288,7 +288,9 @@ defmodule IexCode.Engine.AgentLoop do
   defp model_turn_arguments(state, messages, steering_controls, turn) do
     %{
       "turn" => turn,
-      "context_sha256" => payload_sha256(messages),
+      # Keep the historical receipt identity unchanged. Preparation is only
+      # performed for new model effects, never for completed receipt replay.
+      "context_sha256" => payload_sha256(bounded_context(messages)),
       "steering_control_ids" => Enum.map(steering_controls, & &1.id),
       "model_provider" => state.session.model_provider,
       "model_name" => state.session.model_name,
@@ -318,20 +320,40 @@ defmodule IexCode.Engine.AgentLoop do
              %{attempt: command.attempt + 1},
              authority_opts(state.authority)
            ),
-         :ok <- checkpoint(state.run.id, state.authority),
-         {:ok, response} <- chat(state, messages, route),
-         {:ok, text, tool_calls} <- normalize_response(response, turn),
-         {:ok, state} <- record_usage(state, response),
-         {:ok, receipt} <- encode_model_receipt(text, tool_calls, response),
-         :ok <- checkpoint(state.run.id, state.authority),
-         {:ok, _completed} <-
-           Runs.transition_command_worker(
-             running,
-             "completed",
-             %{output: receipt},
-             authority_opts(state.authority)
-           ) do
-      {:ok, text, tool_calls, state}
+         :ok <- checkpoint(state.run.id, state.authority) do
+      case chat(state, messages, route) do
+        {:error, %IexCode.LLM.RequestBudgetError{} = error} ->
+          _ =
+            Runs.transition_command_worker(
+              running,
+              "failed",
+              %{
+                error_message: Exception.message(error),
+                error_details: %{kind: "request_budget"}
+              },
+              authority_opts(state.authority)
+            )
+
+          {:error, error}
+
+        {:ok, response} ->
+          with {:ok, text, tool_calls} <- normalize_response(response, turn),
+               {:ok, state} <- record_usage(state, response),
+               {:ok, receipt} <- encode_model_receipt(text, tool_calls, response),
+               :ok <- checkpoint(state.run.id, state.authority),
+               {:ok, _completed} <-
+                 Runs.transition_command_worker(
+                   running,
+                   "completed",
+                   %{output: receipt},
+                   authority_opts(state.authority)
+                 ) do
+            {:ok, text, tool_calls, state}
+          end
+
+        {:error, reason} ->
+          {:error, reason}
+      end
     end
   end
 
@@ -445,7 +467,9 @@ defmodule IexCode.Engine.AgentLoop do
       {:ok,
        %{
          role: "user",
-         content: "Steering guidance: " <> bounded_text(String.trim(guidance), 8_000)
+         content: "Steering guidance: " <> String.trim(guidance),
+         legacy_steering_content:
+           "Steering guidance: " <> bounded_text(String.trim(guidance), 8_000)
        }}
     else
       {:error, :invalid_model_turn_steering}
@@ -549,10 +573,11 @@ defmodule IexCode.Engine.AgentLoop do
 
   defp chat(state, messages, route) do
     cancelled? = fn -> FleetControlToken.cancelled?(state.control_token) end
+    # Internal receipt-compatibility metadata is never part of the outgoing
+    # provider transcript. Full steering stays in execution/pause history.
+    messages = Enum.map(messages, &Map.delete(&1, :legacy_steering_content))
 
     settings = Settings.get_settings()
-    model_name = (route && (route["model"] || route[:model])) || state.session.model_name
-    compacted_messages = IexCode.LLM.ContextCompactor.compact(messages, settings, model_name)
 
     system_prompt =
       IexCode.LLM.SystemPromptBuilder.build(@system_prompt, state.project_root, settings)
@@ -567,7 +592,7 @@ defmodule IexCode.Engine.AgentLoop do
     ]
 
     opts = if state.llm == IexCode.LLM, do: Keyword.put(opts, :resolved_route, route), else: opts
-    state.llm.chat(compacted_messages, system_prompt, state.session, fn _chunk -> :ok end, opts)
+    state.llm.chat(messages, system_prompt, state.session, fn _chunk -> :ok end, opts)
   end
 
   defp execute_tool_calls(state, calls, turn) do
@@ -1067,7 +1092,7 @@ defmodule IexCode.Engine.AgentLoop do
       |> Enum.map(&%{role: &1.role, content: bounded_text(&1.content, 20_000)})
 
     user_prompt = BoostEngine.effective_prompt(run)
-    history ++ [%{role: "user", content: bounded_text(user_prompt, @max_message_chars)}]
+    history ++ [%{role: "user", content: user_prompt}]
   end
 
   defp ensure_run_user_message(run) do
@@ -1115,8 +1140,13 @@ defmodule IexCode.Engine.AgentLoop do
   end
 
   defp truncate_model_text(message) do
-    content = bounded_text(value(message, "content") || "", @max_model_text_chars)
-    Map.put(message, :content, content)
+    content =
+      bounded_text(
+        Map.get(message, :legacy_steering_content) || value(message, "content") || "",
+        @max_model_text_chars
+      )
+
+    message |> Map.delete(:legacy_steering_content) |> Map.put(:content, content)
   end
 
   defp execution_policy(metadata) when is_map(metadata) do

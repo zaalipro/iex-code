@@ -6,20 +6,18 @@ defmodule IexCode.LLM.Anthropic do
   alias IexCode.LLM.StreamClient
 
   def chat(messages, system_prompt, opts, on_chunk \\ fn _c -> :ok end) do
-    api_key = Keyword.get(opts, :api_key, "")
-    base_url = Keyword.get(opts, :base_url, "https://api.anthropic.com")
+    with {:ok, prepared} <-
+           IexCode.LLM.RequestPreparation.prepare(__MODULE__, messages, system_prompt, opts) do
+      send_prepared(prepared.body, opts, on_chunk)
+    end
+  end
+
+  @doc false
+  def build_body(messages, system_prompt, opts) do
     model = Keyword.get(opts, :model, "claude-3-7-sonnet")
     temperature = Keyword.get(opts, :temperature, 0.2)
     max_tokens = Keyword.get(opts, :max_tokens, 4096)
-    anthropic_version = Keyword.get(opts, :anthropic_version, "2023-06-01")
     tools = Keyword.get(opts, :tools, [])
-    stream? = Keyword.get(opts, :stream, true)
-
-    headers = [
-      {"x-api-key", api_key},
-      {"anthropic-version", anthropic_version},
-      {"content-type", "application/json"}
-    ]
 
     formatted_messages =
       messages
@@ -105,6 +103,21 @@ defmodule IexCode.LLM.Anthropic do
         end
       end)
 
+    IexCode.LLM.StreamClient.request_body(body, "anthropic", Keyword.get(opts, :stream, true))
+  end
+
+  @doc false
+  def send_prepared(body, opts, on_chunk) do
+    api_key = Keyword.get(opts, :api_key, "")
+    base_url = Keyword.get(opts, :base_url, "https://api.anthropic.com")
+
+    headers = [
+      {"x-api-key", api_key},
+      {"anthropic-version", Keyword.get(opts, :anthropic_version, "2023-06-01")},
+      {"content-type", "application/json"}
+    ]
+
+    stream? = Keyword.get(opts, :stream, true)
     url = String.trim_trailing(base_url, "/") <> "/v1/messages"
 
     if api_key == "" or api_key == nil do

@@ -45,6 +45,128 @@ defmodule IexCode.LLM.ContextCompactor do
   end
 
   @doc """
+  Fits an actual adapter payload, removing oldest complete protocol groups.
+  Keeps the latest objective, all required instruction messages,
+  explicitly mandatory messages, and steering. Never expands a boundary after
+  the final fit check. Ordinary fitting requests are returned unchanged.
+  """
+  def compact_request(messages, settings, builder, fits?) do
+    body = builder.(messages)
+
+    if fits?.(body) do
+      {:ok, messages, body}
+    else
+      users =
+        messages
+        |> Enum.with_index()
+        |> Enum.filter(fn {m, _} -> role(m) == "user" and not steering?(m) end)
+        |> Enum.map(&elem(&1, 1))
+
+      objectives =
+        messages
+        |> Enum.with_index()
+        |> Enum.filter(fn {msg, _} -> get_message_field(msg, :budget_objective) == true end)
+        |> Enum.map(&elem(&1, 1))
+
+      protected =
+        if objectives == [], do: Enum.reject([List.last(users)], &is_nil/1), else: objectives
+
+      groups = request_groups(Enum.with_index(messages))
+
+      groups =
+        if get_setting(settings, :context_compaction_strategy, "token_compaction") ==
+             "token_compaction" do
+          Enum.map(groups, fn group ->
+            Enum.map(group, fn {msg, index} ->
+              if mandatory?(msg, index, protected),
+                do: {msg, index},
+                else: {compact_tool_message(msg), index}
+            end)
+          end)
+        else
+          groups
+        end
+
+      fit_groups(
+        groups,
+        protected,
+        builder,
+        fits?,
+        get_setting(settings, :context_compaction_strategy, "token_compaction"),
+        []
+      )
+    end
+  end
+
+  defp fit_groups(groups, protected, builder, fits?, strategy, dropped) do
+    messages = for group <- groups, {msg, _} <- group, do: msg
+    body = builder.(messages)
+
+    if fits?.(body) do
+      summarized =
+        if strategy == "rolling_summary" and dropped != [] do
+          summary = %{
+            role: "user",
+            content:
+              "Summary of earlier conversation history:\n" <>
+                Enum.join(build_summary_lines(dropped), "\n")
+          }
+
+          # Insert after a complete group, never between tool requests/replies.
+          {head, tail} = Enum.split(messages, length(List.first(groups) || []))
+          head ++ [summary] ++ tail
+        else
+          messages
+        end
+
+      summary_body = builder.(summarized)
+      if fits?.(summary_body), do: {:ok, summarized, summary_body}, else: {:ok, messages, body}
+    else
+      removable =
+        Enum.find_index(groups, fn group ->
+          not Enum.any?(group, fn {msg, index} -> mandatory?(msg, index, protected) end)
+        end)
+
+      if is_nil(removable),
+        do: {:error, body},
+        else:
+          fit_groups(
+            List.delete_at(groups, removable),
+            protected,
+            builder,
+            fits?,
+            strategy,
+            dropped ++ Enum.map(Enum.at(groups, removable), &elem(&1, 0))
+          )
+    end
+  end
+
+  defp request_groups([]), do: []
+
+  defp request_groups([{msg, _} = entry | rest]) do
+    if role(msg) == "assistant" and get_message_field(msg, :tool_calls) not in [nil, []] do
+      {replies, tail} = Enum.split_while(rest, fn {m, _} -> role(m) == "tool" end)
+      [[entry | replies] | request_groups(tail)]
+    else
+      [[entry] | request_groups(rest)]
+    end
+  end
+
+  defp mandatory?(msg, index, protected) do
+    index in protected or role(msg) in ["system", "developer"] or
+      get_message_field(msg, :budget_mandatory) == true or steering?(msg)
+  end
+
+  defp steering?(msg) do
+    case get_message_field(msg, :content) do
+      text when is_binary(text) -> String.starts_with?(text, "Steering guidance:")
+      _ -> false
+    end
+  end
+
+  defp role(msg), do: to_string(get_message_field(msg, :role) || "")
+
+  @doc """
   Estimates the token count for a list of messages or a single message/string.
   Roughly 1 token ≈ 4 bytes of text plus per-message overhead.
   """

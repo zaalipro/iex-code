@@ -74,6 +74,13 @@ defmodule IexCode.Execution.ModelRoute do
          :budget_tokens => profile.thinking_budget,
          :temperature => profile.temperature,
          :max_tokens => profile.max_tokens,
+         :budget_settings =>
+           Map.take(settings, [
+             :context_window_tokens,
+             :context_compaction_strategy,
+             :context_prune_threshold_percent,
+             :keep_recent_turns
+           ]),
          :reasoning_profile => profile
        }}
     end

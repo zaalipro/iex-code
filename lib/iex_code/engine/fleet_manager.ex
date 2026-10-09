@@ -69,6 +69,16 @@ defmodule IexCode.Engine.FleetManager do
     GenServer.call(AgentRegistry.via_fleet(run_id, :manager), {:drain_steering, agent_id})
   end
 
+  def pending_steering(run_id, agent_id),
+    do: GenServer.call(AgentRegistry.via_fleet(run_id, :manager), {:pending_steering, agent_id})
+
+  def consume_steering(run_id, agent_id, ids),
+    do:
+      GenServer.call(
+        AgentRegistry.via_fleet(run_id, :manager),
+        {:consume_steering, agent_id, ids}
+      )
+
   def control_all(run_id, action, payload \\ %{}) when action in [:pause, :resume] do
     GenServer.call(
       AgentRegistry.via_fleet(run_id, :manager),
@@ -338,6 +348,27 @@ defmodule IexCode.Engine.FleetManager do
       end
     else
       {:error, _reason} -> {:reply, [], state}
+    end
+  end
+
+  def handle_call({:pending_steering, agent_id}, _from, state) do
+    with {:ok, state} <- require_parent_run_status(state, ["running", "paused"]),
+         %{row: row, generation: generation} <- Map.get(state.agents, agent_id) do
+      {:reply, Runs.pending_run_agent_steering_controls(row, lease_owner(), generation), state}
+    else
+      nil -> {:reply, {:error, :agent_not_found}, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:consume_steering, agent_id, ids}, _from, state) do
+    with {:ok, state} <- require_parent_run_status(state, ["running", "paused"]),
+         %{row: row, generation: generation} <- Map.get(state.agents, agent_id) do
+      {:reply, Runs.consume_run_agent_steering_controls(row, lease_owner(), generation, 50, ids),
+       state}
+    else
+      nil -> {:reply, {:error, :agent_not_found}, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
 

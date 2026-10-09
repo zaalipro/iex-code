@@ -112,8 +112,9 @@ defmodule IexCode.LLM do
 
     passthrough_opts =
       opts
-      |> Keyword.take([:cancelled?, :receive_timeout])
+      |> Keyword.take([:cancelled?, :receive_timeout, :max_completion_tokens, :thinking])
       |> Keyword.put(:max_tokens, max_tokens)
+      |> Keyword.put(:budget_settings, settings)
       |> Keyword.put(:reasoning_effort, reasoning_effort)
       |> Keyword.put(:thinking_budget, thinking_budget)
       |> Keyword.put(:budget_tokens, thinking_budget)
@@ -128,7 +129,8 @@ defmodule IexCode.LLM do
          else: settings.openai_api_key
 
     openai_fn = fn ->
-      OpenAI.chat(
+      prepare_provider(
+        OpenAI,
         messages,
         system_prompt,
         [
@@ -144,7 +146,8 @@ defmodule IexCode.LLM do
     end
 
     anthropic_fn = fn ->
-      Anthropic.chat(
+      prepare_provider(
+        Anthropic,
         messages,
         system_prompt,
         [
@@ -167,7 +170,8 @@ defmodule IexCode.LLM do
       end
 
     local_fn = fn ->
-      OpenAI.chat(
+      prepare_provider(
+        OpenAI,
         messages,
         system_prompt,
         [
@@ -197,13 +201,22 @@ defmodule IexCode.LLM do
         {^primary_provider, _fn, _key} -> 0
         {_other, _fn, _key} -> 1
       end)
-      |> Enum.map(fn {name, fn_, _key} -> {name, fenced_provider(fn_, opts)} end)
+      |> Enum.map(fn {name, fn_, _key} -> {name, fn_.()} end)
 
     cond do
       providers == [] ->
         {:error, :no_api_key}
 
+      match?([{_, {:error, _}}], providers) ->
+        [{_, error}] = providers
+        error
+
       true ->
+        providers =
+          Enum.map(providers, fn {name, {:ok, callback}} ->
+            {name, fenced_provider(callback, opts)}
+          end)
+
         case Resilience.with_fallback(providers,
                on_chunk: on_chunk,
                on_retry: Keyword.get(opts, :on_retry, fn _a, _r, _s -> :ok end)
@@ -273,39 +286,41 @@ defmodule IexCode.LLM do
 
       passthrough_opts =
         opts
-        |> Keyword.take([:cancelled?, :receive_timeout])
+        |> Keyword.take([:cancelled?, :receive_timeout, :max_completion_tokens, :thinking])
         |> Keyword.put(:max_tokens, max_tokens)
+        |> Keyword.put(
+          :budget_settings,
+          route_value(route, :budget_settings) || Settings.get_settings()
+        )
         |> Keyword.put(:reasoning_effort, reasoning_effort)
         |> Keyword.put(:thinking_budget, thinking_budget)
         |> Keyword.put(:budget_tokens, thinking_budget)
         |> Enum.reject(fn {_key, value} -> is_nil(value) end)
 
-      callback = fn ->
-        module = provider_module(provider)
-
-        module.chat(
-          messages,
-          system_prompt,
-          [
-            api_key: effective_api_key,
-            base_url: base_url,
-            model: model,
-            temperature: temperature,
-            tools: tools,
-            provider: provider
-          ] ++ passthrough_opts,
-          on_chunk
-        )
-      end
-
-      case Resilience.with_fallback([{provider, fenced_provider(callback, opts)}],
-             on_chunk: on_chunk,
-             on_retry: Keyword.get(opts, :on_retry, fn _attempt, _reason, _sleep -> :ok end)
-           ) do
-        {:ok, result, _meta} -> {:ok, result}
-        {:ok, result} -> {:ok, result}
-        {:error, {:all_providers_failed, errors}} -> {:error, errors |> List.first() |> elem(1)}
-        {:error, reason} -> {:error, reason}
+      with {:ok, callback} <-
+             prepare_provider(
+               provider_module(provider),
+               messages,
+               system_prompt,
+               [
+                 api_key: effective_api_key,
+                 base_url: base_url,
+                 model: model,
+                 temperature: temperature,
+                 tools: tools,
+                 provider: provider
+               ] ++ passthrough_opts,
+               on_chunk
+             ) do
+        case Resilience.with_fallback([{provider, fenced_provider(callback, opts)}],
+               on_chunk: on_chunk,
+               on_retry: Keyword.get(opts, :on_retry, fn _attempt, _reason, _sleep -> :ok end)
+             ) do
+          {:ok, result, _meta} -> {:ok, result}
+          {:ok, result} -> {:ok, result}
+          {:error, {:all_providers_failed, errors}} -> {:error, errors |> List.first() |> elem(1)}
+          {:error, reason} -> {:error, reason}
+        end
       end
     else
       false -> {:error, :invalid_resolved_route}
@@ -315,6 +330,13 @@ defmodule IexCode.LLM do
 
   defp do_resolved_chat(_messages, _system_prompt, _on_chunk, _opts, _route),
     do: {:error, :invalid_resolved_route}
+
+  defp prepare_provider(adapter, messages, system, provider_opts, on_chunk) do
+    with {:ok, prepared} <-
+           IexCode.LLM.RequestPreparation.prepare(adapter, messages, system, provider_opts) do
+      {:ok, fn -> adapter.send_prepared(prepared.body, provider_opts, on_chunk) end}
+    end
+  end
 
   defp fenced_provider(callback, opts) do
     fence = Keyword.get(opts, :before_request, fn -> :ok end)

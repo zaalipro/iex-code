@@ -674,8 +674,25 @@ defmodule IexCode.Runs.RunAgentTest do
 
     assert is_binary(first["control_id"])
 
+    assert {:ok, [%{"guidance" => "Second"} = pending]} =
+             Runs.pending_run_agent_steering_controls(agent, owner, agent.lease_generation)
+
     assert {:ok, [%{"guidance" => "Second"}]} =
-             Runs.consume_run_agent_steering_controls(agent, owner, agent.lease_generation)
+             Runs.pending_run_agent_steering_controls(agent, owner, agent.lease_generation)
+
+    assert {:ok, []} =
+             Runs.consume_run_agent_steering_controls(agent, owner, agent.lease_generation, 50, [
+               first["control_id"]
+             ])
+
+    assert {:ok, [%{"guidance" => "Second"}]} =
+             Runs.pending_run_agent_steering_controls(agent, owner, agent.lease_generation)
+
+    Runs.consume_run_agent_steering_controls(agent, owner, agent.lease_generation, 50, [
+      pending["control_id"]
+    ])
+
+    Runs.consume_run_agent_steering_controls(agent, owner, agent.lease_generation)
 
     assert {:ok, []} =
              Runs.consume_run_agent_steering_controls(agent, owner, agent.lease_generation)

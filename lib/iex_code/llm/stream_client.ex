@@ -67,11 +67,7 @@ defmodule IexCode.LLM.StreamClient do
     headers = opts_map |> Map.get(:headers, []) |> normalize_headers()
     auth_secrets = auth_secrets(headers)
 
-    body =
-      opts_map
-      |> Map.fetch!(:body)
-      |> Map.put("stream", true)
-      |> maybe_request_openai_usage(provider)
+    body = request_body(Map.fetch!(opts_map, :body), provider, true)
 
     receive_timeout = Map.get(opts_map, :receive_timeout, 60_000)
     # A nil value (key present, no fun provided) must behave like an absent key.
@@ -187,6 +183,13 @@ defmodule IexCode.LLM.StreamClient do
         {:error, %{status: 0, body: safe_reason, kind: :network, message: message}}
     end
   end
+
+  @doc false
+  def request_body(body, provider, true) do
+    body |> Map.put("stream", true) |> maybe_request_openai_usage(provider)
+  end
+
+  def request_body(body, _provider, false), do: body
 
   # --- Internal Chunk Handling ---
 

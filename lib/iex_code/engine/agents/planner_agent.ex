@@ -9,6 +9,7 @@ defmodule IexCode.Engine.Agents.PlannerAgent do
   alias IexCode.Execution.ModelRoute
   alias IexCode.{Sessions, Settings, Tools, LLM}
   alias IexCode.Tools.AutoFix
+  alias IexCode.LLM.RequestBudgetError
 
   @outer_timeout 90_000
   @inner_timeout 60_000
@@ -226,6 +227,9 @@ defmodule IexCode.Engine.Agents.PlannerAgent do
 
                 {:error, :cancelled} ->
                   {:error, :cancelled}
+
+                {:error, %RequestBudgetError{} = error} ->
+                  {:error, error}
 
                 _ ->
                   fallback_plan =

@@ -228,6 +228,9 @@ defmodule IexCode.LLM.Resilience do
           {:error, {:request_fenced, reason}} ->
             {:error, reason}
 
+          {:error, %IexCode.LLM.RequestBudgetError{}} = error ->
+            error
+
           {:error, reason} ->
             record_failure(provider_name)
 

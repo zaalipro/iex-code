@@ -383,6 +383,39 @@ defmodule IexCode.Engine.SwarmCoordinator do
       {:swarm_agent_phase_interrupted, role, reason, final_state} ->
         {:error, {:agent_phase_interrupted, role, reason, final_state.stage}}
 
+      {:request_budget_failed, %IexCode.LLM.RequestBudgetError{} = reason} ->
+        stop_state_agents(state, "failed")
+        _ = perform_rollback(state.project_root, state)
+
+        {:ok, failed_op} =
+          Sessions.update_operation(state.root_op_id, %{
+            status: "failed",
+            error_message: Exception.message(reason),
+            completed_at: DateTime.utc_now() |> DateTime.truncate(:second)
+          })
+
+        broadcast(session_id, {:operation_failed, failed_op})
+
+        case Sessions.create_message(%{
+               session_id: session_id,
+               role: "assistant",
+               agent_name: "Swarm Coordinator",
+               content: "Request failed: " <> Exception.message(reason)
+             }) do
+          {:ok, message} -> broadcast(session_id, {:message_created, message})
+          _ -> :ok
+        end
+
+        update_db_session_status(session_id, "failed")
+        broadcast(session_id, {:session_status_changed, "failed"})
+
+        broadcast(
+          session_id,
+          {:run_failed, %{session_id: session_id, reason: Exception.message(reason)}}
+        )
+
+        {:error, reason}
+
       {:swarm_cancelled, action, final_state} ->
         {:ok, %{status: :stopped, action: action, cancelled: true, state: final_state}}
 
@@ -649,7 +682,13 @@ defmodule IexCode.Engine.SwarmCoordinator do
               send(parent, {start_ref, :registered, self()})
 
               try do
-                execute_swarm(session_id, user_prompt, run_opts)
+                case execute_swarm(session_id, user_prompt, run_opts) do
+                  {:error, %IexCode.LLM.RequestBudgetError{} = error} ->
+                    exit({:request_budget_failed, error})
+
+                  result ->
+                    result
+                end
               after
                 if register_owner?, do: AgentRegistry.unregister_swarm_owner(session_id)
               end
@@ -1200,10 +1239,23 @@ defmodule IexCode.Engine.SwarmCoordinator do
     case Enum.find(agents, &(&1.role == role)) do
       %{agent_id: agent_id} ->
         FleetRuntime.invoke_agent(run_id, agent_id, fn current ->
-          directives =
-            if drain_steering?, do: FleetManager.drain_steering(run_id, agent_id), else: []
+          if drain_steering? and role in [:planner, :coder] do
+            with {:ok, pending} <- FleetManager.pending_steering(run_id, agent_id),
+                 {:ok, _} = result <- fun.(current.pid, Enum.map(pending, & &1["guidance"])),
+                 {:ok, _} <-
+                   FleetManager.consume_steering(
+                     run_id,
+                     agent_id,
+                     Enum.map(pending, & &1["control_id"])
+                   ) do
+              result
+            end
+          else
+            directives =
+              if drain_steering?, do: FleetManager.drain_steering(run_id, agent_id), else: []
 
-          fun.(current.pid, directives)
+            fun.(current.pid, directives)
+          end
         end)
 
       nil ->
@@ -1721,6 +1773,9 @@ defmodule IexCode.Engine.SwarmCoordinator do
   # or invocation was interrupted could let a later mutating phase run without its declared
   # prerequisite. An explicit targeted restart can service a later invocation, but this
   # interrupted call is never replayed implicitly.
+  defp abort_durable_agent_phase!(_state, _role, %IexCode.LLM.RequestBudgetError{} = reason),
+    do: throw({:request_budget_failed, reason})
+
   defp abort_durable_agent_phase!(%State{run_id: run_id} = state, role, reason)
        when is_binary(run_id) do
     stop_state_agents(state, "interrupted")

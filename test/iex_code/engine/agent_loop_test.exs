@@ -7,6 +7,32 @@ defmodule IexCode.Engine.AgentLoopTest do
   alias IexCode.Runs.Executor
   alias IexCode.Test.LeanHarnessCollector
 
+  test "complete durable steering survives subsequent tool turns", context do
+    run = running_run(context)
+    guidance = String.duplicate("guidance ", 1_000) <> "Required tail constraint"
+
+    {:ok, control} =
+      Runs.enqueue_control(run, "full-guidance", %{
+        kind: "steer",
+        payload: %{"guidance" => guidance}
+      })
+
+    {:ok, _} = Runs.claim_control(control, run.lease_owner)
+
+    Process.put(:agent_loop_responses, [
+      tool_response("steering-tool", 1),
+      {:ok, %{text: "done", tool_calls: [], usage: %{}}}
+    ])
+
+    assert {:ok, _} = execute(run, context.root)
+    assert_receive {:agent_loop_llm_call, first, _, _}
+    assert_receive {:agent_loop_llm_call, second, _, _}
+
+    for transcript <- [first, second] do
+      assert Enum.any?(transcript, &(&1.content == "Steering guidance: " <> guidance))
+    end
+  end
+
   setup do
     root = Path.join(System.tmp_dir!(), "iex-agent-loop-#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)

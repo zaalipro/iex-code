@@ -56,6 +56,55 @@ defmodule IexCode.LeanHarnessBenchTest do
              end)
   end
 
+  for history <- [40, 2_000] do
+    test "actual request budget with #{history} stored rows", context do
+      history = unquote(history)
+      seed_history(context.session.id, history)
+
+      {:ok, _} =
+        Sessions.create_message(%{
+          session_id: context.session.id,
+          role: "user",
+          content: "Current objective"
+        })
+
+      messages =
+        Sessions.list_recent_messages(context.session.id, 20)
+        |> Enum.map(&%{role: &1.role, content: &1.content})
+
+      opts = [
+        model: "fixture-model",
+        max_tokens: 128,
+        tools: IexCode.Tools.tool_definitions(["read_file"]),
+        budget_settings: %{
+          context_window_tokens: 2_000,
+          context_compaction_strategy: "sliding_window"
+        }
+      ]
+
+      {{:ok, prepared}, metrics} =
+        LeanHarnessCollector.measure(fn ->
+          IexCode.LLM.RequestPreparation.prepare(
+            IexCode.LLM.OpenAI,
+            messages,
+            "Required coding instructions",
+            opts
+          )
+        end)
+
+      assert List.last(prepared.messages).content == "Current objective"
+      assert prepared.metrics.estimated_tokens + 128 <= 2_000
+      assert prepared.metrics.bytes <= prepared.metrics.byte_limit
+
+      LeanHarnessCollector.emit(
+        "actual_request_budget",
+        %{history_rows: history, selected_rows: 20},
+        Map.merge(metrics, prepared.metrics)
+        |> Map.put(:retained_request_rows, length(prepared.messages))
+      )
+    end
+  end
+
   for {scenario, history, chunks} <- [
         {"short_single", 0, 4},
         {"short_single_many_chunks", 0, 64},

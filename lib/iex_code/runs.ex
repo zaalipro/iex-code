@@ -4606,7 +4606,33 @@ defmodule IexCode.Runs do
 
   def consume_run_agent_steering_controls(agent_or_id, lease_owner, lease_generation, limit)
       when is_binary(lease_owner) and lease_owner != "" and is_integer(lease_generation) and
-             is_integer(limit) do
+             is_integer(limit),
+      do:
+        consume_run_agent_steering_controls(
+          agent_or_id,
+          lease_owner,
+          lease_generation,
+          limit,
+          :all
+        )
+
+  def consume_run_agent_steering_controls(_agent, _owner, _generation, _limit),
+    do: {:error, :invalid_agent_steering_consumer}
+
+  @doc "Reads pending steering without acknowledging delivery, under the same live fences."
+  def pending_run_agent_steering_controls(agent, owner, generation),
+    do: consume_run_agent_steering_controls(agent, owner, generation, 50, :pending)
+
+  @doc "Acknowledges only the selected steering identities after successful coding invocation."
+  def consume_run_agent_steering_controls(
+        agent_or_id,
+        lease_owner,
+        lease_generation,
+        limit,
+        selection
+      )
+      when is_binary(lease_owner) and lease_owner != "" and is_integer(lease_generation) and
+             is_integer(limit) and (selection in [:all, :pending] or is_list(selection)) do
     with %RunAgent{} = agent <- resolve_run_agent(agent_or_id),
          :ok <-
            validate_agent_fence(agent,
@@ -4643,37 +4669,42 @@ defmodule IexCode.Runs do
             |> Repo.all()
             |> Enum.filter(fn control ->
               is_map(control.result) and control.result["status"] == "queued" and
-                is_binary(control.payload["guidance"] || control.payload[:guidance])
+                is_binary(control.payload["guidance"] || control.payload[:guidance]) and
+                (selection in [:all, :pending] or control.id in selection)
             end)
             |> Enum.take(limit)
             |> Enum.map(fn control ->
               guidance = control.payload["guidance"] || control.payload[:guidance]
 
-              result = %{
-                "action" => "steer",
-                "status" => "consumed",
-                "consumed_at" => DateTime.to_iso8601(consumed_at)
-              }
+              if selection == :pending do
+                {%{"control_id" => control.id, "guidance" => guidance}, control, nil}
+              else
+                result = %{
+                  "action" => "steer",
+                  "status" => "consumed",
+                  "consumed_at" => DateTime.to_iso8601(consumed_at)
+                }
 
-              updated =
-                control
-                |> RunAgentControl.changeset(%{result: result})
-                |> update_or_rollback!()
+                updated =
+                  control
+                  |> RunAgentControl.changeset(%{result: result})
+                  |> update_or_rollback!()
 
-              event =
-                insert_event_in_transaction!(
-                  current.run_id,
-                  "run.agent_steering_consumed",
-                  "fleet",
-                  %{
-                    "run_agent_id" => current.id,
-                    "control_id" => updated.id,
-                    "control_sequence" => updated.sequence,
-                    "lease_generation" => lease_generation
-                  }
-                )
+                event =
+                  insert_event_in_transaction!(
+                    current.run_id,
+                    "run.agent_steering_consumed",
+                    "fleet",
+                    %{
+                      "run_agent_id" => current.id,
+                      "control_id" => updated.id,
+                      "control_sequence" => updated.sequence,
+                      "lease_generation" => lease_generation
+                    }
+                  )
 
-              {%{"control_id" => updated.id, "guidance" => guidance}, updated, event}
+                {%{"control_id" => updated.id, "guidance" => guidance}, updated, event}
+              end
             end)
           end)
         end)
@@ -4681,8 +4712,10 @@ defmodule IexCode.Runs do
       case transaction do
         {:ok, rows} ->
           Enum.each(rows, fn {_item, control, event} ->
-            broadcast(control.run_id, {:run_agent_control_updated, control})
-            broadcast(control.run_id, {:run_event, event})
+            if event do
+              broadcast(control.run_id, {:run_agent_control_updated, control})
+              broadcast(control.run_id, {:run_event, event})
+            end
           end)
 
           {:ok, Enum.map(rows, &elem(&1, 0))}
@@ -4696,7 +4729,7 @@ defmodule IexCode.Runs do
     end
   end
 
-  def consume_run_agent_steering_controls(_agent, _owner, _generation, _limit),
+  def consume_run_agent_steering_controls(_agent, _owner, _generation, _limit, _selection),
     do: {:error, :invalid_agent_steering_consumer}
 
   # Workspace locks

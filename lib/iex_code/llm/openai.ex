@@ -7,26 +7,17 @@ defmodule IexCode.LLM.OpenAI do
   alias IexCode.LLM.StreamClient
 
   def chat(messages, system_prompt, opts, on_chunk \\ fn _c -> :ok end) do
-    raw_api_key = Keyword.get(opts, :api_key, "")
-    base_url = Keyword.get(opts, :base_url, "https://api.openai.com/v1")
+    with {:ok, prepared} <-
+           IexCode.LLM.RequestPreparation.prepare(__MODULE__, messages, system_prompt, opts) do
+      send_prepared(prepared.body, opts, on_chunk)
+    end
+  end
+
+  @doc false
+  def build_body(messages, system_prompt, opts) do
     provider = Keyword.get(opts, :provider, "openai")
     model = Keyword.get(opts, :model, "gpt-4o")
     tools = Keyword.get(opts, :tools, [])
-    stream? = Keyword.get(opts, :stream, true)
-
-    api_key =
-      if raw_api_key in [nil, ""] and
-           (IexCode.LLM.Discovery.is_local_endpoint?(base_url) or
-              IexCode.LLM.Discovery.is_local_provider?(provider)) do
-        "local"
-      else
-        raw_api_key
-      end
-
-    headers = [
-      {"authorization", "Bearer #{api_key}"},
-      {"content-type", "application/json"}
-    ]
 
     system_messages =
       if system_prompt in [nil, ""] do
@@ -57,7 +48,9 @@ defmodule IexCode.LLM.OpenAI do
         effort -> to_string(effort)
       end
 
-    max_tokens = Keyword.get(opts, :max_completion_tokens) || Keyword.get(opts, :max_tokens)
+    max_tokens =
+      Keyword.get(opts, :max_completion_tokens) || Keyword.get(opts, :max_tokens) || 4096
+
     temperature = Keyword.get(opts, :temperature)
 
     body =
@@ -80,7 +73,7 @@ defmodule IexCode.LLM.OpenAI do
         end
       end)
       |> then(fn map ->
-        if caps.type == :local do
+        if caps.type == :local or provider in ["ollama", "lm_studio", "llama_cpp"] do
           Map.put(map, "options", %{
             "num_ctx" => 16_384,
             "temperature" => temperature || 0.6
@@ -97,6 +90,24 @@ defmodule IexCode.LLM.OpenAI do
         end
       end)
 
+    IexCode.LLM.StreamClient.request_body(body, "openai", Keyword.get(opts, :stream, true))
+  end
+
+  @doc false
+  def send_prepared(body, opts, on_chunk) do
+    raw_api_key = Keyword.get(opts, :api_key, "")
+    base_url = Keyword.get(opts, :base_url, "https://api.openai.com/v1")
+    provider = Keyword.get(opts, :provider, "openai")
+
+    api_key =
+      if raw_api_key in [nil, ""] and
+           (IexCode.LLM.Discovery.is_local_endpoint?(base_url) or
+              IexCode.LLM.Discovery.is_local_provider?(provider)),
+         do: "local",
+         else: raw_api_key
+
+    headers = [{"authorization", "Bearer #{api_key}"}, {"content-type", "application/json"}]
+    stream? = Keyword.get(opts, :stream, true)
     url = String.trim_trailing(base_url, "/") <> "/chat/completions"
 
     if api_key == "" or api_key == nil do
