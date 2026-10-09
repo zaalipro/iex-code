@@ -1397,6 +1397,9 @@ defmodule IexCode.Engine.SwarmCoordinator do
           parent_op_id: root_op_id,
           project_root: state.project_root,
           run_id: state.run_id,
+          execution_id: state.run_id || root_op_id,
+          run_attempt: state.run_attempt,
+          run_lease_generation: state.run_lease_generation,
           steer_directives: state.steer_directives ++ targeted_steering,
           allowed_tools: state.allowed_tools,
           execution_policy: state.execution_policy,
@@ -1435,6 +1438,9 @@ defmodule IexCode.Engine.SwarmCoordinator do
           parent_op_id: root_op_id,
           project_root: state.project_root,
           run_id: state.run_id,
+          execution_id: state.run_id || root_op_id,
+          run_attempt: state.run_attempt,
+          run_lease_generation: state.run_lease_generation,
           diagnostics: diagnostics,
           previous_plan: state.plan,
           steer_directives: state.steer_directives ++ targeted_steering,
@@ -1551,6 +1557,9 @@ defmodule IexCode.Engine.SwarmCoordinator do
     coder_opts = [
       session_id: session_id,
       run_id: state.run_id,
+      execution_id: state.run_id || root_op_id,
+      run_attempt: state.run_attempt,
+      run_lease_generation: state.run_lease_generation,
       parent_op_id: root_op_id,
       project_root: project_root,
       plan: state.plan,
@@ -1841,22 +1850,25 @@ defmodule IexCode.Engine.SwarmCoordinator do
              agent_name: "Swarm Coordinator",
              content: final_content,
              metadata: %{
-               swarm_mode: true,
-               status: state.status,
-               iterations: state.iteration,
-               steering_count: length(state.steer_directives)
+               :swarm_mode => true,
+               :status => state.status,
+               :iterations => state.iteration,
+               :steering_count => length(state.steer_directives),
+               "stream_scope" => %{
+                 "session_id" => session_id,
+                 "execution_id" => state.run_id || state.root_op_id,
+                 "attempt" => state.run_attempt || 1,
+                 "attempt_id" => "#{state.run_id || state.root_op_id}:#{state.run_attempt || 1}",
+                 "generation" => state.run_lease_generation || 1
+               }
              }
            }) do
         {:ok, msg} ->
           broadcast(session_id, {:message_created, msg})
           msg
 
-        {:error, reason} ->
-          Logger.error(
-            "[SwarmCoordinator] Failed to persist final swarm message for session #{session_id}: #{inspect(reason)}"
-          )
-
-          %{id: nil, role: "assistant", content: final_content}
+        {:error, _reason} ->
+          raise "Final swarm message persistence failed"
       end
 
     # Complete root operation

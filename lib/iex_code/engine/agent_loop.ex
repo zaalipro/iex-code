@@ -10,6 +10,7 @@ defmodule IexCode.Engine.AgentLoop do
 
   alias IexCode.LLM.ContextCompactor
   alias IexCode.Engine.{AttemptControl, FleetControlToken}
+  alias IexCode.Engine.ExecutionStream
   alias IexCode.Runs
   alias IexCode.Execution.{BoostEngine, Limits, ModelRoute}
   alias IexCode.Runs.{DagPayload, Run, RunCommand}
@@ -63,7 +64,10 @@ defmodule IexCode.Engine.AgentLoop do
           {:ok, nil} ->
             messages = initial_messages(run, state.session.id)
             record_event(state, "user", %{"content" => run.objective, "run_id" => run.id})
-            finish_execution(run, loop(messages, 1, state))
+
+            ExecutionStream.with_stream(state.stream_identity, fn stream ->
+              finish_execution(run, loop(messages, 1, %{state | stream_pid: stream}))
+            end)
 
           {:ok, result} ->
             {:ok, result}
@@ -132,7 +136,13 @@ defmodule IexCode.Engine.AgentLoop do
           ] ++ [paused_answer_message(bundle, answer)]
 
       progress.(10, "Resuming paused run at turn #{bundle.turn + 1}")
-      finish_execution(run, loop(resume_messages, bundle.turn + 1, restored))
+
+      ExecutionStream.with_stream(state.stream_identity, fn stream ->
+        finish_execution(
+          run,
+          loop(resume_messages, bundle.turn + 1, %{restored | stream_pid: stream})
+        )
+      end)
     else
       nil -> {:error, :no_pause_bundle}
       {:error, _reason} = error -> error
@@ -161,6 +171,13 @@ defmodule IexCode.Engine.AgentLoop do
 
       progress.(10, "Single agent preparing bounded #{max_turns}-turn loop")
 
+      identity =
+        ExecutionStream.scope(run.session_id, :assistant,
+          execution_id: run.id,
+          run_attempt: authority.run_attempt,
+          run_lease_generation: authority.lease_generation
+        )
+
       state = %{
         run: run,
         session: effective_session,
@@ -181,7 +198,9 @@ defmodule IexCode.Engine.AgentLoop do
         tool_calls: 0,
         usage: %{input_tokens: 0, output_tokens: 0, cost_cents: 0},
         session_overrides: %{},
-        rollout_path: rollout_path(opts, session)
+        rollout_path: rollout_path(opts, session),
+        stream_pid: nil,
+        stream_identity: identity
       }
 
       {:ok, state}
@@ -225,6 +244,8 @@ defmodule IexCode.Engine.AgentLoop do
     do: {:error, {:agent_turn_limit_exceeded, maximum}}
 
   defp loop(messages, turn, state) do
+    ExecutionStream.turn(state.stream_pid, turn)
+
     with :ok <- checkpoint(state.run.id, state.authority),
          {:ok, messages, steering_controls} <- pending_steering(messages, state, turn),
          :ok <- report_turn_progress(state, turn),
@@ -592,7 +613,14 @@ defmodule IexCode.Engine.AgentLoop do
     ]
 
     opts = if state.llm == IexCode.LLM, do: Keyword.put(opts, :resolved_route, route), else: opts
-    state.llm.chat(messages, system_prompt, state.session, fn _chunk -> :ok end, opts)
+
+    state.llm.chat(
+      messages,
+      system_prompt,
+      state.session,
+      ExecutionStream.callback(state.stream_pid),
+      opts
+    )
   end
 
   defp execute_tool_calls(state, calls, turn) do
@@ -956,7 +984,8 @@ defmodule IexCode.Engine.AgentLoop do
         "turns" => turn,
         "tool_calls" => state.tool_calls,
         "model_provider" => state.session.model_provider,
-        "model_name" => state.session.model_name
+        "model_name" => state.session.model_name,
+        "stream_identity" => ExecutionStream.metadata_identity(state.stream_pid)
       }
     }
 

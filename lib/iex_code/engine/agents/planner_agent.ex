@@ -5,7 +5,7 @@ defmodule IexCode.Engine.Agents.PlannerAgent do
   """
   use GenServer, restart: :transient
   require Logger
-  alias IexCode.Engine.{AgentCancellation, AgentRegistry, OperationManager}
+  alias IexCode.Engine.{AgentCancellation, AgentRegistry, ExecutionStream, OperationManager}
   alias IexCode.Execution.ModelRoute
   alias IexCode.{Sessions, Settings, Tools, LLM}
   alias IexCode.Tools.AutoFix
@@ -216,33 +216,49 @@ defmodule IexCode.Engine.Agents.PlannerAgent do
 
             with {:ok, llm_opts} <-
                    durable_model_options(opts[:execution_policy], state.llm, base_llm_opts) do
-              case state.llm.chat(messages, system_prompt, session, fn _c -> :ok end, llm_opts) do
-                {:ok, %{text: plan_text} = response}
-                when is_binary(plan_text) and byte_size(plan_text) > 0 ->
-                  with :ok <-
-                         persist_run_usage(Keyword.get(opts, :run_id), response, runtime_owner) do
-                    progress.(100, "Plan ready")
-                    {:ok, plan_text}
-                  end
+              identity =
+                ExecutionStream.scope(session_id, :planner,
+                  execution_id: opts[:execution_id] || opts[:run_id],
+                  run_attempt: opts[:run_attempt],
+                  run_lease_generation: opts[:run_lease_generation]
+                )
 
-                {:error, :cancelled} ->
-                  {:error, :cancelled}
+              ExecutionStream.with_stream(identity, fn stream ->
+                callback = ExecutionStream.callback(stream)
 
-                {:error, %RequestBudgetError{} = error} ->
-                  {:error, error}
+                response = state.llm.chat(messages, system_prompt, session, callback, llm_opts)
+                response = if cancelled_fun(state).(), do: {:error, :cancelled}, else: response
 
-                _ ->
-                  fallback_plan =
-                    """
-                    1. Inspect workspace structure and relevant modules.
-                    2. Implement required changes or functions.
-                    3. Run tests and verify code compilation.
-                    """
-                    |> String.trim()
+                case response do
+                  {:ok, %{text: plan_text} = response}
+                  when is_binary(plan_text) and byte_size(plan_text) > 0 ->
+                    with :ok <-
+                           persist_run_usage(Keyword.get(opts, :run_id), response, runtime_owner) do
+                      progress.(100, "Plan ready")
+                      {:ok, plan_text}
+                    end
 
-                  progress.(100, "Default plan created")
-                  {:ok, fallback_plan}
-              end
+                  {:error, :cancelled} ->
+                    {:error, :cancelled}
+
+                  {:error, %RequestBudgetError{} = error} ->
+                    {:error, error}
+
+                  _ ->
+                    ExecutionStream.finish(stream, :failed)
+
+                    fallback_plan =
+                      """
+                      1. Inspect workspace structure and relevant modules.
+                      2. Implement required changes or functions.
+                      3. Run tests and verify code compilation.
+                      """
+                      |> String.trim()
+
+                    progress.(100, "Default plan created")
+                    {:ok, fallback_plan}
+                end
+              end)
             end
           end,
           Keyword.get(opts, :inner_timeout, @inner_timeout)

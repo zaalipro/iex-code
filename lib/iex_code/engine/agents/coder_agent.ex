@@ -5,7 +5,7 @@ defmodule IexCode.Engine.Agents.CoderAgent do
   """
   use GenServer, restart: :transient
   require Logger
-  alias IexCode.Engine.{AgentCancellation, AgentRegistry, OperationManager}
+  alias IexCode.Engine.{AgentCancellation, AgentRegistry, ExecutionStream, OperationManager}
   alias IexCode.Execution.ModelRoute
   alias IexCode.{Sessions, Settings, Tools, LLM}
   alias IexCode.Tools.AutoFix
@@ -180,24 +180,18 @@ defmodule IexCode.Engine.Agents.CoderAgent do
                  {:ok, max_tool_iterations} <-
                    max_tool_iterations(opts[:execution_policy]),
                  {:ok, code_text} <-
-                   run_tool_loop(
+                   run_coder_stream(
                      session_id,
                      messages,
                      system_prompt,
                      session,
                      project_root,
                      parent_op_id,
-                     opts[:run_id],
-                     trusted_project_id(opts, state),
-                     opts[:workspace_lock_delegation],
-                     Keyword.get(opts, :allowed_tools, :all),
-                     cancelled_fun(state),
-                     state.llm,
-                     opts[:execution_policy],
+                     opts,
+                     state,
                      max_tool_iterations,
                      runtime_owner,
-                     progress,
-                     0
+                     progress
                    ) do
               progress.(100, "Implementation complete")
               {:ok, code_text}
@@ -252,6 +246,50 @@ defmodule IexCode.Engine.Agents.CoderAgent do
 
   # Tool loop helpers
 
+  defp run_coder_stream(
+         session_id,
+         messages,
+         system_prompt,
+         session,
+         project_root,
+         parent_op_id,
+         opts,
+         state,
+         max_tool_iterations,
+         runtime_owner,
+         progress
+       ) do
+    identity =
+      ExecutionStream.scope(session_id, :coder,
+        execution_id: opts[:execution_id] || opts[:run_id],
+        run_attempt: opts[:run_attempt],
+        run_lease_generation: opts[:run_lease_generation]
+      )
+
+    ExecutionStream.with_stream(identity, fn stream ->
+      run_tool_loop(
+        session_id,
+        messages,
+        system_prompt,
+        session,
+        project_root,
+        parent_op_id,
+        opts[:run_id],
+        trusted_project_id(opts, state),
+        opts[:workspace_lock_delegation],
+        Keyword.get(opts, :allowed_tools, :all),
+        cancelled_fun(state),
+        state.llm,
+        opts[:execution_policy],
+        max_tool_iterations,
+        runtime_owner,
+        progress,
+        0,
+        stream
+      )
+    end)
+  end
+
   defp apply_explicit_patches(opts, project_root, progress) do
     patches = opts[:patches]
 
@@ -286,11 +324,14 @@ defmodule IexCode.Engine.Agents.CoderAgent do
          max_tool_iterations,
          usage_context,
          progress,
-         iteration
+         iteration,
+         stream
        ) do
     if iteration >= max_tool_iterations do
       {:error, {:tool_iteration_limit_reached, max_tool_iterations}}
     else
+      ExecutionStream.turn(stream, iteration + 1)
+
       progress.(
         min(90, 40 + iteration * 10),
         "LLM iteration #{iteration + 1}/#{max_tool_iterations}..."
@@ -299,7 +340,12 @@ defmodule IexCode.Engine.Agents.CoderAgent do
       base_llm_opts = [cancelled?: cancelled?, allowed_tools: allowed_tools]
 
       with {:ok, llm_opts} <- durable_model_options(execution_policy, llm, base_llm_opts) do
-        case llm.chat(messages, system_prompt, session, fn _c -> :ok end, llm_opts) do
+        response =
+          llm.chat(messages, system_prompt, session, ExecutionStream.callback(stream), llm_opts)
+
+        response = if cancelled?.(), do: {:error, :cancelled}, else: response
+
+        case response do
           {:ok, %{text: text, tool_calls: tool_calls} = response} when tool_calls != [] ->
             with :ok <- persist_run_usage(run_id, response, usage_context) do
               progress.(60, "Executing #{length(tool_calls)} tool call(s)...")
@@ -338,7 +384,8 @@ defmodule IexCode.Engine.Agents.CoderAgent do
                 max_tool_iterations,
                 usage_context,
                 progress,
-                iteration + 1
+                iteration + 1,
+                stream
               )
             end
 

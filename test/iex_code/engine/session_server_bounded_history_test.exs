@@ -8,7 +8,7 @@ defmodule IexCode.Engine.SessionServerBoundedHistoryTest do
 
   for history_size <- [60, 600] do
     test "interactive history selects at most 50 rows before compaction with #{history_size} rows" do
-      provider = start_supervised!({MockLLMServer, scenario: :standard_completion})
+      provider = start_supervised!({MockLLMServer, scenario: :sse_chunks})
       server = GenServer.call(provider, :get_info)
       root = Path.join(System.tmp_dir!(), "interactive-history-#{Ecto.UUID.generate()}")
       File.mkdir_p!(root)

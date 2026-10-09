@@ -23,6 +23,8 @@ defmodule IexCode.Application do
         {Task.Supervisor, name: IexCode.TaskSupervisor},
         {DynamicSupervisor,
          strategy: :one_for_one, name: IexCode.Engine.AttemptControlSupervisor},
+        {DynamicSupervisor,
+         strategy: :one_for_one, name: IexCode.Engine.ExecutionStreamSupervisor},
         IexCode.LLM.Discovery.Server,
         IexCode.WorkspaceLocks,
         IexCode.Engine.SessionSupervisor,

@@ -863,7 +863,8 @@ defmodule IexCode.Engine.SessionServer do
                  current_session,
                  actual_prompt,
                  project_root,
-                 Keyword.get(opts, :allowed_tools, :all)
+                 Keyword.get(opts, :allowed_tools, :all),
+                 user_msg.id
                )
              end) do
           {:ok, task_pid} ->
@@ -952,7 +953,38 @@ defmodule IexCode.Engine.SessionServer do
     {:noreply, state}
   end
 
-  defp run_single_agent(session_id, session, user_prompt, project_root, allowed_tools) do
+  defp run_single_agent(
+         session_id,
+         session,
+         user_prompt,
+         project_root,
+         allowed_tools,
+         execution_id
+       ) do
+    alias IexCode.Engine.ExecutionStream
+    identity = ExecutionStream.scope(session_id, :assistant, execution_id: execution_id)
+
+    ExecutionStream.with_stream(identity, fn stream ->
+      run_single_agent_stream(
+        session_id,
+        session,
+        user_prompt,
+        project_root,
+        allowed_tools,
+        stream
+      )
+    end)
+  end
+
+  defp run_single_agent_stream(
+         session_id,
+         session,
+         user_prompt,
+         project_root,
+         allowed_tools,
+         stream
+       ) do
+    alias IexCode.Engine.ExecutionStream
     subscribe_steering(session_id)
     broadcast(session_id, {:session_status_changed, "running"})
 
@@ -962,6 +994,7 @@ defmodule IexCode.Engine.SessionServer do
     try do
       case control_checkpoint() do
         :cancel ->
+          ExecutionStream.finish(stream, :cancelled)
           finish_cancelled(session_id)
 
         :go ->
@@ -1006,7 +1039,7 @@ defmodule IexCode.Engine.SessionServer do
                   "Querying model (#{session.model_provider}: #{session.model_name})..."
                 )
 
-                LLM.chat(prev_messages, system_prompt, session, fn _c -> :ok end,
+                LLM.chat(prev_messages, system_prompt, session, ExecutionStream.callback(stream),
                   cancelled?: cancelled?,
                   allowed_tools: allowed_tools
                 )
@@ -1101,6 +1134,10 @@ defmodule IexCode.Engine.SessionServer do
 
               msg_metadata =
                 %{}
+                |> Map.put(
+                  "stream_identity",
+                  ExecutionStream.metadata_identity(stream)
+                )
                 |> maybe_put_meta("reasoning", reasoning)
                 |> maybe_put_meta("thinking_tokens", thinking_tokens)
                 |> maybe_put_meta("duration_ms", duration_ms)
@@ -1112,11 +1149,21 @@ defmodule IexCode.Engine.SessionServer do
                      content: final_content,
                      metadata: msg_metadata
                    }) do
-                {:ok, asst_msg} -> broadcast(session_id, {:message_created, asst_msg})
-                _ -> :ok
+                {:ok, asst_msg} ->
+                  broadcast(session_id, {:message_created, asst_msg})
+                  ExecutionStream.finish(stream, :settled)
+
+                {:error, _reason} ->
+                  ExecutionStream.finish(stream, :failed)
+                  raise "Final message persistence failed"
               end
 
             {:error, reason} ->
+              ExecutionStream.finish(
+                stream,
+                if(reason == :cancelled, do: :cancelled, else: :failed)
+              )
+
               case Sessions.create_message(%{
                      session_id: session_id,
                      role: "assistant",
@@ -1136,6 +1183,8 @@ defmodule IexCode.Engine.SessionServer do
       end
     rescue
       error ->
+        ExecutionStream.finish(stream, :failed)
+
         Logger.error(
           "Single-agent run failed for session #{session_id}: #{Exception.format(:error, error)}"
         )
@@ -1148,20 +1197,27 @@ defmodule IexCode.Engine.SessionServer do
           {:run_failed, %{session_id: session_id, reason: Exception.message(error)}}
         )
 
-        case Sessions.create_message(%{
-               session_id: session_id,
-               role: "assistant",
-               agent_name: "Assistant",
-               content: "❌ **Run Failed**: #{Exception.message(error)}"
-             }) do
-          {:ok, err_msg} -> broadcast(session_id, {:message_created, err_msg})
+        try do
+          case Sessions.create_message(%{
+                 session_id: session_id,
+                 role: "assistant",
+                 agent_name: "Assistant",
+                 content: "❌ **Run Failed**: #{Exception.message(error)}"
+               }) do
+            {:ok, err_msg} -> broadcast(session_id, {:message_created, err_msg})
+            _ -> :ok
+          end
+        rescue
           _ -> :ok
         end
+
+        exit(:single_agent_failed)
     catch
       :throw, {:request_budget_failed, error} ->
         exit({:request_budget_failed, error})
 
       :throw, {:session_cancelled, ^session_id} ->
+        ExecutionStream.finish(stream, :cancelled)
         finish_cancelled(session_id)
     after
       unsubscribe_steering(session_id)
@@ -1576,6 +1632,12 @@ defmodule IexCode.Engine.SessionServer do
       {:run_failed, %{session_id: state.session_id, reason: Exception.message(error)}}
     )
 
+    {:noreply, %{state | status: :failed, current_task: nil, task_ref: nil, run_mode: nil}}
+  end
+
+  defp finish_task_down(state, :single_agent_failed) do
+    update_db_session_status(state.session_id, "failed")
+    broadcast(state.session_id, {:session_status_changed, "failed"})
     {:noreply, %{state | status: :failed, current_task: nil, task_ref: nil, run_mode: nil}}
   end
 
