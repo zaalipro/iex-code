@@ -159,18 +159,20 @@ defmodule IexCodeWeb.WorkspaceHistory do
         Enum.map(socket.assigns.operation_events, & &1.id)
       )
 
-    events =
-      Enum.reject(socket.assigns.operation_events, fn event ->
-        status = statuses[event.id]
-        status in ["completed", "failed"] or (status && event.status in ["pending", "running"])
-      end)
-
     # A detached write may commit between the projection and acknowledgement
     # queries. Reload after any terminal acknowledgement before retiring it.
     socket =
       if Enum.any?(statuses, fn {_id, status} -> status in ["completed", "failed"] end),
         do: operations_preserving_detail(socket, socket.assigns.operation_opts),
         else: socket
+
+    # The acknowledgement refresh can detect a cleared cursor and reset the
+    # overlays. Use that refreshed state, never a captured pre-clear list.
+    events =
+      Enum.reject(socket.assigns.operation_events, fn event ->
+        status = statuses[event.id]
+        status in ["completed", "failed"] or (status && event.status in ["pending", "running"])
+      end)
 
     rows =
       Enum.reduce(events, socket.assigns.operations, fn event, rows ->
@@ -268,29 +270,37 @@ defmodule IexCodeWeb.WorkspaceHistory do
   end
 
   defp operations_preserving_detail(socket, opts) do
-    detail = socket.assigns.operation_detail
-    expanded = socket.assigns.expanded_ops
-    events = socket.assigns.operation_events
+    case Sessions.fetch_operation_page(
+           socket.assigns.session.id,
+           Keyword.put(opts, :limit, @window)
+         ) do
+      {:ok, page} ->
+        visible_ids = MapSet.new(page.operations, & &1.id)
 
-    {:ok, page} =
-      Sessions.fetch_operation_page(socket.assigns.session.id, Keyword.put(opts, :limit, @window))
+        expanded =
+          socket.assigns.expanded_ops
+          |> MapSet.intersection(visible_ids)
+          |> MapSet.union(active_ancestors(page.operations))
 
-    socket =
-      assign(socket,
-        operations: page.operations,
-        operation_page: Map.drop(page, [:operations, :stats]),
-        operation_stats: page.stats
-      )
+        detail = socket.assigns.operation_detail
 
-    visible_ids = MapSet.new(socket.assigns.operations, & &1.id)
+        detail =
+          if detail && MapSet.member?(visible_ids, detail.id),
+            do: Sessions.get_operation(socket.assigns.session.id, detail.id)
 
-    expanded =
-      expanded
-      |> MapSet.intersection(visible_ids)
-      |> MapSet.union(active_ancestors(socket.assigns.operations))
+        assign(socket,
+          operations: page.operations,
+          operation_page: Map.drop(page, [:operations, :stats]),
+          operation_stats: page.stats,
+          operation_detail: detail,
+          expanded_ops: expanded
+        )
 
-    detail = if detail && MapSet.member?(visible_ids, detail.id), do: detail
-    assign(socket, operation_detail: detail, expanded_ops: expanded, operation_events: events)
+      {:error, :invalid_cursor} ->
+        # Clear can commit before its notification reaches this view. Discard
+        # the invalid page and its pre-clear overlays/timer together.
+        clear_operations(socket)
+    end
   end
 
   defp page_key(:chat), do: :message_page

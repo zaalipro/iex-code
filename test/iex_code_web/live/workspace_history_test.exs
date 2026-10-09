@@ -3,7 +3,109 @@ defmodule IexCodeWeb.WorkspaceHistoryTest do
   @moduletag mock_llm: true
 
   alias IexCode.{Repo, Sessions}
+  alias IexCode.Sessions.Operation
   alias IexCode.Swarm.PeerStream
+  alias IexCodeWeb.{WorkspaceHistory, WorkspaceLive}
+
+  test "late operation notification resets an older cursor invalidated by clear", ctx do
+    {session, _} = history(ctx.workspace_path, 0)
+    start_supervised!({SessionServer, session.id})
+    socket = older_operation_page(session)
+    late = hd(socket.assigns.operations)
+    clear_before_notification(session, socket)
+
+    assert {:noreply, refreshed} =
+             WorkspaceLive.handle_info({:operation_completed, late}, socket)
+
+    assert_reset_after_clear(refreshed)
+  end
+
+  test "queued reconciliation resets an older cursor invalidated by clear", ctx do
+    {session, _} = history(ctx.workspace_path, 0)
+    start_supervised!({SessionServer, session.id})
+    socket = older_operation_page(session)
+
+    {:ok, running} =
+      Sessions.create_operation(%{
+        session_id: session.id,
+        agent_name: "CoderAgent",
+        op_type: "read_file",
+        title: "detached completion",
+        status: "running"
+      })
+
+    socket =
+      WorkspaceHistory.operation_event(socket, %{
+        running
+        | status: "completed",
+          result: "unsettled result"
+      })
+
+    ref = socket.assigns.operation_reconcile_ref
+    token = socket.assigns.operation_reconcile_token
+    assert is_reference(ref)
+    assert is_reference(token)
+    Process.cancel_timer(ref)
+    on_exit(fn -> Process.cancel_timer(ref) end)
+    clear_before_notification(session, socket)
+
+    assert {:noreply, refreshed} =
+             WorkspaceLive.handle_info(
+               {:reconcile_operation_history, session.id, token, 1},
+               socket
+             )
+
+    assert_reset_after_clear(refreshed)
+    assert WorkspaceHistory.reconcile_tick(refreshed, session.id, token, 1) == refreshed
+  end
+
+  test "open running detail shows its committed completion without reopening", ctx do
+    assert_open_detail_settles(ctx, "completed", :operation_completed, "completed result", nil)
+  end
+
+  test "open running detail shows its committed failure and error without reopening", ctx do
+    assert_open_detail_settles(
+      ctx,
+      "failed",
+      :operation_failed,
+      "failed result",
+      "terminal error"
+    )
+  end
+
+  test "clear during terminal acknowledgement does not restore captured overlays", ctx do
+    {session, _} = history(ctx.workspace_path, 0)
+    socket = older_operation_page(session)
+    persisted = hd(socket.assigns.operations)
+    detached = %{persisted | id: Ecto.UUID.generate(), result: "detached pre-clear result"}
+    socket = Phoenix.Component.assign(socket, operation_events: [detached])
+
+    handler = {__MODULE__, make_ref()}
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:iex_code, :repo, :query],
+        &__MODULE__.clear_after_operation_acknowledgement/4,
+        %{handler: handler, owner: self(), session_id: session.id}
+      )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+    socket = WorkspaceHistory.operation_event(socket, persisted)
+    assert_receive :cleared_after_operation_acknowledgement
+    assert Sessions.list_operations(session.id) == []
+    assert_reset_after_clear(socket)
+  end
+
+  def clear_after_operation_acknowledgement(_event, _measurements, metadata, config) do
+    if self() == config.owner and
+         String.starts_with?(metadata.query, ~s(SELECT o0."id", o0."status" FROM "operations")) do
+      :telemetry.detach(config.handler)
+      import Ecto.Query
+      Repo.delete_all(from(o in Operation, where: o.session_id == ^config.session_id))
+      send(config.owner, :cleared_after_operation_acknowledgement)
+    end
+  end
 
   test "role cards follow current work rather than the oldest projected operation", ctx do
     {session, _} = history(ctx.workspace_path, 0)
@@ -81,7 +183,9 @@ defmodule IexCodeWeb.WorkspaceHistoryTest do
         progress: 0
       })
 
-    {:ok, view, _} = live(ctx.conn, ~p"/sessions/#{session.id}")
+    {:ok, view, _} = live(ctx.conn, ~p"/sessions/#{session.id}?tab=swarm")
+    node = "#operation-node-#{op.id}"
+    view |> element("#{node} button[title='Inspect Details']") |> render_click()
     send(view.pid, {:operation_started, op})
     render(view)
     {:ok, _} = Sessions.update_operation(op, %{progress: 80, result: "latest progress"})
@@ -109,11 +213,14 @@ defmodule IexCodeWeb.WorkspaceHistoryTest do
     })
 
     assert :sys.get_state(view.pid).socket.assigns.operation_reconcile_ref == ref
+    view |> element("#{node} button[title='Inspect Details']") |> render_click()
     {:ok, _} = Sessions.update_operation(op, %{status: "completed", result: "terminal"})
     send(view.pid, {:reconcile_operation_history, session.id, state.operation_reconcile_token, 1})
     render(view)
     assert :sys.get_state(view.pid).socket.assigns.operation_stats.completed == 1
     assert :sys.get_state(view.pid).socket.assigns.operation_stats.running == 0
+    assert has_element?(view, node, "terminal")
+    assert :sys.get_state(view.pid).socket.assigns.operation_detail.result == "terminal"
   end
 
   test "string keyed peer detail renders without losing its existing full payload", ctx do
@@ -389,6 +496,135 @@ defmodule IexCodeWeb.WorkspaceHistoryTest do
 
     PeerStream.clear_history(session.id)
     PeerStream.clear_history(other.id)
+  end
+
+  defp older_operation_page(session) do
+    now = ~U[2026-01-01 00:00:00Z]
+
+    {51, _} =
+      Repo.insert_all(
+        Operation,
+        for n <- 1..51 do
+          %{
+            id: "55555555-5555-4555-8555-#{String.pad_leading(Integer.to_string(n), 12, "0")}",
+            session_id: session.id,
+            agent_name: "CoderAgent",
+            op_type: "read_file",
+            title: "terminal #{n}",
+            status: "completed",
+            progress: 100,
+            inserted_at: now,
+            updated_at: now
+          }
+        end
+      )
+
+    latest =
+      WorkspaceHistory.operations(%Phoenix.LiveView.Socket{
+        assigns: %{__changed__: %{}, session: session}
+      })
+
+    older = WorkspaceHistory.navigate(latest, :operations, %{"direction" => "older"})
+    assert length(older.assigns.operations) == 1
+    assert older.assigns.operation_opts == [before: latest.assigns.operation_page.first_cursor]
+    older
+  end
+
+  defp clear_before_notification(session, socket) do
+    :ok = Phoenix.PubSub.subscribe(IexCode.PubSub, "session:#{session.id}")
+    :ok = SessionServer.clear_operations(session.id)
+    assert_receive :operations_cleared
+
+    # Handle a queued event/tick before passing the clear notification to the
+    # LiveView, so the permissible ordering is deterministic.
+    assert Sessions.list_operations(session.id) == []
+
+    assert {:error, :invalid_cursor} =
+             Sessions.fetch_operation_page(session.id, socket.assigns.operation_opts)
+  end
+
+  defp assert_reset_after_clear(socket) do
+    assert socket.assigns.operation_opts == []
+    assert socket.assigns.operation_latest?
+    assert socket.assigns.operation_stats.total == 0
+    assert socket.assigns.operations == []
+    assert socket.assigns.operation_events == []
+    assert socket.assigns.operation_detail == nil
+    assert socket.assigns.expanded_ops == MapSet.new()
+    assert socket.assigns.operation_reconcile_ref == nil
+    assert socket.assigns.operation_reconcile_token == nil
+    refute socket.assigns.operation_page.has_older?
+    refute socket.assigns.operation_page.has_newer?
+
+    assert {:noreply, cleared} = WorkspaceLive.handle_info(:operations_cleared, socket)
+    assert cleared.assigns.operations == []
+    assert cleared.assigns.operation_detail == nil
+  end
+
+  defp assert_open_detail_settles(ctx, status, notification, result, error) do
+    {session, _} = history(ctx.workspace_path, 0)
+    other = create_session_fixture(Sessions.get_session(session.id).project)
+    result = result <> String.duplicate(" full persisted detail", 150) <> " complete tail"
+
+    {:ok, running} =
+      Sessions.create_operation(%{
+        session_id: session.id,
+        agent_name: "CoderAgent",
+        op_type: "read_file",
+        title: "running detail",
+        status: "running",
+        result: "original running result",
+        params: %{"path" => "sample.txt"}
+      })
+
+    {:ok, view, _} = live(ctx.conn, ~p"/sessions/#{session.id}?tab=swarm")
+    node = "#operation-node-#{running.id}"
+    view |> element("#{node} button[title='Inspect Details']") |> render_click()
+    assert has_element?(view, node, "original running result")
+    assert :sys.get_state(view.pid).socket.assigns.operation_detail.id == running.id
+
+    {:ok, foreign} =
+      Sessions.create_operation(%{
+        session_id: other.id,
+        agent_name: "CoderAgent",
+        op_type: "read_file",
+        title: "foreign completion",
+        status: "completed",
+        result: "foreign result"
+      })
+
+    send(view.pid, {notification, foreign})
+    _ = render(view)
+    assert :sys.get_state(view.pid).socket.assigns.operation_detail.id == running.id
+    refute has_element?(view, "#operation-node-#{foreign.id}")
+
+    {:ok, terminal} =
+      Sessions.update_operation(running, %{
+        status: status,
+        progress: 100,
+        result: result,
+        error_message: error
+      })
+
+    send(view.pid, {notification, terminal})
+    _ = render(view)
+    assigns = :sys.get_state(view.pid).socket.assigns
+    assert Enum.find(assigns.operations, &(&1.id == running.id)).status == status
+    assert Sessions.get_operation(session.id, running.id).result == result
+    assert MapSet.member?(assigns.expanded_ops, running.id)
+    assert assigns.operation_stats.total == 1
+    assert assigns.operation_stats.running == 0
+    assert Enum.all?(assigns.operations, &(byte_size(&1.result || "") <= 2048))
+
+    # Node-scoped assertions cannot be satisfied by a role card or failure
+    # banner. The already-open detail must show the committed result itself.
+    if error, do: assert(has_element?(view, node, error))
+    assert has_element?(view, node, result)
+    refute has_element?(view, node, "original running result")
+    assert assigns.operation_detail.result == result
+    assert assigns.operation_detail.error_message == error
+    assert assigns.operation_detail.status == status
+    assert assigns.operation_detail.params == %{"path" => "sample.txt"}
   end
 
   defp history(path, count) do
