@@ -1553,6 +1553,7 @@
               agent_receipts={@run_agent_receipts}
               dag_projection={@dag_projection}
             />
+            <.execution_previews previews={@execution_previews} />
 
             <%!-- Interactive Swarm & Workflow Visualizer Canvas (Milestone 2 - Requirement R2) --%>
             <section
@@ -3899,7 +3900,7 @@
                 class="flex-1 flex flex-col h-full overflow-y-auto p-6 space-y-6 scroll-smooth"
               >
                 <div
-                  :if={@message_count == 0}
+                  :if={@message_count == 0 and @execution_previews == []}
                   id="chat-empty-state"
                   class="orbital-chat-empty m-auto flex max-w-md flex-col items-center px-6 py-12 text-center"
                 >
@@ -3916,6 +3917,7 @@
                   </p>
                 </div>
 
+                <.execution_previews previews={@execution_previews} />
                 <div id="chat-messages" phx-update="stream" class="space-y-6">
                   <%= for {dom_id, msg} <- @streams.chat_messages do %>
                     <% msg_id = msg.id

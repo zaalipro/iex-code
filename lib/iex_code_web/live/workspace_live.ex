@@ -32,6 +32,7 @@ defmodule IexCodeWeb.WorkspaceLive do
   alias IexCode.Observability.MemoryPoller
   alias IexCodeWeb.CommandPalette
   alias IexCodeWeb.WorkspaceHistory
+  alias IexCodeWeb.WorkspaceStreaming
   alias IexCodeWeb.Components.SwarmCanvas
   alias Phoenix.PubSub
   import IexCodeWeb.WorkspaceComponents, except: [thinking_trace: 1]
@@ -40,6 +41,7 @@ defmodule IexCodeWeb.WorkspaceLive do
   import IexCodeWeb.ToolApprovalModal
   import IexCodeWeb.ThinkingTrace
   import IexCodeWeb.WorkflowComponents
+  import IexCodeWeb.ExecutionPreviews
 
   # Terminal output is capped to the last N lines (ring buffer)
   @terminal_output_max_lines 500
@@ -180,6 +182,7 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:all_sessions, sessions)
       |> stream_configure(:chat_messages, dom_id: &"chat-msg-#{&1.id}")
       |> WorkspaceHistory.chat()
+      |> WorkspaceStreaming.reset()
       |> WorkspaceHistory.operations()
       |> assign(:selected_run, selected_run)
       |> assign(:run_steps, run_steps)
@@ -585,6 +588,7 @@ defmodule IexCodeWeb.WorkspaceLive do
                 |> assign(:tasks, tasks)
                 |> assign(:page_title, "#{new_session.title} · #{project.name}")
                 |> WorkspaceHistory.chat()
+                |> WorkspaceStreaming.reset()
                 |> WorkspaceHistory.operations()
                 |> WorkspaceHistory.peers()
                 |> assign(:workspace_search, "")
@@ -4672,7 +4676,13 @@ defmodule IexCodeWeb.WorkspaceLive do
   end
 
   @impl true
+  def handle_info({:execution_stream, event}, socket),
+    do: {:noreply, WorkspaceStreaming.event(socket, event)}
+
+  @impl true
   def handle_info({:message_created, message}, socket) do
+    socket = WorkspaceStreaming.message(socket, message)
+
     if message.session_id == socket.assigns.session.id and socket.assigns.chat_latest?,
       do: {:noreply, WorkspaceHistory.chat(socket)},
       else: {:noreply, socket}
@@ -4865,6 +4875,7 @@ defmodule IexCodeWeb.WorkspaceLive do
      |> assign(:session, updated_session)
      |> assign(:show_cancel_modal, false)
      |> assign(:cancelling?, false)
+     |> WorkspaceStreaming.session()
      |> put_flash(:info, "Session stopped (#{action} completed)")}
   end
 
@@ -4876,7 +4887,8 @@ defmodule IexCodeWeb.WorkspaceLive do
      socket
      |> assign(:session, updated_session)
      |> assign(:show_cancel_modal, false)
-     |> assign(:cancelling?, false)}
+     |> assign(:cancelling?, false)
+     |> WorkspaceStreaming.session()}
   end
 
   # ============================================================================
@@ -5052,7 +5064,10 @@ defmodule IexCodeWeb.WorkspaceLive do
     updated_session = %{socket.assigns.session | status: to_string(status)}
 
     {:noreply,
-     socket |> assign(:session, updated_session) |> WorkspaceHistory.refresh_operations()}
+     socket
+     |> assign(:session, updated_session)
+     |> WorkspaceHistory.refresh_operations()
+     |> WorkspaceStreaming.session()}
   end
 
   @impl true
@@ -5215,7 +5230,7 @@ defmodule IexCodeWeb.WorkspaceLive do
   @impl true
   def handle_info({:run_updated, run}, socket) do
     if run.session_id == socket.assigns.session.id do
-      socket = sync_run_linked_task(socket, run)
+      socket = socket |> sync_run_linked_task(run) |> WorkspaceStreaming.run(run)
 
       if socket.assigns.selected_run && socket.assigns.selected_run.id == run.id do
         {:noreply, socket |> select_run_projection(run) |> refresh_research_results()}
@@ -5275,6 +5290,8 @@ defmodule IexCodeWeb.WorkspaceLive do
   @impl true
   def handle_info({event_name, agent}, socket)
       when event_name in [:run_agent_created, :run_agent_updated] do
+    socket = WorkspaceStreaming.agent(socket, agent)
+
     if socket.assigns.selected_run && agent.run_id == socket.assigns.selected_run.id do
       {:noreply, refresh_run_fleet(socket)}
     else
