@@ -5,7 +5,7 @@ defmodule IexCode.Tools.BoundedDirectoryTest do
   setup do
     root =
       Path.join(
-        "/tmp/iex-code-readiness-_5wuredz/tmp",
+        System.tmp_dir!(),
         "bounded-directory-#{System.unique_integer([:positive])}"
       )
 

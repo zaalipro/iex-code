@@ -207,15 +207,21 @@ defmodule IexCode.Tools.NativeGrep do
   defp candidate(parent, name, depth) do
     path = Path.join(parent, name)
 
-    if name in @excluded_dirs or String.starts_with?(name, ".") or
-         String.downcase(Path.extname(name)) in @excluded_extensions do
+    if name in @excluded_dirs or String.starts_with?(name, ".") do
       []
     else
       case File.lstat(path) do
-        {:ok, %{type: :directory}} -> [{path, :directory, depth}]
+        {:ok, %{type: :directory}} ->
+          [{path, :directory, depth}]
+
         # Directory symlinks are never descended, including inward cycles.
-        {:ok, %{type: type}} when type in [:regular, :symlink] -> [{path, :file, depth}]
-        _ -> []
+        {:ok, %{type: type}} when type in [:regular, :symlink] ->
+          if String.downcase(Path.extname(name)) in @excluded_extensions,
+            do: [],
+            else: [{path, :file, depth}]
+
+        _ ->
+          []
       end
     end
   end

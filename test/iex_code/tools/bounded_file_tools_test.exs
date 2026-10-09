@@ -6,7 +6,7 @@ defmodule IexCode.Tools.BoundedFileToolsTest do
   setup do
     root =
       Path.join(
-        "/tmp/iex-code-readiness-_5wuredz/tmp",
+        System.tmp_dir!(),
         "bounded-files-#{System.unique_integer([:positive])}"
       )
 
@@ -395,6 +395,22 @@ defmodule IexCode.Tools.BoundedFileToolsTest do
     assert {:ok, ^expected} = grep(root, "needle")
     assert_receive {:scan, %{traversal_entries: 10, eligible_files: 4}, _}
     assert_receive {:scan, %{traversal_entries: 10, eligible_files: 4}, _}
+  end
+
+  test "file extension exclusions do not prune ordinary directories", %{tmp_dir: root} do
+    observe_scans()
+    File.mkdir!(Path.join(root, "archive.zip"))
+    File.write!(Path.join(root, "archive.zip/notes.txt"), "needle nested\n")
+    File.write!(Path.join(root, "control.txt"), "needle control\n")
+    File.write!(Path.join(root, "actual.zip"), "needle excluded\n")
+
+    assert {:ok, output} = grep(root, "needle")
+    assert output =~ "control.txt:1: needle control"
+    refute output =~ "actual.zip:"
+    assert output == "archive.zip/notes.txt:1: needle nested\ncontrol.txt:1: needle control"
+    assert {:ok, ^output} = grep(root, "needle")
+    assert_receive {:scan, %{traversal_entries: 4, eligible_files: 2, output_matches: 2}, _}
+    assert_receive {:scan, %{traversal_entries: 4, eligible_files: 2, output_matches: 2}, _}
   end
 
   test "unfinished root directories at two sizes discard arbitrary prefixes", %{tmp_dir: root} do
