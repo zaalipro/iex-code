@@ -164,6 +164,44 @@ mix phx.server
 Open [http://localhost:4000](http://localhost:4000). Development binds to loopback by
 default.
 
+### Owner authentication and remote deployment
+
+Local loopback mode remains passwordless only while `IEX_CODE_ALLOW_REMOTE` is
+disabled and the request uses a loopback peer and localhost-style Host. Remote mode
+requires one owner configured at runtime with `IEX_CODE_AUTH_USERNAME` and
+`IEX_CODE_AUTH_PASSWORD_HASH`; the latter must be the exact
+`pbkdf2_sha256$600000$base64salt$base64digest` format (16-byte salt, 32-byte digest).
+Credentials are never stored in SQLite, cookies, logs, or settings.
+
+The public application exposes only `/login`, `/health/ready`, and static assets.
+Login and logout POSTs require valid CSRF, and stale logout cannot revoke a newer
+session. Protected LiveViews, reports, websocket, and
+longpoll requests are denied before workspace initialization. Sessions are encrypted,
+HttpOnly, SameSite=Lax, Secure in remote mode, and expire after eight hours; logout
+rotates the in-memory authority epoch and disconnects all its sockets. Restart also
+invalidates sessions. Revocation does not cancel or undo already authorized durable
+work. Login is globally limited to five attempts, refilling one every 12 seconds,
+with at most one password derivation active. This can temporarily limit the owner's
+login too, and is not internet-scale denial-of-service protection.
+
+Provision a deployment host privately with the reviewed no-echo helper:
+
+```bash
+sudo -n /usr/local/sbin/iex-code-owner-auth-provision /etc/iex-code-web/app.env
+```
+
+Run it from a real private TTY. It does not accept credentials on the command line,
+never echoes passwords or hashes, atomically replaces both auth keys, and requires an
+application restart. The container health check uses `/health/ready`, without
+following a redirect to the login page.
+
+Missing or invalid remote credentials, cookie secret, or unsafe Origin/debug
+configuration refuses startup before application children initialize. Keep the
+app loopback-bound behind hostname TLS; nginx loopback traffic still needs sign-in.
+No public signup, user database, SSO, or authentication proxy is needed. See
+[`deploy/owner-auth.md`](deploy/owner-auth.md). The old deployment script's host and
+state-reuse assumptions must be explicitly reviewed for a fresh deployment.
+
 `mix setup` fetches Elixir dependencies, creates and migrates the SQLite database,
 installs npm dependencies, and builds the assets.
 

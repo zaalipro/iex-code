@@ -4,7 +4,7 @@ defmodule IexCodeWeb.Plugs.LocalAccess do
 
   IexCode can execute shell commands and write files directly on the host. A
   public bind therefore requires an explicit `IEX_CODE_ALLOW_REMOTE=true`
-  opt-in and an authenticated reverse proxy. Loopback remains the safe default.
+  opt-in and built-in owner authentication. Loopback remains the safe default.
   """
 
   import Plug.Conn
@@ -21,18 +21,20 @@ defmodule IexCodeWeb.Plugs.LocalAccess do
     else
       conn
       |> put_resp_content_type("text/plain")
-      |> send_resp(403, "IexCode host controls are available only from this machine.")
+      |> send_resp(
+        if(IexCode.OwnerAuth.mode() == :unavailable, do: 503, else: 403),
+        "IexCode host controls are unavailable."
+      )
       |> halt()
     end
   end
 
-  defp access_allowed?(conn) do
-    allow_remote?() or (local_address?(conn.remote_ip) and local_host?(conn.host))
+  def access_allowed?(conn) do
+    IexCode.OwnerAuth.mode() == :remote or
+      (IexCode.OwnerAuth.mode() == :local and local_request?(conn.remote_ip, conn.host))
   end
 
-  defp allow_remote? do
-    System.get_env("IEX_CODE_ALLOW_REMOTE") in ["1", "true", "TRUE"]
-  end
+  def local_request?(ip, host), do: local_address?(ip) and local_host?(host)
 
   defp local_address?({127, _, _, _}), do: true
   defp local_address?({0, 0, 0, 0, 0, 0, 0, 1}), do: true

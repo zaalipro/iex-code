@@ -1,0 +1,494 @@
+#!/usr/bin/env python3
+"""Provision the single owner credential in a private Compose env file.
+
+The command-line interface intentionally accepts only the env-file path.
+Credential values are collected from an interactive TTY and are never
+included in exception messages or command-line arguments.
+"""
+
+import base64
+import contextlib
+import getpass
+import hashlib
+import os
+import re
+import secrets
+import signal
+import stat
+import sys
+import tempfile
+import warnings
+
+
+USERNAME_KEY = "IEX_CODE_AUTH_USERNAME"
+PASSWORD_HASH_KEY = "IEX_CODE_AUTH_PASSWORD_HASH"
+PBKDF2_ALGORITHM = "pbkdf2_sha256"
+PBKDF2_ITERATIONS = 600_000
+SALT_BYTES = 16
+DIGEST_BYTES = 32
+MIN_PASSWORD_CHARS = 15
+MAX_PASSWORD_BYTES = 1024
+PRIVATE_FILE_MODE = 0o600
+PRIVATE_DIRECTORY_MODE = 0o700
+_USERNAME_PATTERN = re.compile(r"[A-Za-z0-9_.@-]+\Z", re.ASCII)
+_ENV_ASSIGNMENT = re.compile(
+    rb"^[ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*=(.*)\Z"
+)
+_ENV_KEY_ONLY = re.compile(
+    rb"^[ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)(?:[ \t]+#.*)?[ \t]*\Z"
+)
+_AUTH_KEY_PREFIX = re.compile(
+    rb"^[ \t]*(?:export[ \t]+)?"
+    rb"(?:\xef\xbb\xbf)?"
+    rb"(IEX_CODE_AUTH_USERNAME|IEX_CODE_AUTH_PASSWORD_HASH)(?=$|[^A-Za-z0-9_])"
+)
+
+
+class ProvisioningError(Exception):
+    """A safe, non-sensitive provisioning failure."""
+
+    def __init__(self):
+        super().__init__("Owner authentication provisioning failed.")
+
+
+def _fail():
+    raise ProvisioningError() from None
+
+
+def validate_username(value):
+    """Return a valid owner username or raise a generic provisioning error."""
+
+    if not isinstance(value, str):
+        _fail()
+    try:
+        encoded = value.encode("ascii")
+    except UnicodeEncodeError:
+        _fail()
+    if not 1 <= len(encoded) <= 64 or _USERNAME_PATTERN.fullmatch(value) is None:
+        _fail()
+    return value
+
+
+def validate_password(value):
+    """Return UTF-8 password bytes after applying the provisioning bounds."""
+
+    if not isinstance(value, str) or len(value) < MIN_PASSWORD_CHARS:
+        _fail()
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError:
+        _fail()
+    if len(encoded) > MAX_PASSWORD_BYTES:
+        _fail()
+    return encoded
+
+
+def _decode_canonical_base64(value, expected_bytes):
+    if len(value) != {16: 24, 32: 44}[expected_bytes]:
+        _fail()
+    try:
+        decoded = base64.b64decode(value.encode("ascii"), validate=True)
+    except (UnicodeEncodeError, ValueError):
+        _fail()
+    if len(decoded) != expected_bytes:
+        _fail()
+    try:
+        canonical = base64.b64encode(decoded).decode("ascii")
+    except UnicodeDecodeError:
+        _fail()
+    if canonical != value:
+        _fail()
+    return decoded
+
+
+def validate_password_hash(value):
+    """Return an exact supported PBKDF2 encoding or raise generically."""
+
+    if not isinstance(value, str):
+        _fail()
+    try:
+        encoded = value.encode("ascii")
+    except UnicodeEncodeError:
+        _fail()
+    if len(encoded) != 90:
+        _fail()
+    parts = value.split("$")
+    if len(parts) != 4 or parts[0] != PBKDF2_ALGORITHM or parts[1] != "600000":
+        _fail()
+    _decode_canonical_base64(parts[2], SALT_BYTES)
+    _decode_canonical_base64(parts[3], DIGEST_BYTES)
+    return value
+
+
+def _derive_password_hash_bytes(password):
+    salt = secrets.token_bytes(SALT_BYTES)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        password,
+        salt,
+        PBKDF2_ITERATIONS,
+        DIGEST_BYTES,
+    )
+    return (
+        f"{PBKDF2_ALGORITHM}$600000$"
+        f"{base64.b64encode(salt).decode('ascii')}$"
+        f"{base64.b64encode(digest).decode('ascii')}"
+    )
+
+
+def derive_password_hash(password):
+    """Derive a fresh, exact-format PBKDF2 password hash."""
+
+    return _derive_password_hash_bytes(validate_password(password))
+
+
+def _single_quote(value):
+    """Quote an env-file value so Compose does not interpolate its `$` bytes."""
+
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
+def _line_body_and_ending(line):
+    if line.endswith(b"\r\n"):
+        return line[:-2], b"\r\n"
+    if line.endswith(b"\n") or line.endswith(b"\r"):
+        return line[:-1], line[-1:]
+    return line, b""
+
+
+def _quote_state_after(value, quote=None):
+    index = 0
+    if quote is None:
+        value = value.lstrip(b" \t")
+        if not value or value[0] not in (39, 34):
+            # A continuation outside a quoted dotenv value is ambiguous.
+            content = value.split(b" #", 1)[0].rstrip(b" \t")
+            if (len(content) - len(content.rstrip(b"\\"))) % 2:
+                _fail()
+            return None
+        quote = value[0]
+        index = 1
+    while index < len(value):
+        character = value[index]
+        if character == 92 and index + 1 < len(value) and value[index + 1] in (quote, 92):
+            index += 2
+            continue
+        if character == quote:
+            trailing = value[index + 1 :].lstrip(b" \t")
+            if trailing and not trailing.startswith(b"#"):
+                _fail()
+            return None
+        index += 1
+    return quote
+
+
+def _auth_value_is_ambiguous(value):
+    return _quote_state_after(value) is not None
+
+
+def _render_env_file(contents, username, password_hash):
+    if not isinstance(contents, bytes) or b"\x00" in contents or contents.startswith(b"\xef\xbb\xbf"):
+        _fail()
+    replacements = {
+        USERNAME_KEY.encode("ascii"): (
+            USERNAME_KEY.encode("ascii") + b"=" + _single_quote(username).encode("ascii")
+        ),
+        PASSWORD_HASH_KEY.encode("ascii"): (
+            PASSWORD_HASH_KEY.encode("ascii")
+            + b"="
+            + _single_quote(password_hash).encode("ascii")
+        ),
+    }
+    seen = set()
+    lines = contents.splitlines(keepends=True)
+    newline = b"\n"
+    rendered = []
+    quote_state = None
+    for line in lines:
+        body, ending = _line_body_and_ending(line)
+        if quote_state is not None:
+            quote_state = _quote_state_after(body, quote_state)
+            rendered.append(line)
+            if ending:
+                newline = ending
+            continue
+        assignment = _ENV_ASSIGNMENT.match(body)
+        if assignment is not None:
+            key = assignment.group(1)
+            if key in replacements:
+                if key in seen or _auth_value_is_ambiguous(assignment.group(2)):
+                    _fail()
+                seen.add(key)
+                rendered.append(replacements[key] + ending)
+                if ending:
+                    newline = ending
+                continue
+            quote_state = _quote_state_after(assignment.group(2))
+        key_only = _ENV_KEY_ONLY.match(body)
+        if key_only is not None and key_only.group(1) in replacements:
+            _fail()
+        prefix = _AUTH_KEY_PREFIX.match(body)
+        if prefix is not None:
+            _fail()
+        rendered.append(line)
+        if ending:
+            newline = ending
+
+    if quote_state is not None:
+        _fail()
+    missing = [key for key in replacements if key not in seen]
+    if missing and rendered and not rendered[-1].endswith((b"\n", b"\r")):
+        rendered.append(newline)
+
+    for key in (USERNAME_KEY.encode("ascii"), PASSWORD_HASH_KEY.encode("ascii")):
+        if key not in seen:
+            rendered.append(replacements[key] + newline)
+    return b"".join(rendered)
+
+
+def validate_private_directory(directory_stat, *, require_root=True):
+    """Validate a root-owned private directory stat fixture."""
+
+    if not stat.S_ISDIR(directory_stat.st_mode):
+        _fail()
+    if require_root and directory_stat.st_uid != 0:
+        _fail()
+    mode = stat.S_IMODE(directory_stat.st_mode)
+    if mode & 0o077 or mode & PRIVATE_DIRECTORY_MODE != PRIVATE_DIRECTORY_MODE:
+        _fail()
+
+
+def validate_private_file(path_stat, *, require_root=True):
+    """Validate a nonsymlink regular private env-file stat fixture."""
+
+    if (
+        stat.S_ISLNK(path_stat.st_mode)
+        or not stat.S_ISREG(path_stat.st_mode)
+        or path_stat.st_nlink != 1
+    ):
+        _fail()
+    if require_root and path_stat.st_uid != 0:
+        _fail()
+    mode = stat.S_IMODE(path_stat.st_mode)
+    if mode & 0o077 or mode not in (0o400, PRIVATE_FILE_MODE):
+        _fail()
+
+
+def _check_directory(parent, require_root):
+    try:
+        directory_stat = os.lstat(parent)
+    except OSError:
+        _fail()
+    validate_private_directory(directory_stat, require_root=require_root)
+
+
+def _read_private_env_file(path, require_root):
+    try:
+        path_stat = os.lstat(path)
+    except OSError:
+        _fail()
+    validate_private_file(path_stat, require_root=require_root)
+
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError:
+        _fail()
+    try:
+        opened_stat = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened_stat.st_mode)
+            or opened_stat.st_dev != path_stat.st_dev
+            or opened_stat.st_ino != path_stat.st_ino
+        ):
+            _fail()
+        chunks = []
+        remaining = opened_stat.st_size
+        while remaining:
+            chunk = os.read(descriptor, min(1024 * 1024, remaining))
+            if not chunk:
+                _fail()
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks), (
+            opened_stat.st_dev,
+            opened_stat.st_ino,
+            opened_stat.st_size,
+            opened_stat.st_mtime_ns,
+            opened_stat.st_ctime_ns,
+        )
+    except OSError:
+        _fail()
+    finally:
+        os.close(descriptor)
+
+
+def _check_env_target(path, require_root):
+    if not isinstance(path, (str, os.PathLike)):
+        _fail()
+    try:
+        path = os.fspath(path)
+    except TypeError:
+        _fail()
+    if not isinstance(path, str) or not path:
+        _fail()
+    path = os.path.abspath(path)
+    parent = os.path.dirname(path)
+    if not parent or os.path.basename(path) in ("", ".", ".."):
+        _fail()
+    if os.path.realpath(parent) != parent:
+        _fail()
+    _check_directory(parent, require_root)
+    return path, parent
+
+
+def _discard_temporary(path):
+    if path is None:
+        return
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def write_env_file(path, username, password_hash, *, require_root=True):
+    """Atomically replace both auth keys in an existing private env file.
+
+    ``require_root=False`` is intentionally available for synthetic,
+    unprivileged tests. The command-line entry point always uses the default.
+    """
+
+    try:
+        username = validate_username(username)
+        password_hash = validate_password_hash(password_hash)
+        path, parent = _check_env_target(path, require_root)
+        contents, original_identity = _read_private_env_file(path, require_root)
+        rendered = _render_env_file(contents, username, password_hash)
+
+        temporary_path = None
+        descriptor = -1
+        directory_descriptor = -1
+        old_umask = os.umask(0o077)
+        try:
+            directory_descriptor = os.open(
+                parent,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+            )
+            descriptor, temporary_path = tempfile.mkstemp(
+                prefix="." + os.path.basename(path) + ".",
+                suffix=".tmp",
+                dir=parent,
+            )
+            os.fchmod(descriptor, PRIVATE_FILE_MODE)
+            with os.fdopen(descriptor, "wb") as temporary_file:
+                descriptor = -1
+                temporary_file.write(rendered)
+                temporary_file.flush()
+                os.fsync(temporary_file.fileno())
+            current_stat = os.lstat(path)
+            current_identity = (
+                current_stat.st_dev,
+                current_stat.st_ino,
+                current_stat.st_size,
+                current_stat.st_mtime_ns,
+                current_stat.st_ctime_ns,
+            )
+            if current_identity != original_identity:
+                _fail()
+            os.replace(
+                os.path.basename(temporary_path),
+                os.path.basename(path),
+                src_dir_fd=directory_descriptor,
+                dst_dir_fd=directory_descriptor,
+            )
+            temporary_path = None
+            os.fsync(directory_descriptor)
+        finally:
+            os.umask(old_umask)
+            if descriptor != -1:
+                os.close(descriptor)
+            if directory_descriptor != -1:
+                os.close(directory_descriptor)
+            _discard_temporary(temporary_path)
+    except ProvisioningError:
+        raise
+    except BaseException:
+        raise ProvisioningError() from None
+
+
+def _require_interactive_tty():
+    try:
+        if not sys.stdin.isatty() or not sys.stderr.isatty():
+            _fail()
+    except (AttributeError, OSError):
+        _fail()
+
+
+@contextlib.contextmanager
+def provisioning_signals():
+    """Unwind catchable signals through getpass's terminal-restoring finally."""
+
+    previous = {}
+
+    def interrupted(_signum, _frame):
+        # Avoid a second signal interrupting getpass's restoration cleanup.
+        for signum in previous:
+            signal.signal(signum, signal.SIG_IGN)
+        raise ProvisioningError() from None
+
+    try:
+        for name in ("SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT", "SIGTSTP"):
+            signum = getattr(signal, name, None)
+            if signum is not None:
+                previous[signum] = signal.getsignal(signum)
+                signal.signal(signum, interrupted)
+        yield
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
+def read_credentials():
+    """Read all three values without echo; never allow getpass's echo fallback."""
+
+    try:
+        _require_interactive_tty()
+        with provisioning_signals(), warnings.catch_warnings():
+            warnings.simplefilter("error", getpass.GetPassWarning)
+            username = validate_username(getpass.getpass("Owner username: ", stream=sys.stderr))
+            password = getpass.getpass("Owner password: ", stream=sys.stderr)
+            confirmation = getpass.getpass("Confirm password: ", stream=sys.stderr)
+        password_bytes = validate_password(password)
+        confirmation_bytes = validate_password(confirmation)
+        if not secrets.compare_digest(password_bytes, confirmation_bytes):
+            _fail()
+        return username, password_bytes
+    except BaseException:
+        raise ProvisioningError() from None
+
+
+def main(argv=None):
+    if argv is None:
+        argv = sys.argv[1:]
+    try:
+        if len(argv) != 1 or not isinstance(argv[0], str):
+            _fail()
+        if os.geteuid() != 0:
+            _fail()
+        target, _ = _check_env_target(argv[0], require_root=True)
+        # Check the existing file before collecting credentials. This avoids
+        # prompting an operator when the destination is not safe to update.
+        _read_private_env_file(target, require_root=True)
+
+        username, password_bytes = read_credentials()
+        password_hash = _derive_password_hash_bytes(password_bytes)
+        write_env_file(target, username, password_hash)
+    except BaseException:
+        print("Owner authentication provisioning failed.", file=sys.stderr)
+        return 1
+    print("Owner authentication provisioned; restart required.", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

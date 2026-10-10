@@ -20,6 +20,16 @@ defmodule IexCodeWeb.Layouts do
   def app(assigns) do
     ~H"""
     <div class="studio-application min-h-dvh w-full bg-canvas text-content font-sans antialiased overflow-hidden flex flex-col">
+      <.form
+        :if={IexCode.OwnerAuth.mode() == :remote}
+        for={to_form(%{}, as: :logout)}
+        action={~p"/logout"}
+        method="post"
+        id="owner-logout-form"
+        class="fixed right-4 bottom-4 z-40"
+      >
+        <button id="owner-logout-submit" type="submit" class="ui-control px-3 py-2 text-xs">Sign out</button>
+      </.form>
       {render_slot(@inner_block)}
       <.flash_group flash={@flash} />
     </div>

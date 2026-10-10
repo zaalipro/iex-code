@@ -28,9 +28,9 @@ defmodule IexCodeWeb.Plugs.LocalAccessTest do
     assert conn.status == 403
   end
 
-  test "requires an explicit environment opt-in for remote access" do
+  test "changing environment after startup cannot bypass local mode" do
     System.put_env("IEX_CODE_ALLOW_REMOTE", "true")
-    refute LocalAccess.call(%{conn(:get, "/") | remote_ip: {10, 10, 0, 4}}, []).halted
+    assert LocalAccess.call(%{conn(:get, "/") | remote_ip: {10, 10, 0, 4}}, []).halted
   end
 
   test "rejects DNS rebinding hostnames even over a loopback connection" do

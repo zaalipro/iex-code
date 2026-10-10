@@ -1,5 +1,10 @@
 import Config
 
+config :iex_code, :owner_auth_runtime,
+  allow_remote: System.get_env("IEX_CODE_ALLOW_REMOTE"),
+  username: System.get_env("IEX_CODE_AUTH_USERNAME"),
+  password_hash: System.get_env("IEX_CODE_AUTH_PASSWORD_HASH")
+
 # config/runtime.exs is executed for all environments, including
 # during releases. It is executed after compilation and before the
 # system starts, so it is typically used to load production configuration

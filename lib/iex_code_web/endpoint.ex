@@ -1,19 +1,33 @@
 defmodule IexCodeWeb.Endpoint do
   use Phoenix.Endpoint, otp_app: :iex_code
 
-  # The session will be stored in the cookie and signed,
-  # this means its contents can be read but not tampered with.
-  # Set :encryption_salt if you would also like to encrypt it.
-  @session_options [
-    store: :cookie,
-    key: "_iex_code_key",
-    signing_salt: "X7SbRcsq",
-    same_site: "Lax"
-  ]
+  def session_options do
+    [
+      store: :cookie,
+      key: "_iex_code_key",
+      signing_salt: "X7SbRcsq",
+      encryption_salt: "owner-cookie-encryption-v1",
+      same_site: "Lax",
+      http_only: true,
+      secure: IexCode.OwnerAuth.mode() != :local,
+      path: "/",
+      max_age: 28_800
+    ]
+  end
 
-  socket "/live", Phoenix.LiveView.Socket,
-    websocket: [connect_info: [session: @session_options]],
-    longpoll: [connect_info: [session: @session_options]]
+  socket "/live", IexCodeWeb.OwnerSocket,
+    websocket: [connect_info: [:peer_data, :uri, session: {__MODULE__, :session_options, []}]],
+    longpoll: [connect_info: [:peer_data, :uri, session: {__MODULE__, :session_options, []}]]
+
+  # Socket dispatch precedes ordinary endpoint plugs. Longpoll token resumes
+  # bypass connect/3, so authorize every transport request before dispatch.
+  def call(%{path_info: ["live", transport]} = conn, opts)
+      when transport in ["websocket", "longpoll"] do
+    conn = IexCodeWeb.Plugs.RequireOwner.transport(conn)
+    if conn.halted, do: conn, else: super(conn, opts)
+  end
+
+  def call(conn, opts), do: super(conn, opts)
 
   # Serve at "/" the static files from "priv/static" directory.
   #
@@ -38,6 +52,7 @@ defmodule IexCodeWeb.Endpoint do
 
   plug Plug.RequestId
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
+  plug :parse_login
 
   plug Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json],
@@ -46,6 +61,16 @@ defmodule IexCodeWeb.Endpoint do
 
   plug Plug.MethodOverride
   plug Plug.Head
-  plug Plug.Session, @session_options
+  plug :owner_session
   plug IexCodeWeb.Router
+
+  defp owner_session(conn, _opts) do
+    Plug.Session.call(conn, Plug.Session.init(session_options()))
+  end
+
+  defp parse_login(%{method: "POST", path_info: ["login"]} = conn, _opts) do
+    Plug.Parsers.call(conn, Plug.Parsers.init(parsers: [:urlencoded], length: 16_384))
+  end
+
+  defp parse_login(conn, _opts), do: conn
 end

@@ -5,6 +5,12 @@ defmodule IexCode.Application do
 
   @impl true
   def start(_type, _args) do
+    with {:ok, auth_config} <- IexCode.OwnerAuth.boot_config() do
+      start_children(auth_config)
+    end
+  end
+
+  defp start_children(auth_config) do
     children =
       [
         IexCode.Repo,
@@ -15,6 +21,7 @@ defmodule IexCode.Application do
         IexCode.DatabasePermissions,
         {DNSCluster, query: Application.get_env(:iex_code, :dns_cluster_query) || :ignore},
         {Phoenix.PubSub, name: IexCode.PubSub},
+        {IexCode.OwnerAuth, config: auth_config},
         IexCode.Observability.MemoryPoller,
         {Registry, keys: :unique, name: IexCode.SessionRegistry},
         {Registry, keys: :unique, name: IexCode.Engine.AgentRegistry},

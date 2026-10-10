@@ -29,7 +29,7 @@
 #   DEPLOY_PORT        SSH port                   (default 22)
 #   DEPLOY_RELEASES    versioned release root     (default /opt/iex-code_releases)
 #   DEPLOY_ENV_FILE    container env file on VPS  (default /etc/iex-code-web/app.env)
-#   DEPLOY_HEALTH_URL  public healthcheck URL     (default https://iex.llmotions.com/)
+#   DEPLOY_HEALTH_URL  public healthcheck URL     (default https://iex.llmotions.com/health/ready)
 #   DEPLOY_PUBLIC_PORT loopback port nginx uses   (default 14052)
 #   DEPLOY_KEEP        releases to keep           (default 5)
 #
@@ -49,7 +49,7 @@ USER="${DEPLOY_USER:-zaali}"
 PORT="${DEPLOY_PORT:-22}"
 RELEASES_ROOT="${DEPLOY_RELEASES:-/opt/iex-code_releases}"
 ENV_FILE="${DEPLOY_ENV_FILE:-/etc/iex-code-web/app.env}"
-HEALTH_URL="${DEPLOY_HEALTH_URL:-https://iex.llmotions.com/}"
+HEALTH_URL="${DEPLOY_HEALTH_URL:-https://iex.llmotions.com/health/ready}"
 PUBLIC_PORT="${DEPLOY_PUBLIC_PORT:-14052}"
 KEEP="${DEPLOY_KEEP:-5}"
 
