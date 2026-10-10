@@ -971,6 +971,7 @@ defmodule IexCode.Engine.SessionServer do
         user_prompt,
         project_root,
         allowed_tools,
+        execution_id,
         stream
       )
     end)
@@ -982,6 +983,7 @@ defmodule IexCode.Engine.SessionServer do
          user_prompt,
          project_root,
          allowed_tools,
+         objective_message_id,
          stream
        ) do
     alias IexCode.Engine.ExecutionStream
@@ -1008,7 +1010,8 @@ defmodule IexCode.Engine.SessionServer do
                 %{
                   role: m.role,
                   content: m.content,
-                  budget_objective: m.role == "user" and m.content == user_prompt
+                  budget_objective: m.id == objective_message_id,
+                  budget_mandatory: m.role == "user" and m.agent_name == "User (Steer)"
                 }
               end)
             rescue

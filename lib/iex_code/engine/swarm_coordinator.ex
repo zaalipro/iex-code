@@ -45,6 +45,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
       :run_lease_ms,
       :execution_policy,
       :control_barrier,
+      :budget_prior_snapshot_ids,
       fleet_agents: [],
       stage: :init,
       iteration: 0,
@@ -172,24 +173,41 @@ defmodule IexCode.Engine.SwarmCoordinator do
           MultiPatch.Snapshot.list_snapshots(session_id)
         end
 
-      lock_opts = [
-        project_id: trusted_project_id(state),
-        run_id: run_id,
-        session_id: session_id
-      ]
-
-      results =
-        Enum.map(snapshots, fn snapshot ->
-          Tools.rollback_multi_patch(snapshot.transaction_id, snapshot.project_root, lock_opts)
-        end)
-
-      case Enum.filter(results, &match?({:error, _}, &1)) do
-        [] -> {:ok, :rolled_back}
-        errors -> {:error, errors}
-      end
+      rollback_snapshots(snapshots, state)
     else
       {:error, :missing_session_scope}
     end
+  rescue
+    e -> {:error, Exception.message(e)}
+  end
+
+  defp rollback_snapshots(snapshots, state) do
+    lock_opts = [
+      project_id: trusted_project_id(state),
+      run_id: state.run_id,
+      session_id: state.session_id
+    ]
+
+    results =
+      Enum.map(snapshots, fn snapshot ->
+        Tools.rollback_multi_patch(snapshot.transaction_id, snapshot.project_root, lock_opts)
+      end)
+
+    case Enum.filter(results, &match?({:error, _}, &1)) do
+      [] -> {:ok, :rolled_back}
+      errors -> {:error, errors}
+    end
+  end
+
+  # Interactive checkpoints span successful invocations. Only budget rejection
+  # uses this boundary; public cancellation/rollback retains its existing scope.
+  defp rollback_budget_failure(%State{run_id: run_id} = state) when is_binary(run_id),
+    do: perform_rollback(state.project_root, state)
+
+  defp rollback_budget_failure(state) do
+    MultiPatch.Snapshot.list_snapshots(state.session_id)
+    |> Enum.reject(&MapSet.member?(state.budget_prior_snapshot_ids, &1.transaction_id))
+    |> rollback_snapshots(state)
   rescue
     e -> {:error, Exception.message(e)}
   end
@@ -258,6 +276,22 @@ defmodule IexCode.Engine.SwarmCoordinator do
   end
 
   defp do_run(session_id, user_prompt, opts) do
+    boundary =
+      if is_binary(opts[:run_id]),
+        do: {:ok, nil},
+        else: MultiPatch.Snapshot.list_snapshots_strict(session_id)
+
+    case boundary do
+      {:ok, snapshots} ->
+        prior_ids = if snapshots, do: MapSet.new(snapshots, & &1.transaction_id)
+        do_run(session_id, user_prompt, opts, prior_ids)
+
+      {:error, _reason} ->
+        {:error, :rollback_boundary_unavailable}
+    end
+  end
+
+  defp do_run(session_id, user_prompt, opts, prior_snapshot_ids) do
     session =
       try do
         Sessions.get_session!(session_id)
@@ -313,6 +347,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
       run_lease_ms: opts[:run_lease_ms],
       execution_policy: opts[:execution_policy],
       control_barrier: opts[:control_barrier],
+      budget_prior_snapshot_ids: prior_snapshot_ids,
       max_retries: max_retries,
       start_time_ms: start_time_ms,
       stage_start_ms: start_time_ms,
@@ -385,7 +420,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
 
       {:request_budget_failed, %IexCode.LLM.RequestBudgetError{} = reason} ->
         stop_state_agents(state, "failed")
-        _ = perform_rollback(state.project_root, state)
+        _ = rollback_budget_failure(state)
 
         {:ok, failed_op} =
           Sessions.update_operation(state.root_op_id, %{
@@ -685,6 +720,9 @@ defmodule IexCode.Engine.SwarmCoordinator do
                 case execute_swarm(session_id, user_prompt, run_opts) do
                   {:error, %IexCode.LLM.RequestBudgetError{} = error} ->
                     exit({:request_budget_failed, error})
+
+                  {:error, :rollback_boundary_unavailable} ->
+                    exit(:rollback_boundary_unavailable)
 
                   result ->
                     result

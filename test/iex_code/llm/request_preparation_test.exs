@@ -211,4 +211,69 @@ defmodule IexCode.LLM.RequestPreparationTest do
     assert Enum.at(prepared.messages, index + 1).role == "tool"
     assert Enum.at(prepared.messages, index + 2).role == "tool"
   end
+
+  test "a required reply protects every message in its complete exchange from shortening" do
+    messages = [
+      %{role: "user", content: String.duplicate("old removable ", 2_000)},
+      %{role: "user", content: "Current objective", budget_objective: true},
+      %{
+        role: "assistant",
+        content: "Need a decision",
+        budget_mandatory: true,
+        tool_calls: [
+          %{id: "read", name: "read_file", args: %{}},
+          %{id: "ask", name: "request_input", args: %{}}
+        ]
+      },
+      %{role: "tool", tool_call_id: "read", content: String.duplicate("complete output ", 300)},
+      %{role: "tool", tool_call_id: "ask", content: "User answer: yes", budget_mandatory: true}
+    ]
+
+    opts = [
+      model: "unknown",
+      max_tokens: 100,
+      budget_settings: %{
+        context_window_tokens: 2_000,
+        context_compaction_strategy: "token_compaction"
+      }
+    ]
+
+    assert {:ok, prepared} = RequestPreparation.prepare(OpenAI, messages, "", opts)
+    assert Enum.take(prepared.messages, -3) == Enum.take(messages, -3)
+    refute Jason.encode!(prepared.body) =~ "budget_mandatory"
+    refute Jason.encode!(prepared.body) =~ "budget_objective"
+  end
+
+  test "an oversized required request_input answer returns typed overflow instead of removal" do
+    messages = [
+      %{role: "user", content: "Current objective", budget_objective: true},
+      %{
+        role: "assistant",
+        content: "Need a decision",
+        budget_mandatory: true,
+        tool_calls: [%{id: "ask", name: "request_input", args: %{}}]
+      },
+      %{
+        role: "tool",
+        tool_call_id: "ask",
+        content: "User answer: " <> String.duplicate("required ", 3_000),
+        budget_mandatory: true
+      }
+    ]
+
+    opts = [
+      model: "unknown",
+      max_tokens: 100,
+      budget_settings: %{
+        context_window_tokens: 2_000,
+        context_compaction_strategy: "sliding_window",
+        keep_recent_turns: 6
+      }
+    ]
+
+    assert {:error, %{__struct__: IexCode.LLM.RequestBudgetError} = error} =
+             RequestPreparation.prepare(OpenAI, messages, "", opts)
+
+    assert Exception.message(error) =~ "No model request was sent"
+  end
 end

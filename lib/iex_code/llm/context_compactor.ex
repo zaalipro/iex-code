@@ -77,11 +77,11 @@ defmodule IexCode.LLM.ContextCompactor do
         if get_setting(settings, :context_compaction_strategy, "token_compaction") ==
              "token_compaction" do
           Enum.map(groups, fn group ->
-            Enum.map(group, fn {msg, index} ->
-              if mandatory?(msg, index, protected),
-                do: {msg, index},
-                else: {compact_tool_message(msg), index}
-            end)
+            if Enum.any?(group, fn {msg, index} -> mandatory?(msg, index, protected) end) do
+              group
+            else
+              Enum.map(group, fn {msg, index} -> {compact_tool_message(msg), index} end)
+            end
           end)
         else
           groups

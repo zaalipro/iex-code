@@ -131,7 +131,12 @@ defmodule IexCode.Engine.AgentLoop do
       resume_messages =
         bundle.messages ++
           [
-            %{role: "assistant", content: bundle.text, tool_calls: bundle.tool_calls}
+            %{
+              role: "assistant",
+              content: bundle.text,
+              tool_calls: bundle.tool_calls,
+              budget_mandatory: true
+            }
             | bundle.tool_messages
           ] ++ [paused_answer_message(bundle, answer)]
 
@@ -237,7 +242,12 @@ defmodule IexCode.Engine.AgentLoop do
     paused_call = Enum.at(bundle.tool_calls, length(bundle.tool_messages), %{})
     call_id = Map.get(paused_call, :id) || Map.get(paused_call, "id") || "paused-call"
 
-    %{role: "tool", tool_call_id: call_id, content: "User answer: #{answer}"}
+    %{
+      role: "tool",
+      tool_call_id: call_id,
+      content: "User answer: #{answer}",
+      budget_mandatory: true
+    }
   end
 
   defp loop(_messages, turn, %{max_turns: maximum}) when turn > maximum,
@@ -1175,7 +1185,10 @@ defmodule IexCode.Engine.AgentLoop do
         @max_model_text_chars
       )
 
-    message |> Map.delete(:legacy_steering_content) |> Map.put(:content, content)
+    # Preparation markers must not change historical model-command hashes.
+    message
+    |> Map.drop([:legacy_steering_content, :budget_mandatory, :budget_objective])
+    |> Map.put(:content, content)
   end
 
   defp execution_policy(metadata) when is_map(metadata) do

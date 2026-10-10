@@ -192,6 +192,35 @@ defmodule IexCode.Tools.MultiPatch.Snapshot do
     end
   end
 
+  @doc """
+  Reads the authoritative session checkpoint boundary without falling back to
+  the legacy best-effort cache.
+  """
+  def list_snapshots_strict(session_id) when is_binary(session_id) do
+    ensure_table()
+
+    durable =
+      from(snapshot in MutationSnapshot,
+        where: snapshot.session_id == ^session_id and is_nil(snapshot.run_id),
+        order_by: [asc: snapshot.created_at, asc: snapshot.transaction_id]
+      )
+      |> Repo.all()
+      |> Enum.map(&hydrate_record/1)
+
+    # Include legacy cache-only entries in the exclusion boundary too. Never
+    # interpret a failed authoritative read as an empty durable checkpoint set.
+    legacy =
+      :ets.tab2list(@table_name)
+      |> Enum.map(fn {_id, entry} -> entry end)
+      |> Enum.filter(&(Map.get(&1, :session_id) == session_id and is_nil(Map.get(&1, :run_id))))
+
+    {:ok, Enum.uniq_by(durable ++ legacy, & &1.transaction_id)}
+  rescue
+    error -> {:error, error}
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
   @doc "Lists rollback manifests owned by one durable run."
   @spec list_run_snapshots(String.t()) :: [map()]
   def list_run_snapshots(run_id) when is_binary(run_id) and run_id != "" do
