@@ -48,6 +48,99 @@ development server to an untrusted network.
 > **cooperative IexCode coordination**, not OS isolation: native processes and arbitrary
 > in-process code that bypass the guarded entry points can still write the checkout.
 
+## Lean defaults and bounded work
+
+Fresh settings and missing run preferences select **durable background, single-agent**
+work for ordinary prompts. Saved preferences are not migrated: a stored Swarm choice
+still selects Swarm, whether it was deliberate or inherited from an older default.
+To opt in, open **Settings → Run defaults**, set **Prompt dispatch** to **Durable
+background** and **Default mission type** to **Single agent**, then save. This changes
+subsequent applicable submissions, not existing sessions, drafts, or queued policies.
+
+Use `/swarm OBJECTIVE` or select **Swarm** in **Run setup** for a coding fleet.
+`/run` forces durable single; `/chat` and `/ask` remain live interactive single.
+Goal, boost, teamwork, Typed DAG, and research retain their explicit workflows.
+Single does not automatically escalate to Swarm.
+
+### History and native tools
+
+- Chat uses a replaceable **50-message** window with **Older / Newer / Latest**.
+  Preview content is capped at 4,096 bytes and reasoning at 2,048 bytes per message.
+  Copy and expansion fetch complete session-scoped content on demand. One requested
+  full detail body is an explicit exception; changing/closing it does not accumulate
+  older bodies. All durable history remains stored.
+- Durable single selects the latest **20** messages in stable time/ID order, then
+  applies its existing role/current-run filtering. Interactive history selects at
+  most **50** before compaction. Final-answer replay looks up the existing
+  `run-final:<run_id>` identity directly.
+- Peer and completed-operation pages each retain **50** recent items with bounded
+  previews and older-history access. Pending/running operations and their necessary
+  ancestors are explicit row-cap exceptions. Peer history lasts only as long as its
+  existing coordinator/ETS retention, not a new durable archive.
+- Native `read_file` defaults to **800 lines**. It reads in **16,384-byte chunks**,
+  with a **65,536-byte line/carry** ceiling and **2,097,152-byte scan** ceiling.
+  Explicit ranges cannot bypass byte limits. Fixed chunk/UTF-8 carry overhead remains.
+- Native `grep_search` prunes excluded directories before descent and bounds work to
+  **5,000 yielded names** (including excluded names), **500 eligible files**,
+  **10 matches/file**, **100 total matches**, and **8,388,608 scanned bytes**.
+  It also caps per-file scans at 2,097,152 bytes, depth at 64, and directory-response
+  wire/pending path text separately at 2,097,152 bytes. Python 3's invocation-scoped
+  directory helper adds startup cost, not a background indexing service.
+- Grep rejects queries over **4,096 bytes** before pattern work. Both native tools
+  cap the complete text response, including notices/errors, at **256,000 bytes**.
+  Unfinished scans identify truncation/incompleteness and explain how to narrow the
+  request; a partial search is not presented as a complete “no matches” result.
+  Workspace containment and outward-symlink checks remain in force.
+
+### Context, output, and thinking
+
+Interactive single, durable single, swarm planner, and swarm coder budget the actual
+serialized adapter payload, including instructions, authorized schemas, transcript,
+and protocol overhead. Older complete tool-call/reply exchanges can be compacted;
+required instructions, the current objective, and pending steering are preserved.
+Mandatory overflow fails visibly **before transport**, without provider-outage retry.
+
+The estimate is `ceil(serialized_bytes × 1.25 / 4) + 128` input tokens. A separate
+guard allows at most three bytes per available input token after output and protocol
+reserve, with an absolute **2,000,000-byte JSON** ceiling. These are conservative
+estimates, not exact tokenization or a model-limit database. Unknown remote model
+names use the configured context setting, which defaults to **128,000 tokens**;
+set it to a suitable limit for your endpoint. Local OpenAI-compatible requests also
+respect the existing **`num_ctx: 16_384`** ceiling.
+
+Output and thinking defaults are each **4,096 tokens**, but effective provider/profile
+overrides govern the request. OpenAI-compatible budgeting reserves the sent
+`max_tokens` or `max_completion_tokens`. Anthropic thinking can raise `max_tokens`
+to at least thinking budget plus 1,024; the raised output already includes thinking
+and is not reserved twice. Lower output/thinking allowances can leave more room for
+input. Completed historical receipts still replay without a new model request.
+
+### Transient output and cancellation
+
+Coding text appears as escaped, explicitly transient previews for single and swarm
+roles, separate from saved conversation messages. Runtime batching defaults to
+**75 ms**, with **16,384-byte answer and reasoning buffers** per invocation.
+The workspace renders at most **eight** previews and retains **64** bounded fencing
+entries (with at most 256 invocation identities). Split think tags do not leak reasoning
+into answer text. Truncated previews do not truncate the persisted final answer.
+
+Retry epochs, turns, attempts, and generations fence stale events. Reconnect reloads
+authoritative saved history, not an exact replay of lost partial text; new continuation
+is labeled partial. Session switches clear unrelated previews. A saved final answer
+and actual terminal state override previews. HTTP completion alone is not successful
+durable settlement; cancellation, provider failure, owner loss, or persistence failure
+cannot turn partial output into success.
+
+Durable single stream callbacks check attempt-local authority rather than reading
+SQLite per chunk. Default authority refresh and read timeout are each **1 second**;
+default cancellation grace is **1.5 seconds**, respecting a dispatcher's custom grace.
+Validity ends at the confirmed monotonic lease deadline even if refresh blocks.
+Missed cancellation notification detection is bounded by refresh plus read timeout,
+then cleanup grace, subject to scheduler progress. Durable fences before effects and
+settlement, existing approvals, provider-route checks, and workspace reservations
+remain authoritative. These controls are not an OS sandbox or rollback of effects
+that were already authorized.
+
 ## Requirements
 
 - Elixir `~> 1.15` and a compatible Erlang/OTP release
@@ -198,8 +291,9 @@ explicit **Remove credential** actions clear them.
 Configure an OpenAI-compatible or Anthropic endpoint, API key, default model,
 temperature, and token limit there. The model gateway has first-class
 OpenAI-compatible and Anthropic adapters. A Gemini model may be used when exposed
-through a compatible endpoint; a direct general-purpose Gemini chat transport and local-model
-transports remain roadmap work. This is distinct from the grounded Gemini search transport below.
+through a compatible endpoint; a direct general-purpose Gemini chat transport remains
+roadmap work. Ollama, LM Studio, and llama.cpp use the OpenAI-compatible adapter and
+local endpoint discovery. This is distinct from the grounded Gemini search transport below.
 
 The research gateway is independent of the model transport. It includes normalized
 adapters for **Tavily, Brave, Exa, Perplexity Search, Firecrawl Search, Linkup Search,
@@ -400,11 +494,57 @@ mix test
 mix test test/iex_code_web/live/workspace_live_test.exs
 mix format --check-formatted
 mix compile --warnings-as-errors
+mix test --max-cases 1 --seed 0 test/benchmarks/lean_harness_bench_test.exs
 ```
 
 The repository includes unit, LiveView, end-to-end, adversarial, concurrency, and PTY
 tests. Historical pass reports under `.agents/` are development records, not a
 substitute for running the gate on the current checkout.
+
+### Recorded harness measurements
+
+The deterministic benchmark uses real SQLite/files/supervision and loopback Req/SSE,
+not a paid model. Run it serially. Normal test commands use the configured test database;
+for disposable, credential-free validation use the isolated wrapper/configuration
+described in [the measurement note](docs/lean-harness-performance.md).
+
+Equivalent baseline/M1/final fixtures show eliminated work, not a provider speedup:
+
+| Fixture | Before hot-path changes | Final |
+| --- | ---: | ---: |
+| Short single, 4 / 64 chunks, total queries | 65 / 125 | 61 / 61 |
+| Same fixture, run SELECTs | 28 / 88 | 24 / 24 |
+| 40 / 2,000 old messages, loaded message rows | 82 / 4,002 | 20 / 20 |
+| Replay with 2,000 old messages, loaded rows | 4,005 | 2, no new HTTP |
+| Read 16,000 / 128,000 lines, scanned bytes | Unavailable | 32,768 / 32,768 |
+| Grep 600 candidates, opened files / matches | Opened files unavailable / 100 | 10 / 100 |
+
+At final validation, comparable-duration 4/400-chunk control fixtures both used
+64 queries and 27 run SELECTs. Request-preparation fixtures at 40/2,000 old messages
+both retained 15 request messages, 5,005 JSON bytes and **1,693 estimated input tokens
++ 128 output tokens**, within a 2,000-token setting and 5,232-byte guard. The separate
+4/4,000-chunk preview fixture retained 16,384 answer bytes with zero queries and two
+events using a 1,000 ms test batching interval. This is not a default-cadence event SLA.
+
+Final checks: **13 benchmark tests and 267 focused affected tests passed**;
+warnings-as-errors compilation and format checking passed. Full isolated `mix precommit`
+**failed, exit 2: 3,643 tests, one failure**, the unchanged research manifest assertion
+expecting 20 steps but receiving 17 (`workspace_live_async_runs_test.exs:222`).
+It was not excluded or repaired. Prior crash/palette timing failures remain historical
+observations, not retroactively passing gates.
+
+The authorized real-provider workspace task read a synthetic `numbers.txt` and saved
+“Alpha is 17, beta is 25, and their sum is 42.” with observed transient output.
+Mission totals, including readiness, are **3 HTTP attempts / 3,552 provider-reported
+input/output tokens**, with no outstanding reservation, under the 6-request/10,000-token
+allowance. No additional paid measurement was made. Estimates and reported usage differ.
+
+Wall timings and endpoint BEAM memory are noisy, not peak/RSS or fixed percentage
+guarantees; grep's Python helper can cost more wall time than the old unbounded scan.
+The original fixture has no UI first-visible timing, filesystem scan counters, or
+provider usage. Current bounds and correctness/cancellation evidence accompany the
+comparison; unavailable baseline metrics are not reconstructed. See the measurement
+note for source revisions, timings, resource samples, commands, and limitations.
 
 ## Current limitations
 
