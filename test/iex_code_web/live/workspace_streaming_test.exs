@@ -301,10 +301,272 @@ defmodule IexCodeWeb.WorkspaceStreamingTest do
       render(ctx.view)
     end
 
-    emit(ctx.view, ctx.identity, 1, :started, "")
-    emit(ctx.view, ctx.identity, 2, :streaming, "still available")
+    user = create_message_fixture(ctx.session, %{content: "current objective after settlement"})
+    identity = %{ctx.identity | execution_id: user.id}
+    emit(ctx.view, identity, 1, :started, "")
+    emit(ctx.view, identity, 2, :streaming, "still available")
     assert has_element?(ctx.view, "#execution-previews", "still available")
     assert length(assigns(ctx.view).execution_streams) <= 64
+  end
+
+  test "terminal churn admits a live preview and final without resurrecting reclaimed identities",
+       ctx do
+    identities = terminal_churn(ctx, 70)
+    user = create_message_fixture(ctx.session, %{content: "authorized replacement"})
+    {:ok, _} = Sessions.update_session(ctx.session, %{status: "running"})
+    live_identity = %{ctx.identity | execution_id: user.id}
+    emit(ctx.view, live_identity, 1, :started, "")
+    emit(ctx.view, live_identity, 2, :streaming, "live after terminal churn")
+    assert has_element?(ctx.view, "#execution-previews", "live after terminal churn")
+
+    refute Enum.any?(
+             assigns(ctx.view).execution_streams,
+             &(&1.identity.execution_id == hd(identities).execution_id)
+           )
+
+    for old <- identities do
+      emit(ctx.view, old, 99, :streaming, "evicted stale output")
+      emit(ctx.view, %{old | invocation_id: Ecto.UUID.generate()}, 1, :started, "stale restart")
+    end
+
+    refute has_element?(ctx.view, "#execution-previews", "evicted stale output")
+    refute has_element?(ctx.view, "#execution-previews", "stale restart")
+    assert has_element?(ctx.view, "#execution-previews", "live after terminal churn")
+    saved = final(ctx.session, live_identity, "authoritative final after churn")
+    send(ctx.view.pid, {:message_created, saved})
+    emit(ctx.view, live_identity, 3, :streaming, "late saved output")
+    refute has_element?(ctx.view, "#execution-preview-0")
+    assert has_element?(ctx.view, "#chat-msg-#{saved.id}")
+    assert Enum.count(ids(ctx.view), &(&1 == saved.id)) == 1
+    {:ok, reconnected, _} = live(ctx.conn, ~p"/sessions/#{ctx.session.id}?tab=chat")
+    emit(reconnected, hd(identities), 100, :streaming, "stale after reconnect")
+    emit(reconnected, live_identity, 100, :streaming, "saved after reconnect")
+    refute has_element?(reconnected, "#execution-preview-0")
+    assert Enum.count(ids(reconnected), &(&1 == saved.id)) == 1
+  end
+
+  test "reclamation retains active durable and awaiting-final lanes and live planner fences",
+       ctx do
+    run = claim_preview_run(ctx)
+    durable = run_identity(ctx, run)
+    op = create_operation_fixture(ctx.session, %{status: "running", op_type: "swarm"})
+    planner = %{ctx.identity | execution_id: op.id, role: "planner"}
+    awaiting = %{planner | role: "coder", invocation_id: Ecto.UUID.generate()}
+    emit(ctx.view, durable, 1, :streaming, "active durable")
+    emit(ctx.view, awaiting, 1, :complete, "awaiting final")
+    emit(ctx.view, planner, 1, :failed, "failed live planner")
+    terminal_churn(ctx, 70)
+
+    state = assigns(ctx.view)
+
+    assert Enum.any?(
+             state.execution_streams,
+             &(&1.identity.invocation_id == durable.invocation_id)
+           )
+
+    assert Enum.any?(
+             state.execution_streams,
+             &(&1.identity.invocation_id == awaiting.invocation_id)
+           )
+
+    assert Enum.any?(
+             state.execution_streams,
+             &(&1.identity.invocation_id == planner.invocation_id)
+           )
+
+    assert has_element?(ctx.view, "#execution-previews", "active durable")
+    assert has_element?(ctx.view, "#execution-previews", "awaiting final")
+    replacement = %{planner | invocation_id: Ecto.UUID.generate()}
+    emit(ctx.view, replacement, 1, :started, "")
+    emit(ctx.view, replacement, 2, :streaming, "replacement planner")
+    emit(ctx.view, planner, 99, :streaming, "abandoned planner")
+    emit(ctx.view, durable, 2, :streaming, "durable continues")
+    assert has_element?(ctx.view, "#execution-previews", "replacement planner")
+    assert has_element?(ctx.view, "#execution-previews", "durable continues")
+    refute has_element?(ctx.view, "#execution-previews", "abandoned planner")
+    assert length(state.execution_streams) <= 64
+    assert length(state.execution_previews) <= 8
+    assert Enum.sum(Enum.map(state.execution_streams, &byte_size(&1.text))) <= 8 * 16_384
+  end
+
+  test "reclaimed durable failure cannot reenter while queued but a new claim can preview", ctx do
+    run = claim_preview_run(ctx)
+    old = run_identity(ctx, run)
+    emit(ctx.view, old, 1, :streaming, "failed attempt")
+    emit(ctx.view, old, 2, :failed, "failed attempt")
+
+    {:ok, failed} =
+      Runs.finalize_run_worker(run, "failed", %{error_message: "fixture failure"},
+        lease_owner: run.lease_owner,
+        lease_generation: run.lease_generation,
+        run_attempt: run.attempt
+      )
+
+    {:ok, queued} = Runs.retry_run(failed)
+    assert queued.attempt == old.attempt
+    assert queued.lease_generation == old.generation
+    terminal_churn(ctx, 70)
+    refute Enum.any?(assigns(ctx.view).execution_streams, &(&1.identity.execution_id == run.id))
+    emit(ctx.view, old, 99, :streaming, "queued stale attempt")
+    refute has_element?(ctx.view, "#execution-previews", "queued stale attempt")
+    {:ok, claimed} = Runs.claim_next_run("replacement-preview", lease_ms: 60_000)
+    assert claimed.id == run.id
+    replacement = run_identity(ctx, claimed)
+    emit(ctx.view, replacement, 1, :started, "")
+    emit(ctx.view, replacement, 2, :streaming, "new claimed attempt")
+    emit(ctx.view, old, 100, :streaming, "old claimed attempt")
+    assert has_element?(ctx.view, "#execution-previews", "new claimed attempt")
+    refute has_element?(ctx.view, "#execution-previews", "old claimed attempt")
+  end
+
+  test "saturated live terminal lanes fail closed without discarding their invocation fences",
+       ctx do
+    identities =
+      for _ <- 1..64 do
+        op = create_operation_fixture(ctx.session, %{status: "running", op_type: "swarm"})
+        identity = %{ctx.identity | execution_id: op.id, role: "planner"}
+        emit(ctx.view, identity, 1, :failed, "live parent failure")
+        identity
+      end
+
+    emit(ctx.view, ctx.identity, 1, :streaming, "cannot evict live parent")
+    refute has_element?(ctx.view, "#execution-previews", "cannot evict live parent")
+    assert length(assigns(ctx.view).execution_streams) == 64
+    old = hd(identities)
+    replacement = %{old | invocation_id: Ecto.UUID.generate()}
+    emit(ctx.view, replacement, 1, :started, "")
+    emit(ctx.view, replacement, 2, :streaming, "live parent replacement")
+    emit(ctx.view, old, 99, :streaming, "retired parent invocation")
+    assert has_element?(ctx.view, "#execution-previews", "live parent replacement")
+    refute has_element?(ctx.view, "#execution-previews", "retired parent invocation")
+  end
+
+  test "new admission fences tied-time objectives but ignores steering and durable user messages",
+       ctx do
+    timestamp = ~U[2026-01-01 00:00:00Z]
+
+    old =
+      Repo.insert!(%IexCode.Sessions.Message{
+        id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+        session_id: ctx.session.id,
+        role: "user",
+        agent_name: "User",
+        content: "earlier objective",
+        inserted_at: timestamp,
+        updated_at: timestamp
+      })
+
+    current =
+      Repo.insert!(%IexCode.Sessions.Message{
+        id: "00000000-0000-4000-8000-000000000000",
+        session_id: ctx.session.id,
+        role: "user",
+        agent_name: "User",
+        content: "current objective",
+        inserted_at: timestamp,
+        updated_at: timestamp
+      })
+
+    create_message_fixture(ctx.session, %{agent_name: "User (Steer)", content: "pending steer"})
+
+    create_message_fixture(ctx.session, %{
+      content: "independent durable objective",
+      metadata: %{"run_id" => Ecto.UUID.generate()}
+    })
+
+    emit(ctx.view, %{ctx.identity | execution_id: old.id}, 1, :streaming, "old tied objective")
+
+    emit(
+      ctx.view,
+      %{ctx.identity | execution_id: current.id},
+      1,
+      :streaming,
+      "current tied objective"
+    )
+
+    refute has_element?(ctx.view, "#execution-previews", "old tied objective")
+    assert has_element?(ctx.view, "#execution-previews", "current tied objective")
+  end
+
+  test "an expired durable lease cannot admit a fresh preview", ctx do
+    run = claim_preview_run(ctx)
+
+    Repo.update!(
+      Ecto.Changeset.change(run,
+        lease_expires_at:
+          DateTime.utc_now()
+          |> DateTime.add(-1, :second)
+          |> DateTime.truncate(:second)
+      )
+    )
+
+    emit(ctx.view, run_identity(ctx, run), 1, :streaming, "expired lease")
+    refute has_element?(ctx.view, "#execution-preview-0")
+  end
+
+  test "a leased idle fleet planner retains awaiting-final and failed invocation fences", ctx do
+    run = claim_preview_run(ctx)
+    owner = String.duplicate("a", 64)
+
+    {:ok, [agent]} =
+      Runs.ensure_run_agents(run, [
+        %{key: "planner", role: "planner", adapter: "planner", display_name: "Planner"}
+      ])
+
+    {:ok, agent} = Runs.claim_run_agent(agent, owner)
+    opts = [lease_owner: owner, lease_generation: agent.lease_generation]
+    {:ok, agent} = Runs.transition_run_agent(agent, "idle", %{}, opts)
+
+    first = %{
+      run_identity(ctx, run)
+      | role: "planner",
+        agent_id: agent.id,
+        agent_generation: agent.lease_generation
+    }
+
+    Enum.reduce([:complete, :failed], {agent, first}, fn status, {agent, identity} ->
+      {:ok, running} = Runs.transition_run_agent(agent, "running", %{}, opts)
+      emit(ctx.view, identity, 1, :started, "")
+      emit(ctx.view, identity, 2, status, "finished planner invocation")
+      {:ok, idle} = Runs.transition_run_agent(running, "idle", %{}, opts)
+      send(ctx.view.pid, {:run_agent_updated, idle})
+      render(ctx.view)
+      [stream] = assigns(ctx.view).execution_streams
+      assert stream.status == to_string(status)
+      replacement = %{identity | invocation_id: Ecto.UUID.generate()}
+      emit(ctx.view, replacement, 1, :started, "")
+      emit(ctx.view, replacement, 2, :streaming, "idle planner replacement")
+      emit(ctx.view, identity, 99, :streaming, "retired idle planner invocation")
+      assert has_element?(ctx.view, "#execution-previews", "idle planner replacement")
+      refute has_element?(ctx.view, "#execution-previews", "retired idle planner invocation")
+      emit(ctx.view, replacement, 3, :complete, "finished replacement")
+      {idle, %{replacement | invocation_id: Ecto.UUID.generate()}}
+    end)
+  end
+
+  test "independent durable admission cannot forget a stopped interactive fence", ctx do
+    emit(ctx.view, ctx.identity, 1, :streaming, "interactive partial")
+    emit(ctx.view, ctx.identity, 2, :cancelled, "interactive partial")
+    {:ok, _} = Sessions.update_session(ctx.session, %{status: "stopped"})
+    send(ctx.view.pid, {:session_status_changed, "stopped"})
+    run = claim_preview_run(ctx)
+    emit(ctx.view, run_identity(ctx, run), 1, :streaming, "independent durable")
+
+    assert Enum.any?(
+             assigns(ctx.view).execution_streams,
+             &(&1.identity.execution_id == ctx.identity.execution_id)
+           )
+
+    create_message_fixture(ctx.session, %{
+      content: "durable swarm objective",
+      metadata: %{"run_id" => run.id}
+    })
+
+    {:ok, _} = Sessions.update_session(ctx.session, %{status: "running"})
+    send(ctx.view.pid, {:session_status_changed, "running"})
+    emit(ctx.view, ctx.identity, 99, :streaming, "cancelled identity reactivated")
+    refute has_element?(ctx.view, "#execution-previews", "cancelled identity reactivated")
+    assert has_element?(ctx.view, "#execution-previews", "independent durable")
   end
 
   test "fleet role and agent generation are scoped to the current durable lease", ctx do
@@ -369,12 +631,15 @@ defmodule IexCodeWeb.WorkspaceStreamingTest do
   end
 
   test "paging keeps previews separate and recovers a committed final from latest", ctx do
-    for n <- 1..120, do: create_message_fixture(ctx.session, %{content: "history #{n}"})
+    for n <- 1..120,
+        do: create_message_fixture(ctx.session, %{role: "assistant", content: "history #{n}"})
+
     render_click(ctx.view, "chat_history", %{"direction" => "latest"})
     render_click(ctx.view, "chat_history", %{"direction" => "older"})
     older = ids(ctx.view)
     emit(ctx.view, ctx.identity, 1, :started, "")
     emit(ctx.view, ctx.identity, 2, :streaming, "active while paging")
+    assert has_element?(ctx.view, "#execution-previews", "active while paging")
     assert ids(ctx.view) == older
     final = final(ctx.session, ctx.identity, "saved while paging")
 
@@ -606,6 +871,53 @@ defmodule IexCodeWeb.WorkspaceStreamingTest do
 
   defp frame(text),
     do: "data: " <> Jason.encode!(%{"choices" => [%{"delta" => %{"content" => text}}]}) <> "\n\n"
+
+  defp terminal_churn(ctx, count) do
+    for n <- 1..count do
+      {:ok, _} = Sessions.update_session(ctx.session, %{status: "running"})
+      user = create_message_fixture(ctx.session, %{content: "terminal objective #{n}"})
+      identity = %{ctx.identity | execution_id: user.id, invocation_id: Ecto.UUID.generate()}
+      emit(ctx.view, identity, 1, :started, "")
+      emit(ctx.view, identity, 2, :streaming, "terminal partial #{n}")
+      assert has_element?(ctx.view, "#execution-previews", "terminal partial #{n}")
+      status = if rem(n, 2) == 0, do: :cancelled, else: :failed
+      emit(ctx.view, identity, 3, status, "terminal partial #{n}")
+
+      if status == :failed do
+        error =
+          create_message_fixture(ctx.session, %{role: "assistant", content: "provider error"})
+
+        send(ctx.view.pid, {:message_created, error})
+      end
+
+      session_status = if status == :cancelled, do: "stopped", else: "idle"
+      {:ok, _} = Sessions.update_session(ctx.session, %{status: session_status})
+      send(ctx.view.pid, {:session_status_changed, session_status})
+      emit(ctx.view, identity, 4, :streaming, "terminal resurrection")
+      refute has_element?(ctx.view, "#execution-previews", "terminal resurrection")
+      assert length(assigns(ctx.view).execution_streams) <= 64
+      assert length(assigns(ctx.view).execution_previews) <= 8
+      identity
+    end
+  end
+
+  defp claim_preview_run(ctx) do
+    {:ok, _} =
+      Runs.create_run(%{
+        project_id: ctx.project.id,
+        session_id: ctx.session.id,
+        objective: "durable preview",
+        kind: "coding_agent",
+        mode: "single"
+      })
+
+    {:ok, run} = Runs.claim_next_run("durable-preview", lease_ms: 60_000)
+    run
+  end
+
+  defp run_identity(ctx, run) do
+    %{ctx.identity | execution_id: run.id, attempt: run.attempt, generation: run.lease_generation}
+  end
 
   defp start_path(ctx, :interactive, _receiver) do
     {:ok, server} = SessionServer.ensure_started(ctx.session.id)

@@ -100,6 +100,13 @@ final starts no helper and performs no model request.
 - On reconnect, reload authoritative persisted history. Do not require replay
   of old preview text. A subsequent snapshot is a capped continuation and must
   be labeled partial. Session switches drop foreign previews.
+- New authorized lanes may reclaim closed entries only when independent
+  admission rejects their identity. Active and awaiting-final lanes, including
+  failed role invocations under live swarm parents, retain their fences.
+  Interactive fences require a later ordinary objective, not a reversible
+  stopped/idle session status; steering and independent durable objectives do
+  not supersede them. Queued retries cannot authorize their old generation,
+  and leased idle fleet agents remain authoritative between role invocations.
 
 This change establishes and tests the runtime protocol only. LiveView display,
 escaping, bounded projection and browser assertions belong to workspace

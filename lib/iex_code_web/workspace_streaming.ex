@@ -96,9 +96,13 @@ defmodule IexCodeWeb.WorkspaceStreaming do
       %{status: status} when status in ~w(idle failed stopped interrupted) ->
         streams =
           Enum.map(socket.assigns.execution_streams, fn stream ->
-            if is_nil(Runs.get_run(stream.identity.execution_id)),
-              do: %{stream | closed?: true, status: status},
-              else: stream
+            i = stream.identity
+            op = Sessions.get_operation(i.session_id, i.execution_id)
+
+            if is_nil(Runs.get_run(i.execution_id)) and
+                 (is_nil(op) or op.status not in ~w(pending running)),
+               do: %{stream | closed?: true, status: status},
+               else: stream
           end)
 
         project(socket, streams)
@@ -231,23 +235,23 @@ defmodule IexCodeWeb.WorkspaceStreaming do
   end
 
   defp prune_ledger(streams, identity) do
-    if length(streams) < @ledger_count do
-      streams
+    # Only authorized new lanes may reclaim terminal entries. Ignore reversible
+    # session status when deciding whether an interactive identity is obsolete:
+    # only a later objective can safely replace its in-memory terminal fence.
+    # Live parent role failures and complete/awaiting-final lanes keep fences.
+    if not Enum.any?(streams, &(lane(&1.identity) == lane(identity))) and current?(identity) do
+      Enum.reject(streams, &(&1.closed? and not current?(&1.identity, false)))
     else
-      Enum.reject(streams, & &1.hidden?)
+      streams
     end
-    |> Enum.reject(fn stream ->
-      stream.identity.execution_id == identity.execution_id and
-        lineage(stream.identity) < lineage(identity) and stream.hidden?
-    end)
   end
 
-  defp current?(i) do
+  defp current?(i, check_session_status? \\ true) do
     case Runs.get_run(i.execution_id) do
       %{} = run ->
         run.session_id == i.session_id and run.attempt == i.attempt and
           run.lease_generation == i.generation and
-          run.status not in ~w(completed failed cancelled interrupted) and
+          run.status in ~w(running paused) and live_lease?(run) and
           is_nil(run.cancellation_requested_at) and current_agent?(i)
 
       nil ->
@@ -258,12 +262,9 @@ defmodule IexCodeWeb.WorkspaceStreaming do
           nil ->
             session = Sessions.get_session(i.session_id)
 
-            session.status not in ~w(failed stopped interrupted) and
-              Repo.exists?(
-                from m in Message,
-                  where:
-                    m.session_id == ^i.session_id and m.id == ^i.execution_id and m.role == "user"
-              )
+            not is_nil(session) and
+              (not check_session_status? or session.status not in ~w(failed stopped interrupted)) and
+              current_interactive?(i)
         end
     end
   end
@@ -272,14 +273,38 @@ defmodule IexCodeWeb.WorkspaceStreaming do
 
   defp current_agent?(i) do
     case Runs.get_run_agent(i.agent_id) do
-      %{run_id: run_id, lease_generation: generation, role: role, status: status} ->
+      %{run_id: run_id, lease_generation: generation, role: role, status: status} = agent ->
         run_id == i.execution_id and generation == i.agent_generation and role == i.role and
-          status not in ~w(completed failed cancelled interrupted)
+          status in ~w(starting idle running paused stopping) and live_lease?(agent)
 
       _ ->
         false
     end
   end
+
+  defp current_interactive?(i) do
+    # Interactive objectives are serialized by SessionServer. SQLite insertion
+    # order, unlike second-resolution timestamps/random UUIDs, distinguishes
+    # successive objectives even within one second. Steering and independent
+    # durable objectives must not supersede an interactive execution.
+    Repo.exists?(
+      from m in Message,
+        where: m.session_id == ^i.session_id and m.id == ^i.execution_id and m.role == "user",
+        where:
+          fragment(
+            "NOT EXISTS (SELECT 1 FROM messages AS newer WHERE newer.session_id = ? AND newer.role = 'user' AND newer.agent_name = 'User' AND json_extract(newer.metadata, '$.run_id') IS NULL AND newer.rowid > ?.rowid)",
+            m.session_id,
+            m
+          )
+    )
+  end
+
+  # Queued retries retain the previous generation until claimed. Neither they
+  # nor an expired/released lease authorize replay of that previous stream.
+  defp live_lease?(%{lease_owner: owner, lease_expires_at: %DateTime{} = expires_at}),
+    do: is_binary(owner) and DateTime.compare(expires_at, DateTime.utc_now()) == :gt
+
+  defp live_lease?(_), do: false
 
   # EXISTS loads no final content, transcript, or arbitrary metadata. It also
   # catches final-before-delta and reconnect ordering outside the visible page.
