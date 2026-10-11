@@ -139,8 +139,9 @@ defmodule IexCode.OwnerAuth.CredentialsTest do
          end}
       )
 
-    :erlang.trace_pattern({:crypto, :pbkdf2_hmac, 5}, true, [:local])
-    :erlang.trace_pattern({Plug.Crypto, :secure_compare, 2}, true, [:local])
+    Code.ensure_loaded!(Plug.Crypto)
+    assert :erlang.trace_pattern({:crypto, :pbkdf2_hmac, 5}, true, [:local]) == 1
+    assert :erlang.trace_pattern({Plug.Crypto, :secure_compare, 2}, true, [:local]) == 1
     :erlang.trace(worker, true, [:call, {:tracer, self()}])
 
     on_exit(fn ->
