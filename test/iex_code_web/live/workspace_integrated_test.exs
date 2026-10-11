@@ -50,13 +50,16 @@ defmodule IexCodeWeb.WorkspaceIntegratedTest do
   end
 
   test "ordinary workspace input compacts history, gates native edit and saves one final", ctx do
+    older_at = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.add(-3600, :second)
+
     for n <- 1..121 do
-      {:ok, _} =
-        Sessions.create_message(%{
-          session_id: ctx.session.id,
-          role: "assistant",
-          content: "Older synthetic #{n}: " <> String.duplicate("context ", 1_000)
-        })
+      %IexCode.Sessions.Message{inserted_at: older_at, updated_at: older_at}
+      |> IexCode.Sessions.Message.changeset(%{
+        session_id: ctx.session.id,
+        role: "assistant",
+        content: "Older synthetic #{n}: " <> String.duplicate("context ", 1_000)
+      })
+      |> IexCode.Repo.insert!()
     end
 
     {:ok, view, _} = live(ctx.conn, ~p"/sessions/#{ctx.session.id}?tab=chat")
