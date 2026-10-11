@@ -667,9 +667,25 @@ These are the focus of the next phases in [`PROJECT.md`](PROJECT.md).
 
 Production releases require at least `DATABASE_PATH`, `SECRET_KEY_BASE`, and an
 appropriate `PHX_HOST`; set `PHX_SERVER=true` to start the endpoint. The production
-endpoint also binds to loopback unless `IEX_CODE_BIND` explicitly overrides it.
+endpoint should bind to loopback behind a trusted TLS reverse proxy.
 
-IexCode is a development-stage, trusted-local-user tool. Browser routes are guarded by
-a loopback address/host check. `IEX_CODE_ALLOW_REMOTE=true` is an explicit escape hatch,
-not an authentication system; do not enable it without an authenticated, hardened proxy.
-Multi-tenant isolation and encrypted secret storage are not present.
+When `IEX_CODE_ALLOW_REMOTE=true`, the built-in single-owner authentication protects
+browser routes, reports, websocket and longpoll transports. It is not a signup or
+multi-user system. Local passwordless access remains restricted to the existing loopback
+peer and Host policy when remote mode is disabled. Multi-tenant isolation and encrypted
+secret storage are not present.
+
+### Reviewed hostname deployment
+
+The reviewed production deployment uses the committed auth-enabled revision, fresh
+SQLite state, app bind `127.0.0.1:14052`, and nginx for `https://iex.llmotions.com`.
+Keep the generated owner credential on the host and retrieve
+`/etc/iex-code-web/owner-credential.txt` privately. Do not expose its contents in
+chat, logs, repository files, or agent evidence, or overwrite it. This app credential
+is separate from SSH/server credentials.
+
+The approved Iex-only certificate flow uses Ubuntu `certbot` without the nginx plugin.
+The exact rollout commands and validation outcomes are recorded in
+[`docs/deployment.md`](docs/deployment.md). Renewal is scoped to this hostname and
+runs `nginx -t` before reload. The package-global `certbot.timer` stays disabled; only
+the Iex timer is enabled.
