@@ -1,6 +1,7 @@
 defmodule IexCodeWeb.OwnerAuthBoundaryTest do
   use IexCodeWeb.ConnCase, async: false
 
+  import ExUnit.CaptureLog
   import Phoenix.LiveViewTest
   alias IexCode.OwnerAuth
   alias IexCode.OwnerAuth.Credentials
@@ -230,6 +231,34 @@ defmodule IexCodeWeb.OwnerAuthBoundaryTest do
 
     assert stale.status == 302
     assert get(recycle(third), "/settings").status == 200
+  end
+
+  test "debug login dispatch logs redact both owner credentials", fixture do
+    previous_level = Logger.level()
+    Logger.configure(level: :debug)
+
+    try do
+      log =
+        capture_log([level: :debug], fn ->
+          conn = get(csrf_conn(fixture.conn), "/login")
+
+          response =
+            post(csrf_conn(recycle(conn)), "/login", %{
+              "owner" => %{"username" => fixture.username, "password" => fixture.password},
+              "_csrf_token" => csrf_token(conn)
+            })
+
+          assert response.status == 302
+        end)
+
+      assert log =~ "Processing with IexCodeWeb.OwnerSessionController.create/2"
+      assert log =~ ~s(Parameters: %{"_csrf_token" => "[FILTERED]")
+      assert log =~ ~s("owner" => %{"password" => "[FILTERED]", "username" => "[FILTERED]"})
+      refute log =~ fixture.username
+      refute log =~ fixture.password
+    after
+      Logger.configure(level: previous_level)
+    end
   end
 
   test "login and logout reject missing CSRF and GET logout never revokes", fixture do

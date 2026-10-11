@@ -71,6 +71,7 @@ config :phoenix, :filter_parameters, [
   "password",
   "password_confirmation",
   "password_hash",
+  "username",
   "owner_auth_epoch",
   "token",
   "_csrf_token"
