@@ -10,28 +10,41 @@ defmodule IexCodeWeb.OwnerAuthBoundaryTest do
     password = Base.encode64(:crypto.strong_rand_bytes(32))
     salt = :crypto.strong_rand_bytes(16)
     digest = :crypto.pbkdf2_hmac(:sha256, password, salt, 600_000, 32)
+    hash = "pbkdf2_sha256$600000$#{Base.encode64(salt)}$#{Base.encode64(digest)}"
 
     {:ok, credentials} =
       Credentials.parse(
         username,
-        "pbkdf2_sha256$600000$#{Base.encode64(salt)}$#{Base.encode64(digest)}"
+        hash
       )
 
-    %{username: username, password: password, credentials: credentials}
+    %{username: username, password: password, hash: hash, credentials: credentials}
   end
 
   setup fixture do
+    previous_runtime = Application.fetch_env(:iex_code, :owner_auth_runtime)
+
+    Application.put_env(:iex_code, :owner_auth_runtime,
+      allow_remote: "true",
+      username: fixture.username,
+      password_hash: fixture.hash
+    )
+
     if Process.whereis(OwnerAuth), do: Supervisor.terminate_child(IexCode.Supervisor, OwnerAuth)
     clock = :atomics.new(1, signed: true)
     :atomics.put(clock, 1, System.monotonic_time(:millisecond))
 
-    start_supervised!(
-      {OwnerAuth,
-       config: %{mode: :remote, credentials: fixture.credentials},
-       clock: fn -> :atomics.get(clock, 1) end}
-    )
+    start_supervised!({OwnerAuth, clock: fn -> :atomics.get(clock, 1) end})
 
-    on_exit(fn -> Supervisor.restart_child(IexCode.Supervisor, OwnerAuth) end)
+    on_exit(fn ->
+      case previous_runtime do
+        {:ok, runtime} -> Application.put_env(:iex_code, :owner_auth_runtime, runtime)
+        :error -> Application.delete_env(:iex_code, :owner_auth_runtime)
+      end
+
+      Supervisor.restart_child(IexCode.Supervisor, OwnerAuth)
+    end)
+
     %{clock: clock}
   end
 
@@ -161,7 +174,8 @@ defmodule IexCodeWeb.OwnerAuthBoundaryTest do
 
   test "local passwordless route and transport require both actual peer and Host", fixture do
     stop_supervised!(OwnerAuth)
-    start_supervised!({OwnerAuth, config: %{mode: :local, credentials: nil}})
+    Application.put_env(:iex_code, :owner_auth_runtime, allow_remote: "false")
+    start_supervised!({OwnerAuth, []})
     assert get(fixture.conn, "/settings").status == 200
 
     for path <- ["/settings", "/live/websocket", "/live/longpoll"] do
@@ -337,13 +351,35 @@ defmodule IexCodeWeb.OwnerAuthBoundaryTest do
     for _ <- 1..5, do: assert({:ok, _} = OwnerAuth.login(fixture.username, fixture.password))
   end
 
-  test "events params info and idle checks reject expired connected owner", fixture do
+  test "idle checks reject expired connected owner", fixture do
     first = login(fixture)
     {:ok, view, _} = live(recycle(first), "/settings")
     :atomics.put(fixture.clock, 1, get_session(first, "expires_at_ms"))
     send(view.pid, :owner_auth_tick)
     assert_redirect(view, "/login")
     assert get(recycle(first), "/settings").status == 302
+  end
+
+  test "expired event cannot reach the protected settings handler", fixture do
+    first = login(fixture)
+    {:ok, view, _} = live(recycle(first), "/settings")
+    :atomics.put(fixture.clock, 1, get_session(first, "expires_at_ms"))
+    assert {:error, {:redirect, %{to: "/login"}}} = render_click(view, "discard_settings")
+  end
+
+  test "expired live patch cannot reach protected params", fixture do
+    first = login(fixture)
+    {:ok, view, _} = live(recycle(first), "/settings")
+    :atomics.put(fixture.clock, 1, get_session(first, "expires_at_ms"))
+    assert {:error, {:redirect, %{to: "/login"}}} = render_patch(view, "/settings/appearance")
+  end
+
+  test "expired ordinary info cannot keep the protected view alive", fixture do
+    first = login(fixture)
+    {:ok, view, _} = live(recycle(first), "/settings")
+    :atomics.put(fixture.clock, 1, get_session(first, "expires_at_ms"))
+    send(view.pid, :auth_synthetic_info)
+    assert_redirect(view, "/login")
   end
 
   test "authority loss denies requests login and readiness without local fallback", fixture do

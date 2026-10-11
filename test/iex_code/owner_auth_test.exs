@@ -74,6 +74,47 @@ defmodule IexCode.OwnerAuthTest do
     end
   end
 
+  test "supervisor child args stay secret-free while init loads private runtime config",
+       fixture do
+    configure_endpoint([])
+    configure_runtime(fixture, [])
+    assert {:ok, _} = OwnerAuth.boot_config()
+
+    child = OwnerAuth.child_spec(name: @server, table: @table, clock: fixture.clock)
+    start_args = child.start |> elem(2)
+    encoded_args = :erlang.term_to_binary(start_args)
+
+    assert :binary.match(encoded_args, fixture.credentials.digest) == :nomatch
+    assert :binary.match(encoded_args, fixture.credentials.username_digest) == :nomatch
+    assert :binary.match(encoded_args, fixture.credentials.salt) == :nomatch
+
+    pid = start_supervised!(Supervisor.child_spec({OwnerAuth, hd(start_args)}, id: @server))
+    assert OwnerAuth.mode(server: @server, table: @table) == :remote
+    assert :sys.get_state(pid).config.credentials == fixture.credentials
+
+    supplied = OwnerAuth.child_spec(config: %{mode: :remote, credentials: fixture.credentials})
+    assert supplied.start == {OwnerAuth, :start_link, [[]]}
+
+    {:ok, application_child} = :supervisor.get_childspec(IexCode.Supervisor, OwnerAuth)
+    assert application_child.start == {OwnerAuth, :start_link, [[]]}
+  end
+
+  test "invalid private remote config fails before authority or application children start",
+       fixture do
+    configure_endpoint([])
+    configure_runtime(fixture, password_hash: nil)
+    existing_children = Supervisor.which_children(IexCode.Supervisor)
+
+    assert OwnerAuth.init(name: @server, table: @table) ==
+             {:stop, :invalid_owner_auth_configuration}
+
+    assert IexCode.Application.start(:normal, []) ==
+             {:error, :invalid_owner_auth_configuration}
+
+    assert :ets.whereis(@table) == :undefined
+    assert Supervisor.which_children(IexCode.Supervisor) == existing_children
+  end
+
   test "malformed raw flags and runtime configuration fail generically", fixture do
     configure_endpoint([])
 
@@ -394,8 +435,15 @@ defmodule IexCode.OwnerAuthTest do
   end
 
   defp start_authority(fixture, config \\ nil) do
+    configure_endpoint([])
+
+    if config && config.mode == :local do
+      Application.put_env(:iex_code, :owner_auth_runtime, allow_remote: "false")
+    else
+      configure_runtime(fixture, [])
+    end
+
     opts = [
-      config: config || %{mode: :remote, credentials: fixture.credentials},
       name: @server,
       table: @table,
       clock: fixture.clock

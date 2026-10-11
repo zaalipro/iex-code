@@ -40,7 +40,7 @@ defmodule IexCode.OwnerAuth do
   def child_spec(opts) do
     %{
       id: Keyword.get(opts, :name, __MODULE__),
-      start: {__MODULE__, :start_link, [opts]},
+      start: {__MODULE__, :start_link, [Keyword.take(opts, [:name, :table, :clock])]},
       type: :worker,
       restart: :permanent
     }
@@ -130,11 +130,13 @@ defmodule IexCode.OwnerAuth do
 
   @impl true
   def init(opts) do
-    config =
-      opts
-      |> Keyword.get(:config, %{mode: :local, credentials: nil})
-      |> normalize_config!()
+    case boot_config() do
+      {:ok, config} -> init_authority(opts, config)
+      {:error, reason} -> {:stop, reason}
+    end
+  end
 
+  defp init_authority(opts, config) do
     table = Keyword.get(opts, :table, @default_table)
     clock = Keyword.get(opts, :clock, fn -> System.monotonic_time(:millisecond) end)
     name = Keyword.get(opts, :name, __MODULE__)
@@ -369,21 +371,6 @@ defmodule IexCode.OwnerAuth do
       session_lifetime_ms: @session_lifetime_ms
     }
   end
-
-  defp normalize_config!(%{mode: mode, credentials: credentials})
-       when mode in [:local, :remote] do
-    if mode == :local and credentials == nil do
-      %{mode: mode, credentials: nil}
-    else
-      if mode == :remote and valid_credentials?(credentials) do
-        %{mode: mode, credentials: credentials}
-      else
-        raise ArgumentError, "invalid owner auth configuration"
-      end
-    end
-  end
-
-  defp normalize_config!(_config), do: raise(ArgumentError, "invalid owner auth configuration")
 
   defp valid_credentials?(%{username_digest: username_digest, salt: salt, digest: digest})
        when is_binary(username_digest) and byte_size(username_digest) == @digest_bytes and
