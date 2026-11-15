@@ -29,11 +29,20 @@ defmodule IexCode.Tools.SafetyPolicy do
       grep_search
       ast_search
       semantic_code_search
+      repo_map
+      diagnostics
       git_status
       git_diff
       git_generate_commit
       run_tests
     )
+  }
+
+  @tool_aliases %{
+    "view_file" => "read_file",
+    "replace_file_content" => "patch_file",
+    "write_to_file" => "write_file",
+    "find_by_name" => "list_dir"
   }
 
   @mutating_categories ~w(shell_execution file_mutations git_push mcp_tools)
@@ -55,8 +64,10 @@ defmodule IexCode.Tools.SafetyPolicy do
   def category_for_tool("mcp__" <> _rest), do: "mcp_tools"
 
   def category_for_tool(tool_name) when is_binary(tool_name) do
+    canonical = Map.get(@tool_aliases, tool_name, tool_name)
+
     Enum.find_value(@categories, "other", fn {cat, tools} ->
-      if tool_name in tools, do: cat
+      if canonical in tools, do: cat
     end)
   end
 

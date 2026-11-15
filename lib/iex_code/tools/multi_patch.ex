@@ -16,7 +16,8 @@ defmodule IexCode.Tools.MultiPatch do
           required(:target) => String.t(),
           required(:replacement) => String.t(),
           optional(:tier) => tier() | :auto,
-          optional(:allow_multiple) => boolean()
+          optional(:allow_multiple) => boolean(),
+          optional(:anchor_line) => pos_integer() | nil
         }
 
   @type patch_result :: %{
@@ -85,7 +86,7 @@ defmodule IexCode.Tools.MultiPatch do
   Patches a single string in memory using the 3-tier matcher.
   """
   @spec patch_string(String.t(), String.t(), String.t(), keyword()) ::
-          {:ok, %{content: String.t(), tier: tier()}} | {:error, :not_found}
+          {:ok, %{content: String.t(), tier: tier()}} | {:error, Matcher.patch_error()}
   defdelegate patch_string(content, target, replacement, opts \\ []), to: Matcher, as: :patch
 
   @doc """
@@ -187,6 +188,7 @@ defmodule IexCode.Tools.MultiPatch do
 
   defp plan_patches(project_root, patches, opts) do
     validate_syntax? = Keyword.get(opts, :validate_syntax, true)
+    reject_ambiguous? = Keyword.get(opts, :reject_ambiguous, true)
 
     # Group patches by path so multiple patches to the same file are applied sequentially in memory
     normalized_patches = Enum.map(patches, &normalize_patch_spec/1)
@@ -214,7 +216,9 @@ defmodule IexCode.Tools.MultiPatch do
 
                 patch_opts = [
                   allow_multiple: patch.allow_multiple,
-                  tier: patch.tier
+                  tier: patch.tier,
+                  anchor_line: patch.anchor_line,
+                  reject_ambiguous: reject_ambiguous?
                 ]
 
                 case Matcher.patch(current_content, target, replacement, patch_opts) do
@@ -223,6 +227,9 @@ defmodule IexCode.Tools.MultiPatch do
 
                   {:error, :not_found} ->
                     {:halt, {:error, {:target_not_found, rel_path, target}}}
+
+                  {:error, {:ambiguous_match, match_lines}} ->
+                    {:halt, {:error, {:ambiguous_target, rel_path, match_lines}}}
                 end
               end)
 
@@ -466,14 +473,28 @@ defmodule IexCode.Tools.MultiPatch do
       Map.get(map, :allow_multiple, false) == true or
         Map.get(map, "allow_multiple", false) == true
 
+    anchor_line = normalize_anchor_line(Map.get(map, :anchor_line) || Map.get(map, "anchor_line"))
+
     %{
       path: path,
       target: target,
       replacement: replacement,
       tier: tier,
-      allow_multiple: allow_multiple
+      allow_multiple: allow_multiple,
+      anchor_line: anchor_line
     }
   end
+
+  defp normalize_anchor_line(line) when is_integer(line) and line >= 1, do: line
+
+  defp normalize_anchor_line(line) when is_binary(line) do
+    case Integer.parse(String.trim(line)) do
+      {parsed, ""} when parsed >= 1 -> parsed
+      _ -> nil
+    end
+  end
+
+  defp normalize_anchor_line(_), do: nil
 
   defp resolve_file_path(project_root, path) do
     WorkspacePath.resolve(project_root, path)
