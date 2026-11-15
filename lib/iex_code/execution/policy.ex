@@ -35,7 +35,17 @@ defmodule IexCode.Execution.Policy do
     git_commit
     git_generate_commit
   )
-  @all_tools @core_tools ++ ~w(ast_search web_search fetch_url)
+  @harness_tools ~w(
+    repo_map
+    diagnostics
+    semantic_code_search
+    find_references
+    rename_symbol
+    update_plan
+    request_input
+    spawn_agent
+  )
+  @all_tools @core_tools ++ ~w(ast_search web_search fetch_url) ++ @harness_tools
   @secret_field_fragments ~w(api_key authorization base_url cookie credential endpoint password secret)
 
   @override_aliases %{

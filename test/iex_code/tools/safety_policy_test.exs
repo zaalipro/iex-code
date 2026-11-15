@@ -35,6 +35,23 @@ defmodule IexCode.Tools.SafetyPolicyTest do
 
     test "returns 'other' for unknown tools" do
       assert SafetyPolicy.category_for_tool("arbitrary_unknown_tool") == "other"
+      assert SafetyPolicy.category_for_tool("git_push") == "other"
+      assert SafetyPolicy.category_for_tool("bash") == "other"
+      assert SafetyPolicy.category_for_tool("terminal_exec") == "other"
+      assert SafetyPolicy.category_for_tool(nil) == "other"
+    end
+
+    test "normalizes whitespace, casing, MCP prefixes, and legacy aliases" do
+      assert SafetyPolicy.category_for_tool("write_file ") == "file_mutations"
+      assert SafetyPolicy.category_for_tool("WRITE_FILE") == "file_mutations"
+      assert SafetyPolicy.category_for_tool("run_command\n") == "shell_execution"
+      assert SafetyPolicy.category_for_tool("\t  RENAME_SYMBOL ") == "file_mutations"
+      assert SafetyPolicy.category_for_tool("MCP__srv__tool") == "mcp_tools"
+      assert SafetyPolicy.category_for_tool(" mcp__srv__tool\n") == "mcp_tools"
+      assert SafetyPolicy.category_for_tool("REPLACE_FILE_CONTENT ") == "file_mutations"
+      assert SafetyPolicy.category_for_tool(" VIEW_FILE ") == "read_only"
+      assert SafetyPolicy.category_for_tool("WRITE_TO_FILE") == "file_mutations"
+      assert SafetyPolicy.category_for_tool("Find_By_Name ") == "read_only"
     end
   end
 
@@ -194,6 +211,92 @@ defmodule IexCode.Tools.SafetyPolicyTest do
 
       assert {:deny, reason2} = SafetyPolicy.evaluate("run_command", default_settings)
       assert reason2 =~ "prohibited in read_only mode"
+    end
+
+    test "read_only ceiling prevents session_overrides from escalating to full_auto or prompt_dangerous" do
+      for settings <- [
+            %AppSettings{tool_approval_mode: "read_only", tool_category_overrides: %{}},
+            %{"tool_approval_mode" => "read_only"},
+            %{tool_approval_mode: :read_only}
+          ],
+          escalation <- [
+            %{"tool_approval_mode" => "full_auto"},
+            %{"tool_approval_mode" => "prompt_dangerous"},
+            %{tool_approval_mode: :full_auto},
+            %{tool_approval_mode: "FULL_AUTO"}
+          ] do
+        assert {:deny, reason} = SafetyPolicy.evaluate("write_file", settings, escalation)
+        assert reason =~ "prohibited in read_only mode"
+
+        assert {:deny, reason2} = SafetyPolicy.evaluate("run_command", settings, escalation)
+        assert reason2 =~ "prohibited in read_only mode"
+      end
+    end
+
+    test "session_overrides can adjust tier when settings are full_auto, prompt_dangerous, or nil" do
+      fa_settings = %AppSettings{tool_approval_mode: "full_auto", tool_category_overrides: %{}}
+
+      assert {:deny, _} =
+               SafetyPolicy.evaluate("run_command", fa_settings, %{
+                 "tool_approval_mode" => "read_only"
+               })
+
+      assert SafetyPolicy.evaluate("run_command", nil, %{"tool_approval_mode" => "full_auto"}) ==
+               :allow
+
+      assert {:deny, _} =
+               SafetyPolicy.evaluate("run_command", nil, %{"tool_approval_mode" => "read_only"})
+
+      # Invalid tier in session_overrides fails closed to prompt_dangerous
+      assert {:prompt, _} =
+               SafetyPolicy.evaluate("run_command", fa_settings, %{
+                 "tool_approval_mode" => "invalid_tier"
+               })
+    end
+
+    test "evaluate/3 normalizes cased/padded tools and denies unrecognized tools in read_only mode" do
+      ro_settings = %AppSettings{
+        tool_approval_mode: "read_only",
+        tool_category_overrides: %{"other" => "auto"}
+      }
+
+      pd_settings = %AppSettings{
+        tool_approval_mode: "prompt_dangerous",
+        tool_category_overrides: %{}
+      }
+
+      assert {:deny, _} = SafetyPolicy.evaluate("write_file ", ro_settings)
+      assert {:deny, _} = SafetyPolicy.evaluate("WRITE_FILE", ro_settings)
+      assert {:deny, _} = SafetyPolicy.evaluate("run_command\n", ro_settings)
+      assert {:deny, _} = SafetyPolicy.evaluate("MCP__srv__tool", ro_settings)
+      assert {:deny, _} = SafetyPolicy.evaluate("REPLACE_FILE_CONTENT ", ro_settings)
+
+      assert {:prompt, _} = SafetyPolicy.evaluate("write_file ", pd_settings)
+      assert {:prompt, _} = SafetyPolicy.evaluate("WRITE_FILE", pd_settings)
+      assert {:prompt, _} = SafetyPolicy.evaluate("run_command\n", pd_settings)
+      assert {:prompt, _} = SafetyPolicy.evaluate("MCP__srv__tool", pd_settings)
+      assert {:prompt, _} = SafetyPolicy.evaluate("REPLACE_FILE_CONTENT ", pd_settings)
+
+      # Unrecognized tools remain :allow in prompt_dangerous, but strictly :deny in read_only even with category override
+      for unknown <- ~w(git_push bash terminal_exec arbitrary_unknown_tool) do
+        assert SafetyPolicy.evaluate(unknown, pd_settings) == :allow
+
+        assert SafetyPolicy.evaluate(unknown, ro_settings) ==
+                 {:deny, "Unrecognized tool '#{unknown}' is prohibited in read_only mode"}
+      end
+
+      # read_only, web_search, and autonomy categories are permitted in read_only unless category-overridden
+      assert SafetyPolicy.evaluate(" VIEW_FILE ", ro_settings) == :allow
+      assert SafetyPolicy.evaluate("web_search", ro_settings) == :allow
+      assert SafetyPolicy.evaluate("update_plan", ro_settings) == :allow
+
+      ro_override_settings = %AppSettings{
+        tool_approval_mode: "read_only",
+        tool_category_overrides: %{"web_search" => "deny", "autonomy" => "prompt"}
+      }
+
+      assert {:deny, _} = SafetyPolicy.evaluate("web_search", ro_override_settings)
+      assert {:prompt, _} = SafetyPolicy.evaluate("update_plan", ro_override_settings)
     end
   end
 end

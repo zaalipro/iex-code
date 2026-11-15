@@ -676,7 +676,7 @@ defmodule IexCode.Execution.Teamwork do
         reasoning_effort: effort,
         mission:
           "Decomposes goals, manages agent handoffs, enforces contracts, and oversees checkpoints.",
-        capabilities: ["planning", "swarm_consensus", "contract_validation"]
+        capabilities: ["planning", "swarm_consensus", "contract_validation", "repo_map"]
       },
       %AgentSpec{
         role: "deep_coder",
@@ -685,7 +685,15 @@ defmodule IexCode.Execution.Teamwork do
         reasoning_effort: effort,
         mission:
           "Synthesizes modular, idiomatic code adhering to project architecture and AST conventions.",
-        capabilities: ["code_synthesis", "ast_refactor", "tool_execution"]
+        capabilities: [
+          "code_synthesis",
+          "ast_refactor",
+          "rename_symbol",
+          "find_references",
+          "semantic_code_search",
+          "repo_map",
+          "tool_execution"
+        ]
       },
       %AgentSpec{
         role: "deep_investigator",
@@ -694,7 +702,14 @@ defmodule IexCode.Execution.Teamwork do
         reasoning_effort: effort,
         mission:
           "Explores codebase AST, pinpoints edge-case hazards, inspects logs, and diagnoses failures.",
-        capabilities: ["ast_search", "root_cause_analysis", "diagnostics"]
+        capabilities: [
+          "ast_search",
+          "repo_map",
+          "find_references",
+          "semantic_code_search",
+          "root_cause_analysis",
+          "diagnostics"
+        ]
       },
       %AgentSpec{
         role: "test_verifier",
@@ -703,7 +718,7 @@ defmodule IexCode.Execution.Teamwork do
         reasoning_effort: if(boost?, do: "high", else: "medium"),
         mission:
           "Designs ExUnit test suites, probes adversarial boundary cases, and drives auto-remediation.",
-        capabilities: ["ex_unit", "adversarial_testing", "regression_gate"]
+        capabilities: ["ex_unit", "test_selector", "adversarial_testing", "regression_gate"]
       },
       %AgentSpec{
         role: "security_auditor",
@@ -712,7 +727,13 @@ defmodule IexCode.Execution.Teamwork do
         reasoning_effort: "medium",
         mission:
           "Verifies secret masking, execution safety policies, and clean precommit compliance.",
-        capabilities: ["safety_policy", "secret_masking", "precommit_audit"]
+        capabilities: [
+          "safety_policy",
+          "secret_masking",
+          "find_references",
+          "repo_map",
+          "precommit_audit"
+        ]
       }
     ]
   end

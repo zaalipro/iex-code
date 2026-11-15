@@ -228,6 +228,36 @@ defmodule IexCode.Execution.PolicyTest do
     assert policy["allowed_tools"] == ["read_file", "web_search", "fetch_url"]
   end
 
+  test "supported_tools includes all 24 built-in tools and accepts Round 1-3 harness tools as overrides" do
+    harness_tools = ~w(
+      repo_map
+      diagnostics
+      semantic_code_search
+      find_references
+      rename_symbol
+      update_plan
+      request_input
+      spawn_agent
+    )
+
+    supported = Policy.supported_tools()
+    defined_tools = IexCode.Tools.tool_definitions(:all) |> Enum.map(& &1.name)
+
+    assert length(supported) == 24
+    assert Enum.sort(supported) == Enum.sort(defined_tools)
+
+    assert {:ok, policy} =
+             Policy.from_settings(%{}, nil, %{
+               allowed_tools: Enum.reverse(harness_tools)
+             })
+
+    assert policy["allowed_tools"] == harness_tools
+
+    # Default policy continues to expose only @core_tools ++ ["ast_search"]
+    assert {:ok, default_policy} = Policy.from_settings(%{})
+    assert default_policy["allowed_tools"] == @core_tools ++ ["ast_search"]
+  end
+
   test "explicit nil or blank optional budgets clear inherited limits" do
     settings = %{
       default_run_token_budget: 100,
