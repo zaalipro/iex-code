@@ -31,6 +31,7 @@ defmodule IexCode.Engine.SubAgent do
     grep_search
     ast_search
     find_references
+    lsp_query
     semantic_code_search
     repo_map
     diagnostics

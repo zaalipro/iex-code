@@ -33,7 +33,7 @@ Settings and the global command palette are available across the workspace.
 IexCode deliberately operates on the selected project **in place**:
 
 - Commands, tests, Git operations, file reads/writes, and the PTY run in the project root by default.
-- Ordinary runs do **not** implicitly create a container or Git worktree unless `spawn_agent` (`isolate_worktree: true`), `IexCode.Sandbox.Worktree`, or `run_command` (`sandbox_policy`) is explicitly invoked.
+- Ordinary runs do **not** implicitly create a container or Git worktree unless `spawn_agent` (`isolate_worktree: true`), `SwarmCoordinator` (`isolate_worktree: true`), `IexCode.Sandbox.Worktree`, or `run_command` (`sandbox_policy`) is explicitly invoked.
 - Processes inherit the permissions of the user who started IexCode.
 - Multi-file patches use preflight validation, atomic writes, and snapshots where that
   tool is used, but arbitrary terminal commands are not transactional.
@@ -603,13 +603,44 @@ by the DAG scheduler. The dedicated exact-level Research launcher creates new `d
   guard zero/negative weights, deduplicate repeated non-empty `reviewer_id` votes, enforce strict
   idempotent `:approved | :rejected` resolution in `resolve_arbitration/2`, and synthesize ranked,
   deduplicated repair prompts via `Arbitrator.synthesize_actionable_feedback/2`.
-- **10-task `eval/tasks` coding benchmark suite**: `mix iex_code.eval` (`IexCode.Eval.Runner` and
-  `Scoring`) runs 10 reproducible coding benchmarks (`example-markdown-typo`,
+- **Self-healing `SwarmCoordinator` × `Arbitrator` repair loop & optional worktree isolation**:
+  `ExplorerAgent` enriches planning context with bounded `RepoMap` (`3,000` bytes), Elixir
+  `SymbolRefactor.find_references`, and zero-network lexical `SemanticIndex` retrieval (`<= 4,500`
+  UTF-8 bytes); `VerifierAgent` supports `selective_preflight: true` (`TestSelector`) before full
+  suites and emits structured `blocker`/`major` `file:line` critiques synthesized via
+  `Arbitrator.synthesize_actionable_feedback/2` into `PlannerAgent` replanning and `CoderAgent`
+  retries; and `SwarmCoordinator` supports opt-in `isolate_worktree: true`, syncing verified edits
+  back to `project_root` via `Sandbox.Worktree` only on `:completed`.
+- **Fail-closed `SafetyPolicy` remediation & 25-tool execution manifest**:
+  `IexCode.Tools.SafetyPolicy` enforces a non-escalatable `read_only` ceiling against
+  `session_overrides`, normalizes tool whitespace, casing, legacy aliases, and `mcp__` prefixes
+  without `String.to_atom/1`, and fails closed on unrecognized `"other"` tools in `read_only` mode;
+  `IexCode.Execution.Policy.supported_tools/0` spans all 25 built-in tools while keeping
+  `Policy.from_settings(%{})` defaults backward-compatible, and `Execution.Teamwork` aligns squad
+  role capabilities with the expanded toolset.
+- **LiveView hybrid retrieval, symbol refactor, checkpoint drift UI & Command Palette 2.0**:
+  `WorkspaceLive` surfaces interactive `:hybrid` / `:vector` / `:lexical` semantic search mode
+  pills, `#symbol-refactor-panel` (`SymbolRefactor.find_references/2` plus `dry_run: true`
+  unified-diff rename previews and `SafetyPolicy`- + `WorkspaceLocks`-gated live apply),
+  session-scoped `TimeTravel.check_drift/1` drift banners, optional `tool_name` / `iteration` /
+  `repair_mode` status pills in `ExecutionPreviews`, and sub-4 ms `CommandPalette` actions
+  (`hybrid_semantic_search`, `symbol_refactor_explorer`).
+- **Polyglot `Chunker` / `TestSelector` / `RepoMap` & stdio `LSPClient` (`lsp_query`)**:
+  `IexCode.SemanticIndex.Chunker` extracts symbol-aware chunks across `.ts`/`.tsx`/`.js`/`.jsx`,
+  `.py`, `.go`, and `.rs` alongside Elixir; `TestSelector` and `RepoMap` pair polyglot test files
+  (`*.test.ts`/`*.spec.ts`, `test_*.py`/`*_test.py`, `*_test.go`, `tests/*.rs`) and Tier 3 import
+  references; and `IexCode.Tools.LSPClient` (`lsp_query`) implements stdio LSP JSON-RPC 2.0
+  `Content-Length` byte framing (`definition`, `references`, `hover`, `document_symbols`) with
+  `@max_buffer_bytes` guards, clean OS process teardown, and strict `WorkspacePath` input and
+  response URI containment.
+- **12-task `eval/tasks` coding benchmark suite**: `mix iex_code.eval` (`IexCode.Eval.Runner` and
+  `Scoring`) runs 12 reproducible coding benchmarks (`example-markdown-typo`,
   `elixir-pagination-boundary`, `elixir-multi-file-contract`, `elixir-repeated-block-patch`,
   `elixir-genserver-bounded-state`, `elixir-compile-repair`, `elixir-context-bugfix`,
-  `elixir-otp-timeout-leak`, `elixir-ast-rename-refactor`, `elixir-jsonrpc-frame-parser`) with
-  `--only`, `--category`, `--tag`, `--json-out`, process-group grading timeouts, automatic workdir
-  cleanup, `pass@k` category summaries, and turn/tool/token/cost telemetry.
+  `elixir-otp-timeout-leak`, `elixir-ast-rename-refactor`, `elixir-jsonrpc-frame-parser`,
+  `polyglot-ts-symbol-bugfix`, `elixir-swarm-feedback-repair`) with `--only`, `--category`,
+  `--tag`, `--json-out`, process-group grading timeouts, automatic workdir cleanup, `pass@k`
+  category summaries, and turn/tool/token/cost telemetry.
 
 ## Verification
 

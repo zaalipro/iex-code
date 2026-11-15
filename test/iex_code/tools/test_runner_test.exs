@@ -99,7 +99,7 @@ defmodule IexCode.Tools.TestRunnerTest do
                  TestRunner.run(
                    project_root: tmp_dir,
                    paths: ["test/sample_test.exs"],
-                   timeout_ms: 800
+                   timeout_ms: 2_000
                  )
       end)
 

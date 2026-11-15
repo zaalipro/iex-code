@@ -28,7 +28,7 @@ defmodule IexCode.Tools.SafetyPolicyTest do
 
     test "correctly categorizes read-only inspection tools" do
       for tool <-
-            ~w(read_file list_dir grep_search ast_search find_references semantic_code_search repo_map diagnostics git_status git_diff git_generate_commit run_tests) do
+            ~w(read_file list_dir grep_search ast_search find_references lsp_query semantic_code_search repo_map diagnostics git_status git_diff git_generate_commit run_tests) do
         assert SafetyPolicy.category_for_tool(tool) == "read_only"
       end
     end
@@ -100,6 +100,7 @@ defmodule IexCode.Tools.SafetyPolicyTest do
 
       assert SafetyPolicy.evaluate("read_file", settings) == :allow
       assert SafetyPolicy.evaluate("find_references", settings) == :allow
+      assert SafetyPolicy.evaluate("lsp_query", settings) == :allow
       assert SafetyPolicy.evaluate("grep_search", settings) == :allow
       assert SafetyPolicy.evaluate("web_search", settings) == :allow
     end
@@ -124,6 +125,7 @@ defmodule IexCode.Tools.SafetyPolicyTest do
 
       assert SafetyPolicy.evaluate("read_file", settings) == :allow
       assert SafetyPolicy.evaluate("find_references", settings) == :allow
+      assert SafetyPolicy.evaluate("lsp_query", settings) == :allow
       assert SafetyPolicy.evaluate("git_diff", settings) == :allow
       assert SafetyPolicy.evaluate("web_search", settings) == :allow
     end

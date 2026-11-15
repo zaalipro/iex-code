@@ -14,6 +14,7 @@ defmodule IexCode.Tools do
   alias IexCode.Tools.{
     ASTSearch,
     Git,
+    LSPClient,
     MultiPatch,
     ProcessGroupRunner,
     RepoMap,
@@ -533,6 +534,44 @@ defmodule IexCode.Tools do
           },
           required: ["symbol", "new_name"]
         }
+      },
+      %{
+        name: "lsp_query",
+        description:
+          "Query an external Language Server Protocol (LSP) server over stdio for definitions, references, hover documentation, or document symbols within workspace-contained files.",
+        parameters: %{
+          type: "object",
+          properties: %{
+            action: %{
+              type: "string",
+              enum: ["definition", "references", "hover", "document_symbols"],
+              description:
+                "LSP query action: 'definition', 'references', 'hover', or 'document_symbols'"
+            },
+            file: %{
+              type: "string",
+              description:
+                "Workspace-contained relative path, absolute path, or file:// URI to inspect"
+            },
+            line: %{
+              type: "integer",
+              description:
+                "0-indexed line number (default 0; used by 'definition', 'references', and 'hover')"
+            },
+            character: %{
+              type: "integer",
+              description:
+                "0-indexed character column offset (default 0; used by 'definition', 'references', and 'hover')"
+            },
+            server_cmd: %{
+              type: "array",
+              items: %{type: "string"},
+              description:
+                "Optional explicit LSP server command and arguments (e.g. [\"typescript-language-server\", \"--stdio\"])"
+            }
+          },
+          required: ["action", "file"]
+        }
       }
     ]
 
@@ -552,6 +591,9 @@ defmodule IexCode.Tools do
 
   def find_references(symbol, root_path \\ ".", opts \\ []),
     do: SymbolRefactor.find_references(root_path, symbol, opts)
+
+  def lsp_query(params, root_path \\ ".", opts \\ []),
+    do: LSPClient.query(root_path, params, opts)
 
   def rename_symbol(from_spec, to_name, root_path \\ ".", opts \\ []) do
     dry_run? = Keyword.get(opts, :dry_run, false) == true
@@ -934,6 +976,94 @@ defmodule IexCode.Tools do
 
           {:error, reason} ->
             {:error, "rename_symbol failed: #{inspect(reason)}"}
+        end
+    end
+  end
+
+  defp do_execute("lsp_query", args, root_path, on_progress) do
+    action = normalize_lsp_action(arg_value(args, "action"))
+    file = nonempty_binary(arg_value(args, "file")) || nonempty_binary(arg_value(args, "path"))
+    line_res = parse_lsp_non_neg_int(arg_value(args, "line"), 0)
+    char_res = parse_lsp_non_neg_int(arg_value(args, "character"), 0)
+    cmd_res = normalize_lsp_server_cmd(arg_value(args, "server_cmd"))
+    timeout_ms = parse_optional_positive_int(arg_value(args, "timeout_ms"))
+    include_decl = arg_value(args, "include_declaration")
+
+    cond do
+      is_nil(action) ->
+        {:error, "lsp_query failed: action is required"}
+
+      action not in ["definition", "references", "hover", "document_symbols"] ->
+        {:error,
+         "lsp_query failed: unsupported action #{inspect(action)} (expected definition, references, hover, or document_symbols)"}
+
+      is_nil(file) ->
+        {:error, "lsp_query failed: file is required"}
+
+      match?({:error, _}, line_res) ->
+        {:error, "lsp_query failed: line must be a non-negative integer"}
+
+      match?({:error, _}, char_res) ->
+        {:error, "lsp_query failed: character must be a non-negative integer"}
+
+      match?({:error, _}, cmd_res) ->
+        {:error, "lsp_query failed: server_cmd must be a non-empty string or list of strings"}
+
+      true ->
+        {:ok, line} = line_res
+        {:ok, character} = char_res
+        {:ok, server_cmd} = cmd_res
+
+        on_progress.(20, "Resolving workspace containment for #{file}...")
+
+        case LSPClient.resolve_uri_in_root(root_path, file) do
+          {:ok, canonical_file, _uri} ->
+            if File.regular?(canonical_file) do
+              on_progress.(50, "Running LSP #{action} query on #{file}...")
+
+              query_opts =
+                [file: canonical_file, line: line, character: character]
+                |> maybe_put_kw(:server_cmd, server_cmd)
+                |> maybe_put_kw(:timeout_ms, timeout_ms)
+                |> maybe_put_kw(
+                  :include_declaration,
+                  if(is_boolean(include_decl), do: include_decl, else: nil)
+                )
+
+              case LSPClient.query(root_path, action, query_opts) do
+                {:ok, result} ->
+                  on_progress.(100, "LSP #{action} query complete")
+                  {:ok, format_lsp_result(action, result, root_path)}
+
+                {:error, reason} when reason in [:outside_workspace, :symlink_escapes_root] ->
+                  {:error,
+                   "Path escapes the workspace: LSP server returned an out-of-workspace URI"}
+
+                {:error, {:lsp_server_unavailable, ext}} ->
+                  {:error, "lsp_query failed: no LSP server available on PATH for #{ext}"}
+
+                {:error, {:lsp_error, code, message}} ->
+                  {:error, "LSP server error (#{code}): #{message}"}
+
+                {:error, reason} ->
+                  {:error, "lsp_query failed: #{inspect(reason)}"}
+              end
+            else
+              {:error, "File does not exist: #{file}"}
+            end
+
+          {:error, reason}
+          when reason in [:outside_workspace, :symlink_escapes_root, :too_many_symlinks] ->
+            {:error, "Path escapes the workspace: #{file}"}
+
+          {:error, :unsupported_uri_scheme} ->
+            {:error, "lsp_query failed: unsupported URI scheme in #{file}"}
+
+          {:error, :invalid_file_uri} ->
+            {:error, "lsp_query failed: invalid file URI #{file}"}
+
+          {:error, reason} ->
+            {:error, "lsp_query failed: #{inspect(reason)}"}
         end
     end
   end
@@ -1864,6 +1994,13 @@ defmodule IexCode.Tools do
   defp safe_existing_atom("to"), do: :to
   defp safe_existing_atom("from"), do: :from
   defp safe_existing_atom("limit"), do: :limit
+  defp safe_existing_atom("action"), do: :action
+  defp safe_existing_atom("file"), do: :file
+  defp safe_existing_atom("line"), do: :line
+  defp safe_existing_atom("character"), do: :character
+  defp safe_existing_atom("server_cmd"), do: :server_cmd
+  defp safe_existing_atom("include_declaration"), do: :include_declaration
+  defp safe_existing_atom("timeout_ms"), do: :timeout_ms
   defp safe_existing_atom("project_id"), do: :project_id
   defp safe_existing_atom("run_id"), do: :run_id
   defp safe_existing_atom("session_id"), do: :session_id
@@ -2313,4 +2450,233 @@ defmodule IexCode.Tools do
         context
     end
   end
+
+  defp normalize_lsp_action(nil), do: nil
+
+  defp normalize_lsp_action(action) when is_atom(action) do
+    action |> Atom.to_string() |> normalize_lsp_action()
+  end
+
+  defp normalize_lsp_action(action) when is_binary(action) do
+    trimmed = action |> String.trim() |> String.downcase()
+    if trimmed == "", do: nil, else: trimmed
+  end
+
+  defp normalize_lsp_action(_other), do: nil
+
+  defp parse_lsp_non_neg_int(nil, default), do: {:ok, default}
+  defp parse_lsp_non_neg_int(val, _default) when is_integer(val) and val >= 0, do: {:ok, val}
+
+  defp parse_lsp_non_neg_int(val, _default) when is_binary(val) do
+    case Integer.parse(String.trim(val)) do
+      {parsed, ""} when parsed >= 0 -> {:ok, parsed}
+      _ -> {:error, :invalid_non_neg_int}
+    end
+  end
+
+  defp parse_lsp_non_neg_int(_other, _default), do: {:error, :invalid_non_neg_int}
+
+  defp normalize_lsp_server_cmd(nil), do: {:ok, nil}
+
+  defp normalize_lsp_server_cmd([_head | _] = list) do
+    if Enum.all?(list, &(is_binary(&1) and &1 != "")) do
+      {:ok, list}
+    else
+      {:error, :lsp_bad_command}
+    end
+  end
+
+  defp normalize_lsp_server_cmd([]), do: {:error, :lsp_bad_command}
+
+  defp normalize_lsp_server_cmd(cmd) when is_binary(cmd) do
+    trimmed = String.trim(cmd)
+
+    cond do
+      trimmed == "" ->
+        {:ok, nil}
+
+      File.exists?(trimmed) or System.find_executable(trimmed) != nil ->
+        {:ok, [trimmed]}
+
+      true ->
+        case OptionParser.split(trimmed) do
+          [head | _] = parts when head != "" -> {:ok, parts}
+          _ -> {:error, :lsp_bad_command}
+        end
+    end
+  end
+
+  defp normalize_lsp_server_cmd(_other), do: {:error, :lsp_bad_command}
+
+  defp format_lsp_result("hover", nil, _root_path), do: "No hover information found."
+
+  defp format_lsp_result("hover", result, _root_path) do
+    text =
+      case result do
+        %{"contents" => contents} -> extract_hover_contents(contents)
+        bin when is_binary(bin) -> String.trim(bin)
+        other -> Jason.encode!(other, pretty: true)
+      end
+
+    if text == "", do: "No hover information found.", else: text
+  end
+
+  defp format_lsp_result(action, result, root_path) when action in ["definition", "references"] do
+    locations =
+      cond do
+        is_nil(result) or result == [] -> []
+        is_map(result) -> [result]
+        is_list(result) -> Enum.filter(result, &is_map/1)
+        true -> []
+      end
+
+    noun = if action == "definition", do: "definition(s)", else: "reference(s)"
+
+    if locations == [] do
+      "No #{action} found."
+    else
+      canonical_root = canonical_lsp_root(root_path)
+
+      lines =
+        Enum.map(locations, fn loc ->
+          uri =
+            Map.get(loc, "uri") ||
+              Map.get(loc, "targetUri") ||
+              get_in(loc, ["location", "uri"])
+
+          range =
+            Map.get(loc, "range") ||
+              Map.get(loc, "targetSelectionRange") ||
+              Map.get(loc, "targetRange") ||
+              get_in(loc, ["location", "range"]) ||
+              %{}
+
+          start_pos = Map.get(range, "start") || %{}
+          l = Map.get(start_pos, "line", 0)
+          c = Map.get(start_pos, "character", 0)
+          rel_path = lsp_uri_to_rel_path(root_path, canonical_root, uri)
+          "#{rel_path}:#{l}:#{c} (L#{l + 1}:C#{c + 1})"
+        end)
+
+      "Found #{length(lines)} #{noun}:\n" <> Enum.join(lines, "\n")
+    end
+  end
+
+  defp format_lsp_result("document_symbols", result, root_path) do
+    cond do
+      is_nil(result) or result == [] ->
+        "No document symbols found."
+
+      is_list(result) ->
+        canonical_root = canonical_lsp_root(root_path)
+        lines = format_lsp_symbols(result, root_path, canonical_root, 0)
+
+        if lines == [] do
+          "No document symbols found."
+        else
+          "Found #{length(lines)} document symbol(s):\n" <> Enum.join(lines, "\n")
+        end
+
+      true ->
+        Jason.encode!(result, pretty: true)
+    end
+  end
+
+  defp extract_hover_contents(val) when is_binary(val), do: String.trim(val)
+  defp extract_hover_contents(%{"value" => val}) when is_binary(val), do: String.trim(val)
+
+  defp extract_hover_contents(list) when is_list(list) do
+    list
+    |> Enum.map(&extract_hover_contents/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.join("\n\n")
+  end
+
+  defp extract_hover_contents(other), do: Jason.encode!(other, pretty: true)
+
+  defp format_lsp_symbols(symbols, root_path, canonical_root, depth) when is_list(symbols) do
+    Enum.flat_map(symbols, fn
+      %{} = sym ->
+        name = Map.get(sym, "name", "<unnamed>")
+        kind_label = lsp_symbol_kind_name(Map.get(sym, "kind"))
+        indent = String.duplicate("  ", depth)
+
+        loc_str =
+          cond do
+            is_map(Map.get(sym, "location")) ->
+              uri = get_in(sym, ["location", "uri"])
+              start_pos = get_in(sym, ["location", "range", "start"]) || %{}
+              rel = lsp_uri_to_rel_path(root_path, canonical_root, uri)
+              " (#{rel}:#{Map.get(start_pos, "line", 0)}:#{Map.get(start_pos, "character", 0)})"
+
+            is_map(Map.get(sym, "range")) ->
+              start_pos = get_in(sym, ["range", "start"]) || %{}
+              l = Map.get(start_pos, "line", 0)
+              c = Map.get(start_pos, "character", 0)
+              " (:#{l}:#{c})"
+
+            true ->
+              ""
+          end
+
+        children =
+          case Map.get(sym, "children") do
+            list when is_list(list) ->
+              format_lsp_symbols(list, root_path, canonical_root, depth + 1)
+
+            _ ->
+              []
+          end
+
+        ["#{indent}- [#{kind_label}] #{name}#{loc_str}" | children]
+
+      _other ->
+        []
+    end)
+  end
+
+  defp canonical_lsp_root(root_path) do
+    case WorkspacePath.resolve(root_path, ".") do
+      {:ok, resolved} -> resolved
+      {:error, _} -> Path.expand(root_path)
+    end
+  end
+
+  defp lsp_uri_to_rel_path(root_path, canonical_root, uri) when is_binary(uri) do
+    case LSPClient.resolve_uri_in_root(root_path, uri) do
+      {:ok, canonical_file, _} -> Path.relative_to(canonical_file, canonical_root)
+      {:error, _} -> uri
+    end
+  end
+
+  defp lsp_uri_to_rel_path(_root_path, _canonical_root, _other), do: "<unknown>"
+
+  defp lsp_symbol_kind_name(1), do: "file"
+  defp lsp_symbol_kind_name(2), do: "module"
+  defp lsp_symbol_kind_name(3), do: "namespace"
+  defp lsp_symbol_kind_name(4), do: "package"
+  defp lsp_symbol_kind_name(5), do: "class"
+  defp lsp_symbol_kind_name(6), do: "method"
+  defp lsp_symbol_kind_name(7), do: "property"
+  defp lsp_symbol_kind_name(8), do: "field"
+  defp lsp_symbol_kind_name(9), do: "constructor"
+  defp lsp_symbol_kind_name(10), do: "enum"
+  defp lsp_symbol_kind_name(11), do: "interface"
+  defp lsp_symbol_kind_name(12), do: "function"
+  defp lsp_symbol_kind_name(13), do: "variable"
+  defp lsp_symbol_kind_name(14), do: "constant"
+  defp lsp_symbol_kind_name(15), do: "string"
+  defp lsp_symbol_kind_name(16), do: "number"
+  defp lsp_symbol_kind_name(17), do: "boolean"
+  defp lsp_symbol_kind_name(18), do: "array"
+  defp lsp_symbol_kind_name(19), do: "object"
+  defp lsp_symbol_kind_name(20), do: "key"
+  defp lsp_symbol_kind_name(21), do: "null"
+  defp lsp_symbol_kind_name(22), do: "enum_member"
+  defp lsp_symbol_kind_name(23), do: "struct"
+  defp lsp_symbol_kind_name(24), do: "event"
+  defp lsp_symbol_kind_name(25), do: "operator"
+  defp lsp_symbol_kind_name(26), do: "type_parameter"
+  defp lsp_symbol_kind_name(kind) when is_integer(kind), do: "kind_#{kind}"
+  defp lsp_symbol_kind_name(_), do: "symbol"
 end

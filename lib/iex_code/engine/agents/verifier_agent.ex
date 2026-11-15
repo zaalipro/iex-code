@@ -193,6 +193,8 @@ defmodule IexCode.Engine.Agents.VerifierAgent do
                       %{command: "mix compile"},
                       fn p ->
                         with_workspace_delegation(workspace_lock_delegation, fn ->
+                          bust_subsecond_mix_manifest(project_root, opts)
+
                           Tools.execute(
                             "run_command",
                             %{
@@ -1359,4 +1361,57 @@ defmodule IexCode.Engine.Agents.VerifierAgent do
   end
 
   defp format_exception_message(other), do: inspect(other)
+
+  # Mix.Compilers.Elixir caches source staleness using 1-second POSIX mtime + byte size.
+  # When an agent repairs an .ex file with an equal-byte-length edit within the same
+  # Unix second as the prior Mix compile/test pass, remove the stale compile.elixir
+  # manifest so Mix recompiles the modified module deterministically.
+  defp bust_subsecond_mix_manifest(project_root, opts) when is_binary(project_root) do
+    manifests = Path.wildcard(Path.join(project_root, "_build/*/lib/*/.mix/compile.elixir"))
+
+    if manifests != [] do
+      changed =
+        opts
+        |> Keyword.get(:changed_files, [])
+        |> List.wrap()
+        |> Enum.filter(&is_binary/1)
+
+      ex_paths =
+        cond do
+          changed != [] ->
+            Enum.flat_map(changed, fn rel ->
+              case IexCode.WorkspacePath.resolve(project_root, rel) do
+                {:ok, abs} ->
+                  if Path.extname(abs) == ".ex" and File.regular?(abs), do: [abs], else: []
+
+                _ ->
+                  []
+              end
+            end)
+
+          Path.expand(project_root) != Path.expand(File.cwd!()) ->
+            Path.wildcard(Path.join(project_root, "lib/**/*.ex"))
+
+          true ->
+            []
+        end
+
+      if ex_paths != [] do
+        for manifest <- manifests,
+            {:ok, m_stat} <- [File.stat(manifest, time: :posix)],
+            Enum.any?(ex_paths, fn ex_path ->
+              case File.stat(ex_path, time: :posix) do
+                {:ok, f_stat} -> abs(f_stat.mtime - m_stat.mtime) <= 1
+                _ -> false
+              end
+            end) do
+          _ = File.rm(manifest)
+        end
+      end
+    end
+
+    :ok
+  end
+
+  defp bust_subsecond_mix_manifest(_project_root, _opts), do: :ok
 end

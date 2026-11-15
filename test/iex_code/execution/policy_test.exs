@@ -228,13 +228,14 @@ defmodule IexCode.Execution.PolicyTest do
     assert policy["allowed_tools"] == ["read_file", "web_search", "fetch_url"]
   end
 
-  test "supported_tools includes all 24 built-in tools and accepts Round 1-3 harness tools as overrides" do
+  test "supported_tools includes all 25 built-in tools and accepts Round 1-4 harness tools as overrides" do
     harness_tools = ~w(
       repo_map
       diagnostics
       semantic_code_search
       find_references
       rename_symbol
+      lsp_query
       update_plan
       request_input
       spawn_agent
@@ -243,7 +244,7 @@ defmodule IexCode.Execution.PolicyTest do
     supported = Policy.supported_tools()
     defined_tools = IexCode.Tools.tool_definitions(:all) |> Enum.map(& &1.name)
 
-    assert length(supported) == 24
+    assert length(supported) == 25
     assert Enum.sort(supported) == Enum.sort(defined_tools)
 
     assert {:ok, policy} =

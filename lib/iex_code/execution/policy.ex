@@ -41,6 +41,7 @@ defmodule IexCode.Execution.Policy do
     semantic_code_search
     find_references
     rename_symbol
+    lsp_query
     update_plan
     request_input
     spawn_agent

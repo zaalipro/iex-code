@@ -22,6 +22,7 @@ defmodule IexCode.Tools.EmpiricalSafetyChallengeTest do
     grep_search
     ast_search
     find_references
+    lsp_query
     semantic_code_search
     repo_map
     diagnostics
@@ -39,19 +40,19 @@ defmodule IexCode.Tools.EmpiricalSafetyChallengeTest do
   @all_tools @mutating_tools ++ @readonly_tools
 
   # ---------------------------------------------------------------------------
-  # Task 1: Safety Tier Permutations Across All 24 Tools
+  # Task 1: Safety Tier Permutations Across All 25 Tools
   # ---------------------------------------------------------------------------
-  describe "Permutations Matrix: All 24 Tools across Safety Tiers" do
-    test "verifies total tool count matches the 24 defined tools" do
+  describe "Permutations Matrix: All 25 Tools across Safety Tiers" do
+    test "verifies total tool count matches the 25 defined tools" do
       definitions = Tools.tool_definitions(:all)
       tool_names = Enum.map(definitions, & &1.name) |> Enum.sort()
 
-      assert length(@all_tools) == 24
-      assert length(tool_names) == 24
+      assert length(@all_tools) == 25
+      assert length(tool_names) == 25
       assert Enum.sort(@all_tools) == tool_names
     end
 
-    test "full_auto mode permits all 24 tools without prompts or denials" do
+    test "full_auto mode permits all 25 tools without prompts or denials" do
       clean_settings = %AppSettings{
         tool_approval_mode: "full_auto",
         tool_category_overrides: %{}
@@ -67,7 +68,7 @@ defmodule IexCode.Tools.EmpiricalSafetyChallengeTest do
       end
     end
 
-    test "prompt_dangerous mode prompts for 7 mutating tools and permits 17 read-only tools" do
+    test "prompt_dangerous mode prompts for 7 mutating tools and permits 18 read-only tools" do
       clean_settings = %AppSettings{
         tool_approval_mode: "prompt_dangerous",
         tool_category_overrides: %{}
@@ -90,7 +91,7 @@ defmodule IexCode.Tools.EmpiricalSafetyChallengeTest do
       end
     end
 
-    test "read_only mode (with clean overrides) denies 7 mutating tools and permits 17 read-only tools" do
+    test "read_only mode (with clean overrides) denies 7 mutating tools and permits 18 read-only tools" do
       clean_settings = %AppSettings{
         tool_approval_mode: "read_only",
         tool_category_overrides: %{}
