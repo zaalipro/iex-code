@@ -77,4 +77,39 @@ defmodule IexCode.Sandbox.PolicyBackendTest do
     assert {:error, :sandbox_empty_command} = Backend.wrap(:bwrap, [], %Policy{}, [])
     assert {:error, :no_sandbox_backend} = Backend.wrap(:none, ["echo"], %Policy{}, [])
   end
+
+  test "seatbelt profile removes (with no-sandbox), allows confined exec/fork, and expands /tmp and /var on macOS" do
+    policy = %Policy{reads: ["/tmp/r"], writes: ["/var/w"], network: :deny, strict: true}
+    profile = Backend.seatbelt_profile(policy)
+
+    assert profile =~ "(allow process-exec)"
+    assert profile =~ "(allow process-fork)"
+    refute profile =~ "(with no-sandbox)"
+    refute profile =~ "no-sandbox"
+
+    if match?({:unix, :darwin}, :os.type()) do
+      assert profile =~ ~s|(allow file-read* (subpath "/private/tmp/r"))|
+      assert profile =~ ~s|(allow file-write* (subpath "/private/var/w"))|
+    end
+  end
+
+  test "seatbelt escaping handles backslashes before quotes and rejects NUL/newline/empty injection" do
+    policy = %Policy{reads: [~S(/a\b"c)], writes: [~S(/d\"e)], network: :deny}
+    profile = Backend.seatbelt_profile(policy)
+
+    assert profile =~ ~S|(subpath "/a\\b\"c")|
+    assert profile =~ ~S|(subpath "/d\\\"e")|
+
+    for bad <- ["", "/tmp/evil\n(allow default)", "/tmp/evil\r", "/tmp/evil\0path"] do
+      assert {:error, {:sandbox_policy_field, "reads"}} =
+               Policy.from_map(%{"reads" => [bad], "writes" => []})
+
+      assert {:error, {:sandbox_policy_field, "writes"}} =
+               Policy.from_map(%{"reads" => ["/"], "writes" => [bad]})
+
+      assert_raise ArgumentError, fn ->
+        Backend.seatbelt_profile(%Policy{reads: [bad], writes: []})
+      end
+    end
+  end
 end

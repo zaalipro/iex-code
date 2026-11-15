@@ -99,4 +99,69 @@ defmodule IexCode.Sandbox.ManagerTest do
 
     assert {:error, :sandbox_empty_command} = Manager.run([], %Policy{}, server: server)
   end
+
+  test "prunes expired approvals on lookup/write and caps approvals at 1024 entries", %{
+    server: server
+  } do
+    assert {:ok, _} = Manager.approve(server, "short-cmd", ttl_ms: 1)
+    assert :ok = wait_until_unapproved(server, "short-cmd", 1_000)
+
+    # Expired entry was pruned from state on lookup
+    assert :sys.get_state(server).approvals == %{}
+
+    # Default cap is 1,024 entries: adding 1,025 evicts oldest entry
+    Enum.each(1..1_025, fn idx ->
+      assert {:ok, _} = Manager.approve(server, "cmd-#{idx}", ttl_ms: 60_000)
+    end)
+
+    state = :sys.get_state(server)
+    assert map_size(state.approvals) == 1_024
+    refute Manager.approved?(server, "cmd-1")
+    assert Manager.approved?(server, "cmd-2")
+    assert Manager.approved?(server, "cmd-1025")
+
+    # Custom bounded server capacity also works cleanly
+    bounded = :"bounded_mgr_#{System.unique_integer([:positive])}"
+
+    start_supervised!(
+      Supervisor.child_spec({Manager, name: bounded, max_approvals: 2}, id: bounded)
+    )
+
+    assert {:ok, _} = Manager.approve(bounded, "first", ttl_ms: 60_000)
+    assert {:ok, _} = Manager.approve(bounded, "second", ttl_ms: 60_000)
+    assert {:ok, _} = Manager.approve(bounded, "third", ttl_ms: 60_000)
+
+    assert map_size(:sys.get_state(bounded).approvals) == 2
+    refute Manager.approved?(bounded, "first")
+    assert Manager.approved?(bounded, "second")
+    assert Manager.approved?(bounded, "third")
+  end
+
+  test "rejects policy injection payloads before execution", %{server: server} do
+    bad_policy = %Policy{reads: ["/"], writes: ["/tmp/evil\n(allow default)"], strict: true}
+
+    assert {:error, {:sandbox_policy_field, "writes"}} =
+             Manager.run(["echo", "hi"], bad_policy, server: server)
+  end
+
+  defp wait_until_unapproved(server, command, timeout_ms) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait_until_unapproved(server, command, deadline)
+  end
+
+  defp do_wait_until_unapproved(server, command, deadline) do
+    if not Manager.approved?(server, command) do
+      :ok
+    else
+      if System.monotonic_time(:millisecond) >= deadline do
+        flunk("approval for #{command} did not expire in time")
+      else
+        _ref = Process.send_after(self(), :poll_expiry, 5)
+
+        receive do
+          :poll_expiry -> do_wait_until_unapproved(server, command, deadline)
+        end
+      end
+    end
+  end
 end

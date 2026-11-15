@@ -197,5 +197,41 @@ defmodule IexCode.TimeTravel.RollbackTest do
 
       assert_receive {:checkpoint_rolled_back, _tx_id, _details}, 1000
     end
+
+    test "T3_R3_ROL_02: rollback_latest/2 and rollback_to/2 respect allow_drift: false on external edits",
+         %{
+           session: session,
+           temp_dir: temp_dir
+         } do
+      {:ok, cp0} =
+        TimeTravel.create_checkpoint(%{
+          session_id: session.id,
+          project_root: temp_dir,
+          patches: []
+        })
+
+      Tools.execute(
+        "write_file",
+        %{
+          "path" => "drift_guarded.txt",
+          "content" => "agent content",
+          "session_id" => session.id
+        },
+        temp_dir
+      )
+
+      target_file = Path.join(temp_dir, "drift_guarded.txt")
+      File.write!(target_file, "user edited externally")
+
+      assert {:error,
+              {:drift_detected, [%{path: "drift_guarded.txt", reason: :content_mismatch}]}} =
+               TimeTravel.rollback_latest(session.id, allow_drift: false)
+
+      assert {:error,
+              {:drift_detected, [%{path: "drift_guarded.txt", reason: :content_mismatch}]}} =
+               TimeTravel.rollback_to(cp0.transaction_id, allow_drift: false)
+
+      assert File.read!(target_file) == "user edited externally"
+    end
   end
 end
