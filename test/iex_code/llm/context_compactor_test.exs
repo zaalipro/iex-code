@@ -297,5 +297,73 @@ defmodule IexCode.LLM.ContextCompactorTest do
       assert ContextCompactor.restore_exchange_boundary([], kept) == kept
       assert ContextCompactor.restore_exchange_boundary([], []) == []
     end
+
+    test "expands Anthropic tool_use + tool_result content blocks across boundary" do
+      dropped = [
+        %{role: "user", content: "Inspect module"},
+        %{
+          role: "assistant",
+          content: [
+            %{type: "tool_use", id: "toolu_1", name: "read_file", input: %{path: "lib/a.ex"}}
+          ]
+        }
+      ]
+
+      kept = [
+        %{
+          role: "user",
+          content: [
+            %{type: "tool_result", tool_use_id: "toolu_1", content: "defmodule A, do: nil"}
+          ]
+        },
+        %{role: "assistant", content: "Inspected."}
+      ]
+
+      assert ContextCompactor.restore_exchange_boundary(dropped, kept) == [
+               Enum.at(dropped, 1) | kept
+             ]
+    end
+
+    test "expands Gemini functionCall + functionResponse parts across boundary" do
+      dropped = [
+        %{"role" => "user", "parts" => [%{"text" => "Check status"}]},
+        %{
+          "role" => "model",
+          "parts" => [%{"functionCall" => %{"name" => "git_status", "args" => %{}}}]
+        }
+      ]
+
+      kept = [
+        %{
+          "role" => "user",
+          "parts" => [
+            %{"functionResponse" => %{"name" => "git_status", "response" => %{"result" => "ok"}}}
+          ]
+        }
+      ]
+
+      assert ContextCompactor.restore_exchange_boundary(dropped, kept) == [
+               Enum.at(dropped, 1) | kept
+             ]
+    end
+  end
+
+  describe "effective_window_tokens/2" do
+    test "defaults to 128_000 unless :auto or auto_model_window is configured" do
+      assert ContextCompactor.effective_window_tokens(%AppSettings{}, "gemini-2.5-pro") == 128_000
+
+      assert ContextCompactor.effective_window_tokens(%{context_window_tokens: 50_000}, "gpt-5") ==
+               50_000
+
+      assert ContextCompactor.effective_window_tokens(
+               %{context_window_tokens: :auto},
+               "gemini-2.5-pro"
+             ) == 1_000_000
+
+      assert ContextCompactor.effective_window_tokens(
+               %{auto_model_window: true},
+               "claude-sonnet-4"
+             ) == 200_000
+    end
   end
 end
