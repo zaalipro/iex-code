@@ -200,6 +200,13 @@ defmodule IexCode.TimeTravel.CheckpointTest do
 
       assert_receive {:checkpoint_created, checkpoint}, 1000
       assert checkpoint.session_id == session.id
+      assert :ok = TimeTravel.check_drift(checkpoint.transaction_id)
+
+      File.write!(Path.join(temp_dir, "broadcast_test.txt"), "external mutation")
+
+      assert {:error,
+              {:drift_detected, [%{path: "broadcast_test.txt", reason: :content_mismatch}]}} =
+               TimeTravel.check_drift(checkpoint.transaction_id)
     end
   end
 end

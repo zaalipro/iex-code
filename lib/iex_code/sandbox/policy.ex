@@ -30,9 +30,34 @@ defmodule IexCode.Sandbox.Policy do
 
   def from_map(_params), do: {:error, :sandbox_policy_shape}
 
+  @doc "Validates an existing policy struct against malformed prefixes or injection payloads."
+  @spec validate(t()) :: :ok | {:error, term()}
+  def validate(%__MODULE__{reads: reads, writes: writes, network: network, strict: strict}) do
+    with :ok <- validate_prefix_list(reads, "reads"),
+         :ok <- validate_prefix_list(writes, "writes"),
+         {:ok, _} <- network(network),
+         {:ok, _} <- strict(strict) do
+      :ok
+    end
+  end
+
+  def validate(_policy), do: {:error, :sandbox_policy_shape}
+
+  @doc "True when `prefix` is a non-empty binary without NUL or newline characters."
+  @spec valid_prefix?(term()) :: boolean()
+  def valid_prefix?(prefix) when is_binary(prefix) do
+    prefix != "" and not String.contains?(prefix, [<<0>>, "\n", "\r"])
+  end
+
+  def valid_prefix?(_prefix), do: false
+
   @doc "Workspace-default policy: read the root, write it, no network."
   @spec for_workdir(String.t()) :: t()
   def for_workdir(workdir) when is_binary(workdir) do
+    if not valid_prefix?(workdir) do
+      raise ArgumentError, "invalid sandbox workdir prefix: #{inspect(workdir)}"
+    end
+
     %__MODULE__{reads: ["/", workdir], writes: [workdir], network: :deny, strict: true}
   end
 
@@ -51,7 +76,7 @@ defmodule IexCode.Sandbox.Policy do
   defp prefixes(params, key, default) do
     case Map.get(params, key, default) do
       values when is_list(values) ->
-        if Enum.all?(values, &is_binary/1),
+        if Enum.all?(values, &valid_prefix?/1),
           do: {:ok, values},
           else: {:error, {:sandbox_policy_field, key}}
 
@@ -59,6 +84,14 @@ defmodule IexCode.Sandbox.Policy do
         {:error, {:sandbox_policy_field, key}}
     end
   end
+
+  defp validate_prefix_list(values, key) when is_list(values) do
+    if Enum.all?(values, &valid_prefix?/1),
+      do: :ok,
+      else: {:error, {:sandbox_policy_field, key}}
+  end
+
+  defp validate_prefix_list(_values, key), do: {:error, {:sandbox_policy_field, key}}
 
   defp network("allow"), do: {:ok, :allow}
   defp network("deny"), do: {:ok, :deny}
