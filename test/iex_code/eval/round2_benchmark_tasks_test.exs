@@ -396,7 +396,7 @@ defmodule IexCode.Eval.Round2BenchmarkTasksTest do
 
   test "Round 2 eval tasks #7-#8 load cleanly and fail pre-repair" do
     assert {:ok, all_tasks} = Task.load_dir("eval/tasks")
-    assert length(all_tasks) == 8
+    assert length(all_tasks) == 10
 
     round2_ids = ["elixir-context-bugfix", "elixir-otp-timeout-leak"]
     tasks = Enum.filter(all_tasks, &(&1.id in round2_ids))

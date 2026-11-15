@@ -10,7 +10,7 @@ defmodule IexCode.Tools.SafetyPolicyTest do
     end
 
     test "correctly categorizes file mutation tools" do
-      for tool <- ~w(write_file patch_file multi_patch) do
+      for tool <- ~w(write_file patch_file multi_patch rename_symbol) do
         assert SafetyPolicy.category_for_tool(tool) == "file_mutations"
         assert SafetyPolicy.category_for_tool(String.to_atom(tool)) == "file_mutations"
       end
@@ -28,7 +28,7 @@ defmodule IexCode.Tools.SafetyPolicyTest do
 
     test "correctly categorizes read-only inspection tools" do
       for tool <-
-            ~w(read_file list_dir grep_search ast_search semantic_code_search git_status git_diff git_generate_commit run_tests) do
+            ~w(read_file list_dir grep_search ast_search find_references semantic_code_search repo_map diagnostics git_status git_diff git_generate_commit run_tests) do
         assert SafetyPolicy.category_for_tool(tool) == "read_only"
       end
     end
@@ -75,10 +75,14 @@ defmodule IexCode.Tools.SafetyPolicyTest do
       assert {:prompt, reason2} = SafetyPolicy.evaluate("write_file", settings)
       assert reason2 =~ "modifies files or executes commands"
 
+      assert {:prompt, reason_rename} = SafetyPolicy.evaluate("rename_symbol", settings)
+      assert reason_rename =~ "modifies files or executes commands"
+
       assert {:prompt, reason3} = SafetyPolicy.evaluate("git_commit", settings)
       assert reason3 =~ "modifies files or executes commands"
 
       assert SafetyPolicy.evaluate("read_file", settings) == :allow
+      assert SafetyPolicy.evaluate("find_references", settings) == :allow
       assert SafetyPolicy.evaluate("grep_search", settings) == :allow
       assert SafetyPolicy.evaluate("web_search", settings) == :allow
     end
@@ -95,10 +99,14 @@ defmodule IexCode.Tools.SafetyPolicyTest do
       assert {:deny, reason2} = SafetyPolicy.evaluate("write_file", settings)
       assert reason2 =~ "prohibited in read_only mode"
 
+      assert {:deny, reason_rename} = SafetyPolicy.evaluate("rename_symbol", settings)
+      assert reason_rename =~ "prohibited in read_only mode"
+
       assert {:deny, reason3} = SafetyPolicy.evaluate("git_commit", settings)
       assert reason3 =~ "prohibited in read_only mode"
 
       assert SafetyPolicy.evaluate("read_file", settings) == :allow
+      assert SafetyPolicy.evaluate("find_references", settings) == :allow
       assert SafetyPolicy.evaluate("git_diff", settings) == :allow
       assert SafetyPolicy.evaluate("web_search", settings) == :allow
     end

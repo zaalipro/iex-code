@@ -32,6 +32,9 @@ defmodule IexCode.Engine.LoopGuard do
     "view_file",
     "grep_search",
     "ast_search",
+    "find_references",
+    "semantic_code_search",
+    "repo_map",
     "list_dir"
   ]
 

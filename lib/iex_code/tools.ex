@@ -17,6 +17,7 @@ defmodule IexCode.Tools do
     MultiPatch,
     ProcessGroupRunner,
     RepoMap,
+    SymbolRefactor,
     TerminalServer,
     TestRunner
   }
@@ -154,15 +155,21 @@ defmodule IexCode.Tools do
       %{
         name: "semantic_code_search",
         description:
-          "Perform natural language semantic vector search across the project codebase to retrieve relevant functions, modules, and code patterns.",
+          "Perform hybrid BM25 + vector semantic search (or pure vector / lexical search) across the project codebase to retrieve relevant functions, modules, and code patterns.",
         parameters: %{
           type: "object",
           properties: %{
-            query: %{type: "string", description: "Natural language query or concept"},
+            query: %{type: "string", description: "Natural language or symbol query"},
+            mode: %{
+              type: "string",
+              enum: ["hybrid", "vector", "lexical"],
+              description:
+                "Retrieval ranking mode: 'hybrid' (BM25 + dense vector RRF, default), 'vector' (dense cosine similarity), or 'lexical' (code-aware BM25 without embedding calls)"
+            },
             limit: %{type: "integer", description: "Maximum results to return (default 10)"},
             threshold: %{
               type: "number",
-              description: "Minimum cosine similarity score 0.0-1.0 (default 0.4)"
+              description: "Minimum similarity score 0.0-1.0 (default 0.4)"
             },
             path: %{type: "string", description: "Optional file path prefix filter"}
           },
@@ -460,6 +467,72 @@ defmodule IexCode.Tools do
             }
           }
         }
+      },
+      %{
+        name: "find_references",
+        description:
+          "Find all AST-verified references to an Elixir module or function/macro symbol across workspace .ex/.exs files (definitions, aliases, imports, requires, uses, structs, calls, captures, and specs), ignoring comments and string literals.",
+        parameters: %{
+          type: "object",
+          properties: %{
+            symbol: %{
+              type: "string",
+              description:
+                "Target Elixir symbol (e.g. 'MyApp.Accounts', 'MyApp.Accounts.get_user/1', or 'MyApp.Accounts.get_user')"
+            },
+            module: %{
+              type: "string",
+              description: "Optional module name when specifying module and function separately"
+            },
+            function: %{
+              type: "string",
+              description: "Optional function or macro name when specifying module + function"
+            },
+            arity: %{
+              type: "integer",
+              description: "Optional function arity filter when specifying module + function"
+            },
+            path: %{
+              type: "string",
+              description: "Optional relative file or directory subpath inside workspace"
+            },
+            limit: %{
+              type: "integer",
+              description: "Maximum references to return (default 200)"
+            }
+          },
+          required: ["symbol"]
+        }
+      },
+      %{
+        name: "rename_symbol",
+        description:
+          "Safely rename an Elixir module or function/macro symbol across all workspace .ex/.exs files with AST scope resolution, pre-write syntax verification, and atomic rollback-safe commits.",
+        parameters: %{
+          type: "object",
+          properties: %{
+            symbol: %{
+              type: "string",
+              description:
+                "Source Elixir symbol to rename (e.g. 'MyApp.OldMod', 'MyApp.Mod.old_fun/2', or 'MyApp.Mod.old_fun')"
+            },
+            new_name: %{
+              type: "string",
+              description:
+                "Target module name (for module renames, e.g. 'MyApp.NewMod') or function name (for function renames, e.g. 'new_fun')"
+            },
+            dry_run: %{
+              type: "boolean",
+              description:
+                "When true, previews unified diffs and occurrence counts without modifying files (default false)"
+            },
+            path: %{
+              type: "string",
+              description: "Optional relative file or directory subpath inside workspace"
+            }
+          },
+          required: ["symbol", "new_name"]
+        }
       }
     ]
 
@@ -476,6 +549,18 @@ defmodule IexCode.Tools do
 
   # --- Direct Delegations ---
   def ast_search(query, root_path \\ "."), do: ASTSearch.search(root_path, query)
+
+  def find_references(symbol, root_path \\ ".", opts \\ []),
+    do: SymbolRefactor.find_references(root_path, symbol, opts)
+
+  def rename_symbol(from_spec, to_name, root_path \\ ".", opts \\ []) do
+    dry_run? = Keyword.get(opts, :dry_run, false) == true
+    args = Map.put(trusted_lock_args(opts), "dry_run", dry_run?)
+
+    with_mutation_locks("rename_symbol", args, root_path, fn ->
+      SymbolRefactor.rename_symbol(root_path, from_spec, to_name, opts)
+    end)
+  end
 
   def multi_patch(patches, root_path \\ ".", opts \\ []) do
     args = Map.put(trusted_lock_args(opts), "patches", patches)
@@ -747,14 +832,109 @@ defmodule IexCode.Tools do
   defp do_execute("ast_search", args, root_path, on_progress) do
     on_progress.(30, "Scanning AST symbols in #{root_path}...")
 
-    case ASTSearch.search(root_path, args) do
+    case ASTSearch.search(root_path, args, contain_root: true) do
       {:ok, results} ->
         on_progress.(100, "Found #{length(results)} matching symbols")
         formatted = ASTSearch.format_results(results, include_code: true)
         {:ok, formatted}
 
+      {:error, reason} when reason in [:outside_workspace, :symlink_escapes_root] ->
+        sub_path = arg_value(args, "path") || ""
+        {:error, "Path escapes the workspace: #{sub_path}"}
+
       {:error, reason} ->
         {:error, "AST search failed: #{inspect(reason)}"}
+    end
+  end
+
+  defp do_execute("find_references", args, root_path, on_progress) do
+    on_progress.(25, "Scanning AST symbol references in #{root_path}...")
+
+    sub_path = nonempty_binary(arg_value(args, "path"))
+    limit = parse_optional_positive_int(arg_value(args, "limit"))
+
+    opts =
+      []
+      |> maybe_put_kw(:path, sub_path)
+      |> maybe_put_kw(:limit, limit)
+
+    case SymbolRefactor.find_references(root_path, args, opts) do
+      {:ok, refs} ->
+        on_progress.(100, "Found #{length(refs)} symbol reference(s)")
+        fmt_opts = if limit, do: [limit: limit], else: []
+        {:ok, SymbolRefactor.format_references(refs, fmt_opts)}
+
+      {:error, reason} when reason in [:outside_workspace, :symlink_escapes_root] ->
+        {:error, "Path escapes the workspace: #{sub_path || "."}"}
+
+      {:error, reason} ->
+        {:error, "find_references failed: #{inspect(reason)}"}
+    end
+  end
+
+  defp do_execute("rename_symbol", args, root_path, on_progress) do
+    to_name =
+      nonempty_binary(arg_value(args, "new_name")) ||
+        nonempty_binary(arg_value(args, "to_name")) ||
+        nonempty_binary(arg_value(args, "to"))
+
+    raw_dry_run = arg_value(args, "dry_run")
+    sub_path = nonempty_binary(arg_value(args, "path"))
+
+    cond do
+      is_nil(to_name) ->
+        {:error, "rename_symbol failed: new_name is required"}
+
+      not is_nil(raw_dry_run) and not is_boolean(raw_dry_run) ->
+        {:error, "rename_symbol failed: dry_run must be a boolean"}
+
+      true ->
+        dry_run? = raw_dry_run == true
+        from_spec = nonempty_binary(arg_value(args, "from")) || args
+
+        on_progress.(
+          25,
+          if(dry_run?,
+            do: "Previewing symbol rename to #{to_name}...",
+            else: "Renaming symbol to #{to_name}..."
+          )
+        )
+
+        opts = [dry_run: dry_run?] |> maybe_put_kw(:path, sub_path)
+
+        case SymbolRefactor.rename_symbol(root_path, from_spec, to_name, opts) do
+          {:ok, %{dry_run: true, files_changed: 0}} ->
+            on_progress.(100, "Dry run complete (0 occurrences)")
+            {:ok, "Dry run: 0 occurrences found (0 files would change)."}
+
+          {:ok, %{dry_run: true} = summary} ->
+            on_progress.(
+              100,
+              "Dry run complete (#{summary.occurrences} occurrence(s) across #{summary.files_changed} file(s))"
+            )
+
+            {:ok,
+             "Dry run: would rename #{summary.occurrences} occurrence(s) across #{summary.files_changed} file(s).\n\n#{summary.diff}"}
+
+          {:ok, %{dry_run: false, files_changed: 0}} ->
+            on_progress.(100, "Rename complete (0 occurrences)")
+            {:ok, "Renamed 0 occurrences across 0 files (no matching symbol references found)."}
+
+          {:ok, %{dry_run: false} = summary} ->
+            on_progress.(
+              100,
+              "Renamed #{summary.occurrences} occurrence(s) across #{summary.files_changed} file(s)"
+            )
+
+            {:ok,
+             "Renamed #{summary.occurrences} occurrence(s) across #{summary.files_changed} file(s) (#{Enum.join(summary.files, ", ")}).\n\n#{summary.diff}"}
+
+          {:error, reason} when reason in [:outside_workspace, :symlink_escapes_root] ->
+            {:error, "Path escapes the workspace: #{sub_path || "."}"}
+
+          {:error, reason} ->
+            {:error, "rename_symbol failed: #{inspect(reason)}"}
+        end
     end
   end
 
@@ -824,32 +1004,31 @@ defmodule IexCode.Tools do
   end
 
   defp do_execute("semantic_code_search", %{"query" => query} = args, root_path, on_progress) do
-    on_progress.(20, "Executing semantic vector search...")
+    on_progress.(20, "Executing semantic code search...")
     limit = Map.get(args, "limit", 10)
     threshold = Map.get(args, "threshold", 0.4)
     path = Map.get(args, "path")
 
-    project =
-      case IexCode.Projects.list_projects() do
-        projects when is_list(projects) ->
-          Enum.find(projects, &(&1.root_path == root_path)) || List.first(projects)
-
-        _ ->
-          nil
+    mode =
+      case arg_value(args, "mode") do
+        nil -> :hybrid
+        "" -> :hybrid
+        other -> other
       end
 
-    project_id = if project, do: project.id, else: "default"
+    project_id = resolve_semantic_project_id(args, root_path)
 
     if IexCode.SemanticIndex.Indexer.stats(project_id).ets_chunks == 0 do
       on_progress.(40, "Indexing codebase chunks...")
       _ = IexCode.SemanticIndex.Indexer.index_project(project_id, root_path)
     end
 
-    on_progress.(70, "Computing vector similarity...")
+    on_progress.(70, "Computing code retrieval ranking...")
 
     search_opts = [
       limit: limit,
-      threshold: threshold
+      threshold: threshold,
+      mode: mode
     ]
 
     search_opts = if path, do: Keyword.put(search_opts, :path, path), else: search_opts
@@ -1525,6 +1704,10 @@ defmodule IexCode.Tools do
     if arg_value(args, "compile") == true, do: [{:project, :exclusive}], else: []
   end
 
+  defp mutation_resources("rename_symbol", args) do
+    if arg_value(args, "dry_run") == true, do: [], else: [{:project, :exclusive}]
+  end
+
   defp mutation_resources("git_stage", _args), do: [{:git, :exclusive}]
   defp mutation_resources("git_commit", _args), do: [{:git, :exclusive}]
   defp mutation_resources(_tool_name, _args), do: []
@@ -1673,10 +1856,57 @@ defmodule IexCode.Tools do
   defp safe_existing_atom("path"), do: :path
   defp safe_existing_atom("patches"), do: :patches
   defp safe_existing_atom("compile"), do: :compile
+  defp safe_existing_atom("dry_run"), do: :dry_run
+  defp safe_existing_atom("mode"), do: :mode
+  defp safe_existing_atom("symbol"), do: :symbol
+  defp safe_existing_atom("new_name"), do: :new_name
+  defp safe_existing_atom("to_name"), do: :to_name
+  defp safe_existing_atom("to"), do: :to
+  defp safe_existing_atom("from"), do: :from
+  defp safe_existing_atom("limit"), do: :limit
   defp safe_existing_atom("project_id"), do: :project_id
   defp safe_existing_atom("run_id"), do: :run_id
   defp safe_existing_atom("session_id"), do: :session_id
   defp safe_existing_atom(_key), do: :__unknown_lock_arg__
+
+  defp maybe_put_kw(opts, _key, nil), do: opts
+  defp maybe_put_kw(opts, key, val), do: Keyword.put(opts, key, val)
+
+  defp resolve_semantic_project_id(args, root_path) do
+    case nonempty_binary(arg_value(args, "project_id")) do
+      explicit when is_binary(explicit) ->
+        explicit
+
+      nil ->
+        projects =
+          case IexCode.Projects.list_projects() do
+            list when is_list(list) -> list
+            _ -> []
+          end
+
+        case Enum.find(
+               projects,
+               &(&1.root_path == root_path or same_workspace?(&1.root_path, root_path))
+             ) do
+          %Project{id: id} ->
+            id
+
+          nil ->
+            case IexCode.Projects.get_or_create_project(root_path) do
+              {:ok, %Project{id: id}} ->
+                id
+
+              _ ->
+                case List.first(projects) do
+                  %Project{id: id} -> id
+                  _ -> "default"
+                end
+            end
+        end
+    end
+  rescue
+    _ -> "default"
+  end
 
   defp nonempty_binary(value) when is_binary(value) and value != "", do: value
   defp nonempty_binary(_value), do: nil

@@ -7,6 +7,11 @@ defmodule IexCodeWeb.ChallengerM4DeepStressTest do
   # Fixtures
   # ============================================================================
   setup_all do
+    # Ensure module bytecode and OTP JIT are loaded before sub-millisecond :timer.tc checks
+    Code.ensure_loaded!(CommandPalette)
+    _ = CommandPalette.score("warmup", "warmup")
+    _ = CommandPalette.search("warmup", [], [])
+
     # 2,000 synthetic files across realistic deep project trees
     files_2000 =
       for i <- 1..2000 do

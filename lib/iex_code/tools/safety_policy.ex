@@ -17,7 +17,7 @@ defmodule IexCode.Tools.SafetyPolicy do
 
   @categories %{
     "shell_execution" => ~w(run_command),
-    "file_mutations" => ~w(write_file patch_file multi_patch),
+    "file_mutations" => ~w(write_file patch_file multi_patch rename_symbol),
     "autonomy" => ~w(update_plan request_input spawn_agent),
     # mcp_tools members are dynamic (mcp__server__tool); matched by prefix.
     "mcp_tools" => [],
@@ -28,6 +28,7 @@ defmodule IexCode.Tools.SafetyPolicy do
       list_dir
       grep_search
       ast_search
+      find_references
       semantic_code_search
       repo_map
       diagnostics

@@ -15,12 +15,13 @@ defmodule IexCode.Tools.EmpiricalSafetyChallengeTest do
   alias IexCode.Tools
   alias IexCode.Tools.SafetyPolicy
 
-  @mutating_tools ~w(write_file patch_file multi_patch run_command git_commit git_stage)
+  @mutating_tools ~w(write_file patch_file multi_patch rename_symbol run_command git_commit git_stage)
   @readonly_tools ~w(
     read_file
     list_dir
     grep_search
     ast_search
+    find_references
     semantic_code_search
     repo_map
     diagnostics
@@ -38,19 +39,19 @@ defmodule IexCode.Tools.EmpiricalSafetyChallengeTest do
   @all_tools @mutating_tools ++ @readonly_tools
 
   # ---------------------------------------------------------------------------
-  # Task 1: Safety Tier Permutations Across All 22 Tools
+  # Task 1: Safety Tier Permutations Across All 24 Tools
   # ---------------------------------------------------------------------------
-  describe "Permutations Matrix: All 22 Tools across Safety Tiers" do
-    test "verifies total tool count matches the 22 defined tools" do
+  describe "Permutations Matrix: All 24 Tools across Safety Tiers" do
+    test "verifies total tool count matches the 24 defined tools" do
       definitions = Tools.tool_definitions(:all)
       tool_names = Enum.map(definitions, & &1.name) |> Enum.sort()
 
-      assert length(@all_tools) == 22
-      assert length(tool_names) == 22
+      assert length(@all_tools) == 24
+      assert length(tool_names) == 24
       assert Enum.sort(@all_tools) == tool_names
     end
 
-    test "full_auto mode permits all 22 tools without prompts or denials" do
+    test "full_auto mode permits all 24 tools without prompts or denials" do
       clean_settings = %AppSettings{
         tool_approval_mode: "full_auto",
         tool_category_overrides: %{}
@@ -66,7 +67,7 @@ defmodule IexCode.Tools.EmpiricalSafetyChallengeTest do
       end
     end
 
-    test "prompt_dangerous mode prompts for 6 mutating tools and permits 16 read-only tools" do
+    test "prompt_dangerous mode prompts for 7 mutating tools and permits 17 read-only tools" do
       clean_settings = %AppSettings{
         tool_approval_mode: "prompt_dangerous",
         tool_category_overrides: %{}
@@ -89,7 +90,7 @@ defmodule IexCode.Tools.EmpiricalSafetyChallengeTest do
       end
     end
 
-    test "read_only mode (with clean overrides) denies 6 mutating tools and permits 16 read-only tools" do
+    test "read_only mode (with clean overrides) denies 7 mutating tools and permits 17 read-only tools" do
       clean_settings = %AppSettings{
         tool_approval_mode: "read_only",
         tool_category_overrides: %{}

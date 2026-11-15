@@ -577,13 +577,39 @@ by the DAG scheduler. The dedicated exact-level Research launcher creates new `d
   `changed`, `changed_files`, `stale`, and `partition` (`"auto"` / `:auto` or explicit
   `MIX_TEST_PARTITION` with automatic `*_test<partition>.db*` cleanup); and `AutoFix` rejects
   patch targets outside the workspace or inside `deps/` / `_build/`.
-- **8-task `eval/tasks` coding benchmark suite**: `mix iex_code.eval` (`IexCode.Eval.Runner` and
-  `Scoring`) runs 8 reproducible coding benchmarks (`example-markdown-typo`,
+- **LSP-grade `SymbolRefactor` (`find_references` & `rename_symbol`) & contained `ASTSearch`**:
+  `IexCode.Tools.SymbolRefactor` provides scope-aware Elixir AST + `:elixir_tokenizer` reference
+  discovery (`find_references`) and safe multi-file renaming (`rename_symbol`, with `dry_run: true`
+  previews and `{:project, :exclusive}` workspace locking on live writes) resolving lexical
+  `alias` / multi-alias / `:as` / `import` scopes, ignoring comments, docs, and string literals,
+  validating transformed buffers with `Code.string_to_quoted/2` before touching disk, and writing
+  atomically inside `WorkspacePath` containment; `ASTSearch` enforces `contain_root: true` and
+  `max_file_bytes` (`1,048,576`) on agent tool calls.
+- **Hybrid BM25 + RRF `SemanticIndex` retrieval**: `IexCode.SemanticIndex.HybridRanker` and
+  `Indexer` combine code-aware tokenization (`CamelCase`, `snake_case`, module segments, `:atom` /
+  `@attr` names) and field-boosted BM25 (`symbol_name > file_path > content`) with dense cosine
+  similarity via Reciprocal Rank Fusion (`mode: :hybrid | :vector | :lexical` on `Indexer.search/3`
+  and `semantic_code_search`), invalidate stale chunks on `{file_hash, model, dimensions}` changes,
+  guard mismatched vector dimensions, and enforce symlink/size bounds during indexing.
+- **Crash-isolated, non-blocking `MCP` client & manager**: `IexCode.MCP.Client`, `Manager`, and
+  `ToolBridge` isolate server crashes via `trap_exit` + child monitoring with per-server status and
+  lazy/explicit `reconnect/2`, execute `call_tool` concurrently outside manager serialization,
+  close stdio ports and child OS processes cleanly on `terminate/2`, enforce `@max_buffer_bytes`
+  (`8 MB`) and `@max_output_bytes` (`256 KB`), support `list_resources/2`, `read_resource/3`,
+  `list_prompts/2`, and `get_prompt/4`, and propagate MCP `"isError" => true` as
+  `{:error, {:mcp_tool_error, text}}`.
+- **Hardened `Consensus` bounds & actionable feedback synthesis**: `IexCode.Consensus.Assessment`,
+  `Matrix`, and `Arbitrator` clamp confidence and 5-dimension rubric scores into `[0.0, 1.0]`,
+  guard zero/negative weights, deduplicate repeated non-empty `reviewer_id` votes, enforce strict
+  idempotent `:approved | :rejected` resolution in `resolve_arbitration/2`, and synthesize ranked,
+  deduplicated repair prompts via `Arbitrator.synthesize_actionable_feedback/2`.
+- **10-task `eval/tasks` coding benchmark suite**: `mix iex_code.eval` (`IexCode.Eval.Runner` and
+  `Scoring`) runs 10 reproducible coding benchmarks (`example-markdown-typo`,
   `elixir-pagination-boundary`, `elixir-multi-file-contract`, `elixir-repeated-block-patch`,
   `elixir-genserver-bounded-state`, `elixir-compile-repair`, `elixir-context-bugfix`,
-  `elixir-otp-timeout-leak`) with `--only`, `--category`, `--tag`, `--json-out`, process-group
-  grading timeouts, automatic workdir cleanup, `pass@k` category summaries, and
-  turn/tool/token/cost telemetry.
+  `elixir-otp-timeout-leak`, `elixir-ast-rename-refactor`, `elixir-jsonrpc-frame-parser`) with
+  `--only`, `--category`, `--tag`, `--json-out`, process-group grading timeouts, automatic workdir
+  cleanup, `pass@k` category summaries, and turn/tool/token/cost telemetry.
 
 ## Verification
 

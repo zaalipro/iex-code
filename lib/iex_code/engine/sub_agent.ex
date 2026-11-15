@@ -30,6 +30,7 @@ defmodule IexCode.Engine.SubAgent do
     list_dir
     grep_search
     ast_search
+    find_references
     semantic_code_search
     repo_map
     diagnostics
