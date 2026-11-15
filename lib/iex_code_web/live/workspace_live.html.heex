@@ -2480,6 +2480,67 @@
 
                   <%!-- Details & Diff Inspector Viewport --%>
                   <div class="flex-1 min-w-0 bg-[#0a0d12] flex flex-col overflow-hidden">
+                    <%= if @checkpoint_drift do %>
+                      <%= cond do %>
+                        <% @checkpoint_drift.status == :drifted -> %>
+                          <div
+                            id="checkpoint-drift-banner"
+                            role="alert"
+                            class="mx-4 mt-3 rounded-xl border border-amber-500/40 bg-amber-950/40 p-3 text-xs text-amber-200"
+                          >
+                            <div class="flex items-center justify-between gap-2 font-semibold text-amber-100">
+                              <div class="flex items-center gap-2">
+                                <.icon
+                                  name="hero-exclamation-triangle"
+                                  class="h-4 w-4 shrink-0 text-amber-400"
+                                />
+                                <span>
+                                  Workspace drift detected ({length(@checkpoint_drift.drifts)} file(s) changed since snapshot)
+                                </span>
+                              </div>
+                              <span class="rounded border border-amber-500/30 bg-amber-900/50 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-amber-300">
+                                Drift Warning
+                              </span>
+                            </div>
+                            <ul class="mt-2 space-y-1 font-mono text-[11px] text-amber-200/90">
+                              <%= for drift <- @checkpoint_drift.drifts do %>
+                                <li class="flex items-center justify-between gap-2 rounded bg-black/30 px-2 py-1">
+                                  <span class="font-semibold text-amber-100">{drift.path}</span>
+                                  <span class="text-[10px] text-amber-300/90">
+                                    {format_drift_reason(drift.reason)}
+                                  </span>
+                                </li>
+                              <% end %>
+                            </ul>
+                          </div>
+                        <% @checkpoint_drift.status == :clean -> %>
+                          <div
+                            id="checkpoint-drift-clean-badge"
+                            class="mx-4 mt-3 flex items-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-950/30 px-3 py-2 text-xs text-emerald-200"
+                          >
+                            <.icon
+                              name="hero-check-circle"
+                              class="h-4 w-4 shrink-0 text-emerald-400"
+                            />
+                            <span>
+                              All snapshot files match expected post-checkpoint state (zero drift).
+                            </span>
+                          </div>
+                        <% true -> %>
+                          <div
+                            id="checkpoint-drift-error"
+                            role="alert"
+                            class="mx-4 mt-3 flex items-center gap-2 rounded-xl border border-rose-500/40 bg-rose-950/40 px-3 py-2 text-xs text-rose-200"
+                          >
+                            <.icon
+                              name="hero-shield-exclamation"
+                              class="h-4 w-4 shrink-0 text-rose-400"
+                            />
+                            <span>{@checkpoint_drift.error}</span>
+                          </div>
+                      <% end %>
+                    <% end %>
+
                     <%= if @selected_checkpoint do %>
                       <% tx_id = @selected_checkpoint.transaction_id || @selected_checkpoint.id %>
                       <div
@@ -2505,15 +2566,28 @@
                           </p>
                         </div>
 
-                        <button
-                          type="button"
-                          phx-click="rollback_to_checkpoint"
-                          phx-value-tx_id={tx_id}
-                          class="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs transition-smooth flex items-center gap-1.5 shadow-sm"
-                        >
-                          <.icon name="hero-arrow-uturn-left" class="w-3.5 h-3.5" />
-                          <span>1-Click Rollback to this Checkpoint</span>
-                        </button>
+                        <div class="flex items-center gap-2">
+                          <button
+                            id="check-checkpoint-drift-btn"
+                            type="button"
+                            phx-click="check_checkpoint_drift"
+                            phx-value-id={tx_id}
+                            class="px-3 py-1.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-200 font-semibold text-xs transition-smooth flex items-center gap-1.5"
+                          >
+                            <.icon name="hero-shield-check" class="w-3.5 h-3.5 text-amber-300" />
+                            <span>Check Drift</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            phx-click="rollback_to_checkpoint"
+                            phx-value-tx_id={tx_id}
+                            class="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs transition-smooth flex items-center gap-1.5 shadow-sm"
+                          >
+                            <.icon name="hero-arrow-uturn-left" class="w-3.5 h-3.5" />
+                            <span>1-Click Rollback to this Checkpoint</span>
+                          </button>
+                        </div>
                       </div>
 
                       <div
@@ -3250,6 +3324,17 @@
                   <.icon name="hero-sparkles" class="w-3.5 h-3.5" />
                   <span>Semantic search</span>
                 </button>
+                <button
+                  id="symbol-explorer-references-mode"
+                  type="button"
+                  phx-click="set_ast_mode"
+                  phx-value-mode="references"
+                  aria-pressed={to_string(@ast_search_mode == "references")}
+                  class="header-control"
+                >
+                  <.icon name="hero-arrows-right-left" class="w-3.5 h-3.5" />
+                  <span>References &amp; Rename</span>
+                </button>
               </:leading>
               <:actions>
                 <%= if @ast_search_mode == "semantic" do %>
@@ -3272,95 +3357,394 @@
               </:actions>
             </.page_toolbar>
 
-            <%= if @ast_search_mode == "ast" do %>
-              <.ast_explorer
-                ast_query={@ast_query}
-                ast_type_filter={@ast_type_filter}
-                ast_visibility={@ast_visibility}
-                ast_results={@ast_results}
-                ast_searching?={@ast_searching?}
-                ast_total_count={@ast_total_count}
-              />
-            <% else %>
-              <%!-- Semantic Search View --%>
-              <div
-                id="semantic-search-panel"
-                class="flex-1 flex flex-col h-full bg-[#0d1117] overflow-hidden font-mono text-xs"
-              >
-                <.page_header
-                  id="semantic-search-page-header"
-                  title="Semantic search"
-                  description="Find related code with natural language, entirely on your machine."
-                  icon="hero-sparkles"
+            <%= cond do %>
+              <% @ast_search_mode == "ast" -> %>
+                <.ast_explorer
+                  ast_query={@ast_query}
+                  ast_type_filter={@ast_type_filter}
+                  ast_visibility={@ast_visibility}
+                  ast_results={@ast_results}
+                  ast_searching?={@ast_searching?}
+                  ast_total_count={@ast_total_count}
                 />
-                <.page_toolbar
-                  id="semantic-search-toolbar"
-                  class="[&_.page-toolbar__controls]:w-full"
+              <% @ast_search_mode == "references" -> %>
+                <%!-- Symbol References & Safe Rename View --%>
+                <div
+                  id="symbol-refactor-panel"
+                  class="flex-1 flex flex-col h-full bg-[#0d1117] overflow-y-auto font-mono text-xs"
                 >
-                  <form
-                    id="semantic-search-form"
-                    phx-change="search_semantic"
-                    phx-submit="search_semantic"
-                    class="relative w-full"
-                  >
-                    <.icon
-                      name="hero-magnifying-glass"
-                      class="w-4 h-4 text-gray-400 absolute left-3 top-2.5"
-                    />
-                    <input
-                      type="text"
-                      name="query"
-                      value={@semantic_query}
-                      phx-debounce="200"
-                      placeholder="Ask in natural language (e.g. 'function that calculates consensus', 'rollback checkpoints')..."
-                      class="w-full bg-[#161b22] border border-[#21262d] rounded-xl pl-9 pr-4 py-2 text-gray-100 placeholder-gray-500 font-mono text-xs focus:outline-none focus:border-purple-500/50 focus:ring-1 focus:ring-purple-500/50"
-                    />
-                  </form>
-                </.page_toolbar>
+                  <.page_header
+                    id="symbol-refactor-page-header"
+                    title="Symbol References & Safe Rename"
+                    description="Lexical-scope-aware Elixir reference finder and syntax-verified atomic multi-file refactoring."
+                    icon="hero-arrows-right-left"
+                  />
 
-                <%!-- Semantic Results List --%>
-                <div class="flex-1 overflow-y-auto p-4 space-y-3">
-                  <%= if @semantic_query == "" do %>
-                    <div class="h-64 flex flex-col items-center justify-center text-center text-zinc-500">
-                      <.icon name="hero-sparkles" class="w-8 h-8 text-zinc-600 mb-2" />
-                      <p>Type a natural language query above to search code semantically.</p>
-                    </div>
-                  <% else %>
-                    <%= if @semantic_results == [] do %>
-                      <div class="h-64 flex flex-col items-center justify-center text-center text-zinc-500">
-                        <p>
-                          No matches found above similarity threshold for "{@semantic_query}".
-                        </p>
+                  <div class="grid gap-4 p-4 xl:grid-cols-2">
+                    <%!-- Left Card: Symbol References --%>
+                    <section
+                      id="symbol-references-section"
+                      class="flex flex-col rounded-2xl border border-[#21262d] bg-[#11151c] p-4 space-y-3"
+                    >
+                      <div class="flex items-center justify-between gap-2">
+                        <div>
+                          <h3 class="text-sm font-bold text-gray-100">Find Symbol References</h3>
+                          <p class="text-[11px] text-zinc-400 mt-0.5">
+                            Resolves aliases, multi-aliases, imports, calls, captures, and definitions.
+                          </p>
+                        </div>
+                        <span class="px-2 py-0.5 rounded text-[10px] bg-sky-950/60 border border-sky-700/40 text-sky-300 font-semibold">
+                          {length(@symbol_references_results)} refs
+                        </span>
                       </div>
-                    <% else %>
-                      <%= for result <- @semantic_results do %>
-                        <div
-                          phx-click="jump_to_symbol"
-                          phx-value-path={result.file_path}
-                          phx-value-line={result.start_line}
-                          class="p-3 bg-[#161b22] hover:bg-[#21262d] border border-[#30363d] rounded-xl cursor-pointer transition-smooth group"
+
+                      <form
+                        id="symbol-references-form"
+                        phx-submit="search_symbol_references"
+                        class="flex items-center gap-2"
+                      >
+                        <input
+                          id="symbol-references-input"
+                          type="text"
+                          name="symbol"
+                          value={@symbol_references_query}
+                          placeholder="e.g. MyApp.Calc or MyApp.Calc.add/2"
+                          class="flex-1 bg-[#161b22] border border-[#30363d] rounded-xl px-3 py-2 text-gray-100 placeholder-gray-500 font-mono text-xs focus:outline-none focus:border-sky-500/60"
+                        />
+                        <button
+                          id="symbol-references-submit-btn"
+                          type="submit"
+                          class="px-3.5 py-2 rounded-xl bg-sky-600/20 hover:bg-sky-600/30 border border-sky-500/40 text-sky-200 font-semibold transition-smooth flex items-center gap-1.5 shrink-0"
                         >
-                          <div class="flex items-center justify-between mb-2">
-                            <div class="flex items-center gap-2 truncate">
-                              <span class="text-blue-400 font-bold">{result.file_path}</span>
-                              <span class="text-zinc-500 text-[11px]">:{result.start_line}-{result.end_line}</span>
-                              <%= if result.symbol_name do %>
-                                <span class="px-1.5 py-0.5 rounded text-[10px] bg-purple-900/50 text-purple-300 font-semibold">
-                                  {result.symbol_type} {result.symbol_name}
+                          <.icon name="hero-magnifying-glass" class="w-3.5 h-3.5" />
+                          <span>Find References</span>
+                        </button>
+                      </form>
+
+                      <%= if @symbol_references_error do %>
+                        <div
+                          id="symbol-references-error"
+                          role="alert"
+                          class="rounded-xl border border-rose-500/40 bg-rose-950/40 px-3 py-2 text-rose-200 text-[11px] flex items-center gap-2"
+                        >
+                          <.icon
+                            name="hero-exclamation-triangle"
+                            class="w-4 h-4 shrink-0 text-rose-400"
+                          />
+                          <span>{@symbol_references_error}</span>
+                        </div>
+                      <% end %>
+
+                      <div
+                        id="symbol-references-results"
+                        class="space-y-2 max-h-[28rem] overflow-y-auto"
+                      >
+                        <%= if @symbol_references_results == [] do %>
+                          <div class="py-10 text-center text-zinc-500">
+                            <%= if @symbol_references_query == "" do %>
+                              <p>
+                                Enter a qualified module or function symbol to inspect references.
+                              </p>
+                            <% else %>
+                              <p>No AST references found for "{@symbol_references_query}".</p>
+                            <% end %>
+                          </div>
+                        <% else %>
+                          <%= for {ref, idx} <- Enum.with_index(@symbol_references_results) do %>
+                            <div
+                              id={"symbol-reference-item-#{idx}"}
+                              phx-click="jump_to_symbol"
+                              phx-value-path={ref.file}
+                              phx-value-line={ref.line}
+                              class="p-3 rounded-xl border border-[#30363d] bg-[#161b22] hover:bg-[#1f2630] cursor-pointer transition-smooth space-y-1.5"
+                            >
+                              <div class="flex items-center justify-between gap-2">
+                                <span class="text-blue-400 font-bold truncate">
+                                  {ref.file}:{ref.line}:{ref.column}
+                                </span>
+                                <span class="px-2 py-0.5 rounded text-[10px] uppercase tracking-wider bg-purple-950/70 border border-purple-700/50 text-purple-300 font-semibold shrink-0">
+                                  {to_string(ref.kind)}
+                                </span>
+                              </div>
+                              <pre
+                                phx-no-curly-interpolation
+                                class="bg-[#0a0d12] px-2.5 py-1.5 rounded-lg text-[11px] text-zinc-300 overflow-x-auto font-mono whitespace-pre-wrap"
+                              ><code><%= ref.snippet %></code></pre>
+                            </div>
+                          <% end %>
+                        <% end %>
+                      </div>
+                    </section>
+
+                    <%!-- Right Card: Safe Rename Dry-Run Preview & Apply --%>
+                    <section
+                      id="symbol-rename-section"
+                      class="flex flex-col rounded-2xl border border-[#21262d] bg-[#11151c] p-4 space-y-3"
+                    >
+                      <div class="flex items-center justify-between gap-2">
+                        <div>
+                          <h3 class="text-sm font-bold text-gray-100">Safe Multi-File Rename</h3>
+                          <p class="text-[11px] text-zinc-400 mt-0.5">
+                            Validates transformed AST syntax before atomic workspace-locked commit.
+                          </p>
+                        </div>
+                        <span class="px-2 py-0.5 rounded text-[10px] bg-emerald-950/60 border border-emerald-700/40 text-emerald-300 font-semibold">
+                          SafetyPolicy · Locked
+                        </span>
+                      </div>
+
+                      <form
+                        id="symbol-rename-preview-form"
+                        phx-submit="preview_symbol_rename"
+                        class="space-y-2.5"
+                      >
+                        <div class="grid gap-2 sm:grid-cols-2">
+                          <input
+                            id="symbol-rename-from-input"
+                            type="text"
+                            name="from"
+                            value={@symbol_rename_from}
+                            placeholder="From (e.g. MyApp.Calc.add/2)"
+                            class="w-full bg-[#161b22] border border-[#30363d] rounded-xl px-3 py-2 text-gray-100 placeholder-gray-500 font-mono text-xs focus:outline-none focus:border-purple-500/60"
+                          />
+                          <input
+                            id="symbol-rename-to-input"
+                            type="text"
+                            name="to"
+                            value={@symbol_rename_to}
+                            placeholder="To (e.g. sum)"
+                            class="w-full bg-[#161b22] border border-[#30363d] rounded-xl px-3 py-2 text-gray-100 placeholder-gray-500 font-mono text-xs focus:outline-none focus:border-purple-500/60"
+                          />
+                        </div>
+                        <div class="flex items-center justify-end">
+                          <button
+                            id="preview-symbol-rename-btn"
+                            type="submit"
+                            class="px-3.5 py-2 rounded-xl bg-purple-600/20 hover:bg-purple-600/30 border border-purple-500/40 text-purple-200 font-semibold transition-smooth flex items-center gap-1.5"
+                          >
+                            <.icon name="hero-document-magnifying-glass" class="w-3.5 h-3.5" />
+                            <span>Preview Dry-Run Diff</span>
+                          </button>
+                        </div>
+                      </form>
+
+                      <%= if @symbol_rename_error do %>
+                        <div
+                          id="symbol-rename-error"
+                          role="alert"
+                          class="rounded-xl border border-rose-500/40 bg-rose-950/40 px-3 py-2 text-rose-200 text-[11px] flex items-center gap-2"
+                        >
+                          <.icon
+                            name="hero-shield-exclamation"
+                            class="w-4 h-4 shrink-0 text-rose-400"
+                          />
+                          <span>{@symbol_rename_error}</span>
+                        </div>
+                      <% end %>
+
+                      <%= if @symbol_rename_preview do %>
+                        <div
+                          id="symbol-rename-preview-card"
+                          class="rounded-xl border border-[#30363d] bg-[#161b22] p-3 space-y-3"
+                        >
+                          <div class="flex flex-wrap items-center justify-between gap-2">
+                            <div class="flex flex-wrap items-center gap-2 text-[11px]">
+                              <span
+                                id="symbol-rename-files-count"
+                                class="px-2 py-0.5 rounded bg-sky-950/70 border border-sky-800 text-sky-300 font-semibold"
+                              >
+                                {@symbol_rename_preview.files_changed} file(s) changed
+                              </span>
+                              <span
+                                id="symbol-rename-occurrences-count"
+                                class="px-2 py-0.5 rounded bg-amber-950/70 border border-amber-800 text-amber-300 font-semibold"
+                              >
+                                {@symbol_rename_preview.occurrences} occurrence(s)
+                              </span>
+                              <%= if @symbol_rename_preview[:applied?] do %>
+                                <span class="px-2 py-0.5 rounded bg-emerald-950 border border-emerald-800 text-emerald-300 font-semibold">
+                                  Applied
                                 </span>
                               <% end %>
                             </div>
-                            <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-950 border border-emerald-800 text-emerald-300">
-                              {result.match_percent}% match
-                            </span>
+
+                            <button
+                              id="apply-symbol-rename-btn"
+                              type="button"
+                              phx-click="apply_symbol_rename"
+                              disabled={
+                                @symbol_rename_preview.occurrences == 0 or
+                                  @symbol_rename_preview[:applied?] == true
+                              }
+                              class="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:pointer-events-none text-white font-semibold text-xs transition-smooth flex items-center gap-1.5"
+                            >
+                              <.icon name="hero-check-circle" class="w-3.5 h-3.5" />
+                              <span>Apply Safe Rename</span>
+                            </button>
                           </div>
-                          <pre class="bg-[#0a0d12] p-2.5 rounded-lg text-[11px] text-zinc-300 overflow-x-auto max-h-36 font-mono whitespace-pre-wrap"><code>{result.content}</code></pre>
+
+                          <pre
+                            id="symbol-rename-diff-preview"
+                            phx-no-curly-interpolation
+                            class="bg-[#0a0d12] p-3 rounded-lg text-[11px] text-zinc-300 overflow-auto max-h-72 font-mono whitespace-pre"
+                          ><code><%= if @symbol_rename_preview.diff == "", do: "No matching occurrences found for dry-run rename.", else: @symbol_rename_preview.diff %></code></pre>
+                        </div>
+                      <% else %>
+                        <div class="py-10 text-center text-zinc-500">
+                          <p>
+                            Submit source and target symbol names above to preview a dry-run diff.
+                          </p>
                         </div>
                       <% end %>
-                    <% end %>
-                  <% end %>
+                    </section>
+                  </div>
                 </div>
-              </div>
+              <% true -> %>
+                <%!-- Semantic Search View --%>
+                <div
+                  id="semantic-search-panel"
+                  class="flex-1 flex flex-col h-full bg-[#0d1117] overflow-hidden font-mono text-xs"
+                >
+                  <.page_header
+                    id="semantic-search-page-header"
+                    title="Semantic search"
+                    description="Find related code with hybrid BM25 + dense vector RRF, pure vector cosine, or lexical BM25."
+                    icon="hero-sparkles"
+                  />
+                  <.page_toolbar
+                    id="semantic-search-toolbar"
+                    class="[&_.page-toolbar__controls]:w-full"
+                  >
+                    <div class="w-full space-y-2.5">
+                      <div
+                        id="semantic-mode-pills"
+                        role="group"
+                        aria-label="Semantic retrieval mode"
+                        class="flex flex-wrap items-center gap-2"
+                      >
+                        <button
+                          id="semantic-mode-hybrid"
+                          type="button"
+                          phx-click="set_semantic_mode"
+                          phx-value-mode="hybrid"
+                          aria-pressed={to_string(@semantic_search_mode == "hybrid")}
+                          class={[
+                            "px-2.5 py-1 rounded-lg border text-[11px] font-semibold transition-smooth flex items-center gap-1.5",
+                            @semantic_search_mode == "hybrid" &&
+                              "bg-purple-500/20 border-purple-400/50 text-purple-200",
+                            @semantic_search_mode != "hybrid" &&
+                              "bg-[#161b22] border-[#21262d] text-zinc-400 hover:text-zinc-200"
+                          ]}
+                        >
+                          <.icon name="hero-sparkles" class="w-3 h-3" />
+                          <span>Hybrid (BM25 + RRF)</span>
+                        </button>
+                        <button
+                          id="semantic-mode-vector"
+                          type="button"
+                          phx-click="set_semantic_mode"
+                          phx-value-mode="vector"
+                          aria-pressed={to_string(@semantic_search_mode == "vector")}
+                          class={[
+                            "px-2.5 py-1 rounded-lg border text-[11px] font-semibold transition-smooth flex items-center gap-1.5",
+                            @semantic_search_mode == "vector" &&
+                              "bg-purple-500/20 border-purple-400/50 text-purple-200",
+                            @semantic_search_mode != "vector" &&
+                              "bg-[#161b22] border-[#21262d] text-zinc-400 hover:text-zinc-200"
+                          ]}
+                        >
+                          <.icon name="hero-cube-transparent" class="w-3 h-3" />
+                          <span>Vector</span>
+                        </button>
+                        <button
+                          id="semantic-mode-lexical"
+                          type="button"
+                          phx-click="set_semantic_mode"
+                          phx-value-mode="lexical"
+                          aria-pressed={to_string(@semantic_search_mode == "lexical")}
+                          class={[
+                            "px-2.5 py-1 rounded-lg border text-[11px] font-semibold transition-smooth flex items-center gap-1.5",
+                            @semantic_search_mode == "lexical" &&
+                              "bg-purple-500/20 border-purple-400/50 text-purple-200",
+                            @semantic_search_mode != "lexical" &&
+                              "bg-[#161b22] border-[#21262d] text-zinc-400 hover:text-zinc-200"
+                          ]}
+                        >
+                          <.icon name="hero-bolt" class="w-3 h-3" />
+                          <span>Lexical (BM25)</span>
+                        </button>
+                      </div>
+
+                      <form
+                        id="semantic-search-form"
+                        phx-change="search_semantic"
+                        phx-submit="search_semantic"
+                        class="relative w-full"
+                      >
+                        <.icon
+                          name="hero-magnifying-glass"
+                          class="w-4 h-4 text-gray-400 absolute left-3 top-2.5"
+                        />
+                        <input
+                          type="text"
+                          name="query"
+                          value={@semantic_query}
+                          phx-debounce="200"
+                          placeholder="Ask in natural language (e.g. 'function that calculates consensus', 'rollback checkpoints')..."
+                          class="w-full bg-[#161b22] border border-[#21262d] rounded-xl pl-9 pr-4 py-2 text-gray-100 placeholder-gray-500 font-mono text-xs focus:outline-none focus:border-purple-500/50 focus:ring-1 focus:ring-purple-500/50"
+                        />
+                      </form>
+                    </div>
+                  </.page_toolbar>
+
+                  <%!-- Semantic Results List --%>
+                  <div class="flex-1 overflow-y-auto p-4 space-y-3">
+                    <%= if @semantic_query == "" do %>
+                      <div class="h-64 flex flex-col items-center justify-center text-center text-zinc-500">
+                        <.icon name="hero-sparkles" class="w-8 h-8 text-zinc-600 mb-2" />
+                        <p>
+                          Type a query above to search code in {@semantic_search_mode} mode.
+                        </p>
+                      </div>
+                    <% else %>
+                      <%= if @semantic_results == [] do %>
+                        <div class="h-64 flex flex-col items-center justify-center text-center text-zinc-500">
+                          <p>
+                            No matches found above similarity threshold for "{@semantic_query}".
+                          </p>
+                        </div>
+                      <% else %>
+                        <%= for result <- @semantic_results do %>
+                          <div
+                            phx-click="jump_to_symbol"
+                            phx-value-path={result.file_path}
+                            phx-value-line={result.start_line}
+                            class="p-3 bg-[#161b22] hover:bg-[#21262d] border border-[#30363d] rounded-xl cursor-pointer transition-smooth group"
+                          >
+                            <div class="flex items-center justify-between mb-2">
+                              <div class="flex items-center gap-2 truncate">
+                                <span class="text-blue-400 font-bold">{result.file_path}</span>
+                                <span class="text-zinc-500 text-[11px]">:{result.start_line}-{result.end_line}</span>
+                                <%= if result.symbol_name do %>
+                                  <span class="px-1.5 py-0.5 rounded text-[10px] bg-purple-900/50 text-purple-300 font-semibold">
+                                    {result.symbol_type} {result.symbol_name}
+                                  </span>
+                                <% end %>
+                              </div>
+                              <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-950 border border-emerald-800 text-emerald-300">
+                                {result.match_percent}% match
+                              </span>
+                            </div>
+                            <pre
+                              phx-no-curly-interpolation
+                              class="bg-[#0a0d12] p-2.5 rounded-lg text-[11px] text-zinc-300 overflow-x-auto max-h-36 font-mono whitespace-pre-wrap"
+                            ><code><%= result.content %></code></pre>
+                          </div>
+                        <% end %>
+                      <% end %>
+                    <% end %>
+                  </div>
+                </div>
             <% end %>
           </div>
         <% end %>

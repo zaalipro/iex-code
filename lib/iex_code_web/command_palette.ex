@@ -134,6 +134,44 @@ defmodule IexCodeWeb.CommandPalette do
       }
     },
     %{
+      id: "hybrid_semantic_search",
+      category: :action,
+      title: "Hybrid Semantic Code Search",
+      subtitle: "BM25 + dense vector RRF code retrieval",
+      icon: "hero-sparkles",
+      shortcut: "Cmd+Shift+H",
+      event: "open_hybrid_semantic_search",
+      params: %{"mode" => "hybrid"},
+      preview: %{
+        category: :action,
+        shortcut: "Cmd+Shift+H",
+        description:
+          "Search workspace code using fused BM25 lexical and dense vector Reciprocal Rank Fusion",
+        target_tab: "ast",
+        event: "open_hybrid_semantic_search",
+        params: %{"mode" => "hybrid"}
+      }
+    },
+    %{
+      id: "symbol_refactor_explorer",
+      category: :action,
+      title: "Symbol References & Rename Explorer",
+      subtitle: "AST-verified references and safe multi-file symbol rename",
+      icon: "hero-arrows-right-left",
+      shortcut: "Cmd+Shift+R",
+      event: "open_symbol_refactor_explorer",
+      params: %{"mode" => "references"},
+      preview: %{
+        category: :action,
+        shortcut: "Cmd+Shift+R",
+        description:
+          "Find lexical-scope-aware Elixir symbol references and preview atomic multi-file renames",
+        target_tab: "ast",
+        event: "open_symbol_refactor_explorer",
+        params: %{"mode" => "references"}
+      }
+    },
+    %{
       id: "teamwork",
       category: :action,
       title: "Teamwork Orchestration Blueprint",

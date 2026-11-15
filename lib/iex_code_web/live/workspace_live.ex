@@ -28,7 +28,7 @@ defmodule IexCodeWeb.WorkspaceLive do
   alias IexCode.Research.Registry, as: SearchRegistry
   alias IexCode.Tools.Git
   alias IexCode.Tools.Git.{DiffParser, HunkOps}
-  alias IexCode.Tools.{TerminalServer, TerminalSession}
+  alias IexCode.Tools.{SafetyPolicy, SymbolRefactor, TerminalServer, TerminalSession}
   alias IexCode.Observability.MemoryPoller
   alias IexCodeWeb.CommandPalette
   alias IexCodeWeb.WorkspaceHistory
@@ -86,6 +86,12 @@ defmodule IexCodeWeb.WorkspaceLive do
                        )
                        |> IO.iodata_to_binary()
   @workspace_tabs ~w(kanban workflows swarm research calendar changes tests ast consensus chat files terminal)
+  @ast_explorer_modes ~w(ast semantic references)
+  @semantic_mode_atoms %{
+    "hybrid" => :hybrid,
+    "vector" => :vector,
+    "lexical" => :lexical
+  }
 
   @impl true
   def mount(params, _session, socket) do
@@ -309,16 +315,25 @@ defmodule IexCodeWeb.WorkspaceLive do
       |> assign(:swarm_iteration, 1)
       |> assign(:max_retries, 3)
       |> assign(:active_tools, default_active_tools(settings))
-      # Semantic vector search assigns
+      # Semantic hybrid/vector/lexical search & symbol refactor assigns
       |> assign(:ast_search_mode, "ast")
+      |> assign(:semantic_search_mode, "hybrid")
       |> assign(:semantic_query, "")
       |> assign(:semantic_results, [])
       |> assign(:semantic_searching?, false)
       |> assign(:semantic_threshold, 0.3)
       |> assign(:semantic_stats, %{ets_chunks: 0, db_chunks: 0})
+      |> assign(:symbol_references_query, "")
+      |> assign(:symbol_references_results, [])
+      |> assign(:symbol_references_error, nil)
+      |> assign(:symbol_rename_from, "")
+      |> assign(:symbol_rename_to, "")
+      |> assign(:symbol_rename_preview, nil)
+      |> assign(:symbol_rename_error, nil)
       # Time-Travel Checkpoints
       |> assign(:checkpoints, [])
       |> assign(:selected_checkpoint, nil)
+      |> assign(:checkpoint_drift, nil)
       # Multi-Model Adversarial Consensus
       |> assign_initial_consensus()
       # Dropdown & Modal state
@@ -500,15 +515,22 @@ defmodule IexCodeWeb.WorkspaceLive do
         []
       end
 
+    selected_cp = socket.assigns[:selected_checkpoint] || List.first(checkpoints)
+
+    initial_drift =
+      if active_tab == "changes" and changes_subtab == "checkpoints" do
+        socket.assigns[:checkpoint_drift] || detect_checkpoint_drift_on_select(selected_cp)
+      else
+        socket.assigns[:checkpoint_drift]
+      end
+
     socket =
       socket
       |> assign(:active_tab, active_tab)
       |> assign(:changes_subtab, changes_subtab)
       |> assign(:checkpoints, checkpoints)
-      |> assign(
-        :selected_checkpoint,
-        socket.assigns[:selected_checkpoint] || List.first(checkpoints)
-      )
+      |> assign(:selected_checkpoint, selected_cp)
+      |> assign(:checkpoint_drift, initial_drift)
 
     socket =
       if active_tab == "chat" and params["id"] in [nil, socket.assigns.session.id],
@@ -608,6 +630,11 @@ defmodule IexCodeWeb.WorkspaceLive do
                   Runs.list_workspace_locks(project_id: project.id, active: true)
                 )
                 |> assign_run_projection(new_session.id)
+                |> assign(:checkpoint_drift, nil)
+                |> assign(:symbol_references_results, [])
+                |> assign(:symbol_references_error, nil)
+                |> assign(:symbol_rename_preview, nil)
+                |> assign(:symbol_rename_error, nil)
                 |> refresh_research_results()
                 |> clear_research_attachments()
                 |> refresh_git_state()
@@ -722,15 +749,21 @@ defmodule IexCodeWeb.WorkspaceLive do
   @impl true
   def handle_event("switch_changes_subtab", %{"tab" => tab}, socket) do
     checkpoints = IexCode.TimeTravel.list_checkpoints(socket.assigns.session.id)
+    selected_cp = socket.assigns[:selected_checkpoint] || List.first(checkpoints)
+
+    drift =
+      if tab == "checkpoints" do
+        detect_checkpoint_drift_on_select(selected_cp)
+      else
+        socket.assigns[:checkpoint_drift]
+      end
 
     {:noreply,
      socket
      |> assign(:changes_subtab, tab)
      |> assign(:checkpoints, checkpoints)
-     |> assign(
-       :selected_checkpoint,
-       socket.assigns[:selected_checkpoint] || List.first(checkpoints)
-     )}
+     |> assign(:selected_checkpoint, selected_cp)
+     |> assign(:checkpoint_drift, drift)}
   end
 
   @impl true
@@ -780,13 +813,87 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("select_checkpoint", %{"tx_id" => tx_id}, socket) do
-    checkpoint =
-      Enum.find(socket.assigns.checkpoints, fn cp ->
-        cp.transaction_id == tx_id or cp.id == tx_id or to_string(cp.transaction_id) == tx_id or
-          to_string(cp.id) == tx_id
-      end) || IexCode.TimeTravel.get_checkpoint(tx_id)
+    checkpoint = find_checkpoint_for_socket(socket, tx_id)
+    drift = detect_checkpoint_drift_on_select(checkpoint)
 
-    {:noreply, assign(socket, :selected_checkpoint, checkpoint)}
+    {:noreply,
+     socket
+     |> assign(:selected_checkpoint, checkpoint)
+     |> assign(:checkpoint_drift, drift)}
+  end
+
+  @impl true
+  def handle_event("check_checkpoint_drift", params, socket) do
+    raw_id =
+      params["id"] ||
+        params["tx_id"] ||
+        (socket.assigns[:selected_checkpoint] &&
+           (socket.assigns.selected_checkpoint.transaction_id ||
+              socket.assigns.selected_checkpoint.id))
+
+    tx_id = if is_nil(raw_id), do: "", else: String.trim(to_string(raw_id))
+
+    if tx_id == "" do
+      {:noreply,
+       assign(socket, :checkpoint_drift, %{
+         tx_id: nil,
+         status: :error,
+         drifts: [],
+         error: "No checkpoint selected for drift inspection."
+       })}
+    else
+      session_id = socket.assigns.session.id
+
+      checkpoints =
+        case socket.assigns[:checkpoints] do
+          list when is_list(list) and list != [] -> list
+          _ -> IexCode.TimeTravel.list_checkpoints(session_id)
+        end
+
+      checkpoint =
+        Enum.find(checkpoints, fn cp ->
+          cp.transaction_id == tx_id or cp.id == tx_id or
+            to_string(cp.transaction_id) == tx_id or to_string(cp.id) == tx_id
+        end) ||
+          case IexCode.TimeTravel.get_checkpoint(tx_id) do
+            %{session_id: ^session_id} = cp -> cp
+            _ -> nil
+          end
+
+      drift_state =
+        if is_nil(checkpoint) do
+          %{
+            tx_id: tx_id,
+            status: :error,
+            drifts: [],
+            error: format_checkpoint_drift_error(:checkpoint_not_found)
+          }
+        else
+          case IexCode.TimeTravel.check_drift(checkpoint) do
+            :ok ->
+              %{tx_id: tx_id, status: :clean, drifts: [], error: nil}
+
+            {:error, {:drift_detected, drifts}} ->
+              %{tx_id: tx_id, status: :drifted, drifts: drifts, error: nil}
+
+            {:error, reason} ->
+              %{
+                tx_id: tx_id,
+                status: :error,
+                drifts: [],
+                error: format_checkpoint_drift_error(reason)
+              }
+          end
+        end
+
+      {:noreply,
+       socket
+       |> assign(:active_tab, "changes")
+       |> assign(:changes_subtab, "checkpoints")
+       |> assign(:checkpoints, checkpoints)
+       |> assign(:selected_checkpoint, checkpoint || socket.assigns[:selected_checkpoint])
+       |> assign(:checkpoint_drift, drift_state)}
+    end
   end
 
   @impl true
@@ -802,6 +909,7 @@ defmodule IexCodeWeb.WorkspaceLive do
          socket
          |> assign(:checkpoints, checkpoints)
          |> assign(:selected_checkpoint, List.first(checkpoints))
+         |> assign(:checkpoint_drift, nil)
          |> put_flash(
            :info,
            "Rolled back #{summary.reverted_checkpoints} checkpoint(s) successfully."
@@ -825,6 +933,7 @@ defmodule IexCodeWeb.WorkspaceLive do
          socket
          |> assign(:checkpoints, checkpoints)
          |> assign(:selected_checkpoint, List.first(checkpoints))
+         |> assign(:checkpoint_drift, nil)
          |> put_flash(
            :info,
            "Rolled back #{summary.reverted_checkpoints} checkpoint successfully."
@@ -2426,43 +2535,233 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   @impl true
   def handle_event("set_ast_mode", %{"mode" => mode}, socket) do
-    stats =
-      if socket.assigns[:project] do
-        IexCode.SemanticIndex.Indexer.stats(socket.assigns.project.id)
-      else
-        %{ets_chunks: 0, db_chunks: 0}
-      end
+    normalized_mode = if mode in @ast_explorer_modes, do: mode, else: "ast"
+    stats = semantic_stats_for_socket(socket)
 
-    {:noreply, socket |> assign(:ast_search_mode, mode) |> assign(:semantic_stats, stats)}
+    {:noreply,
+     socket
+     |> assign(:ast_search_mode, normalized_mode)
+     |> assign(:semantic_stats, stats)}
   end
 
   @impl true
-  def handle_event("search_semantic", %{"query" => query}, socket) do
-    query = String.trim(query || "")
-    project_id = socket.assigns.project.id
+  def handle_event("open_ast_explorer", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:show_command_palette, false)
+     |> assign(:active_tab, "ast")
+     |> assign(:ast_search_mode, "ast")}
+  end
+
+  @impl true
+  def handle_event("open_hybrid_semantic_search", params, socket) do
+    raw_mode = if is_map(params), do: params["mode"], else: nil
+    {mode_str, _mode_atom} = resolve_semantic_mode(raw_mode, "hybrid")
+    stats = semantic_stats_for_socket(socket)
+
+    {:noreply,
+     socket
+     |> assign(:show_command_palette, false)
+     |> assign(:active_tab, "ast")
+     |> assign(:ast_search_mode, "semantic")
+     |> assign(:semantic_search_mode, mode_str)
+     |> assign(:semantic_stats, stats)}
+  end
+
+  @impl true
+  def handle_event("open_symbol_refactor_explorer", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:show_command_palette, false)
+     |> assign(:active_tab, "ast")
+     |> assign(:ast_search_mode, "references")}
+  end
+
+  @impl true
+  def handle_event("set_semantic_mode", %{"mode" => raw_mode}, socket) do
+    fallback = socket.assigns[:semantic_search_mode] || "hybrid"
+    {mode_str, mode_atom} = resolve_semantic_mode(raw_mode, fallback)
+    socket = assign(socket, :semantic_search_mode, mode_str)
+    query = String.trim(socket.assigns[:semantic_query] || "")
 
     if query == "" do
-      {:noreply, assign(socket, :semantic_results, []) |> assign(:semantic_query, "")}
+      {:noreply, socket}
     else
-      threshold = socket.assigns[:semantic_threshold] || 0.3
+      execute_semantic_search(socket, query, mode_atom)
+    end
+  end
 
-      case IexCode.SemanticIndex.Indexer.search(project_id, query,
-             threshold: threshold,
-             limit: 15
-           ) do
-        {:ok, results} ->
+  @impl true
+  def handle_event("search_semantic", params, socket) do
+    query = String.trim((is_map(params) && params["query"]) || "")
+
+    {_mode_str, mode_atom} =
+      resolve_semantic_mode(socket.assigns[:semantic_search_mode], "hybrid")
+
+    execute_semantic_search(socket, query, mode_atom)
+  end
+
+  @impl true
+  def handle_event("search_symbol_references", params, socket) do
+    symbol =
+      ((is_map(params) && (params["symbol"] || get_in(params, ["references", "symbol"]))) || "")
+      |> to_string()
+      |> String.trim()
+
+    if symbol == "" do
+      {:noreply,
+       socket
+       |> assign(:symbol_references_query, "")
+       |> assign(:symbol_references_results, [])
+       |> assign(
+         :symbol_references_error,
+         "Enter an Elixir module or Module.function/arity symbol."
+       )}
+    else
+      case SymbolRefactor.find_references(socket.assigns.project.root_path, symbol) do
+        {:ok, refs} ->
           {:noreply,
            socket
-           |> assign(:semantic_results, results)
-           |> assign(:semantic_query, query)
-           |> assign(:semantic_searching?, false)}
+           |> assign(:symbol_references_query, symbol)
+           |> assign(:symbol_references_results, refs)
+           |> assign(:symbol_references_error, nil)}
 
         {:error, reason} ->
           {:noreply,
            socket
-           |> assign(:semantic_searching?, false)
-           |> put_flash(:error, "Semantic search error: #{inspect(reason)}")}
+           |> assign(:symbol_references_query, symbol)
+           |> assign(:symbol_references_results, [])
+           |> assign(:symbol_references_error, format_symbol_refactor_error(reason))}
       end
+    end
+  end
+
+  @impl true
+  def handle_event("preview_symbol_rename", params, socket) do
+    from =
+      ((is_map(params) &&
+          (params["from"] || params["symbol"] || get_in(params, ["rename", "from"]))) || "")
+      |> to_string()
+      |> String.trim()
+
+    to =
+      ((is_map(params) &&
+          (params["to"] || params["new_name"] || get_in(params, ["rename", "to"]))) || "")
+      |> to_string()
+      |> String.trim()
+
+    if from == "" or to == "" do
+      {:noreply,
+       socket
+       |> assign(:symbol_rename_from, from)
+       |> assign(:symbol_rename_to, to)
+       |> assign(:symbol_rename_preview, nil)
+       |> assign(:symbol_rename_error, "Both source symbol and new name are required.")}
+    else
+      case SymbolRefactor.rename_symbol(socket.assigns.project.root_path, from, to, dry_run: true) do
+        {:ok, preview} ->
+          enriched = Map.merge(preview, %{from: from, to: to, applied?: false})
+
+          {:noreply,
+           socket
+           |> assign(:symbol_rename_from, from)
+           |> assign(:symbol_rename_to, to)
+           |> assign(:symbol_rename_preview, enriched)
+           |> assign(:symbol_rename_error, nil)}
+
+        {:error, reason} ->
+          {:noreply,
+           socket
+           |> assign(:symbol_rename_from, from)
+           |> assign(:symbol_rename_to, to)
+           |> assign(:symbol_rename_preview, nil)
+           |> assign(:symbol_rename_error, format_symbol_refactor_error(reason))}
+      end
+    end
+  end
+
+  @impl true
+  def handle_event("apply_symbol_rename", _params, socket) do
+    preview = socket.assigns[:symbol_rename_preview]
+    from = String.trim((preview && preview[:from]) || socket.assigns[:symbol_rename_from] || "")
+    to = String.trim((preview && preview[:to]) || socket.assigns[:symbol_rename_to] || "")
+    live_settings = Settings.get_settings()
+    session_overrides = SessionServer.get_session_overrides(socket.assigns.session.id)
+
+    case SafetyPolicy.evaluate("rename_symbol", live_settings, session_overrides) do
+      {:deny, reason} ->
+        msg = "Symbol rename denied by safety policy: #{reason}"
+
+        {:noreply,
+         socket
+         |> assign(:settings, live_settings)
+         |> assign(:symbol_rename_error, msg)
+         |> put_flash(:error, msg)}
+
+      decision when decision == :allow or elem(decision, 0) == :prompt ->
+        cond do
+          is_nil(preview) or from == "" or to == "" ->
+            msg = "Preview the symbol rename diff before applying changes."
+
+            {:noreply,
+             socket
+             |> assign(:symbol_rename_error, msg)
+             |> put_flash(:error, msg)}
+
+          preview[:occurrences] == 0 ->
+            msg = "No matching symbol occurrences found to rename."
+
+            {:noreply,
+             socket
+             |> assign(:symbol_rename_error, msg)
+             |> put_flash(:info, msg)}
+
+          true ->
+            project = socket.assigns.project
+
+            case with_ui_mutation_lock(socket, fn ->
+                   SymbolRefactor.rename_symbol(project.root_path, from, to, dry_run: false)
+                 end) do
+              {:ok, summary} ->
+                files = list_project_files(project.root_path)
+                applied_preview = Map.merge(summary, %{from: from, to: to, applied?: true})
+                broadcast_git_changed(socket)
+
+                ref_query = String.trim(socket.assigns[:symbol_references_query] || "")
+
+                updated_refs =
+                  if ref_query != "" do
+                    case SymbolRefactor.find_references(project.root_path, ref_query) do
+                      {:ok, refs} -> refs
+                      _ -> socket.assigns[:symbol_references_results] || []
+                    end
+                  else
+                    socket.assigns[:symbol_references_results] || []
+                  end
+
+                {:noreply,
+                 socket
+                 |> assign(:settings, live_settings)
+                 |> assign(:project_files, files)
+                 |> assign(:files, files)
+                 |> assign(:symbol_rename_preview, applied_preview)
+                 |> assign(:symbol_rename_error, nil)
+                 |> assign(:symbol_references_results, updated_refs)
+                 |> refresh_git_state()
+                 |> put_flash(
+                   :info,
+                   "Renamed #{summary.occurrences} occurrence(s) across #{summary.files_changed} file(s)."
+                 )}
+
+              {:error, reason} ->
+                msg = symbol_mutation_error(reason)
+
+                {:noreply,
+                 socket
+                 |> assign(:symbol_rename_error, msg)
+                 |> put_flash(:error, "Symbol rename failed: #{msg}")}
+            end
+        end
     end
   end
 
@@ -5427,7 +5726,11 @@ defmodule IexCodeWeb.WorkspaceLive do
         []
       end
 
-    {:noreply, socket |> assign(:checkpoints, checkpoints) |> refresh_git_state()}
+    {:noreply,
+     socket
+     |> assign(:checkpoints, checkpoints)
+     |> assign(:checkpoint_drift, nil)
+     |> refresh_git_state()}
   end
 
   @impl true
@@ -5708,6 +6011,121 @@ defmodule IexCodeWeb.WorkspaceLive do
 
   defp ui_mutation_error(reason), do: inspect(reason)
 
+  defp semantic_stats_for_socket(socket) do
+    if socket.assigns[:project] do
+      IexCode.SemanticIndex.Indexer.stats(socket.assigns.project.id)
+    else
+      %{ets_chunks: 0, db_chunks: 0}
+    end
+  end
+
+  defp resolve_semantic_mode(raw_mode, fallback_str) do
+    candidate = if is_binary(raw_mode), do: String.trim(raw_mode), else: ""
+
+    case Map.fetch(@semantic_mode_atoms, candidate) do
+      {:ok, mode_atom} ->
+        {candidate, mode_atom}
+
+      :error ->
+        safe_fallback =
+          if Map.has_key?(@semantic_mode_atoms, fallback_str), do: fallback_str, else: "hybrid"
+
+        {safe_fallback, Map.fetch!(@semantic_mode_atoms, safe_fallback)}
+    end
+  end
+
+  defp execute_semantic_search(socket, "", _mode_atom) do
+    {:noreply,
+     socket
+     |> assign(:semantic_results, [])
+     |> assign(:semantic_query, "")
+     |> assign(:semantic_searching?, false)}
+  end
+
+  defp execute_semantic_search(socket, query, mode_atom) do
+    project_id = socket.assigns.project.id
+    threshold = socket.assigns[:semantic_threshold] || 0.3
+
+    case IexCode.SemanticIndex.Indexer.search(project_id, query,
+           mode: mode_atom,
+           threshold: threshold,
+           limit: 15
+         ) do
+      {:ok, results} ->
+        {:noreply,
+         socket
+         |> assign(:semantic_results, results)
+         |> assign(:semantic_query, query)
+         |> assign(:semantic_searching?, false)}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:semantic_searching?, false)
+         |> put_flash(:error, "Semantic search error: #{inspect(reason)}")}
+    end
+  end
+
+  defp format_symbol_refactor_error({:invalid_symbol_spec, spec}) do
+    "Invalid Elixir symbol specification: #{inspect(spec)}"
+  end
+
+  defp format_symbol_refactor_error({:invalid_target_name, target}) do
+    "Invalid target symbol name: #{inspect(target)}"
+  end
+
+  defp format_symbol_refactor_error(reason)
+       when reason in [:outside_workspace, :symlink_escapes_root] do
+    "Target path escapes workspace root."
+  end
+
+  defp format_symbol_refactor_error(:path_not_found), do: "Workspace path not found."
+  defp format_symbol_refactor_error(reason), do: inspect(reason)
+
+  defp symbol_mutation_error({:workspace_lock_waiting, _locks} = lock_err),
+    do: ui_mutation_error(lock_err)
+
+  defp symbol_mutation_error(reason), do: format_symbol_refactor_error(reason)
+
+  defp find_checkpoint_for_socket(socket, tx_id) do
+    session_id = socket.assigns.session.id
+
+    Enum.find(socket.assigns[:checkpoints] || [], fn cp ->
+      cp.transaction_id == tx_id or cp.id == tx_id or
+        to_string(cp.transaction_id) == tx_id or to_string(cp.id) == tx_id
+    end) ||
+      case IexCode.TimeTravel.get_checkpoint(tx_id) do
+        %{session_id: ^session_id} = cp -> cp
+        _ -> nil
+      end
+  end
+
+  defp detect_checkpoint_drift_on_select(nil), do: nil
+
+  defp detect_checkpoint_drift_on_select(checkpoint) do
+    tx_id = checkpoint.transaction_id || checkpoint.id
+
+    case IexCode.TimeTravel.check_drift(checkpoint) do
+      {:error, {:drift_detected, drifts}} ->
+        %{tx_id: tx_id, status: :drifted, drifts: drifts, error: nil}
+
+      _ ->
+        nil
+    end
+  end
+
+  defp format_checkpoint_drift_error(:checkpoint_not_found), do: "Checkpoint was not found."
+
+  defp format_checkpoint_drift_error(:outside_workspace),
+    do: "Checkpoint contains a path outside workspace."
+
+  defp format_checkpoint_drift_error(reason), do: inspect(reason)
+
+  defp format_drift_reason(:content_mismatch), do: "modified since snapshot"
+  defp format_drift_reason(:file_missing), do: "deleted since snapshot"
+  defp format_drift_reason(:unexpected_file_exists), do: "created after snapshot"
+  defp format_drift_reason(other), do: to_string(inspect(other))
+
   defp atomic_editor_write(full_path, content) do
     tmp_path =
       Path.join(
@@ -5901,7 +6319,13 @@ defmodule IexCodeWeb.WorkspaceLive do
              socket |> assign(:active_tab, "tests") |> assign(:show_autofix_modal, true)}
 
           "ast_search" ->
-            {:noreply, assign(socket, :active_tab, "ast")}
+            handle_event("open_ast_explorer", %{}, socket)
+
+          "hybrid_semantic_search" ->
+            handle_event("open_hybrid_semantic_search", %{"mode" => "hybrid"}, socket)
+
+          "symbol_refactor_explorer" ->
+            handle_event("open_symbol_refactor_explorer", %{}, socket)
 
           "teamwork" ->
             handle_event("open_teamwork", %{}, socket)
