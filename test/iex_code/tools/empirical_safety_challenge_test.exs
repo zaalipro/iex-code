@@ -209,43 +209,73 @@ defmodule IexCode.Tools.EmpiricalSafetyChallengeTest do
       end
     end
 
-    test "VULNERABILITY PROOF 3: Session overrides can hijack tool_approval_mode to full_auto" do
-      # If session_overrides contains "tool_approval_mode" => "full_auto",
-      # it completely overrides the database AppSettings read_only tier.
+    test "REMEDIATION VERIFICATION 3: Session overrides cannot escalate read_only mode to full_auto or prompt_dangerous" do
       clean_ro_settings = %AppSettings{
         tool_approval_mode: "read_only",
         tool_category_overrides: %{}
       }
 
-      session_hijack = %{"tool_approval_mode" => "full_auto"}
+      map_ro_settings = %{tool_approval_mode: :read_only, tool_category_overrides: %{}}
 
-      for mutating_tool <- @mutating_tools do
-        result = SafetyPolicy.evaluate(mutating_tool, clean_ro_settings, session_hijack)
+      for escalation_override <- [
+            %{"tool_approval_mode" => "full_auto"},
+            %{"tool_approval_mode" => "prompt_dangerous"},
+            %{tool_approval_mode: "full_auto"},
+            %{tool_approval_mode: :full_auto}
+          ],
+          settings <- [clean_ro_settings, map_ro_settings] do
+        for mutating_tool <- @mutating_tools do
+          result = SafetyPolicy.evaluate(mutating_tool, settings, escalation_override)
 
-        assert result == :allow,
-               "Defect verification: session override hijacked read_only mode to full_auto for #{mutating_tool}"
+          assert result ==
+                   {:deny, "Mutating tool '#{mutating_tool}' is prohibited in read_only mode"},
+                 "Expected read_only ceiling to block #{mutating_tool} under #{inspect(escalation_override)}, got: #{inspect(result)}"
+        end
       end
     end
 
-    test "VULNERABILITY PROOF 4: Whitespace and case variations escape category categorization" do
+    test "REMEDIATION VERIFICATION 4: Whitespace/case variations normalize cleanly and unknown tools fail closed in read_only mode" do
       clean_ro_settings = %AppSettings{
         tool_approval_mode: "read_only",
         tool_category_overrides: %{}
       }
 
-      # Because category_for_tool checks exact match in list:
-      # "write_file " or "WRITE_FILE" maps to "other"
-      assert SafetyPolicy.category_for_tool("write_file ") == "other"
-      assert SafetyPolicy.category_for_tool("WRITE_FILE") == "other"
-      assert SafetyPolicy.category_for_tool("run_command\n") == "other"
+      # Trimmed and case-folded variations resolve to their canonical category
+      assert SafetyPolicy.category_for_tool("write_file ") == "file_mutations"
+      assert SafetyPolicy.category_for_tool("WRITE_FILE") == "file_mutations"
+      assert SafetyPolicy.category_for_tool("run_command\n") == "shell_execution"
+      assert SafetyPolicy.category_for_tool("MCP__srv__tool") == "mcp_tools"
+      assert SafetyPolicy.category_for_tool("REPLACE_FILE_CONTENT ") == "file_mutations"
 
-      # And because "other" is not in @mutating_categories:
-      refute SafetyPolicy.mutating_category?("other")
+      # All normalized mutating tools are strictly denied in read_only mode
+      assert SafetyPolicy.evaluate("write_file ", clean_ro_settings) ==
+               {:deny, "Mutating tool 'write_file' is prohibited in read_only mode"}
 
-      # Therefore in read_only mode, evaluate returns :allow for untrimmed/cased tools!
-      assert SafetyPolicy.evaluate("write_file ", clean_ro_settings) == :allow
-      assert SafetyPolicy.evaluate("WRITE_FILE", clean_ro_settings) == :allow
-      assert SafetyPolicy.evaluate("run_command\n", clean_ro_settings) == :allow
+      assert SafetyPolicy.evaluate("WRITE_FILE", clean_ro_settings) ==
+               {:deny, "Mutating tool 'WRITE_FILE' is prohibited in read_only mode"}
+
+      assert SafetyPolicy.evaluate("run_command\n", clean_ro_settings) ==
+               {:deny, "Mutating tool 'run_command' is prohibited in read_only mode"}
+
+      assert SafetyPolicy.evaluate("MCP__srv__tool", clean_ro_settings) ==
+               {:deny, "Mutating tool 'MCP__srv__tool' is prohibited in read_only mode"}
+
+      assert SafetyPolicy.evaluate("REPLACE_FILE_CONTENT ", clean_ro_settings) ==
+               {:deny, "Mutating tool 'REPLACE_FILE_CONTENT' is prohibited in read_only mode"}
+
+      # Unknown / unclassified tools also fail closed in read_only mode
+      for unknown_tool <- [
+            "arbitrary_unknown_tool",
+            "git_push",
+            "bash",
+            "terminal_exec",
+            " unknown_tool "
+          ] do
+        trimmed = String.trim(unknown_tool)
+
+        assert SafetyPolicy.evaluate(unknown_tool, clean_ro_settings) ==
+                 {:deny, "Unrecognized tool '#{trimmed}' is prohibited in read_only mode"}
+      end
     end
   end
 
