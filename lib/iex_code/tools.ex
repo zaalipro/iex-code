@@ -172,7 +172,7 @@ defmodule IexCode.Tools do
       %{
         name: "run_tests",
         description:
-          "Run mix test suite or specific test file with structured failure diagnostics.",
+          "Run mix test suite, incremental changed-file tests, or specific test files with structured failure diagnostics.",
         parameters: %{
           type: "object",
           properties: %{
@@ -185,7 +185,27 @@ defmodule IexCode.Tools do
               type: "integer",
               description: "Optional line number when running a single test file"
             },
+            changed: %{
+              type: "boolean",
+              description:
+                "Select and run only tests affected by modified, staged, or untracked workspace files"
+            },
+            changed_files: %{
+              type: "array",
+              items: %{type: "string"},
+              description:
+                "Optional explicit list of changed file paths used to select matching test files"
+            },
             failed: %{type: "boolean", description: "Run only previously failed tests"},
+            stale: %{
+              type: "boolean",
+              description: "Run only stale tests whose module dependencies changed (--stale)"
+            },
+            partition: %{
+              type: "string",
+              description:
+                "Optional MIX_TEST_PARTITION suffix (e.g. 'auto' for an isolated ephemeral SQLite partition or '_agent1')"
+            },
             seed: %{type: "integer", description: "Seed for test execution"},
             timeout_ms: %{type: "integer", description: "Timeout in milliseconds (default 60000)"}
           }
@@ -384,6 +404,17 @@ defmodule IexCode.Tools do
             max_turns: %{
               type: "integer",
               description: "Child turn budget 1-10 (default 5)"
+            },
+            mode: %{
+              type: "string",
+              enum: ["coder", "research", "read_only"],
+              description:
+                "Execution mode: 'coder' (default) or 'research' / 'read_only' (non-mutating inspection tools only)"
+            },
+            isolate_worktree: %{
+              type: "boolean",
+              description:
+                "When true, runs the child agent inside an isolated temporary Git worktree and returns changed_files and diff_stat without modifying the parent checkout"
             }
           },
           required: ["objective"]
@@ -457,8 +488,9 @@ defmodule IexCode.Tools do
   def run_tests(opts \\ []) do
     root_path = Keyword.get(opts, :project_root, File.cwd!())
     args = trusted_lock_args(opts)
+    normalized_opts = normalize_run_tests_opts(opts)
 
-    with_mutation_locks("run_tests", args, root_path, fn -> TestRunner.run(opts) end)
+    with_mutation_locks("run_tests", args, root_path, fn -> TestRunner.run(normalized_opts) end)
   end
 
   def git_status(repo_dir \\ "."), do: Git.status(repo_dir)
@@ -849,9 +881,14 @@ defmodule IexCode.Tools do
       [project_root: root_path, on_progress: on_progress]
       |> add_opt_from_map(args, "paths", :paths)
       |> add_opt_from_map(args, "line", :line)
+      |> add_opt_from_map(args, "changed", :changed)
+      |> add_opt_from_map(args, "changed_files", :changed_files)
       |> add_opt_from_map(args, "failed", :failed)
+      |> add_opt_from_map(args, "stale", :stale)
+      |> add_opt_from_map(args, "partition", :partition)
       |> add_opt_from_map(args, "seed", :seed)
       |> add_opt_from_map(args, "timeout_ms", :timeout_ms)
+      |> normalize_run_tests_opts()
 
     case TestRunner.run(opts) do
       {:ok, %{status: :passed} = res} ->
@@ -1236,14 +1273,19 @@ defmodule IexCode.Tools do
     with {:ok, run_id} <- autonomy_run_id(args),
          {:ok, objective} <- autonomy_objective(args),
          {:ok, context} <- sub_agent_context(args) do
-      max_turns = Map.get(args, "max_turns")
+      child_context =
+        context
+        |> maybe_put_sub_agent_opt(args, "max_turns", :max_turns)
+        |> maybe_put_sub_agent_opt(args, "mode", :mode)
+        |> maybe_put_sub_agent_opt(args, "isolate_worktree", :isolate_worktree)
+
       on_progress.(10, "Spawning child agent: #{String.slice(objective, 0, 80)}")
 
       IexCode.Engine.SubAgent.run(
         run_id,
         objective,
         root_path,
-        Map.put(context, :max_turns, max_turns),
+        child_context,
         on_progress
       )
     end
@@ -2010,9 +2052,35 @@ defmodule IexCode.Tools do
   end
 
   defp add_opt_from_map(opts, map, map_key, opt_key) do
-    case Map.get(map, map_key) do
+    val =
+      case Map.fetch(map, map_key) do
+        {:ok, v} -> v
+        :error -> Map.get(map, opt_key)
+      end
+
+    case val do
       nil -> opts
-      val -> Keyword.put(opts, opt_key, val)
+      v -> Keyword.put(opts, opt_key, v)
+    end
+  end
+
+  defp normalize_run_tests_opts(opts) when is_list(opts) do
+    case Keyword.fetch(opts, :partition) do
+      {:ok, "auto"} -> Keyword.put(opts, :partition, :auto)
+      _ -> opts
+    end
+  end
+
+  defp maybe_put_sub_agent_opt(context, args, string_key, atom_key) do
+    cond do
+      Map.has_key?(args, string_key) ->
+        Map.put(context, atom_key, Map.get(args, string_key))
+
+      Map.has_key?(args, atom_key) ->
+        Map.put(context, atom_key, Map.get(args, atom_key))
+
+      true ->
+        context
     end
   end
 end

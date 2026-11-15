@@ -219,6 +219,75 @@ defmodule IexCode.Tools.TestRunnerTest do
     end
   end
 
+  describe "Tools run_tests schema and pass-through" do
+    setup tags do
+      IexCode.DataCase.setup_sandbox(tags)
+      :ok
+    end
+
+    test "run_tests tool schema advertises changed, changed_files, stale, and partition" do
+      defs = IexCode.Tools.tool_definitions(:all) |> Map.new(&{&1.name, &1})
+      props = defs["run_tests"].parameters.properties
+
+      assert props.changed.type == "boolean"
+      assert props.changed_files.type == "array"
+      assert props.changed_files.items.type == "string"
+      assert props.stale.type == "boolean"
+      assert props.partition.type == "string"
+    end
+
+    @tag :tmp_dir
+    test "Tools.execute(\"run_tests\", ...) passes changed, changed_files, stale, and partition through",
+         %{tmp_dir: tmp_dir} do
+      setup_temp_project(tmp_dir)
+      File.mkdir_p!(Path.join(tmp_dir, "lib"))
+
+      File.write!(Path.join(tmp_dir, "lib/calc.ex"), """
+      defmodule Calc do
+        def double(x), do: x * 2
+      end
+      """)
+
+      File.write!(Path.join(tmp_dir, "test/calc_test.exs"), """
+      defmodule CalcTest do
+        use ExUnit.Case
+
+        test "doubles and checks partition" do
+          part = System.get_env("MIX_TEST_PARTITION")
+          if is_binary(part) and part != "" do
+            File.write!("temp_app_test\#{part}.db", "db")
+          end
+          assert Calc.double(4) == 8
+        end
+      end
+      """)
+
+      assert {:ok, msg} =
+               IexCode.Tools.execute(
+                 "run_tests",
+                 %{
+                   "changed" => true,
+                   "changed_files" => ["lib/calc.ex"],
+                   "partition" => "auto"
+                 },
+                 tmp_dir
+               )
+
+      assert msg =~ "Tests PASSED: 1 tests"
+      assert Path.wildcard(Path.join(tmp_dir, "*_test_tr_*.db*")) == []
+
+      assert {:ok, stale_msg} =
+               IexCode.Tools.execute(
+                 "run_tests",
+                 %{"stale" => true, "partition" => "_stale_part"},
+                 tmp_dir
+               )
+
+      assert stale_msg =~ "Tests PASSED:"
+      refute File.exists?(Path.join(tmp_dir, "temp_app_test_stale_part.db"))
+    end
+  end
+
   defp setup_temp_project(tmp_dir) do
     File.write!(Path.join(tmp_dir, "mix.exs"), """
     defmodule TempApp.MixProject do

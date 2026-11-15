@@ -32,8 +32,8 @@ Settings and the global command palette are available across the workspace.
 
 IexCode deliberately operates on the selected project **in place**:
 
-- Commands, tests, Git operations, file reads/writes, and the PTY run in the project root.
-- IexCode does **not** create a Git worktree, container, or application sandbox for a run.
+- Commands, tests, Git operations, file reads/writes, and the PTY run in the project root by default.
+- Ordinary runs do **not** implicitly create a container or Git worktree unless `spawn_agent` (`isolate_worktree: true`), `IexCode.Sandbox.Worktree`, or `run_command` (`sandbox_policy`) is explicitly invoked.
 - Processes inherit the permissions of the user who started IexCode.
 - Multi-file patches use preflight validation, atomic writes, and snapshots where that
   tool is used, but arbitrary terminal commands are not transactional.
@@ -545,12 +545,45 @@ by the DAG scheduler. The dedicated exact-level Research launcher creates new `d
   failing call and halting cleanly with `{:agent_doom_loop_detected, tool_name}` on the 5th.
   Agent/coordinator histories cap at `@history_limit 20`, and detached LiveViews validate
   session UUIDs and existence before `PubSub.subscribe/2`.
-- **6-task `eval/tasks` coding benchmark suite**: `mix iex_code.eval` (`IexCode.Eval.Runner` and
-  `Scoring`) runs 6 reproducible coding benchmarks (`example-markdown-typo`,
+- **Coding-aware context compaction & hierarchical `AGENTS.md` / `CLAUDE.md` rules**:
+  `IexCode.LLM.ContextCompactor` preserves atomic tool-call/reply exchange groups across OpenAI
+  (`tool_calls`/`tool`), Anthropic (`tool_use`/`tool_result`), and Gemini
+  (`functionCall`/`functionResponse`), synthesizes structured working-memory summaries (touched
+  files, patches, test outcomes, errors, plan steps), prunes bulky tool outputs while retaining
+  diff headers and Elixir `lib/`/`test/` stack frames, and supports opt-in model-aware context
+  windows (`:auto`). `IexCode.LLM.SystemPromptBuilder` discovers and SHA-256-deduplicates root
+  and `active_paths`-scoped nested `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, and
+  `.github/copilot-instructions.md` rules under strict `WorkspacePath` containment (32 KB per
+  file, 48 KB aggregate).
+- **Hardened OS sandboxes, ephemeral Git worktrees, and atomic `TimeTravel`**:
+  `IexCode.Sandbox.Backend` and `Policy` confine macOS Seatbelt subshells without
+  `(with no-sandbox)`, reject SBPL injection characters, and reap timed-out process groups with
+  bounded approval caches (`1,024` max) in `IexCode.Sandbox.Manager`. `IexCode.Sandbox.Worktree`
+  manages detached ephemeral Git worktrees with lock-guarded atomic `apply_back/3` and orphan
+  pruning, while `IexCode.TimeTravel` enforces `WorkspacePath`/symlink containment, drift
+  detection (`check_drift/1`, `allow_drift: false`), and atomic rollback writes with backup
+  recovery.
+- **`SubAgent` summaries, read-only modes, and isolated worktrees**: `IexCode.Engine.SubAgent`
+  (`spawn_agent`) returns bounded `"summary"` (20,000 chars) and `"message_id"` fields,
+  terminalizes child `Run` rows under delegated worker lease authority, enforces `"coder"`,
+  `"research"`, and `"read_only"` modes (intersecting `SubAgent.read_only_tools/0` with parent
+  `allowed_tools` so children cannot escalate permissions), and supports `isolate_worktree: true`
+  to execute children in temporary detached Git worktrees returning `"changed_files"` and
+  `"diff_stat"`.
+- **Smart incremental `TestSelector` & hardened `TestRunner` / `AutoFix`**:
+  `IexCode.Tools.TestSelector` ranks affected tests from modified, staged, and untracked files
+  across direct paths, convention mirrors, and AST/alias module references; `TestRunner`
+  (`run_tests`) reaps timed-out ExUnit process groups via `ProcessGroupRunner` and supports
+  `changed`, `changed_files`, `stale`, and `partition` (`"auto"` / `:auto` or explicit
+  `MIX_TEST_PARTITION` with automatic `*_test<partition>.db*` cleanup); and `AutoFix` rejects
+  patch targets outside the workspace or inside `deps/` / `_build/`.
+- **8-task `eval/tasks` coding benchmark suite**: `mix iex_code.eval` (`IexCode.Eval.Runner` and
+  `Scoring`) runs 8 reproducible coding benchmarks (`example-markdown-typo`,
   `elixir-pagination-boundary`, `elixir-multi-file-contract`, `elixir-repeated-block-patch`,
-  `elixir-genserver-bounded-state`, `elixir-compile-repair`) with `--only`, `--category`,
-  `--tag`, `--json-out`, process-group grading timeouts, automatic workdir cleanup, `pass@k`
-  category summaries, and turn/tool/token/cost telemetry.
+  `elixir-genserver-bounded-state`, `elixir-compile-repair`, `elixir-context-bugfix`,
+  `elixir-otp-timeout-leak`) with `--only`, `--category`, `--tag`, `--json-out`, process-group
+  grading timeouts, automatic workdir cleanup, `pass@k` category summaries, and
+  turn/tool/token/cost telemetry.
 
 ## Verification
 
