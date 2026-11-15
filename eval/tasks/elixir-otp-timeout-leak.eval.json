@@ -1,0 +1,11 @@
+{
+  "id": "elixir-otp-timeout-leak",
+  "prompt": "Fix the timeout, worker process leak, and crash-handling bugs in JobCoordinator (lib/job_coordinator.ex) so timed-out jobs kill their worker process, demonitor/cancel timers, and clean up active job state; crashing workers reply {:error, {:worker_exit, reason}} via :DOWN without crashing the coordinator; and concurrent jobs run non-blockingly.",
+  "repo": "fixtures/elixir-otp-timeout-leak",
+  "test_cmd": ["elixir", "grade.exs"],
+  "timeout_ms": 30000,
+  "max_turns": 8,
+  "category": "concurrency",
+  "difficulty": "hard",
+  "tags": ["elixir", "otp", "genserver", "timeout", "concurrency"]
+}

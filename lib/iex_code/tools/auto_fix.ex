@@ -9,6 +9,9 @@ defmodule IexCode.Tools.AutoFix do
   alias IexCode.Tools.{MultiPatch, ASTSearch}
   alias IexCode.Tools.TestRunner.{Result, Failure, CompilationError, StackFrame}
   alias IexCode.LLM
+  alias IexCode.WorkspacePath
+
+  @excluded_patch_dirs MapSet.new(~w(deps _build .git node_modules))
 
   @type diagnostic ::
           Result.t()
@@ -237,17 +240,16 @@ defmodule IexCode.Tools.AutoFix do
          %Failure{file: file, line: line, stacktrace: stack},
          project_root
        ) do
-    # Find first stack frame in lib/
+    # Find first contained stack frame inside lib/ (excluding deps/ and _build/)
     lib_frame =
       Enum.find_value(stack || [], fn frame ->
         case extract_frame_file_and_line(frame) do
           {f, l} when is_binary(f) and f != "" ->
-            norm = normalize_rel_path(f, project_root)
-
-            if String.starts_with?(norm, "lib/") or String.contains?(f, "/lib/") do
-              %{file: norm, line: l || 1, source: :stacktrace}
+            with {:ok, rel} <- contain_rel_path(f, project_root),
+                 true <- String.starts_with?(rel, "lib/") or String.contains?(rel, "/lib/") do
+              %{file: rel, line: l || 1, source: :stacktrace}
             else
-              nil
+              _ -> nil
             end
 
           _ ->
@@ -260,37 +262,32 @@ defmodule IexCode.Tools.AutoFix do
         resolved
 
       _ ->
-        %{file: normalize_rel_path(file, project_root), line: line || 1, source: :test_file}
+        resolve_contained_target(file, line, :test_file, project_root)
     end
   end
 
   defp resolve_target_file_and_line(%StackFrame{file: file, line: line}, project_root) do
-    %{file: normalize_rel_path(file, project_root), line: line || 1, source: :stacktrace}
+    resolve_contained_target(file, line, :stacktrace, project_root)
   end
 
   defp resolve_target_file_and_line(%CompilationError{file: file, line: line}, project_root) do
-    %{file: normalize_rel_path(file, project_root), line: line || 1, source: :compilation_error}
+    resolve_contained_target(file, line, :compilation_error, project_root)
   end
 
-  defp resolve_target_file_and_line(%{file: file, line: line}, project_root)
-       when is_binary(file) do
-    %{file: normalize_rel_path(file, project_root), line: line || 1, source: :map}
+  defp resolve_target_file_and_line(%{file: file} = map, project_root) when is_binary(file) do
+    resolve_contained_target(file, Map.get(map, :line), :map, project_root)
   end
 
-  defp resolve_target_file_and_line(%{"file" => file, "line" => line}, project_root)
+  defp resolve_target_file_and_line(%{"file" => file} = map, project_root)
        when is_binary(file) do
-    %{file: normalize_rel_path(file, project_root), line: line || 1, source: :map}
+    resolve_contained_target(file, Map.get(map, "line"), :map, project_root)
   end
 
   defp resolve_target_file_and_line(%{message: msg}, project_root) when is_binary(msg) do
     # Try parsing file:line from string like "lib/calc.ex:12: error"
     case Regex.run(~r/([a-zA-Z0-9_\/.-]+\.(?:ex|exs)):(\d+)/, msg) do
       [_, file, line_str] ->
-        %{
-          file: normalize_rel_path(file, project_root),
-          line: String.to_integer(line_str),
-          source: :regex
-        }
+        resolve_contained_target(file, String.to_integer(line_str), :regex, project_root)
 
       _ ->
         %{file: "lib", line: 1, source: :unknown}
@@ -300,11 +297,7 @@ defmodule IexCode.Tools.AutoFix do
   defp resolve_target_file_and_line(str, project_root) when is_binary(str) do
     case Regex.run(~r/([a-zA-Z0-9_\/.-]+\.(?:ex|exs)):(\d+)/, str) do
       [_, file, line_str] ->
-        %{
-          file: normalize_rel_path(file, project_root),
-          line: String.to_integer(line_str),
-          source: :regex
-        }
+        resolve_contained_target(file, String.to_integer(line_str), :regex, project_root)
 
       _ ->
         %{file: "lib", line: 1, source: :unknown}
@@ -313,6 +306,16 @@ defmodule IexCode.Tools.AutoFix do
 
   defp resolve_target_file_and_line(_, _project_root) do
     %{file: "", line: 1, source: :unknown}
+  end
+
+  defp resolve_contained_target(file, line, source, project_root) do
+    case contain_rel_path(file, project_root) do
+      {:ok, rel} ->
+        %{file: rel, line: line || 1, source: source}
+
+      {:error, _reason} ->
+        %{file: "", line: line || 1, source: :outside_workspace}
+    end
   end
 
   defp extract_frame_file_and_line(%StackFrame{file: file, line: line}), do: {file, line}
@@ -332,85 +335,92 @@ defmodule IexCode.Tools.AutoFix do
 
   defp extract_frame_file_and_line(_), do: nil
 
-  defp normalize_rel_path(nil, _), do: ""
+  defp contain_rel_path(nil, _project_root), do: {:error, :empty_path}
+  defp contain_rel_path("", _project_root), do: {:error, :empty_path}
 
-  defp normalize_rel_path(path, project_root) when is_binary(path) and is_binary(project_root) do
-    if Path.type(path) == :relative and not String.starts_with?(path, "/") do
-      Path.relative_to(Path.expand(path, "/fake_root"), "/fake_root")
-    else
-      exp_path = realpath(path)
-      exp_root = realpath(project_root)
+  defp contain_rel_path(path, project_root)
+       when is_binary(path) and is_binary(project_root) do
+    trimmed = String.trim(path)
 
-      if String.starts_with?(exp_path, exp_root) do
-        Path.relative_to(exp_path, exp_root)
-      else
-        exp_p = Path.expand(path)
-        exp_r = Path.expand(project_root)
-        rel = Path.relative_to(exp_p, exp_r)
+    cond do
+      trimmed == "" ->
+        {:error, :empty_path}
 
-        if rel != exp_p do
-          rel
+      File.dir?(project_root) ->
+        with {:ok, canonical_root} <- WorkspacePath.resolve(project_root, "."),
+             {:ok, canonical_file} <- WorkspacePath.resolve(canonical_root, trimmed),
+             rel <- Path.relative_to(canonical_file, canonical_root),
+             false <- rel in ["", "."] or excluded_patch_path?(rel) do
+          {:ok, rel}
         else
-          path
+          true -> {:error, :excluded_path}
+          {:error, reason} -> {:error, reason}
         end
-      end
+
+      true ->
+        contain_lexical_rel_path(trimmed, project_root)
     end
   end
 
-  defp normalize_rel_path(other, _), do: to_string(other || "")
+  defp contain_rel_path(_other, _project_root), do: {:error, :invalid_path}
 
-  defp realpath(path) when is_binary(path) do
-    expanded = Path.expand(path)
-    resolve_symlink_parts(Path.split(expanded), [])
-  end
+  defp contain_lexical_rel_path(path, project_root) do
+    cond do
+      String.contains?(path, <<0>>) ->
+        {:error, :invalid_path}
 
-  defp realpath(other), do: other
+      ".." in Path.split(path) ->
+        {:error, :outside_workspace}
 
-  defp resolve_symlink_parts([], acc), do: Path.join(Enum.reverse(acc))
+      Path.type(path) == :relative ->
+        rel = Path.relative_to(Path.expand(path, "/fake_root"), "/fake_root")
 
-  defp resolve_symlink_parts([head | tail], []) do
-    resolve_symlink_parts(tail, [head])
-  end
+        if rel in ["", "."] or excluded_patch_path?(rel),
+          do: {:error, :excluded_path},
+          else: {:ok, rel}
 
-  defp resolve_symlink_parts([head | tail], acc) do
-    current = Path.join(Enum.reverse([head | acc]))
+      true ->
+        exp_path = Path.expand(path)
+        exp_root = Path.expand(project_root)
 
-    case :file.read_link(String.to_charlist(current)) do
-      {:ok, link_target} ->
-        target_str = List.to_string(link_target)
+        if String.starts_with?(exp_path, exp_root <> "/") do
+          rel = Path.relative_to(exp_path, exp_root)
 
-        resolved =
-          if Path.type(target_str) == :absolute do
-            target_str
-          else
-            Path.expand(target_str, Path.join(Enum.reverse(acc)))
-          end
-
-        new_acc = Enum.reverse(Path.split(resolved))
-        resolve_symlink_parts(tail, new_acc)
-
-      {:error, _} ->
-        resolve_symlink_parts(tail, [head | acc])
+          if rel in ["", "."] or excluded_patch_path?(rel),
+            do: {:error, :excluded_path},
+            else: {:ok, rel}
+        else
+          {:error, :outside_workspace}
+        end
     end
   end
 
-  defp resolve_file_path(project_root, path) when is_binary(path) and is_binary(project_root) do
-    if Path.type(path) == :absolute do
-      if File.exists?(path) do
-        path
-      else
-        rel = normalize_rel_path(path, project_root)
-        candidate = Path.expand(Path.join(project_root, rel))
-        if File.exists?(candidate), do: candidate, else: path
-      end
+  defp excluded_patch_path?(rel_path) when is_binary(rel_path) do
+    rel_path
+    |> Path.split()
+    |> Enum.any?(&MapSet.member?(@excluded_patch_dirs, &1))
+  end
+
+  defp resolve_contained_file(project_root, path)
+       when is_binary(project_root) and is_binary(path) do
+    trimmed = String.trim(path)
+
+    if trimmed == "" do
+      {:error, :empty_path}
     else
-      Path.expand(Path.join(project_root, path))
+      with {:ok, canonical_root} <- WorkspacePath.resolve(project_root, "."),
+           {:ok, canonical_file} <- WorkspacePath.resolve(canonical_root, trimmed),
+           rel <- Path.relative_to(canonical_file, canonical_root),
+           false <- rel in ["", "."] or excluded_patch_path?(rel) do
+        {:ok, canonical_file, rel}
+      else
+        true -> {:error, :excluded_path}
+        {:error, reason} -> {:error, reason}
+      end
     end
   end
 
-  defp resolve_file_path(project_root, other) do
-    Path.expand(Path.join(project_root, to_string(other)))
-  end
+  defp resolve_contained_file(_project_root, _other), do: {:error, :invalid_path}
 
   defp classify_error(%CompilationError{error_type: "SyntaxError"}) do
     :syntax_error
@@ -470,9 +480,8 @@ defmodule IexCode.Tools.AutoFix do
   end
 
   defp read_surrounding_context(project_root, rel_path, target_line) do
-    full_path = resolve_file_path(project_root, rel_path)
-
-    if File.exists?(full_path) and not File.dir?(full_path) do
+    with {:ok, full_path, _rel} <- resolve_contained_file(project_root, rel_path),
+         true <- File.regular?(full_path) do
       lines = File.read!(full_path) |> String.split("\n")
       total = length(lines)
       start_line = max(1, (target_line || 1) - 15)
@@ -487,7 +496,7 @@ defmodule IexCode.Tools.AutoFix do
 
       %{start_line: start_line, end_line: end_line, content: sliced}
     else
-      %{start_line: 1, end_line: 1, content: ""}
+      _ -> %{start_line: 1, end_line: 1, content: ""}
     end
   rescue
     _ -> %{start_line: 1, end_line: 1, content: ""}
@@ -498,41 +507,41 @@ defmodule IexCode.Tools.AutoFix do
   # ============================================================================
 
   defp formulate_heuristic_patch(project_root, item, opts) do
-    full_path = resolve_file_path(project_root, item.file)
-
-    if not File.exists?(full_path) or File.dir?(full_path) do
-      {:error, :file_not_found}
-    else
+    with {:ok, full_path, safe_rel} <- resolve_contained_file(project_root, item.file),
+         true <- File.regular?(full_path) do
+      safe_item = %{item | file: safe_rel}
       content = File.read!(full_path)
       lines = String.split(content, "\n")
-      target_line_idx = if is_integer(item.line), do: max(0, item.line - 1), else: 0
+      target_line_idx = if is_integer(safe_item.line), do: max(0, safe_item.line - 1), else: 0
       current_line = Enum.at(lines, target_line_idx) || ""
 
-      case item.error_type do
+      case safe_item.error_type do
         :unused_variable ->
-          fix_unused_variable(item, current_line)
+          fix_unused_variable(safe_item, current_line)
 
         :missing_alias ->
-          fix_missing_alias(project_root, item, content)
+          fix_missing_alias(project_root, safe_item, content)
 
         :assertion_mismatch ->
           # Opt-in: rewriting assertions to match actual values can mask real
           # bugs in the code under test.
           if opts[:rewrite_assertions] == true do
-            fix_assertion_mismatch(item, current_line)
+            fix_assertion_mismatch(safe_item, current_line)
           else
             {:error, :assertion_rewrite_disabled}
           end
 
         :syntax_error ->
-          fix_syntax_error(item, current_line, content)
+          fix_syntax_error(safe_item, current_line, content)
 
         :undefined_function ->
-          fix_undefined_function(item, current_line, content)
+          fix_undefined_function(safe_item, current_line, content)
 
         _ ->
           {:error, :no_heuristic}
       end
+    else
+      _ -> {:error, :file_not_found}
     end
   end
 
@@ -776,25 +785,16 @@ defmodule IexCode.Tools.AutoFix do
 
   defp valid_patch_target?(project_root, %{path: path, target: target})
        when is_binary(path) and is_binary(target) and target != "" do
-    full_path = resolve_file_path(project_root, path)
-    project_root_abs = Path.expand(project_root)
-
-    if within_project?(full_path, project_root_abs) and File.exists?(full_path) and
-         not File.dir?(full_path) do
-      content = File.read!(full_path)
+    with {:ok, canonical_file, _rel} <- resolve_contained_file(project_root, path),
+         true <- File.regular?(canonical_file),
+         {:ok, content} <- File.read(canonical_file) do
       String.contains?(content, target)
     else
-      false
+      _ -> false
     end
   rescue
     _ -> false
   end
 
   defp valid_patch_target?(_, _), do: false
-
-  defp within_project?(full_path, project_root_abs) when is_binary(project_root_abs) do
-    String.starts_with?(full_path, project_root_abs <> "/")
-  end
-
-  defp within_project?(_, _), do: false
 end

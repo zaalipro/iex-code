@@ -223,6 +223,144 @@ defmodule IexCode.Tools.AutoFixTest do
     end
   end
 
+  describe "workspace containment hardening" do
+    @tag :tmp_dir
+    test "ignores stacktrace frames outside project_root or inside deps/ and _build/", %{
+      tmp_dir: tmp_dir
+    } do
+      outside_dir =
+        Path.join(System.tmp_dir!(), "autofix-outside-#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(Path.join(outside_dir, "lib"))
+      File.mkdir_p!(Path.join(tmp_dir, "deps/plug/lib"))
+      File.mkdir_p!(Path.join(tmp_dir, "_build/test/lib/my_app"))
+      File.mkdir_p!(Path.join(tmp_dir, "lib"))
+      File.mkdir_p!(Path.join(tmp_dir, "test"))
+      on_exit(fn -> File.rm_rf(outside_dir) end)
+
+      outside_file = Path.join(outside_dir, "lib/external.ex")
+      File.write!(outside_file, "defmodule External do\n  def run(x), do: :ok\nend\n")
+
+      dep_file = Path.join(tmp_dir, "deps/plug/lib/plug.ex")
+      File.write!(dep_file, "defmodule Plug do\n  def call(conn, opts), do: conn\nend\n")
+
+      build_file = Path.join(tmp_dir, "_build/test/lib/my_app/compiled.ex")
+      File.write!(build_file, "defmodule Compiled do\n  def f(x), do: :ok\nend\n")
+
+      real_lib = Path.join(tmp_dir, "lib/real_app.ex")
+      File.write!(real_lib, "defmodule RealApp do\n  def run(x), do: :ok\nend\n")
+
+      failure = %Failure{
+        index: 1,
+        test_name: "test containment",
+        module: "ContainmentTest",
+        file: "test/containment_test.exs",
+        line: 5,
+        message: "Assertion failed",
+        stacktrace: [
+          %StackFrame{file: outside_file, line: 2, app: nil, context: nil, raw: ""},
+          %StackFrame{
+            file: "deps/plug/lib/plug.ex",
+            line: 2,
+            app: "plug",
+            context: nil,
+            raw: ""
+          },
+          %StackFrame{
+            file: "_build/test/lib/my_app/compiled.ex",
+            line: 2,
+            app: nil,
+            context: nil,
+            raw: ""
+          },
+          %StackFrame{
+            file: "../escape/lib/evil.ex",
+            line: 2,
+            app: nil,
+            context: nil,
+            raw: ""
+          },
+          %StackFrame{
+            file: "lib/real_app.ex",
+            line: 2,
+            app: "my_app",
+            context: nil,
+            raw: ""
+          }
+        ]
+      }
+
+      assert {:ok, [analyzed]} = AutoFix.analyze_failures(tmp_dir, failure)
+      assert analyzed.file == "lib/real_app.ex"
+      assert analyzed.line == 2
+      assert analyzed.source == :stacktrace
+
+      # When only outside/deps/_build frames exist, fall back to contained test file
+      only_disallowed = %{
+        failure
+        | stacktrace: Enum.take(failure.stacktrace, 4)
+      }
+
+      assert {:ok, [fallback_analyzed]} = AutoFix.analyze_failures(tmp_dir, only_disallowed)
+      assert fallback_analyzed.file == "test/containment_test.exs"
+      assert fallback_analyzed.source == :test_file
+    end
+
+    @tag :tmp_dir
+    test "never proposes or applies patches to outside-root, symlink-escape, deps/, or _build/ targets",
+         %{tmp_dir: tmp_dir} do
+      outside_dir =
+        Path.join(System.tmp_dir!(), "autofix-escape-#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(Path.join(outside_dir, "lib"))
+      File.mkdir_p!(Path.join(tmp_dir, "lib"))
+      File.mkdir_p!(Path.join(tmp_dir, "deps/foo/lib"))
+      File.mkdir_p!(Path.join(tmp_dir, "_build/test/lib/foo"))
+      on_exit(fn -> File.rm_rf(outside_dir) end)
+
+      outside_target = Path.join(outside_dir, "lib/secret.ex")
+      outside_orig = "defmodule Secret do\n  def run(unused_arg), do: :ok\nend\n"
+      File.write!(outside_target, outside_orig)
+
+      symlink_path = Path.join(tmp_dir, "lib/symlink_escape.ex")
+      File.ln_s!(outside_target, symlink_path)
+
+      dep_target = Path.join(tmp_dir, "deps/foo/lib/dep.ex")
+      dep_orig = "defmodule Dep do\n  def run(unused_arg), do: :ok\nend\n"
+      File.write!(dep_target, dep_orig)
+
+      build_target = Path.join(tmp_dir, "_build/test/lib/foo/build.ex")
+      build_orig = "defmodule BuildMod do\n  def run(unused_arg), do: :ok\nend\n"
+      File.write!(build_target, build_orig)
+
+      for bad_file <- [
+            outside_target,
+            "../#{Path.basename(outside_dir)}/lib/secret.ex",
+            "lib/symlink_escape.ex",
+            "deps/foo/lib/dep.ex",
+            "_build/test/lib/foo/build.ex"
+          ] do
+        comp_err = %CompilationError{
+          error_type: "CompileError",
+          file: bad_file,
+          line: 2,
+          message: "variable \"unused_arg\" is unused"
+        }
+
+        assert {:ok, [analyzed]} = AutoFix.analyze_failures(tmp_dir, comp_err)
+        assert analyzed.file == ""
+        assert analyzed.source == :outside_workspace
+        assert analyzed.context.content == ""
+        assert {:ok, []} = AutoFix.generate_patch_proposals(tmp_dir, comp_err)
+        assert {:error, :no_applicable_patches} = AutoFix.apply_auto_fix(tmp_dir, comp_err)
+      end
+
+      assert File.read!(outside_target) == outside_orig
+      assert File.read!(dep_target) == dep_orig
+      assert File.read!(build_target) == build_orig
+    end
+  end
+
   describe "format_diagnostics/1" do
     test "formats diagnostic markdown report" do
       failure = %Failure{
