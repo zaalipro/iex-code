@@ -9,7 +9,7 @@ defmodule IexCode.Engine.AgentLoop do
   """
 
   alias IexCode.LLM.ContextCompactor
-  alias IexCode.Engine.{AttemptControl, FleetControlToken}
+  alias IexCode.Engine.{AttemptControl, FleetControlToken, LoopGuard}
   alias IexCode.Engine.ExecutionStream
   alias IexCode.Runs
   alias IexCode.Execution.{BoostEngine, Limits, ModelRoute}
@@ -201,6 +201,7 @@ defmodule IexCode.Engine.AgentLoop do
         max_tokens: bounded_max_tokens(value(policy, "max_tokens")),
         max_turns: max_turns,
         tool_calls: 0,
+        loop_guard: LoopGuard.new(),
         usage: %{input_tokens: 0, output_tokens: 0, cost_cents: 0},
         session_overrides: %{},
         rollout_path: rollout_path(opts, session),
@@ -234,6 +235,7 @@ defmodule IexCode.Engine.AgentLoop do
       state
       | usage: usage,
         tool_calls: Map.get(bundle, :tool_call_count, 0),
+        loop_guard: Map.get(bundle, :loop_guard, LoopGuard.new()),
         session_overrides: Map.get(bundle, :session_overrides, %{})
     }
   end
@@ -663,8 +665,14 @@ defmodule IexCode.Engine.AgentLoop do
              authority_opts(state.authority)
            ),
          {:ok, output} <- execute_or_replay_command(state, command, call.name, arguments) do
-      message = %{role: "tool", tool_call_id: call.id, content: output}
-      {:ok, message, %{state | tool_calls: state.tool_calls + 1}}
+      case LoopGuard.record(state.loop_guard, call.name, arguments, output) do
+        {:ok, guarded_output, next_guard} ->
+          message = %{role: "tool", tool_call_id: call.id, content: guarded_output}
+          {:ok, message, %{state | tool_calls: state.tool_calls + 1, loop_guard: next_guard}}
+
+        {:halt, reason, _next_guard} ->
+          {:error, reason}
+      end
     else
       {:pause, payload} -> {:pause, tag_pause_call(payload, call.id), state}
       {:error, _reason} = error -> error
@@ -743,6 +751,7 @@ defmodule IexCode.Engine.AgentLoop do
       turn: turn,
       usage: state.usage,
       tool_call_count: state.tool_calls,
+      loop_guard: Map.get(state, :loop_guard, LoopGuard.new()),
       session_overrides: Map.get(state, :session_overrides, %{})
     }
 
@@ -1215,7 +1224,7 @@ defmodule IexCode.Engine.AgentLoop do
     temperature = if is_number(temperature), do: temperature * 1.0, else: session.temperature
 
     cond do
-      provider not in ["openai", "anthropic", "ollama", "lm_studio", "llama_cpp"] ->
+      provider not in ["openai", "anthropic", "gemini", "ollama", "lm_studio", "llama_cpp"] ->
         {:error, :invalid_execution_model_provider}
 
       not Limits.valid_model_name?(model) ->

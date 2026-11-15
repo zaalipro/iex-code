@@ -5,7 +5,15 @@ defmodule IexCode.Engine.Agents.CoderAgent do
   """
   use GenServer, restart: :transient
   require Logger
-  alias IexCode.Engine.{AgentCancellation, AgentRegistry, ExecutionStream, OperationManager}
+
+  alias IexCode.Engine.{
+    AgentCancellation,
+    AgentRegistry,
+    ExecutionStream,
+    LoopGuard,
+    OperationManager
+  }
+
   alias IexCode.Execution.ModelRoute
   alias IexCode.{Sessions, Settings, Tools, LLM}
   alias IexCode.Tools.AutoFix
@@ -14,6 +22,7 @@ defmodule IexCode.Engine.Agents.CoderAgent do
   @inner_timeout 60_000
   @legacy_max_tool_iterations 5
   @max_configured_tool_iterations 20
+  @history_limit 20
 
   defmodule State do
     defstruct [
@@ -211,7 +220,7 @@ defmodule IexCode.Engine.Agents.CoderAgent do
           state
           | status: :idle,
             last_result: code_result,
-            history: [code_result | state.history]
+            history: Enum.take([code_result | state.history], @history_limit)
         }
 
         {:reply, {:ok, code_result}, new_state}
@@ -285,7 +294,8 @@ defmodule IexCode.Engine.Agents.CoderAgent do
         runtime_owner,
         progress,
         0,
-        stream
+        stream,
+        LoopGuard.new()
       )
     end)
   end
@@ -325,7 +335,8 @@ defmodule IexCode.Engine.Agents.CoderAgent do
          usage_context,
          progress,
          iteration,
-         stream
+         stream,
+         loop_guard
        ) do
     if iteration >= max_tool_iterations do
       {:error, {:tool_iteration_limit_reached, max_tool_iterations}}
@@ -347,24 +358,23 @@ defmodule IexCode.Engine.Agents.CoderAgent do
 
         case response do
           {:ok, %{text: text, tool_calls: tool_calls} = response} when tool_calls != [] ->
-            with :ok <- persist_run_usage(run_id, response, usage_context) do
-              progress.(60, "Executing #{length(tool_calls)} tool call(s)...")
+            with :ok <- persist_run_usage(run_id, response, usage_context),
+                 {:ok, tool_messages, next_guard} <-
+                   (
+                     progress.(60, "Executing #{length(tool_calls)} tool call(s)...")
 
-              tool_messages =
-                Enum.map(
-                  tool_calls,
-                  &execute_tool_call(
-                    &1,
-                    session_id,
-                    project_root,
-                    parent_op_id,
-                    run_id,
-                    project_id,
-                    workspace_lock_delegation,
-                    allowed_tools
-                  )
-                )
-
+                     execute_tool_calls(
+                       tool_calls,
+                       session_id,
+                       project_root,
+                       parent_op_id,
+                       run_id,
+                       project_id,
+                       workspace_lock_delegation,
+                       allowed_tools,
+                       loop_guard
+                     )
+                   ) do
               run_tool_loop(
                 session_id,
                 messages ++
@@ -385,7 +395,8 @@ defmodule IexCode.Engine.Agents.CoderAgent do
                 usage_context,
                 progress,
                 iteration + 1,
-                stream
+                stream,
+                next_guard
               )
             end
 
@@ -436,6 +447,38 @@ defmodule IexCode.Engine.Agents.CoderAgent do
 
   defp max_tool_iterations(_policy), do: {:error, :invalid_execution_policy}
 
+  defp execute_tool_calls(
+         tool_calls,
+         session_id,
+         project_root,
+         parent_op_id,
+         run_id,
+         project_id,
+         workspace_lock_delegation,
+         allowed_tools,
+         loop_guard
+       ) do
+    Enum.reduce_while(tool_calls, {:ok, [], loop_guard}, fn tc, {:ok, acc, current_guard} ->
+      case execute_tool_call(
+             tc,
+             session_id,
+             project_root,
+             parent_op_id,
+             run_id,
+             project_id,
+             workspace_lock_delegation,
+             allowed_tools,
+             current_guard
+           ) do
+        {:ok, message, next_guard} ->
+          {:cont, {:ok, acc ++ [message], next_guard}}
+
+        {:error, _reason} = error ->
+          {:halt, error}
+      end
+    end)
+  end
+
   defp execute_tool_call(
          tc,
          session_id,
@@ -444,7 +487,8 @@ defmodule IexCode.Engine.Agents.CoderAgent do
          run_id,
          project_id,
          workspace_lock_delegation,
-         allowed_tools
+         allowed_tools,
+         loop_guard
        ) do
     args =
       if is_map(tc.args) do
@@ -487,7 +531,17 @@ defmodule IexCode.Engine.Agents.CoderAgent do
         {:error, reason} -> "ERROR: #{format_reason(reason)}"
       end
 
-    %{role: "tool", content: content, tool_call_id: tc.id}
+    if allowed_tools == [] do
+      {:ok, %{role: "tool", content: content, tool_call_id: tc.id}, loop_guard}
+    else
+      case LoopGuard.record_formatted(loop_guard, tc.name, tc.args, res, content) do
+        {:ok, guarded_content, next_guard} ->
+          {:ok, %{role: "tool", content: guarded_content, tool_call_id: tc.id}, next_guard}
+
+        {:halt, reason, _next_guard} ->
+          {:error, reason}
+      end
+    end
   end
 
   defp trusted_project_id(_opts, state) do

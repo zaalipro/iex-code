@@ -16,14 +16,14 @@ defmodule IexCodeWeb.Detached.DagLive do
   alias IexCodeWeb.Components.SwarmCanvas
 
   @impl true
-  def mount(%{"id" => session_id}, _session, socket) do
+  def mount(%{"id" => raw_session_id}, _session, socket) do
+    {session_id, session} = fetch_session!(raw_session_id)
+
     if connected?(socket) do
       Phoenix.PubSub.subscribe(IexCode.PubSub, "runs:session:#{session_id}")
       Phoenix.PubSub.subscribe(IexCode.PubSub, "session:#{session_id}:research_results")
       Phoenix.PubSub.subscribe(IexCode.PubSub, "session:#{session_id}")
     end
-
-    session = Sessions.get_session!(session_id)
 
     run =
       case Runs.list_runs(session_id: session_id) do
@@ -404,5 +404,15 @@ defmodule IexCodeWeb.Detached.DagLive do
       </div>
     </Layouts.app>
     """
+  end
+
+  defp fetch_session!(raw_session_id) do
+    case Ecto.UUID.cast(raw_session_id) do
+      {:ok, session_id} ->
+        {session_id, Sessions.get_session!(session_id)}
+
+      :error ->
+        raise Ecto.NoResultsError, queryable: IexCode.Sessions.Session
+    end
   end
 end
