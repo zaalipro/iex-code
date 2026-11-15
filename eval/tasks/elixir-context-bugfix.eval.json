@@ -1,0 +1,11 @@
+{
+  "id": "elixir-context-bugfix",
+  "prompt": "Fix the context-layer bugs in lib/orders.ex (using Ledger in lib/ledger.ex): check duplicate order_id (:duplicate_order), reserve funds via Ledger.reserve/2 against available balance across multiple pending orders, reject repeat cancel_order/2 calls with {:error, :already_cancelled} and release via Ledger.release/2, and sort list_orders/3 ascending by order id.",
+  "repo": "fixtures/elixir-context-bugfix",
+  "test_cmd": ["elixir", "grade.exs"],
+  "timeout_ms": 30000,
+  "max_turns": 8,
+  "category": "bugfix",
+  "difficulty": "medium",
+  "tags": ["elixir", "context", "bugfix", "multi_file"]
+}
