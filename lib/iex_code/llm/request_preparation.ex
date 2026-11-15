@@ -37,7 +37,13 @@ defmodule IexCode.LLM.RequestPreparation do
 
     body = builder.(messages)
     limit = min(configured, get_in(body, ["options", "num_ctx"]) || configured)
-    reserve = body["max_completion_tokens"] || body["max_tokens"] || 4_096
+
+    reserve =
+      body["max_completion_tokens"] ||
+        body["max_tokens"] ||
+        get_in(body, ["generationConfig", "maxOutputTokens"]) ||
+        4_096
+
     byte_limit = min(2_000_000, max(limit - reserve - 128, 0) * 3)
     measure = fn body -> measure(body, limit, reserve, byte_limit) end
 
@@ -61,9 +67,10 @@ defmodule IexCode.LLM.RequestPreparation do
     end
   end
 
-  defp measure(body, limit, reserve, byte_limit) do
-    instruction_body = Map.take(body, ["system"])
-    messages = body["messages"] || []
+  @doc false
+  def measure(body, limit, reserve, byte_limit) do
+    instruction_body = Map.take(body, ["system", "systemInstruction"])
+    messages = body["messages"] || body["contents"] || []
 
     {instructions, transcript} =
       Enum.split_with(messages, &(&1["role"] in ["system", "developer"]))
@@ -71,6 +78,12 @@ defmodule IexCode.LLM.RequestPreparation do
     instructions = bytes(instruction_body) + bytes(instructions)
     tools = bytes(body["tools"] || [])
     transcript = bytes(transcript)
+
+    generation_config =
+      if Map.has_key?(body, "generationConfig"),
+        do: bytes(Map.take(body, ["generationConfig"])),
+        else: 0
+
     total = bytes(body)
 
     %{
@@ -82,6 +95,7 @@ defmodule IexCode.LLM.RequestPreparation do
       instructions: instructions,
       tools: tools,
       transcript: transcript,
+      generation_config: generation_config,
       protocol: max(total - instructions - tools - transcript, 0),
       protocol_tokens: 128
     }

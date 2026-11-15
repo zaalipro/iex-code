@@ -23,7 +23,9 @@ defmodule IexCode.LLM.Reasoning do
         opts_map["reasoning_effort"] ||
         Map.get(overrides, "reasoning_effort") ||
         Map.get(overrides, :reasoning_effort) ||
-        settings_value(settings, :default_reasoning_effort, "medium")
+        settings_value(settings, :default_reasoning_effort, nil) ||
+        caps.default_effort ||
+        "medium"
 
     raw_budget =
       opts_map[:thinking_budget] ||
@@ -33,9 +35,11 @@ defmodule IexCode.LLM.Reasoning do
         Map.get(overrides, "budget_tokens") ||
         Map.get(overrides, "thinking_budget") ||
         Map.get(overrides, :budget_tokens) ||
-        settings_value(settings, :default_thinking_budget, 4096)
+        settings_value(settings, :default_thinking_budget, nil) ||
+        caps.default_budget ||
+        4096
 
-    budget_val = parse_integer(raw_budget, 4096)
+    budget_val = parse_integer(raw_budget, caps.default_budget || 4096)
 
     raw_max_tokens =
       opts_map[:max_tokens] ||
@@ -223,7 +227,7 @@ defmodule IexCode.LLM.Reasoning do
     |> put_stream(stream?)
   end
 
-  defp build_gemini_native_payload(profile, messages, system_prompt, _tools) do
+  defp build_gemini_native_payload(profile, messages, system_prompt, tools) do
     thinking_config =
       if profile.thinking_budget && profile.thinking_budget > 0 do
         %{"thinkingBudget" => profile.thinking_budget}
@@ -231,10 +235,13 @@ defmodule IexCode.LLM.Reasoning do
         %{"thinkingBudget" => 0}
       end
 
+    non_system_messages =
+      Enum.reject(messages, fn m -> m["role"] in ["system", "developer"] end)
+
     %{
       "contents" =>
-        Enum.map(messages, fn m ->
-          role = if m["role"] == "assistant", do: "model", else: "user"
+        Enum.map(non_system_messages, fn m ->
+          role = if m["role"] in ["assistant", "model"], do: "model", else: "user"
           %{"role" => role, "parts" => [%{"text" => m["content"] || ""}]}
         end),
       "generationConfig" => %{
@@ -244,6 +251,7 @@ defmodule IexCode.LLM.Reasoning do
       }
     }
     |> put_gemini_system(system_prompt)
+    |> put_tools_gemini(tools)
   end
 
   defp build_local_payload(profile, messages, tools, stream?) do
@@ -376,11 +384,35 @@ defmodule IexCode.LLM.Reasoning do
     Map.put(map, "systemInstruction", %{"parts" => [%{"text" => prompt}]})
   end
 
-  defp normalize_openai_effort(effort) do
-    case to_string(effort || "medium") do
+  defp put_tools_gemini(map, []), do: map
+
+  defp put_tools_gemini(map, tools) when is_list(tools) do
+    declarations =
+      Enum.map(tools, fn
+        %{name: name, description: desc, parameters: params} ->
+          %{"name" => name, "description" => desc, "parameters" => params}
+
+        %{"name" => name, "description" => desc, "parameters" => params} ->
+          %{"name" => name, "description" => desc, "parameters" => params}
+
+        %{"name" => _} = t ->
+          t
+
+        t ->
+          t
+      end)
+
+    Map.put(map, "tools", [%{"functionDeclarations" => declarations}])
+  end
+
+  @doc "Normalizes reasoning effort levels for OpenAI-compatible reasoning models."
+  def normalize_openai_effort(effort) do
+    case String.downcase(String.trim(to_string(effort || "medium"))) do
+      "minimal" -> "minimal"
       "low" -> "low"
       "medium" -> "medium"
       "high" -> "high"
+      "xhigh" -> "xhigh"
       "max" -> "high"
       "none" -> nil
       _ -> "medium"

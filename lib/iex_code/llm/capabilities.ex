@@ -39,8 +39,43 @@ defmodule IexCode.LLM.Capabilities do
   @impl Access
   def pop(struct, key), do: Map.pop(struct, key)
 
-  @openai_reasoning_prefixes ~w(o1 o3 o4)
-  @anthropic_thinking_prefixes ~w(claude-3-7 claude-3.7 claude-4)
+  @openai_reasoning_prefixes ~w(o1 o3 o4 gpt-5 codex)
+  @anthropic_thinking_prefixes ~w(
+    claude-3-7
+    claude-3.7
+    claude-4
+    claude-5
+    claude-sonnet-4
+    claude-opus-4
+    claude-haiku-4-5
+    claude-haiku-4.5
+    claude-sonnet-5
+    claude-opus-5
+    claude-haiku-5
+  )
+  @gemini_native_prefixes ~w(
+    gemini-2.5
+    gemini-3
+    gemini-4
+    gemini-carbon
+    gemini-hydrogen
+    gemini-argon
+    carbon
+    hydrogen
+    argon
+  )
+  @gemini_openai_proxy_prefixes ~w(
+    gemini-2.5-pro
+    gemini-3
+    gemini-4
+    gemini-carbon
+    gemini-hydrogen
+    gemini-argon
+    carbon
+    hydrogen
+    argon
+  )
+  @gemini_codename_patterns ~w(carbon hydrogen argon)
   @gemini_thinking_prefixes ~w(gemini-2.0-flash-thinking gemini-2.5-flash-thinking gemini-3.8-flash-thinking)
   @local_think_tag_patterns ~w(deepseek-r1 r1- qwen-qwq qwq)
 
@@ -53,7 +88,7 @@ defmodule IexCode.LLM.Capabilities do
     model_base = List.last(String.split(norm_model, "/"))
 
     cond do
-      # OpenAI Reasoning Models (o1, o3, o3-mini, o4)
+      # OpenAI Reasoning Models (o1, o3, o4, gpt-5*, codex*)
       (norm_provider == "openai" or norm_provider == "") and
           (matches_any_prefix?(model_base, @openai_reasoning_prefixes) or
              matches_any_prefix?(norm_model, @openai_reasoning_prefixes)) ->
@@ -68,20 +103,17 @@ defmodule IexCode.LLM.Capabilities do
           supports_temperature?: false,
           requires_temperature_1_0?: false,
           supports_extended_thinking?: false,
-          default_effort: "medium",
+          default_effort: infer_openai_effort(model_base),
           default_budget: nil,
           min_budget: nil,
           max_output_tokens: 100_000,
           tags: [:reasoning, :coding, :fast]
         }
 
-      # Anthropic Extended Thinking (Claude 3.7 Sonnet+)
+      # Anthropic Extended Thinking (Claude 3.7+, Claude 4/4.5/4.6, Claude 5)
       (norm_provider == "anthropic" or
          matches_any_prefix?(model_base, @anthropic_thinking_prefixes)) and
-          (matches_any_prefix?(model_base, @anthropic_thinking_prefixes) or
-             matches_any_prefix?(norm_model, @anthropic_thinking_prefixes) or
-             String.contains?(norm_model, "claude-3-7") or
-             String.contains?(norm_model, "claude-3.7")) ->
+          anthropic_thinking_model?(model_base, norm_model) ->
         %__MODULE__{
           provider: "anthropic",
           model: model,
@@ -93,34 +125,42 @@ defmodule IexCode.LLM.Capabilities do
           supports_temperature?: true,
           requires_temperature_1_0?: true,
           supports_extended_thinking?: true,
-          default_effort: "medium",
-          default_budget: 4_096,
+          default_effort: infer_openai_effort(model_base),
+          default_budget: infer_anthropic_budget(model_base),
           min_budget: 1_024,
           max_output_tokens: 64_000,
           tags: [:extended_thinking, :coding, :analysis]
         }
 
-      # Gemini Native Thinking Models
-      (norm_provider in ["gemini", "google"] or String.contains?(norm_model, "thinking")) and
-          (matches_any_prefix?(model_base, @gemini_thinking_prefixes) or
-             String.contains?(norm_model, "thinking")) ->
+      # Gemini Native Thinking Models (provider "gemini" or "google")
+      norm_provider in ["gemini", "google"] and gemini_native_model?(model_base, norm_model) ->
+        gemini_native_capabilities(norm_provider, model, model_base)
+
+      # Gemini Frontier Models routed via OpenAI-compatible proxy
+      norm_provider in ["openai", ""] and gemini_openai_proxy_model?(model_base, norm_model) ->
         %__MODULE__{
-          provider: norm_provider,
+          provider: "openai",
           model: model,
           reasoning_supported: true,
           reasoning_supported?: true,
-          type: :gemini,
-          reasoning_type: :thinking_budget,
+          type: :openai,
+          reasoning_type: :reasoning_effort,
           supports_temperature: true,
           supports_temperature?: true,
           requires_temperature_1_0?: false,
           supports_extended_thinking?: false,
-          default_effort: "medium",
-          default_budget: 4_096,
-          min_budget: 1_024,
+          default_effort: infer_gemini_effort(model_base),
+          default_budget: nil,
+          min_budget: nil,
           max_output_tokens: 65_536,
-          tags: [:thinking, :multimodal]
+          tags: [:gemini_reasoning, :reasoning, :coding, :multimodal]
         }
+
+      # Explicit *-thinking* Gemini models on non-OpenAI providers
+      String.contains?(norm_model, "thinking") and
+          (matches_any_prefix?(model_base, @gemini_thinking_prefixes) or
+             String.starts_with?(model_base, "gemini-")) ->
+        gemini_native_capabilities(norm_provider, model, model_base)
 
       # DeepSeek / Open Reasoning Models on OpenAI-compatible proxies
       (norm_provider in ["openai", ""] or norm_provider == "deepseek") and
@@ -219,6 +259,83 @@ defmodule IexCode.LLM.Capabilities do
       max_output_tokens: 4_096,
       tags: [:standard]
     }
+  end
+
+  defp gemini_native_capabilities(norm_provider, model, model_base) do
+    %__MODULE__{
+      provider: norm_provider,
+      model: model,
+      reasoning_supported: true,
+      reasoning_supported?: true,
+      type: :gemini,
+      reasoning_type: :thinking_budget,
+      supports_temperature: true,
+      supports_temperature?: true,
+      requires_temperature_1_0?: false,
+      supports_extended_thinking?: false,
+      default_effort: infer_gemini_effort(model_base),
+      default_budget: 4_096,
+      min_budget: 1_024,
+      max_output_tokens: 65_536,
+      tags: [:thinking, :multimodal]
+    }
+  end
+
+  defp anthropic_thinking_model?(model_base, norm_model) do
+    matches_any_prefix?(model_base, @anthropic_thinking_prefixes) or
+      matches_any_prefix?(norm_model, @anthropic_thinking_prefixes) or
+      String.contains?(norm_model, "claude-3-7") or
+      String.contains?(norm_model, "claude-3.7")
+  end
+
+  defp gemini_native_model?("", _norm_model), do: false
+
+  defp gemini_native_model?(model_base, norm_model) do
+    matches_any_prefix?(model_base, @gemini_native_prefixes) or
+      matches_any_prefix?(norm_model, @gemini_native_prefixes) or
+      matches_any_prefix?(model_base, @gemini_thinking_prefixes) or
+      String.contains?(norm_model, "thinking") or
+      (String.starts_with?(model_base, "gemini-") and
+         contains_any_pattern?(model_base, @gemini_codename_patterns))
+  end
+
+  defp gemini_openai_proxy_model?("", _norm_model), do: false
+
+  defp gemini_openai_proxy_model?(model_base, norm_model) do
+    matches_any_prefix?(model_base, @gemini_openai_proxy_prefixes) or
+      matches_any_prefix?(norm_model, @gemini_openai_proxy_prefixes) or
+      (String.starts_with?(model_base, "gemini-") and
+         contains_any_pattern?(model_base, @gemini_codename_patterns))
+  end
+
+  defp infer_openai_effort(model_base) do
+    cond do
+      String.ends_with?(model_base, "-minimal") -> "minimal"
+      String.ends_with?(model_base, "-xhigh") -> "xhigh"
+      String.ends_with?(model_base, "-medium") -> "medium"
+      String.ends_with?(model_base, "-high") -> "high"
+      String.ends_with?(model_base, "-low") -> "low"
+      true -> "medium"
+    end
+  end
+
+  defp infer_gemini_effort(model_base) do
+    cond do
+      String.ends_with?(model_base, "-minimal") -> "minimal"
+      String.ends_with?(model_base, "-xhigh") -> "xhigh"
+      String.ends_with?(model_base, "-medium") -> "medium"
+      String.ends_with?(model_base, "-high") -> "high"
+      String.ends_with?(model_base, "-low") -> "low"
+      true -> "medium"
+    end
+  end
+
+  defp infer_anthropic_budget(model_base) do
+    cond do
+      String.ends_with?(model_base, "-xhigh") -> 32_000
+      String.ends_with?(model_base, "-high") -> 16_384
+      true -> 4_096
+    end
   end
 
   defp matches_any_prefix?(model, prefixes) do

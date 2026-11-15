@@ -267,5 +267,30 @@ defmodule IexCode.LLM.ReasoningTest do
       assert payload["reasoning_effort"] == "high"
       assert payload["max_completion_tokens"] == 8192
     end
+
+    test "supports minimal and xhigh OpenAI reasoning efforts while preserving max and none" do
+      assert Reasoning.normalize_openai_effort("minimal") == "minimal"
+      assert Reasoning.normalize_openai_effort("xhigh") == "xhigh"
+      assert Reasoning.normalize_openai_effort("max") == "high"
+      assert is_nil(Reasoning.normalize_openai_effort("none"))
+
+      messages = [%{"role" => "user", "content" => "Refactor module"}]
+
+      minimal_payload =
+        Reasoning.serialize_payload("openai", "gpt-5", messages, nil, nil,
+          reasoning_effort: "minimal"
+        )
+
+      assert minimal_payload["reasoning_effort"] == "minimal"
+      refute Map.has_key?(minimal_payload, "temperature")
+
+      xhigh_payload =
+        Reasoning.serialize_payload("openai", "codex-xhigh", messages, nil, nil,
+          reasoning_effort: "xhigh"
+        )
+
+      assert xhigh_payload["reasoning_effort"] == "xhigh"
+      refute Map.has_key?(xhigh_payload, "temperature")
+    end
   end
 end

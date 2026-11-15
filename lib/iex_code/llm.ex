@@ -8,7 +8,7 @@ defmodule IexCode.LLM do
   """
   alias IexCode.Execution.Limits
   alias IexCode.Settings
-  alias IexCode.LLM.{Anthropic, OpenAI, Resilience}
+  alias IexCode.LLM.{Anthropic, Gemini, OpenAI, Resilience}
 
   @doc """
   Dispatches chat requests through the explicitly selected OpenAI or Anthropic
@@ -161,6 +161,36 @@ defmodule IexCode.LLM do
       )
     end
 
+    gemini_key =
+      Map.get(settings, :gemini_api_key) ||
+        Map.get(settings, "gemini_api_key") ||
+        Map.get(settings, :google_api_key) ||
+        Map.get(settings, "google_api_key")
+
+    gemini_base =
+      Map.get(settings, :gemini_base_url) ||
+        Map.get(settings, "gemini_base_url") ||
+        Map.get(settings, :google_base_url) ||
+        Map.get(settings, "google_base_url") ||
+        "https://generativelanguage.googleapis.com/v1beta"
+
+    gemini_fn = fn ->
+      prepare_provider(
+        Gemini,
+        messages,
+        system_prompt,
+        [
+          api_key: gemini_key,
+          base_url: gemini_base,
+          model: raw_model,
+          temperature: temperature,
+          tools: tools,
+          provider: "gemini"
+        ] ++ passthrough_opts,
+        on_chunk
+      )
+    end
+
     local_base =
       case primary_provider do
         "ollama" -> IexCode.LLM.Discovery.default_base_url("ollama")
@@ -190,6 +220,7 @@ defmodule IexCode.LLM do
       [
         {"openai", openai_fn, openai_key},
         {"anthropic", anthropic_fn, settings.anthropic_api_key},
+        {"gemini", gemini_fn, gemini_key},
         {"ollama", local_fn, "local"},
         {"lm_studio", local_fn, "local"},
         {"llama_cpp", local_fn, "local"}
@@ -238,7 +269,8 @@ defmodule IexCode.LLM do
   end
 
   defp do_resolved_chat(messages, system_prompt, on_chunk, opts, route) when is_map(route) do
-    provider = route_value(route, :provider)
+    raw_provider = route_value(route, :provider)
+    provider = if raw_provider == "google", do: "gemini", else: raw_provider
     model = route_value(route, :model)
     api_key = route_value(route, :api_key)
     base_url = route_value(route, :base_url)
@@ -262,7 +294,7 @@ defmodule IexCode.LLM do
          else: api_key
 
     with true <-
-           provider in ["openai", "anthropic", "ollama", "lm_studio", "llama_cpp"] or
+           provider in ["openai", "anthropic", "gemini", "ollama", "lm_studio", "llama_cpp"] or
              {:error, :invalid_resolved_route},
          true <- Limits.valid_model_name?(model) or {:error, :invalid_resolved_route},
          true <- present?(effective_api_key) or {:error, :no_api_key},
@@ -369,25 +401,29 @@ defmodule IexCode.LLM do
 
     cond do
       String.starts_with?(normalized, "claude") -> "anthropic"
-      String.starts_with?(normalized, ["gpt", "gemini", "o1", "o3", "o4"]) -> "openai"
+      String.starts_with?(normalized, ["gpt", "codex", "gemini", "o1", "o3", "o4"]) -> "openai"
       true -> nil
     end
   end
 
   defp provider_for_model(_model), do: nil
 
+  defp normalize_provider("google"), do: "gemini"
+  defp normalize_provider(:google), do: "gemini"
+
   defp normalize_provider(provider)
-       when provider in ["openai", "anthropic", "ollama", "lm_studio", "llama_cpp"],
+       when provider in ["openai", "anthropic", "gemini", "ollama", "lm_studio", "llama_cpp"],
        do: provider
 
   defp normalize_provider(provider)
-       when provider in [:openai, :anthropic, :ollama, :lm_studio, :llama_cpp],
+       when provider in [:openai, :anthropic, :gemini, :ollama, :lm_studio, :llama_cpp],
        do: Atom.to_string(provider)
 
   defp normalize_provider(_provider), do: nil
 
   defp provider_module("openai"), do: OpenAI
   defp provider_module("anthropic"), do: Anthropic
+  defp provider_module("gemini"), do: Gemini
   defp provider_module("ollama"), do: OpenAI
   defp provider_module("lm_studio"), do: OpenAI
   defp provider_module("llama_cpp"), do: OpenAI

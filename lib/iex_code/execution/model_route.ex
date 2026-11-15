@@ -13,6 +13,7 @@ defmodule IexCode.Execution.ModelRoute do
 
   @openai_default "https://cli.llmotions.com/v1"
   @anthropic_default "https://api.anthropic.com"
+  @gemini_default "https://generativelanguage.googleapis.com/v1beta"
   @digest_key "model_route_sha256"
 
   @spec put_digest(map(), map() | struct()) :: {:ok, map()} | {:error, term()}
@@ -97,7 +98,7 @@ defmodule IexCode.Execution.ModelRoute do
     base_url = base_url(settings, provider)
 
     cond do
-      provider not in ["openai", "anthropic", "ollama", "lm_studio", "llama_cpp"] ->
+      provider not in ["openai", "anthropic", "gemini", "ollama", "lm_studio", "llama_cpp"] ->
         {:error, :invalid_model_route}
 
       not Limits.valid_model_name?(model) ->
@@ -138,6 +139,14 @@ defmodule IexCode.Execution.ModelRoute do
   defp base_url(settings, "anthropic"),
     do: normalize_url(value(settings, "anthropic_base_url") || @anthropic_default)
 
+  defp base_url(settings, "gemini"),
+    do:
+      normalize_url(
+        value(settings, "gemini_base_url") ||
+          value(settings, "google_base_url") ||
+          @gemini_default
+      )
+
   defp base_url(settings, "ollama"),
     do:
       normalize_url(
@@ -158,6 +167,8 @@ defmodule IexCode.Execution.ModelRoute do
           IexCode.LLM.Discovery.default_base_url("llama_cpp")
       )
 
+  defp base_url(_settings, _provider), do: nil
+
   defp credential(settings, "openai") do
     key = value(settings, "openai_api_key")
     base = base_url(settings, "openai")
@@ -168,6 +179,10 @@ defmodule IexCode.Execution.ModelRoute do
   end
 
   defp credential(settings, "anthropic"), do: value(settings, "anthropic_api_key")
+
+  defp credential(settings, "gemini") do
+    value(settings, "gemini_api_key") || value(settings, "google_api_key")
+  end
 
   defp credential(settings, local) when local in ["ollama", "lm_studio", "llama_cpp"] do
     key = value(settings, "#{local}_api_key")
@@ -204,11 +219,15 @@ defmodule IexCode.Execution.ModelRoute do
   defp known_atom("model_route_sha256"), do: :model_route_sha256
   defp known_atom("openai_base_url"), do: :openai_base_url
   defp known_atom("anthropic_base_url"), do: :anthropic_base_url
+  defp known_atom("gemini_base_url"), do: :gemini_base_url
+  defp known_atom("google_base_url"), do: :google_base_url
   defp known_atom("ollama_base_url"), do: :ollama_base_url
   defp known_atom("lm_studio_base_url"), do: :lm_studio_base_url
   defp known_atom("llama_cpp_base_url"), do: :llama_cpp_base_url
   defp known_atom("openai_api_key"), do: :openai_api_key
   defp known_atom("anthropic_api_key"), do: :anthropic_api_key
+  defp known_atom("gemini_api_key"), do: :gemini_api_key
+  defp known_atom("google_api_key"), do: :google_api_key
   defp known_atom("ollama_api_key"), do: :ollama_api_key
   defp known_atom("lm_studio_api_key"), do: :lm_studio_api_key
   defp known_atom("llama_cpp_api_key"), do: :llama_cpp_api_key
