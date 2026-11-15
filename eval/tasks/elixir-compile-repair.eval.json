@@ -1,0 +1,11 @@
+{
+  "id": "elixir-compile-repair",
+  "prompt": "Repair the compile/syntax error and slug normalization logic in lib/slugifier.ex so Slugifier.slugify/1 lowercases, replaces runs of non-alphanumeric characters with a single '-', and trims leading/trailing hyphens.",
+  "repo": "fixtures/elixir-compile-repair",
+  "test_cmd": ["elixir", "grade.exs"],
+  "timeout_ms": 30000,
+  "max_turns": 8,
+  "category": "compile_repair",
+  "difficulty": "easy",
+  "tags": ["elixir", "compile_repair", "syntax"]
+}

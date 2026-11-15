@@ -1,0 +1,11 @@
+{
+  "id": "elixir-repeated-block-patch",
+  "prompt": "In lib/rate_limiter.ex, update ONLY allow_webhook?/2 so that count == limit is still allowed (returning {:allow, 0}, and {:deny, 0} only when count > limit). Keep allow_api?/2 and allow_admin?/2 strict (count >= limit -> {:deny, 0}).",
+  "repo": "fixtures/elixir-repeated-block-patch",
+  "test_cmd": ["elixir", "grade.exs"],
+  "timeout_ms": 30000,
+  "max_turns": 8,
+  "category": "ambiguous_edit",
+  "difficulty": "medium",
+  "tags": ["elixir", "ambiguous_edit", "patching"]
+}

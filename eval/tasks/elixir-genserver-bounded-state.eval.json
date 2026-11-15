@@ -1,0 +1,11 @@
+{
+  "id": "elixir-genserver-bounded-state",
+  "prompt": "Fix EventBuffer in lib/event_buffer.ex so pushed events are bounded to max_size (keeping the newest max_size events in insertion order) and unexpected info messages are safely ignored via a catch-all handle_info/2 clause.",
+  "repo": "fixtures/elixir-genserver-bounded-state",
+  "test_cmd": ["elixir", "grade.exs"],
+  "timeout_ms": 30000,
+  "max_turns": 8,
+  "category": "concurrency",
+  "difficulty": "hard",
+  "tags": ["elixir", "otp", "genserver", "concurrency"]
+}

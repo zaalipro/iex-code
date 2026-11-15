@@ -3,6 +3,8 @@ defmodule Mix.Tasks.IexCode.Eval do
   Runs coding-eval tasks against the agent loop and reports pass@k.
 
       mix iex_code.eval [TASKS_DIR] [--samples N] [--ks 1,3] [--max-turns N]
+                        [--only id1,id2] [--category CAT] [--tag TAG]
+                        [--json-out PATH] [--keep-workdir]
 
   Tasks are `*.eval.json` files (see `IexCode.Eval.Task`). Each sample gets a
   fresh workdir copy of the task fixture, one agent run, and one grade
@@ -13,7 +15,17 @@ defmodule Mix.Tasks.IexCode.Eval do
 
   @shortdoc "Runs coding-eval tasks and reports pass@k"
 
-  @switches [samples: :integer, ks: :string, max_turns: :integer, help: :boolean]
+  @switches [
+    samples: :integer,
+    ks: :string,
+    max_turns: :integer,
+    only: :string,
+    category: :string,
+    tag: :string,
+    json_out: :string,
+    keep_workdir: :boolean,
+    help: :boolean
+  ]
 
   @impl true
   def run(argv) do
@@ -33,19 +45,57 @@ defmodule Mix.Tasks.IexCode.Eval do
 
     with {:ok, samples} <- pos_int(Keyword.get(opts, :samples, 1), "--samples"),
          {:ok, ks} <- parse_ks(Keyword.get(opts, :ks, "1")),
+         {:ok, max_turns} <- optional_pos_int(Keyword.get(opts, :max_turns), "--max-turns"),
+         {:ok, only} <- parse_only(Keyword.get(opts, :only)),
+         {:ok, category} <- parse_optional_non_empty(Keyword.get(opts, :category), "--category"),
+         {:ok, tag} <- parse_optional_non_empty(Keyword.get(opts, :tag), "--tag"),
+         {:ok, json_out} <- parse_optional_non_empty(Keyword.get(opts, :json_out), "--json-out"),
          {:ok, results} <-
            IexCode.Eval.Runner.run(dir,
              samples: samples,
              ks: ks,
+             max_turns: max_turns,
+             only: only,
+             category: category,
+             tag: tag,
+             keep_workdir: Keyword.get(opts, :keep_workdir, false),
              on_sample: fn task, sample ->
                Mix.shell().info("  sample #{task.id}##{sample.sample}: #{verdict(sample.passed)}")
              end
            ) do
       Mix.shell().info(IexCode.Eval.Runner.format_report(results))
+
+      if json_out do
+        File.mkdir_p!(Path.dirname(json_out))
+        File.write!(json_out, IexCode.Eval.Runner.to_json_report(results))
+      end
     else
       {:error, reason} -> fail(inspect(reason))
     end
   end
+
+  defp parse_only(nil), do: {:ok, nil}
+
+  defp parse_only(value) when is_binary(value) do
+    ids =
+      value
+      |> String.split(",")
+      |> Enum.map(&String.trim/1)
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.uniq()
+
+    if ids == [], do: {:error, {:eval_bad_option, "--only"}}, else: {:ok, ids}
+  end
+
+  defp parse_optional_non_empty(nil, _flag), do: {:ok, nil}
+
+  defp parse_optional_non_empty(value, flag) when is_binary(value) do
+    trimmed = String.trim(value)
+    if trimmed == "", do: {:error, {:eval_bad_option, flag}}, else: {:ok, trimmed}
+  end
+
+  defp optional_pos_int(nil, _flag), do: {:ok, nil}
+  defp optional_pos_int(value, flag), do: pos_int(value, flag)
 
   defp parse_ks(value) when is_binary(value) do
     parts = value |> String.split(",") |> Enum.map(&String.trim/1)

@@ -45,6 +45,49 @@ defmodule IexCode.Eval.Scoring do
     }
   end
 
+  @doc "Groups task results by category and computes `summarize/2` for each category."
+  @spec summarize_by_category([map()], [pos_integer()]) :: %{
+          optional(String.t()) => %{
+            samples: non_neg_integer(),
+            passed: non_neg_integer(),
+            pass_rate: float(),
+            pass_at_k: %{pos_integer() => float()}
+          }
+        }
+  def summarize_by_category(task_results, ks \\ [1])
+      when is_list(task_results) and is_list(ks) do
+    task_results
+    |> Enum.group_by(&task_category/1)
+    |> Map.new(fn {category, entries} ->
+      outcomes = Enum.flat_map(entries, &task_outcomes/1)
+      {category, summarize(outcomes, ks)}
+    end)
+  end
+
+  defp task_category(entry) when is_map(entry) do
+    Map.get(entry, :category) || Map.get(entry, "category") || "general"
+  end
+
+  defp task_outcomes(%{samples: samples}) when is_list(samples),
+    do: Enum.map(samples, &sample_passed?/1)
+
+  defp task_outcomes(%{"samples" => samples}) when is_list(samples),
+    do: Enum.map(samples, &sample_passed?/1)
+
+  defp task_outcomes(%{outcomes: outcomes}) when is_list(outcomes),
+    do: Enum.map(outcomes, &(&1 == true))
+
+  defp task_outcomes(%{"outcomes" => outcomes}) when is_list(outcomes),
+    do: Enum.map(outcomes, &(&1 == true))
+
+  defp task_outcomes(%{passed: passed}) when is_boolean(passed), do: [passed]
+  defp task_outcomes(%{"passed" => passed}) when is_boolean(passed), do: [passed]
+  defp task_outcomes(_other), do: []
+
+  defp sample_passed?(%{passed: passed}) when is_boolean(passed), do: passed
+  defp sample_passed?(%{"passed" => passed}) when is_boolean(passed), do: passed
+  defp sample_passed?(_other), do: false
+
   defp comb(n, k) when k < 0 or k > n, do: 0
   defp comb(_n, 0), do: 1
 

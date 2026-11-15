@@ -28,4 +28,20 @@ defmodule IexCode.Eval.ScoringTest do
     assert summary.pass_rate == 0.5
     assert summary.pass_at_k == %{1 => 0.5, 2 => 1.0}
   end
+
+  test "summarize_by_category groups tasks and computes pass@k per category" do
+    tasks = [
+      %{category: "bugfix", samples: [%{passed: true}, %{passed: false}]},
+      %{category: "bugfix", samples: [%{passed: true}, %{passed: true}]},
+      %{category: "refactor", samples: [%{passed: false}, %{passed: false}]},
+      %{samples: [%{passed: true}]}
+    ]
+
+    by_cat = Scoring.summarize_by_category(tasks, [1, 2])
+
+    assert by_cat["bugfix"] == Scoring.summarize([true, false, true, true], [1, 2])
+    assert by_cat["refactor"] == Scoring.summarize([false, false], [1, 2])
+    assert by_cat["general"] == Scoring.summarize([true], [1, 2])
+    assert Scoring.summarize_by_category([], [1]) == %{}
+  end
 end

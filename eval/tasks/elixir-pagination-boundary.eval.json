@@ -1,0 +1,11 @@
+{
+  "id": "elixir-pagination-boundary",
+  "prompt": "Fix the off-by-one page slice and empty-page / out-of-range boundary bugs in lib/paginator.ex so Paginator.paginate/3 passes all tests in grade.exs.",
+  "repo": "fixtures/elixir-pagination-boundary",
+  "test_cmd": ["elixir", "grade.exs"],
+  "timeout_ms": 30000,
+  "max_turns": 8,
+  "category": "bugfix",
+  "difficulty": "easy",
+  "tags": ["elixir", "collections", "boundary"]
+}
