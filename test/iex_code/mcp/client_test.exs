@@ -32,6 +32,12 @@ defmodule IexCode.MCP.ClientTest do
 
     assert {:error, {:mcp_error, -32602, "unknown tool"}} =
              Client.call_tool(client, "nope", %{}, timeout_ms: 15_000)
+
+    assert {:error, {:mcp_error, -32601, "method not found"}} =
+             Client.list_resources(client, 5_000)
+
+    assert {:error, {:mcp_error, -32601, "method not found"}} =
+             Client.list_prompts(client, 5_000)
   end
 
   test "missing command fails fast" do
@@ -39,5 +45,23 @@ defmodule IexCode.MCP.ClientTest do
 
     assert {:error, {:mcp_no_command, "definitely-not-a-real-command-xyz"}} =
              Client.start_link(command: "definitely-not-a-real-command-xyz")
+  end
+
+  test "exposes 8 MiB default max_buffer_bytes and closes port cleanly on stop", %{
+    elixir: elixir,
+    script: script
+  } do
+    assert Client.max_buffer_bytes() == 8_388_608
+
+    {:ok, client} = Client.start_link(command: elixir, args: [script], timeout_ms: 15_000)
+    assert {:ok, _info} = Client.initialize(client, timeout_ms: 15_000)
+
+    port = :sys.get_state(client).port
+    assert Port.info(port) != nil
+
+    ref = Process.monitor(client)
+    :ok = GenServer.stop(client, :normal)
+    assert_receive {:DOWN, ^ref, :process, ^client, :normal}, 5_000
+    assert Port.info(port) == nil
   end
 end
