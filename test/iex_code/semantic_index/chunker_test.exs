@@ -154,4 +154,232 @@ defmodule IexCode.SemanticIndex.ChunkerTest do
       assert Enum.any?(chunks, fn c -> c.content =~ "🚀" and c.content =~ "こんにちは" end)
     end
   end
+
+  describe "Tier 3: Polyglot Symbol-Aware Chunking" do
+    test "chunks TypeScript and JavaScript files into interface, type, class, method, and function chunks" do
+      ts_code = """
+      export interface UserProfile {
+        id: string;
+        name: string;
+      }
+
+      export type UserId = string;
+
+      export class UserService {
+        private count = 0;
+
+        async findUser(id: UserId): Promise<UserProfile | null> {
+          return { id, name: "Ada" };
+        }
+      }
+
+      export function formatUser(user: UserProfile): string {
+        return `${user.name} (${user.id})`;
+      }
+
+      export const isAdmin = (id: string) => id === "root";
+      """
+
+      chunks = Chunker.chunk_file("src/user_service.ts", ts_code)
+
+      iface = Enum.find(chunks, &(&1.symbol_name == "UserProfile"))
+      assert iface.chunk_type == "interface"
+      assert iface.symbol_type == "interface"
+      assert iface.start_line == 1
+      assert iface.end_line == 4
+      assert iface.content =~ "File: src/user_service.ts | interface UserProfile"
+
+      type_chunk = Enum.find(chunks, &(&1.symbol_name == "UserId"))
+      assert type_chunk.chunk_type == "type"
+      assert type_chunk.start_line == 6
+      assert type_chunk.end_line == 6
+      assert type_chunk.content =~ "File: src/user_service.ts | type UserId"
+
+      class_chunk = Enum.find(chunks, &(&1.symbol_name == "UserService"))
+      assert class_chunk.chunk_type == "class"
+      assert class_chunk.start_line == 8
+      assert class_chunk.end_line == 14
+      assert class_chunk.content =~ "File: src/user_service.ts | class UserService"
+
+      method_chunk = Enum.find(chunks, &(&1.symbol_name == "findUser"))
+      assert method_chunk.chunk_type == "method"
+      assert method_chunk.symbol_type == "method"
+      assert method_chunk.start_line == 11
+      assert method_chunk.end_line == 13
+      assert method_chunk.content =~ "File: src/user_service.ts | method findUser"
+
+      fn_chunk = Enum.find(chunks, &(&1.symbol_name == "formatUser"))
+      assert fn_chunk.chunk_type == "function"
+      assert fn_chunk.start_line == 16
+      assert fn_chunk.end_line == 18
+      assert fn_chunk.content =~ "File: src/user_service.ts | function formatUser"
+
+      arrow_chunk = Enum.find(chunks, &(&1.symbol_name == "isAdmin"))
+      assert arrow_chunk.chunk_type == "function"
+      assert arrow_chunk.start_line == 20
+      assert arrow_chunk.end_line == 20
+
+      # Also verify .jsx/.tsx/.js extensions route through polyglot chunker
+      jsx_chunks =
+        Chunker.chunk_file("web/Button.tsx", "export function Button() { return <button />; }\n")
+
+      assert [%{symbol_name: "Button", chunk_type: "function"}] = jsx_chunks
+    end
+
+    test "chunks Python files into class, method, and function chunks with indentation boundaries" do
+      py_code = """
+      class JobQueue:
+          def __init__(self, limit):
+              self.limit = limit
+
+          async def enqueue(
+              self,
+              item
+          ):
+              return item
+
+      def run_worker(queue):
+          return queue.limit
+      """
+
+      chunks = Chunker.chunk_file("worker/queue.py", py_code)
+
+      cls = Enum.find(chunks, &(&1.symbol_name == "JobQueue"))
+      assert cls.chunk_type == "class"
+      assert cls.start_line == 1
+      assert cls.end_line == 9
+      assert cls.content =~ "File: worker/queue.py | class JobQueue"
+
+      init_m = Enum.find(chunks, &(&1.symbol_name == "__init__"))
+      assert init_m.chunk_type == "method"
+      assert init_m.start_line == 2
+      assert init_m.end_line == 3
+
+      enq_m = Enum.find(chunks, &(&1.symbol_name == "enqueue"))
+      assert enq_m.chunk_type == "method"
+      assert enq_m.start_line == 5
+      assert enq_m.end_line == 9
+      assert enq_m.content =~ "File: worker/queue.py | method enqueue"
+
+      top_fn = Enum.find(chunks, &(&1.symbol_name == "run_worker"))
+      assert top_fn.chunk_type == "function"
+      assert top_fn.start_line == 11
+      assert top_fn.end_line == 12
+      assert top_fn.content =~ "File: worker/queue.py | function run_worker"
+    end
+
+    test "chunks Go files into struct, interface, type, method, and function chunks" do
+      go_code = """
+      package server
+
+      type Config struct {
+          Port int
+      }
+
+      type Handler interface {
+          Serve() error
+      }
+
+      type Port int
+
+      func (c *Config) Addr() string {
+          return ":8080"
+      }
+
+      func Start(cfg Config) error {
+          return nil
+      }
+      """
+
+      chunks = Chunker.chunk_file("cmd/server.go", go_code)
+
+      st = Enum.find(chunks, &(&1.symbol_name == "Config"))
+      assert st.chunk_type == "struct"
+      assert st.start_line == 3
+      assert st.end_line == 5
+      assert st.content =~ "File: cmd/server.go | struct Config"
+
+      iface = Enum.find(chunks, &(&1.symbol_name == "Handler"))
+      assert iface.chunk_type == "interface"
+      assert iface.start_line == 7
+      assert iface.end_line == 9
+
+      alias_t = Enum.find(chunks, &(&1.symbol_name == "Port"))
+      assert alias_t.chunk_type == "type"
+      assert alias_t.start_line == 11
+      assert alias_t.end_line == 11
+
+      meth = Enum.find(chunks, &(&1.symbol_name == "Addr"))
+      assert meth.chunk_type == "method"
+      assert meth.start_line == 13
+      assert meth.end_line == 15
+      assert meth.content =~ "File: cmd/server.go | method Addr"
+
+      func_c = Enum.find(chunks, &(&1.symbol_name == "Start"))
+      assert func_c.chunk_type == "function"
+      assert func_c.start_line == 17
+      assert func_c.end_line == 19
+    end
+
+    test "chunks Rust files into struct, trait, impl, method, and function chunks safely with lifetimes" do
+      rs_code = """
+      pub struct Engine<'a> {
+          name: &'a str,
+      }
+
+      pub trait Runner {
+          fn run(&self) -> bool;
+      }
+
+      impl<'a> Engine<'a> {
+          pub fn has_brace(&self, ch: char) -> bool {
+              ch == '{'
+          }
+      }
+
+      pub fn boot() -> bool {
+          true
+      }
+      """
+
+      chunks = Chunker.chunk_file("src/engine.rs", rs_code)
+
+      st = Enum.find(chunks, &(&1.symbol_name == "Engine"))
+      assert st.chunk_type == "struct"
+      assert st.start_line == 1
+      assert st.end_line == 3
+
+      tr = Enum.find(chunks, &(&1.symbol_name == "Runner"))
+      assert tr.chunk_type == "interface"
+      assert tr.symbol_type == "trait"
+      assert tr.start_line == 5
+      assert tr.end_line == 7
+
+      imp = Enum.find(chunks, &(&1.chunk_type == "impl"))
+      assert imp.symbol_name == "Engine<'a>"
+      assert imp.start_line == 9
+      assert imp.end_line == 13
+      assert imp.content =~ "File: src/engine.rs | impl Engine<'a>"
+
+      meth = Enum.find(chunks, &(&1.symbol_name == "has_brace"))
+      assert meth.chunk_type == "method"
+      assert meth.start_line == 10
+      assert meth.end_line == 12
+
+      top_fn = Enum.find(chunks, &(&1.symbol_name == "boot"))
+      assert top_fn.chunk_type == "function"
+      assert top_fn.start_line == 15
+      assert top_fn.end_line == 17
+    end
+
+    test "falls back to windowed line chunking when polyglot file has no declarations" do
+      lines = for i <- 1..60, do: "// statement #{i}"
+      content = Enum.join(lines, "\n")
+
+      chunks = Chunker.chunk_file("scripts/plain.ts", content)
+      assert length(chunks) >= 1
+      assert Enum.all?(chunks, &(&1.chunk_type == "text"))
+      assert hd(chunks).content =~ "File: scripts/plain.ts [lines 1-50]"
+    end
+  end
 end

@@ -1,0 +1,11 @@
+{
+  "id": "elixir-swarm-feedback-repair",
+  "prompt": "Fix the swarm verifier feedback-repair state machine in lib/feedback_repair.ex so FeedbackRepair.new/1, FeedbackRepair.record_verdict/2, and FeedbackRepair.next_action/1 enforce bounded max_rounds, reject :approved verdicts that carry non-empty findings with {:error, :approved_with_findings}, deduplicate and deterministically sort open_findings, track resolved_findings across rounds, and transition status/next_action accurately.",
+  "repo": "fixtures/elixir-swarm-feedback-repair",
+  "test_cmd": ["elixir", "grade.exs"],
+  "timeout_ms": 30000,
+  "max_turns": 8,
+  "category": "bugfix",
+  "difficulty": "hard",
+  "tags": ["elixir", "swarm", "feedback", "repair"]
+}

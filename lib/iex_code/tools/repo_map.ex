@@ -9,6 +9,7 @@ defmodule IexCode.Tools.RepoMap do
   a `focus_query`.
   """
 
+  alias IexCode.Tools.TestSelector
   alias IexCode.WorkspacePath
 
   @default_max_bytes 16_000
@@ -56,17 +57,31 @@ defmodule IexCode.Tools.RepoMap do
       cond do
         File.regular?(target_path) ->
           rel = relative_display_path(canonical_root, target_path)
-          entries = extract_file_entry(target_path, rel) |> List.wrap()
+
+          entries =
+            extract_file_entry(target_path, rel)
+            |> List.wrap()
+            |> attach_paired_tests([])
+
           {:ok, format_repo_map(entries, subpath, focus_query, max_bytes)}
 
         File.dir?(target_path) ->
-          entries =
+          raw_entries =
             target_path
             |> collect_source_files()
             |> Enum.flat_map(fn abs_path ->
               rel = relative_display_path(canonical_root, abs_path)
               extract_file_entry(abs_path, rel) |> List.wrap()
             end)
+
+          test_files =
+            raw_entries
+            |> Enum.map(& &1.path)
+            |> Enum.filter(&TestSelector.test_file?/1)
+
+          entries =
+            raw_entries
+            |> attach_paired_tests(test_files)
             |> rank_entries(focus_query)
 
           {:ok, format_repo_map(entries, subpath, focus_query, max_bytes)}
@@ -76,6 +91,29 @@ defmodule IexCode.Tools.RepoMap do
       end
     else
       {:error, reason} -> {:error, format_path_error(reason, subpath)}
+    end
+  end
+
+  @doc """
+  Returns paired test file paths in `root_path` for `source_path` using Elixir
+  and polyglot test-pairing conventions.
+  """
+  @spec paired_tests(Path.t(), String.t()) :: {:ok, [String.t()]} | {:error, term()}
+  def paired_tests(root_path, source_path)
+      when is_binary(root_path) and is_binary(source_path) do
+    with {:ok, canonical_root} <- WorkspacePath.resolve(root_path, "."),
+         {:ok, resolved_source} <- WorkspacePath.resolve(canonical_root, source_path) do
+      rel_source = relative_display_path(canonical_root, resolved_source)
+
+      test_files =
+        canonical_root
+        |> collect_source_files()
+        |> Enum.map(&relative_display_path(canonical_root, &1))
+        |> Enum.filter(&TestSelector.test_file?/1)
+
+      {:ok, TestSelector.paired_tests_for(rel_source, test_files)}
+    else
+      {:error, reason} -> {:error, format_path_error(reason, source_path)}
     end
   end
 
@@ -426,14 +464,23 @@ defmodule IexCode.Tools.RepoMap do
     |> Enum.map(&elem(&1, 1))
   end
 
+  defp attach_paired_tests(entries, test_files) do
+    Enum.map(entries, fn entry ->
+      tests = TestSelector.paired_tests_for(entry.path, test_files)
+      Map.put(entry, :tests, tests)
+    end)
+  end
+
   defp score_entry(entry, down_query, tokens) do
     down_path = String.downcase(entry.path)
     down_symbols = Enum.map_join(entry.symbols, "\n", fn {_line, sym} -> String.downcase(sym) end)
+    down_tests = entry |> Map.get(:tests, []) |> Enum.map_join("\n", &String.downcase/1)
 
     phrase_bonus =
       cond do
         String.contains?(down_path, down_query) -> 20
         String.contains?(down_symbols, down_query) -> 12
+        down_tests != "" and String.contains?(down_tests, down_query) -> 4
         true -> 0
       end
 
@@ -441,7 +488,8 @@ defmodule IexCode.Tools.RepoMap do
       Enum.reduce(tokens, 0, fn tok, acc ->
         path_hit = if String.contains?(down_path, tok), do: 10, else: 0
         sym_hit = if String.contains?(down_symbols, tok), do: 3, else: 0
-        acc + path_hit + sym_hit
+        test_hit = if down_tests != "" and String.contains?(down_tests, tok), do: 1, else: 0
+        acc + path_hit + sym_hit + test_hit
       end)
 
     phrase_bonus + token_score
@@ -459,18 +507,23 @@ defmodule IexCode.Tools.RepoMap do
     assemble_bounded_output(header, blocks, max_bytes)
   end
 
-  defp format_entry_block(%{path: path, symbols: []}) do
-    "## #{path}\n  (no symbols extracted)\n"
+  defp format_entry_block(%{path: path, symbols: []} = entry) do
+    tests_line = format_tests_line(Map.get(entry, :tests, []))
+    "## #{path}\n  (no symbols extracted)\n#{tests_line}"
   end
 
-  defp format_entry_block(%{path: path, symbols: symbols}) do
+  defp format_entry_block(%{path: path, symbols: symbols} = entry) do
     sym_lines =
       Enum.map_join(symbols, "\n", fn {line_no, label} ->
         "  L#{line_no} #{label}"
       end)
 
-    "## #{path}\n#{sym_lines}\n"
+    tests_line = format_tests_line(Map.get(entry, :tests, []))
+    "## #{path}\n#{sym_lines}\n#{tests_line}"
   end
+
+  defp format_tests_line([]), do: ""
+  defp format_tests_line(tests), do: "  Tests: #{Enum.join(tests, ", ")}\n"
 
   defp assemble_bounded_output(header, blocks, max_bytes) do
     total_blocks = length(blocks)
