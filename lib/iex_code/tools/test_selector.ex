@@ -1,22 +1,29 @@
 defmodule IexCode.Tools.TestSelector do
   @moduledoc """
-  Smart incremental ExUnit test selector.
+  Smart incremental test selector for Elixir and polyglot codebases.
 
-  Resolves a bounded, deterministically ranked list of `test/**/*_test.exs`
-  targets from explicit `:changed_files` or workspace Git status/diff +
-  untracked files across three tiers:
+  Resolves a bounded, deterministically ranked list of test targets
+  (`test/**/*_test.exs`, JS/TS `*.test.*` / `*.spec.*` / `__tests__/*`,
+  Python `test_*.py` / `*_test.py`, Go `*_test.go`, and Rust `tests/*.rs`)
+  from explicit `:changed_files` or workspace Git status/diff + untracked
+  files across three tiers:
 
-    1. Direct modified `*_test.exs` files (`:direct`)
-    2. Path-convention mirrors from `lib/.../<name>.ex` (`:mirror`)
-    3. Reverse module reference graph from `defmodule` names in changed `.ex`
-       files to `test/**/*_test.exs` references (`:reference`)
+    1. Direct modified test files (`:direct`)
+    2. Path-convention mirrors (`:mirror`):
+       - Elixir: `lib/.../<name>.ex` -> `test/.../<name>_test.exs`
+       - TS/JS: `foo.ts` -> `foo.test.ts` / `foo.spec.ts` / `__tests__/foo.test.ts`
+       - Python: `foo.py` -> `test_foo.py` / `foo_test.py`
+       - Go: `foo.go` -> `foo_test.go`
+       - Rust: `foo.rs` -> `tests/foo.rs`
+    3. Reverse module/import reference graph (`:reference`)
   """
 
   alias IexCode.WorkspacePath
 
   @default_max_targets 25
   @max_file_bytes 512_000
-  @excluded_dirs MapSet.new(~w(_build deps .git node_modules))
+  @excluded_dirs MapSet.new(~w(_build deps .git node_modules target __pycache__ .venv))
+  @js_ts_extensions ~w(.ts .tsx .js .jsx .mjs .cjs)
 
   @type reason_tier :: :direct | :mirror | :reference
 
@@ -57,7 +64,9 @@ defmodule IexCode.Tools.TestSelector do
       mirror_set = MapSet.union(direct_set, MapSet.new(mirrors))
 
       modules = extract_changed_modules(canonical_root, changed_files)
-      references = select_references(canonical_root, all_test_files, mirror_set, modules)
+
+      references =
+        select_references(canonical_root, all_test_files, mirror_set, modules, changed_files)
 
       ranked =
         Enum.map(direct, &{&1, :direct}) ++
@@ -183,42 +192,119 @@ defmodule IexCode.Tools.TestSelector do
   end
 
   defp list_test_files(canonical_root) do
-    test_root = Path.join(canonical_root, "test")
+    canonical_root
+    |> walk_test_files(canonical_root, [])
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
 
-    if File.dir?(test_root) do
-      Path.wildcard(Path.join(test_root, "**/*_test.exs"))
-      |> Enum.flat_map(fn candidate ->
-        with {:ok, resolved} <- WorkspacePath.resolve(canonical_root, candidate),
-             true <- File.regular?(resolved),
-             rel <- Path.relative_to(resolved, canonical_root),
-             false <- excluded_rel_path?(rel) do
-          [rel]
-        else
-          _ -> []
-        end
-      end)
-      |> Enum.uniq()
-      |> Enum.sort()
-    else
-      []
+  defp walk_test_files(dir, canonical_root, acc) do
+    case File.ls(dir) do
+      {:ok, names} ->
+        Enum.reduce(names, acc, fn name, inner_acc ->
+          full_path = Path.join(dir, name)
+          collect_test_entry(name, full_path, canonical_root, inner_acc)
+        end)
+
+      {:error, _} ->
+        acc
     end
   end
 
-  # Tier 1: Direct modified `*_test.exs` files inside `test/`.
+  defp collect_test_entry(name, full_path, canonical_root, acc) do
+    case File.lstat(full_path) do
+      {:ok, %File.Stat{type: :symlink}} ->
+        acc
+
+      {:ok, %File.Stat{type: :directory}} ->
+        if MapSet.member?(@excluded_dirs, name) do
+          acc
+        else
+          walk_test_files(full_path, canonical_root, acc)
+        end
+
+      {:ok, %File.Stat{type: :regular}} ->
+        rel = Path.relative_to(full_path, canonical_root)
+
+        if not excluded_rel_path?(rel) and test_file?(rel) do
+          [rel | acc]
+        else
+          acc
+        end
+
+      _ ->
+        acc
+    end
+  end
+
+  @doc false
+  @spec test_file?(String.t()) :: boolean()
+  def test_file?(rel) when is_binary(rel) do
+    ext = rel |> Path.extname() |> String.downcase()
+    base = Path.basename(rel)
+    parts = Path.split(Path.dirname(rel))
+
+    cond do
+      String.starts_with?(rel, "test/") and String.ends_with?(rel, "_test.exs") ->
+        true
+
+      ext in @js_ts_extensions ->
+        stem = Path.basename(rel, ext)
+
+        String.ends_with?(stem, ".test") or String.ends_with?(stem, ".spec") or
+          "__tests__" in parts
+
+      ext == ".py" ->
+        stem = Path.basename(rel, ".py")
+        String.starts_with?(base, "test_") or String.ends_with?(stem, "_test")
+
+      ext == ".go" ->
+        String.ends_with?(base, "_test.go")
+
+      ext == ".rs" ->
+        "tests" in parts
+
+      true ->
+        false
+    end
+  end
+
+  @doc false
+  @spec paired_tests_for(String.t(), [String.t()]) :: [String.t()]
+  def paired_tests_for(source_path, all_test_files)
+      when is_binary(source_path) and is_list(all_test_files) do
+    if test_file?(source_path) do
+      []
+    else
+      select_mirrors([source_path], all_test_files, MapSet.new())
+    end
+  end
+
+  # Tier 1: Direct modified test files.
   defp select_direct(changed_files, test_file_set) do
     changed_files
     |> Enum.filter(&MapSet.member?(test_file_set, &1))
     |> Enum.sort()
   end
 
-  # Tier 2: Path-convention mirrors from `lib/.../<stem>.ex`.
+  # Tier 2: Path-convention mirrors for Elixir and polyglot source files.
   defp select_mirrors(changed_files, all_test_files, already_selected) do
     candidates =
       Enum.flat_map(changed_files, fn path ->
-        case lib_mirror_specs(path) do
-          nil -> []
-          spec -> match_mirror_specs(spec, all_test_files)
-        end
+        elixir_matches =
+          case lib_mirror_specs(path) do
+            nil -> []
+            spec -> match_mirror_specs(spec, all_test_files)
+          end
+
+        polyglot_matches =
+          if test_file?(path) do
+            []
+          else
+            match_polyglot_mirrors(path, all_test_files)
+          end
+
+        elixir_matches ++ polyglot_matches
       end)
 
     exact =
@@ -246,6 +332,191 @@ defmodule IexCode.Tools.TestSelector do
     |> Enum.uniq()
     |> Enum.reject(&MapSet.member?(already_selected, &1))
   end
+
+  defp match_polyglot_mirrors(path, all_test_files) do
+    ext = path |> Path.extname() |> String.downcase()
+    dir = Path.dirname(path)
+    stem = Path.basename(path, ext)
+
+    cond do
+      ext in @js_ts_extensions ->
+        match_js_ts_mirrors(dir, stem, ext, all_test_files)
+
+      ext == ".py" ->
+        match_python_mirrors(dir, stem, all_test_files)
+
+      ext == ".go" ->
+        match_go_mirrors(dir, stem, all_test_files)
+
+      ext == ".rs" ->
+        match_rust_mirrors(dir, stem, all_test_files)
+
+      true ->
+        []
+    end
+  end
+
+  defp match_js_ts_mirrors(dir, stem, ext, all_test_files) do
+    same_dir_exact =
+      MapSet.new(
+        for suffix <- [".test", ".spec"], e <- [ext | @js_ts_extensions] do
+          join_rel(dir, "#{stem}#{suffix}#{e}")
+        end ++
+          for test_dir <- [join_rel(dir, "__tests__")],
+              name <- ["#{stem}.test", "#{stem}.spec", stem],
+              e <- [ext | @js_ts_extensions] do
+            join_rel(test_dir, "#{name}#{e}")
+          end
+      )
+
+    sub_dir = strip_source_prefix(dir)
+
+    mirrored_sibling =
+      MapSet.new(
+        for root_dir <- ["__tests__", "tests", "test"],
+            rel_dir <- Enum.uniq([dir, sub_dir]),
+            target_dir = join_rel(root_dir, rel_dir),
+            name <- ["#{stem}.test", "#{stem}.spec", stem],
+            e <- [ext | @js_ts_extensions] do
+          join_rel(target_dir, "#{name}#{e}")
+        end ++
+          for root_dir <- ["__tests__", "tests", "test"],
+              name <- ["#{stem}.test", "#{stem}.spec", stem],
+              e <- [ext | @js_ts_extensions] do
+            join_rel(root_dir, "#{name}#{e}")
+          end
+      )
+
+    Enum.flat_map(all_test_files, fn test_path ->
+      cond do
+        MapSet.member?(same_dir_exact, test_path) -> [{:exact, test_path}]
+        MapSet.member?(mirrored_sibling, test_path) -> [{:sibling, test_path}]
+        true -> []
+      end
+    end)
+  end
+
+  defp match_python_mirrors(dir, stem, all_test_files) do
+    exact_names = ["test_#{stem}.py", "#{stem}_test.py"]
+
+    same_dir_exact =
+      MapSet.new(
+        for(name <- exact_names, do: join_rel(dir, name)) ++
+          for(
+            sub <- ["tests", "test"],
+            name <- exact_names,
+            do: join_rel(join_rel(dir, sub), name)
+          )
+      )
+
+    sub_dir = strip_source_prefix(dir)
+
+    mirrored_sibling =
+      MapSet.new(
+        for root_dir <- ["tests", "test"],
+            rel_dir <- Enum.uniq([dir, sub_dir]),
+            target_dir = join_rel(root_dir, rel_dir),
+            name <- exact_names do
+          join_rel(target_dir, name)
+        end ++
+          for root_dir <- ["tests", "test"], name <- exact_names do
+            join_rel(root_dir, name)
+          end
+      )
+
+    Enum.flat_map(all_test_files, fn test_path ->
+      cond do
+        MapSet.member?(same_dir_exact, test_path) -> [{:exact, test_path}]
+        MapSet.member?(mirrored_sibling, test_path) -> [{:sibling, test_path}]
+        true -> []
+      end
+    end)
+  end
+
+  defp match_go_mirrors(dir, stem, all_test_files) do
+    exact_path = join_rel(dir, "#{stem}_test.go")
+
+    Enum.flat_map(all_test_files, fn test_path ->
+      if test_path == exact_path, do: [{:exact, test_path}], else: []
+    end)
+  end
+
+  defp match_rust_mirrors(dir, stem, all_test_files) do
+    {crate_root, sub_inside_src} = split_rust_src_root(dir)
+
+    exact_paths =
+      MapSet.new(
+        [
+          join_rel(crate_root, "tests/#{stem}.rs"),
+          join_rel(crate_root, "tests/#{stem}_test.rs"),
+          "tests/#{stem}.rs",
+          "tests/#{stem}_test.rs"
+        ] ++
+          if sub_inside_src != "." do
+            [
+              join_rel(crate_root, "tests/#{sub_inside_src}/#{stem}.rs"),
+              "tests/#{sub_inside_src}/#{stem}.rs"
+            ]
+          else
+            []
+          end
+      )
+
+    subdir_prefixes =
+      [
+        join_rel(crate_root, "tests/#{stem}") <> "/",
+        "tests/#{stem}/"
+      ]
+      |> Enum.uniq()
+
+    Enum.flat_map(all_test_files, fn test_path ->
+      cond do
+        MapSet.member?(exact_paths, test_path) ->
+          [{:exact, test_path}]
+
+        Enum.any?(subdir_prefixes, &String.starts_with?(test_path, &1)) ->
+          [{:subdir, test_path}]
+
+        true ->
+          []
+      end
+    end)
+  end
+
+  defp split_rust_src_root("."), do: {".", "."}
+
+  defp split_rust_src_root(dir) do
+    parts = Path.split(dir)
+
+    case Enum.find_index(parts, &(&1 == "src")) do
+      nil ->
+        {dir, "."}
+
+      idx ->
+        crate_parts = Enum.take(parts, idx)
+        sub_parts = Enum.drop(parts, idx + 1)
+        crate_root = if crate_parts == [], do: ".", else: Path.join(crate_parts)
+        sub_dir = if sub_parts == [], do: ".", else: Path.join(sub_parts)
+        {crate_root, sub_dir}
+    end
+  end
+
+  defp strip_source_prefix("."), do: "."
+
+  defp strip_source_prefix(dir) do
+    case Path.split(dir) do
+      [head | rest] when head in ["src", "lib", "app"] ->
+        if rest == [], do: ".", else: Path.join(rest)
+
+      _ ->
+        dir
+    end
+  end
+
+  defp join_rel(".", child), do: child
+  defp join_rel("", child), do: child
+  defp join_rel(dir, "."), do: dir
+  defp join_rel(dir, child), do: Path.join(dir, child)
 
   defp lib_mirror_specs(path) do
     if String.starts_with?(path, "lib/") and String.ends_with?(path, ".ex") do
@@ -367,21 +638,87 @@ defmodule IexCode.Tools.TestSelector do
 
   defp extract_alias_segments(_), do: :error
 
-  defp select_references(_canonical_root, _all_test_files, _already_selected, []), do: []
+  defp select_references(canonical_root, all_test_files, already_selected, modules, changed_files) do
+    elixir_targets = build_module_match_targets(modules)
+    polyglot_targets = build_polyglot_targets(changed_files)
 
-  defp select_references(canonical_root, all_test_files, already_selected, modules) do
-    match_targets = build_module_match_targets(modules)
+    if elixir_targets == [] and polyglot_targets == [] do
+      []
+    else
+      all_test_files
+      |> Enum.reject(&MapSet.member?(already_selected, &1))
+      |> Enum.flat_map(fn test_rel ->
+        score =
+          if String.ends_with?(test_rel, ".exs") do
+            if elixir_targets == [],
+              do: 0,
+              else: score_test_file_references(canonical_root, test_rel, elixir_targets)
+          else
+            if polyglot_targets == [],
+              do: 0,
+              else: score_polyglot_references(canonical_root, test_rel, polyglot_targets)
+          end
 
-    all_test_files
-    |> Enum.reject(&MapSet.member?(already_selected, &1))
-    |> Enum.flat_map(fn test_rel ->
-      case score_test_file_references(canonical_root, test_rel, match_targets) do
-        0 -> []
-        score -> [{score, test_rel}]
+        if score > 0, do: [{score, test_rel}], else: []
+      end)
+      |> Enum.sort_by(fn {score, path} -> {-score, path} end)
+      |> Enum.map(&elem(&1, 1))
+    end
+  end
+
+  defp build_polyglot_targets(changed_files) do
+    generic_stems = MapSet.new(~w(index mod lib main __init__))
+
+    changed_files
+    |> Enum.reject(
+      &(String.ends_with?(&1, ".ex") or String.ends_with?(&1, ".exs") or test_file?(&1))
+    )
+    |> Enum.flat_map(fn path ->
+      ext = path |> Path.extname() |> String.downcase()
+      stem = Path.basename(path, ext)
+
+      if ext in ([".py", ".go", ".rs"] ++ @js_ts_extensions) and String.length(stem) >= 3 and
+           not MapSet.member?(generic_stems, stem) do
+        [%{stem: stem, no_ext: Path.rootname(path)}]
+      else
+        []
       end
     end)
-    |> Enum.sort_by(fn {score, path} -> {-score, path} end)
-    |> Enum.map(&elem(&1, 1))
+  end
+
+  defp score_polyglot_references(canonical_root, test_rel, targets) do
+    with {:ok, full_path} <- WorkspacePath.resolve(canonical_root, test_rel),
+         {:ok, %File.Stat{type: :regular, size: size}} when size <= @max_file_bytes <-
+           File.stat(full_path),
+         {:ok, content} <- File.read(full_path) do
+      import_lines =
+        content
+        |> String.split(~r/\r?\n/)
+        |> Enum.filter(&Regex.match?(~r/\b(import|from|require|use|mod)\b/, &1))
+        |> Enum.join("\n")
+
+      if import_lines == "" do
+        0
+      else
+        Enum.reduce(targets, 0, fn target, acc ->
+          cond do
+            Regex.match?(
+              ~r/(?<![\w])#{Regex.escape(target.no_ext)}(?![\w])/,
+              import_lines
+            ) ->
+              acc + 10
+
+            Regex.match?(~r/(?<![\w])#{Regex.escape(target.stem)}(?![\w])/, import_lines) ->
+              acc + 5
+
+            true ->
+              acc
+          end
+        end)
+      end
+    else
+      _ -> 0
+    end
   end
 
   defp build_module_match_targets(modules) do

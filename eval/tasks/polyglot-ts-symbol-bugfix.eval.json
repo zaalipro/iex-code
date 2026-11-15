@@ -1,0 +1,11 @@
+{
+  "id": "polyglot-ts-symbol-bugfix",
+  "prompt": "Fix the TypeScript symbol resolution bugs in src/symbol_resolver.ts so SymbolTable.register/1, SymbolTable.resolve/2, and formatSymbolSignature/1 scope keys by namespace, perform exact lookups without mutating the table on misses, and format qualified signatures as `<kind> <qualifiedName>(<comma-separated params>)[: <returnType>]`.",
+  "repo": "fixtures/polyglot-ts-symbol-bugfix",
+  "test_cmd": ["elixir", "grade.exs"],
+  "timeout_ms": 30000,
+  "max_turns": 8,
+  "category": "bugfix",
+  "difficulty": "medium",
+  "tags": ["typescript", "polyglot", "symbols", "bugfix"]
+}

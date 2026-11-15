@@ -110,6 +110,24 @@ defmodule IexCode.Eval.BenchmarkSuiteE2ETest do
                 args: %{"path" => "lib/jsonrpc_framer.ex"}
               }
             ]
+
+          String.contains?(prompt, "src/symbol_resolver.ts") ->
+            [
+              %{
+                id: "read-symbol-resolver",
+                name: "read_file",
+                args: %{"path" => "src/symbol_resolver.ts"}
+              }
+            ]
+
+          String.contains?(prompt, "lib/feedback_repair.ex") ->
+            [
+              %{
+                id: "read-feedback-repair",
+                name: "read_file",
+                args: %{"path" => "lib/feedback_repair.ex"}
+              }
+            ]
         end
 
       %{
@@ -818,6 +836,140 @@ defmodule IexCode.Eval.BenchmarkSuiteE2ETest do
                 }
               }
             ]
+
+          String.contains?(prompt, "src/symbol_resolver.ts") ->
+            [
+              %{
+                id: "write-symbol-resolver",
+                name: "write_file",
+                args: %{
+                  "path" => "src/symbol_resolver.ts",
+                  "content" => """
+                  export interface SymbolEntry {
+                    name: string;
+                    kind: "function" | "class" | "interface" | "type" | "method";
+                    namespace?: string;
+                    params?: string[];
+                    returnType?: string;
+                  }
+
+                  export class SymbolTable {
+                    private entries: Map<string, SymbolEntry> = new Map();
+
+                    register(entry: SymbolEntry): void {
+                      const key = entry.namespace ? `${entry.namespace}.${entry.name}` : entry.name;
+                      this.entries.set(key, entry);
+                    }
+
+                    resolve(name: string, namespace?: string): SymbolEntry | undefined {
+                      const key = namespace ? `${namespace}.${name}` : name;
+                      return this.entries.get(key);
+                    }
+
+                    size(): number {
+                      return this.entries.size;
+                    }
+                  }
+
+                  export function formatSymbolSignature(entry: SymbolEntry): string {
+                    const qualified = entry.namespace ? `${entry.namespace}.${entry.name}` : entry.name;
+                    const params = (entry.params ?? []).join(", ");
+                    const ret = entry.returnType ? `: ${entry.returnType}` : "";
+                    return `${entry.kind} ${qualified}(${params})${ret}`;
+                  }
+                  """
+                }
+              }
+            ]
+
+          String.contains?(prompt, "lib/feedback_repair.ex") ->
+            [
+              %{
+                id: "write-feedback-repair",
+                name: "write_file",
+                args: %{
+                  "path" => "lib/feedback_repair.ex",
+                  "content" => """
+                  defmodule FeedbackRepair do
+                    @moduledoc \"\"\"
+                    Bounded verifier feedback-repair loop state machine.
+                    \"\"\"
+
+                    @type finding :: %{file: String.t(), line: non_neg_integer(), reason: String.t()}
+
+                    @spec new(keyword()) :: map()
+                    def new(opts \\\\ []) do
+                      max_rounds = Keyword.get(opts, :max_rounds, 3)
+
+                      %{
+                        round: 0,
+                        max_rounds: max_rounds,
+                        status: :pending,
+                        open_findings: [],
+                        resolved_findings: [],
+                        history: []
+                      }
+                    end
+
+                    @spec record_verdict(map(), map()) :: {:ok, map()} | {:error, term()}
+                    def record_verdict(state, %{status: status} = verdict)
+                        when status in [:approved, :changes_requested] do
+                      raw_findings = Map.get(verdict, :findings, [])
+
+                      findings =
+                        raw_findings
+                        |> Enum.uniq()
+                        |> Enum.sort_by(fn f -> {f.file, f.line, f.reason} end)
+
+                      if status == :approved and findings != [] do
+                        {:error, :approved_with_findings}
+                      else
+                        next_round = state.round + 1
+                        newly_resolved = Enum.reject(state.open_findings, &(&1 in findings))
+
+                        resolved =
+                          (state.resolved_findings ++ newly_resolved)
+                          |> Enum.reject(&(&1 in findings))
+                          |> Enum.uniq()
+                          |> Enum.sort_by(fn f -> {f.file, f.line, f.reason} end)
+
+                        next_status =
+                          cond do
+                            status == :approved -> :approved
+                            next_round >= state.max_rounds -> :exhausted
+                            true -> :repairing
+                          end
+
+                        entry = %{round: next_round, status: status, findings: findings}
+
+                        {:ok,
+                         %{
+                           state
+                           | round: next_round,
+                             status: next_status,
+                             open_findings: findings,
+                             resolved_findings: resolved,
+                             history: state.history ++ [entry]
+                         }}
+                      end
+                    end
+
+                    def record_verdict(_state, _verdict), do: {:error, :invalid_verdict}
+
+                    @spec next_action(map()) ::
+                            {:halt, :approved | :max_rounds_exceeded}
+                            | {:repair, pos_integer(), [finding()]}
+                    def next_action(%{status: :approved}), do: {:halt, :approved}
+                    def next_action(%{status: :exhausted}), do: {:halt, :max_rounds_exceeded}
+
+                    def next_action(state) do
+                      {:repair, state.round + 1, state.open_findings}
+                    end
+                  end
+                  """
+                }
+              }
+            ]
         end
 
       %{
@@ -828,9 +980,9 @@ defmodule IexCode.Eval.BenchmarkSuiteE2ETest do
     end
   end
 
-  test "all 10 eval tasks load cleanly and start in a genuinely failing state before agent execution" do
+  test "all 12 eval tasks load cleanly and start in a genuinely failing state before agent execution" do
     assert {:ok, tasks} = Task.load_dir("eval/tasks")
-    assert length(tasks) == 10
+    assert length(tasks) == 12
 
     expected_ids = [
       "elixir-ast-rename-refactor",
@@ -842,7 +994,9 @@ defmodule IexCode.Eval.BenchmarkSuiteE2ETest do
       "elixir-otp-timeout-leak",
       "elixir-pagination-boundary",
       "elixir-repeated-block-patch",
-      "example-markdown-typo"
+      "elixir-swarm-feedback-repair",
+      "example-markdown-typo",
+      "polyglot-ts-symbol-bugfix"
     ]
 
     assert Enum.map(tasks, & &1.id) == expected_ids
@@ -857,7 +1011,7 @@ defmodule IexCode.Eval.BenchmarkSuiteE2ETest do
     end
   end
 
-  test "full benchmark suite passes 10/10 through real AgentLoop and real Tools and cleans up workdirs" do
+  test "full benchmark suite passes 12/12 through real AgentLoop and real Tools and cleans up workdirs" do
     assert {:ok, results} =
              Runner.run("eval/tasks",
                samples: 1,
@@ -866,7 +1020,7 @@ defmodule IexCode.Eval.BenchmarkSuiteE2ETest do
                tool_executor: IexCode.Tools
              )
 
-    assert length(results.tasks) == 10
+    assert length(results.tasks) == 12
 
     for task <- results.tasks do
       assert [sample] = task.samples
@@ -883,8 +1037,8 @@ defmodule IexCode.Eval.BenchmarkSuiteE2ETest do
       refute File.exists?(sample.workdir)
     end
 
-    assert results.aggregate.samples == 10
-    assert results.aggregate.passed == 10
+    assert results.aggregate.samples == 12
+    assert results.aggregate.passed == 12
     assert results.aggregate.pass_rate == 1.0
     assert results.aggregate.pass_at_k == %{1 => 1.0}
 
@@ -896,11 +1050,11 @@ defmodule IexCode.Eval.BenchmarkSuiteE2ETest do
     assert results.by_category["general"].pass_rate == 1.0
 
     report = Runner.format_report(results)
-    assert report =~ "eval: 10 task(s) x 1 sample(s)"
-    assert report =~ "aggregate: 10/10 passed"
+    assert report =~ "eval: 12 task(s) x 1 sample(s)"
+    assert report =~ "aggregate: 12/12 passed"
 
     decoded = results |> Runner.to_json_report() |> Jason.decode!()
-    assert decoded["aggregate"]["passed"] == 10
+    assert decoded["aggregate"]["passed"] == 12
     assert decoded["aggregate"]["pass_rate"] == 1.0
   end
 
