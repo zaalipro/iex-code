@@ -92,6 +92,24 @@ defmodule IexCode.Eval.BenchmarkSuiteE2ETest do
                 args: %{"path" => "lib/job_coordinator.ex"}
               }
             ]
+
+          String.contains?(prompt, "lib/ast_renamer.ex") ->
+            [
+              %{
+                id: "read-ast-renamer",
+                name: "read_file",
+                args: %{"path" => "lib/ast_renamer.ex"}
+              }
+            ]
+
+          String.contains?(prompt, "lib/jsonrpc_framer.ex") ->
+            [
+              %{
+                id: "read-jsonrpc-framer",
+                name: "read_file",
+                args: %{"path" => "lib/jsonrpc_framer.ex"}
+              }
+            ]
         end
 
       %{
@@ -644,6 +662,162 @@ defmodule IexCode.Eval.BenchmarkSuiteE2ETest do
                 }
               }
             ]
+
+          String.contains?(prompt, "lib/ast_renamer.ex") ->
+            [
+              %{
+                id: "write-ast-renamer",
+                name: "write_file",
+                args: %{
+                  "path" => "lib/ast_renamer.ex",
+                  "content" => """
+                  defmodule AstRenamer do
+                    @moduledoc \"\"\"
+                    AST-aware Elixir function renaming utility.
+                    \"\"\"
+
+                    @spec rename_function(String.t(), atom(), atom(), non_neg_integer()) ::
+                            {:ok, String.t()} | {:error, term()}
+                    def rename_function(source, old_name, new_name, arity)
+                        when is_binary(source) and is_atom(old_name) and is_atom(new_name) and
+                               is_integer(arity) and arity >= 0 do
+                      with {:ok, ast} <- Code.string_to_quoted(source) do
+                        updated_ast =
+                          Macro.prewalk(ast, fn
+                            {def_kind, def_meta, [{:when, when_meta, [{^old_name, fn_meta, args}, guard]}, body]}
+                            when def_kind in [:def, :defp] and
+                                   ((is_nil(args) and arity == 0) or
+                                      (is_list(args) and length(args) == arity)) ->
+                              {def_kind, def_meta,
+                               [{:when, when_meta, [{new_name, fn_meta, args}, guard]}, body]}
+
+                            {def_kind, def_meta, [{^old_name, fn_meta, args}, body]}
+                            when def_kind in [:def, :defp] and
+                                   ((is_nil(args) and arity == 0) or
+                                      (is_list(args) and length(args) == arity)) ->
+                              {def_kind, def_meta, [{new_name, fn_meta, args}, body]}
+
+                            {:&, cap_meta, [{:/, slash_meta, [{^old_name, fn_meta, ctx}, ^arity]}]}
+                            when is_atom(ctx) ->
+                              {:&, cap_meta, [{:/, slash_meta, [{new_name, fn_meta, ctx}, arity]}]}
+
+                            {:&, cap_meta,
+                             [{:/, slash_meta, [{{:., dot_meta, [mod, ^old_name]}, call_meta, []}, ^arity]}]} ->
+                              {:&, cap_meta,
+                               [{:/, slash_meta, [{{:., dot_meta, [mod, new_name]}, call_meta, []}, arity]}]}
+
+                            {{:., dot_meta, [mod, ^old_name]}, call_meta, args}
+                            when is_list(args) and length(args) == arity ->
+                              {{:., dot_meta, [mod, new_name]}, call_meta, args}
+
+                            {^old_name, call_meta, args}
+                            when is_list(args) and length(args) == arity ->
+                              {new_name, call_meta, args}
+
+                            other ->
+                              other
+                          end)
+
+                        {:ok, Macro.to_string(updated_ast)}
+                      end
+                    end
+                  end
+                  """
+                }
+              }
+            ]
+
+          String.contains?(prompt, "lib/jsonrpc_framer.ex") ->
+            [
+              %{
+                id: "write-jsonrpc-framer",
+                name: "write_file",
+                args: %{
+                  "path" => "lib/jsonrpc_framer.ex",
+                  "content" => """
+                  defmodule JsonRpcFramer do
+                    @moduledoc \"\"\"
+                    Streaming Content-Length framer for JSON-RPC / LSP / MCP stdio transports.
+                    \"\"\"
+
+                    @default_max_bytes 1_048_576
+
+                    @type t :: %{buffer: binary(), max_content_length: pos_integer()}
+
+                    @spec new(keyword()) :: t()
+                    def new(opts \\\\ []) do
+                      %{
+                        buffer: "",
+                        max_content_length: Keyword.get(opts, :max_content_length, @default_max_bytes)
+                      }
+                    end
+
+                    @spec encode(binary()) :: binary()
+                    def encode(payload) when is_binary(payload) do
+                      "Content-Length: \#{byte_size(payload)}\\r\\n\\r\\n" <> payload
+                    end
+
+                    @spec feed(t(), binary()) :: {:ok, [binary()], t()} | {:error, term(), t()}
+                    def feed(%{buffer: buffer} = state, chunk) when is_binary(chunk) do
+                      extract_frames(buffer <> chunk, state, [])
+                    end
+
+                    defp extract_frames(buffer, state, acc) do
+                      case :binary.match(buffer, "\\r\\n\\r\\n") do
+                        {header_len, 4} ->
+                          header_block = binary_part(buffer, 0, header_len)
+                          rest = binary_part(buffer, header_len + 4, byte_size(buffer) - header_len - 4)
+
+                          case parse_content_length(header_block, state.max_content_length) do
+                            {:ok, content_length} ->
+                              if byte_size(rest) >= content_length do
+                                payload = binary_part(rest, 0, content_length)
+                                remaining = binary_part(rest, content_length, byte_size(rest) - content_length)
+                                extract_frames(remaining, state, [payload | acc])
+                              else
+                                {:ok, Enum.reverse(acc), %{state | buffer: buffer}}
+                              end
+
+                            {:error, reason} ->
+                              {:error, reason, %{state | buffer: ""}}
+                          end
+
+                        :nomatch ->
+                          {:ok, Enum.reverse(acc), %{state | buffer: buffer}}
+                      end
+                    end
+
+                    defp parse_content_length(header_block, max_bytes) do
+                      headers =
+                        header_block
+                        |> String.split("\\r\\n", trim: true)
+                        |> Enum.reduce(%{}, fn line, acc ->
+                          case String.split(line, ":", parts: 2) do
+                            [name, val] ->
+                              Map.put(acc, name |> String.trim() |> String.downcase(), String.trim(val))
+
+                            _ ->
+                              acc
+                          end
+                        end)
+
+                      case Map.fetch(headers, "content-length") do
+                        :error ->
+                          {:error, :missing_content_length}
+
+                        {:ok, raw} ->
+                          case Integer.parse(raw) do
+                            {len, ""} when len >= 0 and len <= max_bytes -> {:ok, len}
+                            {len, ""} when len > max_bytes -> {:error, :frame_too_large}
+                            _ -> {:error, :invalid_content_length}
+                          end
+                      end
+                    end
+                  end
+                  """
+                }
+              }
+            ]
         end
 
       %{
@@ -654,14 +828,16 @@ defmodule IexCode.Eval.BenchmarkSuiteE2ETest do
     end
   end
 
-  test "all 8 eval tasks load cleanly and start in a genuinely failing state before agent execution" do
+  test "all 10 eval tasks load cleanly and start in a genuinely failing state before agent execution" do
     assert {:ok, tasks} = Task.load_dir("eval/tasks")
-    assert length(tasks) == 8
+    assert length(tasks) == 10
 
     expected_ids = [
+      "elixir-ast-rename-refactor",
       "elixir-compile-repair",
       "elixir-context-bugfix",
       "elixir-genserver-bounded-state",
+      "elixir-jsonrpc-frame-parser",
       "elixir-multi-file-contract",
       "elixir-otp-timeout-leak",
       "elixir-pagination-boundary",
@@ -681,7 +857,7 @@ defmodule IexCode.Eval.BenchmarkSuiteE2ETest do
     end
   end
 
-  test "full benchmark suite passes 8/8 through real AgentLoop and real Tools and cleans up workdirs" do
+  test "full benchmark suite passes 10/10 through real AgentLoop and real Tools and cleans up workdirs" do
     assert {:ok, results} =
              Runner.run("eval/tasks",
                samples: 1,
@@ -690,7 +866,7 @@ defmodule IexCode.Eval.BenchmarkSuiteE2ETest do
                tool_executor: IexCode.Tools
              )
 
-    assert length(results.tasks) == 8
+    assert length(results.tasks) == 10
 
     for task <- results.tasks do
       assert [sample] = task.samples
@@ -707,8 +883,8 @@ defmodule IexCode.Eval.BenchmarkSuiteE2ETest do
       refute File.exists?(sample.workdir)
     end
 
-    assert results.aggregate.samples == 8
-    assert results.aggregate.passed == 8
+    assert results.aggregate.samples == 10
+    assert results.aggregate.passed == 10
     assert results.aggregate.pass_rate == 1.0
     assert results.aggregate.pass_at_k == %{1 => 1.0}
 
@@ -720,11 +896,11 @@ defmodule IexCode.Eval.BenchmarkSuiteE2ETest do
     assert results.by_category["general"].pass_rate == 1.0
 
     report = Runner.format_report(results)
-    assert report =~ "eval: 8 task(s) x 1 sample(s)"
-    assert report =~ "aggregate: 8/8 passed"
+    assert report =~ "eval: 10 task(s) x 1 sample(s)"
+    assert report =~ "aggregate: 10/10 passed"
 
     decoded = results |> Runner.to_json_report() |> Jason.decode!()
-    assert decoded["aggregate"]["passed"] == 8
+    assert decoded["aggregate"]["passed"] == 10
     assert decoded["aggregate"]["pass_rate"] == 1.0
   end
 

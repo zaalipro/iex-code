@@ -179,5 +179,31 @@ defmodule IexCode.Consensus.ArbitratorTest do
       assert result.decision == :approved
       assert abs(result.swarm_concordance - 1.0) < 0.2
     end
+
+    test "T3_R4_ARB_02: resolve_arbitration validates resolution, is idempotent, and rejects conflicts",
+         %{run: run} do
+      assessments = [
+        mock_assessment("r1", :approve, 0.8, 0.8),
+        mock_assessment("r2", :request_changes, 0.7, 0.6)
+      ]
+
+      result = Arbitrator.arbitrate(assessments, run_id: run.id)
+      approval = result.approval_record
+
+      assert {:error, :invalid_resolution} = Arbitrator.resolve_arbitration(approval.id, :pending)
+
+      assert {:error, :invalid_resolution} =
+               Arbitrator.resolve_arbitration(approval.id, "ship_it")
+
+      assert {:ok, resolved} = Arbitrator.resolve_arbitration(approval.id, :approved)
+      assert resolved.status == :approved
+
+      # Matching re-resolution is idempotent
+      assert {:ok, idempotent} = Arbitrator.resolve_arbitration(approval.id, "approved")
+      assert idempotent.status == :approved
+
+      # Conflicting re-resolution is rejected
+      assert {:error, :already_resolved} = Arbitrator.resolve_arbitration(approval.id, :rejected)
+    end
   end
 end

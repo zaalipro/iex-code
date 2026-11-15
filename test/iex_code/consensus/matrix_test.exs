@@ -237,5 +237,19 @@ defmodule IexCode.Consensus.MatrixTest do
 
       assert_close(result.weighted_score, 0.60)
     end
+
+    test "T2_R4_MAT_04: out-of-range confidence/scores are clamped and duplicate reviewer_ids deduplicated" do
+      rogue_r1 = sample_assessment("r1", :approve, 5.0, %{correctness: 3.0, security: -2.0})
+      dup_r1 = sample_assessment("r1", :approve, 5.0, %{correctness: 3.0, security: -2.0})
+      r2 = sample_assessment("r2", :reject, 0.9, %{correctness: 0.2, security: 0.3})
+
+      result = Matrix.compute([rogue_r1, dup_r1, r2])
+
+      assert length(result.assessments) == 2
+      assert result.weighted_score >= -1.0 and result.weighted_score <= 1.0
+      assert result.swarm_concordance >= 0.0 and result.swarm_concordance <= 1.0
+      assert result.dimensional_averages.correctness <= 1.0
+      assert result.dimensional_averages.security >= 0.0
+    end
   end
 end
