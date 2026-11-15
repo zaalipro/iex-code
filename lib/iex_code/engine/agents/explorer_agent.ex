@@ -6,16 +6,27 @@ defmodule IexCode.Engine.Agents.ExplorerAgent do
   use GenServer, restart: :transient
   require Logger
   alias IexCode.Engine.{AgentCancellation, AgentRegistry, OperationManager}
+  alias IexCode.SemanticIndex.Indexer
   alias IexCode.Tools
-  alias IexCode.Tools.ASTSearch
+  alias IexCode.Tools.{ASTSearch, RepoMap, SymbolRefactor}
 
   @outer_timeout 90_000
   @inner_timeout 60_000
   @history_limit 20
+  @max_context_summary_bytes 4_500
+  @repo_map_max_bytes 3_000
+  @search_text_scan_limit 8_000
+  @max_symbol_candidates 3
 
   @stopwords ~w(the and for with this that from into your you are have has will would should could
                 implement create make code file files please using used when then them they what
                 which there here about after before between during through under over need wants)
+
+  @prompt_verbs MapSet.new(~w(
+    Inspect Explore Implement Fix Refactor Update Create Add Remove Check Verify Analyze
+    Search Run Test Find Build Ensure Support Upgrade Write Read Please Explorer Shard
+    All Some Key Workspace Module Modules Function Functions File Files Code Task Plan
+  ))
 
   defmodule State do
     defstruct [
@@ -156,11 +167,14 @@ defmodule IexCode.Engine.Agents.ExplorerAgent do
             else
               progress.(20, "Searching project files...")
 
-              # Derive the grep query from the prompt (plus any steering directives)
+              # Derive the grep and focus queries from a bounded slice of prompt + steering
               search_text =
-                Enum.join([prompt | Keyword.get(opts, :steer_directives, [])], "\n")
+                [prompt | Keyword.get(opts, :steer_directives, [])]
+                |> Enum.join("\n")
+                |> String.slice(0, @search_text_scan_limit)
 
               query = derive_search_query(search_text)
+              focus_query = derive_focus_query(search_text, query)
 
               # Run grep operation for the derived query
               grep_res =
@@ -181,49 +195,80 @@ defmodule IexCode.Engine.Agents.ExplorerAgent do
                   {:error, {:tool_not_allowed, "grep_search"}}
                 end
 
-              if cancelled_fun(state).() do
-                {:error, :cancelled}
-              else
-                progress.(60, "Scanning AST symbols...")
+              cond do
+                cancelled_fun(state).() ->
+                  {:error, :cancelled}
 
-                # Run AST search for key symbols if specified
-                ast_symbols =
-                  if tool_allowed?("ast_search", allowed_tools) do
-                    case ASTSearch.search(project_root, %{type: "module"}) do
-                      {:ok, syms} -> syms
-                      _ -> []
+                true ->
+                  progress.(45, "Generating structural repository map...")
+
+                  repo_map_res =
+                    if tool_allowed?("repo_map", allowed_tools) do
+                      RepoMap.generate(project_root,
+                        focus_query: focus_query,
+                        max_bytes: @repo_map_max_bytes
+                      )
+                    else
+                      {:error, {:tool_not_allowed, "repo_map"}}
                     end
+
+                  if cancelled_fun(state).() do
+                    {:error, :cancelled}
                   else
-                    []
-                  end
+                    progress.(65, "Scanning AST symbols and references...")
 
-                progress.(80, "Synthesizing codebase context...")
+                    ast_symbols =
+                      if tool_allowed?("ast_search", allowed_tools) do
+                        case ASTSearch.search(project_root, %{type: "module"}) do
+                          {:ok, syms} -> syms
+                          _ -> []
+                        end
+                      else
+                        []
+                      end
 
-                context_summary =
-                  cond do
-                    match?(
-                      {:ok, output} when is_binary(output) and byte_size(output) > 0,
-                      grep_res
-                    ) ->
-                      {:ok, output} = grep_res
-                      "Found key modules in workspace:\n#{String.slice(output, 0, 1500)}"
+                    symbol_refs =
+                      if tool_allowed?("find_references", allowed_tools) or
+                           tool_allowed?("ast_search", allowed_tools) do
+                        search_text
+                        |> extract_candidate_symbols(ast_symbols)
+                        |> query_symbol_references(project_root)
+                      else
+                        []
+                      end
 
-                    ast_symbols != [] ->
-                      sym_list =
-                        Enum.map_join(
-                          Enum.take(ast_symbols, 10),
-                          "\n",
-                          &"- #{&1.name} (#{Path.relative_to(&1.file, project_root)}:#{&1.line})"
+                    if cancelled_fun(state).() do
+                      {:error, :cancelled}
+                    else
+                      progress.(80, "Synthesizing codebase context...")
+
+                      semantic_hits =
+                        if tool_allowed?("semantic_code_search", allowed_tools) do
+                          query_lexical_semantic_index(
+                            project_root,
+                            focus_query,
+                            query,
+                            opts,
+                            state
+                          )
+                        else
+                          []
+                        end
+
+                      context_summary =
+                        synthesize_context_summary(
+                          project_root,
+                          grep_res,
+                          ast_symbols,
+                          symbol_refs,
+                          semantic_hits,
+                          repo_map_res
                         )
 
-                      "Discovered AST modules:\n#{sym_list}"
-
-                    true ->
-                      "Workspace exploration complete. Ready for implementation."
+                      progress.(100, "Exploration complete")
+                      {:ok, context_summary}
+                    end
                   end
-
-                progress.(100, "Exploration complete")
-                {:ok, context_summary}
               end
             end
           end,
@@ -304,7 +349,7 @@ defmodule IexCode.Engine.Agents.ExplorerAgent do
     IexCode.WorkspaceLocks.with_delegation(delegation, fun)
   end
 
-  # Search derivation
+  # Search derivation & context synthesis
 
   defp derive_search_query(text) do
     words =
@@ -319,6 +364,335 @@ defmodule IexCode.Engine.Agents.ExplorerAgent do
     case words do
       [] -> "defmodule"
       words -> Enum.map_join(words, "|", &Regex.escape/1)
+    end
+  end
+
+  defp derive_focus_query(text, grep_query) do
+    words =
+      text
+      |> String.downcase()
+      |> String.replace(~r/[^a-z0-9_\-.\/]+/, " ")
+      |> String.split(" ", trim: true)
+      |> Enum.reject(&(String.length(&1) < 3 or &1 in @stopwords))
+      |> Enum.uniq()
+      |> Enum.take(5)
+
+    cond do
+      words != [] -> Enum.join(words, " ")
+      grep_query != "defmodule" -> String.replace(grep_query, "|", " ")
+      true -> grep_query
+    end
+  end
+
+  defp extract_candidate_symbols(search_text, ast_symbols) when is_binary(search_text) do
+    qualified_calls =
+      Regex.scan(
+        ~r/\b([A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)*\.[a-z_][a-zA-Z0-9_?!]*(?:\/\d+)?)\b/,
+        search_text,
+        capture: :all_but_first
+      )
+      |> List.flatten()
+
+    dotted_modules =
+      Regex.scan(
+        ~r/\b([A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]+)+)\b/,
+        search_text,
+        capture: :all_but_first
+      )
+      |> List.flatten()
+
+    camel_modules =
+      Regex.scan(
+        ~r/\b([A-Z][a-z0-9]+(?:[A-Z][A-Za-z0-9_]*)+)\b/,
+        search_text,
+        capture: :all_but_first
+      )
+      |> List.flatten()
+      |> Enum.reject(&MapSet.member?(@prompt_verbs, &1))
+
+    unqualified_fun_arities =
+      Regex.scan(
+        ~r/(?<![A-Za-z0-9_.])([a-z_][a-zA-Z0-9_?!]*\/\d+)\b/,
+        search_text,
+        capture: :all_but_first
+      )
+      |> List.flatten()
+
+    down_text = String.downcase(search_text)
+
+    ast_matched_modules =
+      ast_symbols
+      |> Enum.map(&Map.get(&1, :name))
+      |> Enum.filter(&is_binary/1)
+      |> Enum.filter(fn mod_name ->
+        short = mod_name |> String.split(".") |> List.last() |> String.downcase()
+
+        String.length(short) >= 3 and
+          (String.contains?(down_text, String.downcase(mod_name)) or
+             Regex.match?(~r/\b#{Regex.escape(short)}\b/, down_text))
+      end)
+
+    single_cap_modules =
+      Regex.scan(~r/\b([A-Z][a-zA-Z0-9_]{2,})\b/, search_text, capture: :all_but_first)
+      |> List.flatten()
+      |> Enum.reject(&MapSet.member?(@prompt_verbs, &1))
+
+    base_modules =
+      (dotted_modules ++ camel_modules ++ ast_matched_modules ++ single_cap_modules)
+      |> Enum.uniq()
+
+    qualified_from_ast =
+      for mod <- Enum.take(base_modules, 2),
+          fun_arity <- Enum.take(unqualified_fun_arities, 2) do
+        "#{mod}.#{fun_arity}"
+      end
+
+    (qualified_calls ++
+       qualified_from_ast ++
+       dotted_modules ++
+       camel_modules ++
+       ast_matched_modules ++
+       single_cap_modules)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+    |> Enum.take(@max_symbol_candidates)
+  end
+
+  defp query_symbol_references([], _project_root), do: []
+
+  defp query_symbol_references(candidates, project_root) when is_list(candidates) do
+    candidates
+    |> Enum.flat_map(fn symbol ->
+      case SymbolRefactor.find_references(project_root, symbol, limit: 5) do
+        {:ok, [_ | _] = refs} ->
+          Enum.map(refs, &Map.put(&1, :symbol, symbol))
+
+        _ ->
+          []
+      end
+    end)
+    |> Enum.uniq_by(&{&1.file, &1.line, &1.column, &1.kind})
+    |> Enum.take(8)
+  rescue
+    _ -> []
+  end
+
+  defp query_lexical_semantic_index(project_root, focus_query, grep_query, opts, state) do
+    candidate_keys =
+      [opts[:project_id], safe_trusted_project_id(state), project_root, Path.expand(project_root)]
+      |> Enum.filter(&(is_binary(&1) and &1 != ""))
+      |> Enum.uniq()
+
+    case Enum.find(candidate_keys, &has_indexed_chunks?/1) do
+      nil ->
+        []
+
+      key ->
+        lexical_query =
+          if is_binary(focus_query) and focus_query != "" and focus_query != "defmodule",
+            do: focus_query,
+            else: String.replace(grep_query, "|", " ")
+
+        case Indexer.search(key, lexical_query, mode: :lexical, limit: 5, threshold: 0.05) do
+          {:ok, results} when is_list(results) -> results
+          _ -> []
+        end
+    end
+  rescue
+    _ -> []
+  catch
+    _, _ -> []
+  end
+
+  defp safe_trusted_project_id(state) do
+    trusted_project_id(state)
+  rescue
+    _ -> nil
+  catch
+    _, _ -> nil
+  end
+
+  defp has_indexed_chunks?(project_key) when is_binary(project_key) do
+    table = Indexer.table_name()
+
+    ets_count =
+      if :ets.whereis(table) != :undefined do
+        :ets.select_count(table, [
+          {{:_, project_key, :_, :_, :_, :_, :_, :_, :_}, [], [true]}
+        ])
+      else
+        0
+      end
+
+    if ets_count > 0 do
+      true
+    else
+      case Indexer.stats(project_key) do
+        %{ets_chunks: n} when is_integer(n) and n > 0 ->
+          true
+
+        %{db_chunks: n} when is_integer(n) and n > 0 ->
+          match?(
+            {:ok, warmed} when is_integer(warmed) and warmed > 0,
+            Indexer.warm_cache(project_key)
+          )
+
+        _ ->
+          false
+      end
+    end
+  rescue
+    _ -> false
+  catch
+    _, _ -> false
+  end
+
+  defp synthesize_context_summary(
+         project_root,
+         grep_res,
+         ast_symbols,
+         symbol_refs,
+         semantic_hits,
+         repo_map_res
+       ) do
+    grep_output =
+      case grep_res do
+        {:ok, output} when is_binary(output) and byte_size(output) > 0 -> output
+        _ -> nil
+      end
+
+    grep_has_matches? = is_binary(grep_output) and not no_grep_matches?(grep_output)
+
+    ast_section =
+      if ast_symbols != [] do
+        sym_list =
+          ast_symbols
+          |> Enum.take(10)
+          |> Enum.map_join("\n", fn sym ->
+            "- #{sym.name} (#{Path.relative_to(sym.file, project_root)}:#{sym.line})"
+          end)
+          |> clamp_utf8_bytes(450)
+
+        "Discovered AST modules:\n#{sym_list}"
+      end
+
+    refs_section =
+      if symbol_refs != [] do
+        ref_lines =
+          symbol_refs
+          |> Enum.map_join("\n", fn ref ->
+            "- #{ref.symbol} -> #{ref.file}:#{ref.line}:#{ref.column} [#{ref.kind}] #{ref.snippet}"
+          end)
+          |> clamp_utf8_bytes(650)
+
+        "Symbol references:\n#{ref_lines}"
+      end
+
+    semantic_section =
+      if semantic_hits != [] do
+        hit_lines =
+          semantic_hits
+          |> Enum.take(5)
+          |> Enum.map_join("\n", fn hit ->
+            sym = hit.symbol_name || hit.chunk_type || "chunk"
+
+            preview =
+              hit.content |> String.replace(~r/\s+/, " ") |> String.trim() |> clamp_utf8_bytes(90)
+
+            "- #{hit.file_path}:#{hit.start_line}-#{hit.end_line} (#{sym}, score=#{hit.score}): #{preview}"
+          end)
+          |> clamp_utf8_bytes(650)
+
+        "Lexical semantic matches:\n#{hit_lines}"
+      end
+
+    repo_map_raw =
+      case repo_map_res do
+        {:ok, map_text}
+        when is_binary(map_text) and byte_size(map_text) > 0 ->
+          if String.starts_with?(map_text, "No supported source files found") do
+            nil
+          else
+            map_text
+          end
+
+        _ ->
+          nil
+      end
+
+    non_grep_sections =
+      [ast_section, refs_section, semantic_section]
+      |> Enum.reject(&is_nil/1)
+
+    grep_section =
+      cond do
+        grep_has_matches? ->
+          "Found key modules in workspace:\n#{clamp_utf8_bytes(grep_output, 1_000)}"
+
+        is_binary(grep_output) and non_grep_sections == [] and is_nil(repo_map_raw) ->
+          "Found key modules in workspace:\n#{clamp_utf8_bytes(grep_output, 1_000)}"
+
+        true ->
+          nil
+      end
+
+    prior_sections =
+      [grep_section | non_grep_sections]
+      |> Enum.reject(&is_nil/1)
+
+    prior_bytes =
+      prior_sections
+      |> Enum.join("\n\n")
+      |> byte_size()
+
+    repo_map_section =
+      if is_binary(repo_map_raw) do
+        heading = "Structural repository map:\n"
+        sep_bytes = if prior_sections == [], do: 0, else: 2
+        remaining = @max_context_summary_bytes - prior_bytes - sep_bytes - byte_size(heading)
+
+        if remaining >= 120 do
+          heading <> clamp_utf8_bytes(repo_map_raw, min(@repo_map_max_bytes, remaining))
+        end
+      end
+
+    sections =
+      (prior_sections ++ [repo_map_section])
+      |> Enum.reject(&is_nil/1)
+
+    case sections do
+      [] ->
+        "Workspace exploration complete. Ready for implementation."
+
+      _ ->
+        sections
+        |> Enum.join("\n\n")
+        |> clamp_utf8_bytes(@max_context_summary_bytes)
+    end
+  end
+
+  defp no_grep_matches?(output) when is_binary(output) do
+    String.contains?(output, "No matches found for ") or
+      String.contains?(output, "No matches in the scanned portion.")
+  end
+
+  defp clamp_utf8_bytes(text, max_bytes)
+       when is_binary(text) and is_integer(max_bytes) and max_bytes >= 0 do
+    if byte_size(text) <= max_bytes do
+      text
+    else
+      do_clamp_utf8(binary_part(text, 0, max_bytes))
+    end
+  end
+
+  defp do_clamp_utf8(<<>>), do: ""
+
+  defp do_clamp_utf8(bin) do
+    if String.valid?(bin) do
+      bin
+    else
+      do_clamp_utf8(binary_part(bin, 0, byte_size(bin) - 1))
     end
   end
 

@@ -2,6 +2,7 @@ defmodule IexCode.Engine.SwarmCoordinatorTest do
   use IexCode.DataCase, async: false
   @moduletag timeout: 120_000
   alias IexCode.{Projects, Sessions}
+  alias IexCode.CoderAgentLoopLLMStub
   alias IexCode.Engine.{SwarmCoordinator, AgentSupervisor}
 
   setup context do
@@ -66,10 +67,12 @@ defmodule IexCode.Engine.SwarmCoordinatorTest do
       )
 
       {:ok, pid} = SwarmCoordinator.run_swarm(session.id, "Analyze async files", tmp_dir)
-      assert is_pid(pid) and Process.alive?(pid)
+      assert is_pid(pid)
+      ref = Process.monitor(pid)
 
       assert_receive {:session_status_changed, "running"}, 5000
       assert_receive {:session_status_changed, "idle"}, 20_000
+      assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 5000
 
       AgentSupervisor.stop_all_agents(session.id)
     end
@@ -195,8 +198,173 @@ defmodule IexCode.Engine.SwarmCoordinatorTest do
       assert Enum.count(agents, &(&1.role == :coder)) == 1
       assert Enum.count(agents, &(&1.role == :verifier)) == 1
 
-      # Verify all 8 agent processes are alive and monitored
-      assert Enum.all?(agents, &Process.alive?(&1.pid))
+      # Verify all 8 agent processes respond synchronously via OTP :sys.get_state/1
+      assert Enum.all?(agents, fn agent -> is_map(:sys.get_state(agent.pid)) end)
     end
+  end
+
+  describe "Opt-in Worktree Isolation & Arbitrated Self-Healing" do
+    @tag :tmp_dir
+    test "isolate_worktree: true syncs verified changes on pass and leaves project_root untouched on failure",
+         %{session: session, tmp_dir: tmp_dir} do
+      init_git_repo!(tmp_dir)
+
+      lib_dir = Path.join(tmp_dir, "lib")
+      File.mkdir_p!(lib_dir)
+      target_file = Path.join(lib_dir, "isolated_mod.ex")
+      original_source = "defmodule IsolatedMod do\n  def version, do: :v1\nend\n"
+      File.write!(target_file, original_source)
+      git_commit_all!(tmp_dir, "initial commit")
+
+      # 1. Failed swarm run inside isolated worktree must NOT mutate project_root
+      broken_source = "defmodule IsolatedMod do\n  def unclosed do\nend\n"
+
+      fail_responses = [
+        {:ok, %{text: "Plan: introduce change", tool_calls: []}},
+        {:ok,
+         %{
+           text: "Writing broken file in worktree",
+           tool_calls: [
+             %{
+               id: "wt-fail-1",
+               name: "write_file",
+               args: %{"path" => "lib/isolated_mod.ex", "content" => broken_source}
+             },
+             %{
+               id: "wt-fail-2",
+               name: "write_file",
+               args: %{
+                 "path" => "lib/leaked_artifact.ex",
+                 "content" => "defmodule LeakedArtifact, do: nil\n"
+               }
+             }
+           ]
+         }},
+        {:ok, %{text: "Done turn 0", tool_calls: []}}
+      ]
+
+      start_supervised!({CoderAgentLoopLLMStub, fail_responses})
+
+      {:ok, planner_pid} =
+        AgentSupervisor.start_agent(session.id, :planner,
+          project_root: tmp_dir,
+          llm: CoderAgentLoopLLMStub
+        )
+
+      {:ok, coder_pid} =
+        AgentSupervisor.start_agent(session.id, :coder,
+          project_root: tmp_dir,
+          llm: CoderAgentLoopLLMStub
+        )
+
+      Ecto.Adapters.SQL.Sandbox.allow(IexCode.Repo, self(), planner_pid)
+      Ecto.Adapters.SQL.Sandbox.allow(IexCode.Repo, self(), coder_pid)
+
+      assert {:ok, failed_msg} =
+               SwarmCoordinator.run(
+                 session.id,
+                 "Attempt risky edit in isolated worktree",
+                 project_root: tmp_dir,
+                 isolate_worktree: true,
+                 max_retries: 0
+               )
+
+      assert failed_msg.metadata.status == :failed
+      assert File.read!(target_file) == original_source
+      refute File.exists?(Path.join(lib_dir, "leaked_artifact.ex"))
+      assert git_worktree_count(tmp_dir) == 1
+
+      stop_supervised!(CoderAgentLoopLLMStub)
+
+      # 2. Successful swarm run inside isolated worktree syncs verified changes back to project_root
+      valid_v2 = "defmodule IsolatedMod do\n  def version, do: :v2\nend\n"
+
+      pass_responses = [
+        {:ok, %{text: "Plan: upgrade IsolatedMod to :v2", tool_calls: []}},
+        {:ok,
+         %{
+           text: "Updating IsolatedMod in worktree",
+           tool_calls: [
+             %{
+               id: "wt-pass-1",
+               name: "write_file",
+               args: %{"path" => "lib/isolated_mod.ex", "content" => valid_v2}
+             }
+           ]
+         }},
+        {:ok, %{text: "Updated cleanly", tool_calls: []}}
+      ]
+
+      start_supervised!({CoderAgentLoopLLMStub, pass_responses})
+
+      {:ok, planner_pid2} =
+        AgentSupervisor.start_agent(session.id, :planner,
+          project_root: tmp_dir,
+          llm: CoderAgentLoopLLMStub
+        )
+
+      {:ok, coder_pid2} =
+        AgentSupervisor.start_agent(session.id, :coder,
+          project_root: tmp_dir,
+          llm: CoderAgentLoopLLMStub
+        )
+
+      Ecto.Adapters.SQL.Sandbox.allow(IexCode.Repo, self(), planner_pid2)
+      Ecto.Adapters.SQL.Sandbox.allow(IexCode.Repo, self(), coder_pid2)
+
+      assert {:ok, passed_msg} =
+               SwarmCoordinator.run(
+                 session.id,
+                 "Upgrade IsolatedMod to v2",
+                 project_root: tmp_dir,
+                 isolate_worktree: true,
+                 max_retries: 1
+               )
+
+      assert passed_msg.metadata.status == :completed
+      assert File.read!(target_file) == valid_v2
+      assert git_worktree_count(tmp_dir) == 1
+
+      AgentSupervisor.stop_all_agents(session.id)
+    end
+
+    @tag :tmp_dir
+    test "isolate_worktree: true gracefully falls back on non-git workspace",
+         %{session: session, tmp_dir: tmp_dir} do
+      File.write!(
+        Path.join(tmp_dir, "plain.ex"),
+        "defmodule Plain do\n  def ok?, do: true\nend\n"
+      )
+
+      assert {:ok, final_msg} =
+               SwarmCoordinator.run(
+                 session.id,
+                 "Verify non-git fallback",
+                 project_root: tmp_dir,
+                 isolate_worktree: true
+               )
+
+      assert final_msg.metadata.status == :completed
+      AgentSupervisor.stop_all_agents(session.id)
+    end
+  end
+
+  defp init_git_repo!(dir) do
+    {_, 0} = System.cmd("git", ["init"], cd: dir, stderr_to_stdout: true)
+    {_, 0} = System.cmd("git", ["config", "user.email", "swarm@test.local"], cd: dir)
+    {_, 0} = System.cmd("git", ["config", "user.name", "Swarm Test"], cd: dir)
+  end
+
+  defp git_commit_all!(dir, message) do
+    {_, 0} = System.cmd("git", ["add", "."], cd: dir, stderr_to_stdout: true)
+    {_, 0} = System.cmd("git", ["commit", "-m", message], cd: dir, stderr_to_stdout: true)
+  end
+
+  defp git_worktree_count(dir) do
+    {out, 0} = System.cmd("git", ["worktree", "list", "--porcelain"], cd: dir)
+
+    out
+    |> String.split("\n")
+    |> Enum.count(&String.starts_with?(&1, "worktree "))
   end
 end

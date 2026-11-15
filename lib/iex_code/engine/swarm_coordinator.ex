@@ -17,11 +17,13 @@ defmodule IexCode.Engine.SwarmCoordinator do
     FleetSupervisor
   }
 
+  alias IexCode.Consensus.Arbitrator
   alias IexCode.Engine.Agents.{PlannerAgent, ExplorerAgent, CoderAgent, VerifierAgent}
   alias IexCode.Execution.Limits
+  alias IexCode.Sandbox.Worktree
   alias IexCode.Tools
-  alias IexCode.Tools.{AutoFix, MultiPatch}
-  alias IexCode.{Runs, Sessions}
+  alias IexCode.Tools.{AutoFix, Git, MultiPatch}
+  alias IexCode.{Runs, Sessions, WorkspaceLocks, WorkspacePath}
   alias Phoenix.PubSub
 
   @max_steering_directives 64
@@ -29,6 +31,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
   @max_steering_context_bytes 128_000
   @swarm_start_timeout 5_000
   @history_limit 20
+  @worktree_excluded_dirs ~w(_build deps .git node_modules .elixir_ls tmp)
 
   defmodule State do
     defstruct [
@@ -47,6 +50,11 @@ defmodule IexCode.Engine.SwarmCoordinator do
       :execution_policy,
       :control_barrier,
       :budget_prior_snapshot_ids,
+      :changed_files,
+      :worktree,
+      :worktree_sync_result,
+      isolate_worktree: false,
+      selective_preflight: false,
       fleet_agents: [],
       stage: :init,
       iteration: 0,
@@ -349,6 +357,9 @@ defmodule IexCode.Engine.SwarmCoordinator do
       execution_policy: opts[:execution_policy],
       control_barrier: opts[:control_barrier],
       budget_prior_snapshot_ids: prior_snapshot_ids,
+      isolate_worktree: Keyword.get(opts, :isolate_worktree, false) == true,
+      selective_preflight: Keyword.get(opts, :selective_preflight, false) == true,
+      changed_files: Keyword.get(opts, :changed_files),
       max_retries: max_retries,
       start_time_ms: start_time_ms,
       stage_start_ms: start_time_ms,
@@ -1461,6 +1472,8 @@ defmodule IexCode.Engine.SwarmCoordinator do
          diagnostics
        ) do
     progress = min(70, 45 + state.iteration * 10)
+    exec_root = execution_root(state)
+    repair_brief = build_arbitrated_repair_brief(diagnostics, exec_root)
 
     broadcast_stage(
       state,
@@ -1475,17 +1488,18 @@ defmodule IexCode.Engine.SwarmCoordinator do
           target,
           prompt,
           parent_op_id: root_op_id,
-          project_root: state.project_root,
+          project_root: exec_root,
           run_id: state.run_id,
           execution_id: state.run_id || root_op_id,
           run_attempt: state.run_attempt,
           run_lease_generation: state.run_lease_generation,
-          diagnostics: diagnostics,
+          diagnostics: repair_brief,
           previous_plan: state.plan,
           steer_directives: state.steer_directives ++ targeted_steering,
           allowed_tools: state.allowed_tools,
           execution_policy: state.execution_policy,
-          workspace_lock_delegation: state.workspace_lock_delegation
+          workspace_lock_delegation:
+            if(isolated_worktree?(state), do: nil, else: state.workspace_lock_delegation)
         )
       end)
 
@@ -1571,13 +1585,16 @@ defmodule IexCode.Engine.SwarmCoordinator do
   end
 
   defp run_coding_and_verification_loop(%State{} = state) do
-    do_coding_and_verification_loop(state, 0)
+    with_optional_worktree_isolation(state, fn exec_state ->
+      do_coding_and_verification_loop(exec_state, 0)
+    end)
   end
 
   defp do_coding_and_verification_loop(%State{} = state, iteration) do
     state = check_steering_and_control(state)
     session_id = state.session_id
-    project_root = state.project_root
+    exec_root = execution_root(state)
+    isolated? = isolated_worktree?(state)
     root_op_id = state.root_op_id
     prompt = state.user_prompt
 
@@ -1600,14 +1617,15 @@ defmodule IexCode.Engine.SwarmCoordinator do
       run_attempt: state.run_attempt,
       run_lease_generation: state.run_lease_generation,
       parent_op_id: root_op_id,
-      project_root: project_root,
+      project_root: exec_root,
+      isolated_worktree: isolated?,
       plan: state.plan,
       context: state.explorer_context,
       diagnostics: state.verifier_result,
       steer_directives: state.steer_directives,
       allowed_tools: state.allowed_tools,
       execution_policy: state.execution_policy,
-      workspace_lock_delegation: state.workspace_lock_delegation
+      workspace_lock_delegation: if(isolated?, do: nil, else: state.workspace_lock_delegation)
     ]
 
     coder_res =
@@ -1638,7 +1656,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
       "Verifier: Checking compilation and test suite..."
     )
 
-    verify_res = invoke_verifier(state, root_op_id, project_root)
+    verify_res = invoke_verifier(state, root_op_id, exec_root)
 
     state = check_steering_and_control(state)
 
@@ -1654,7 +1672,8 @@ defmodule IexCode.Engine.SwarmCoordinator do
 
         %State{state | verifier_result: summary_map, status: :completed, stage: :complete}
 
-      {:error, {:verification_failed, diagnostics}} ->
+      {:error, {:verification_failed, raw_diagnostics}} ->
+        diagnostics = ensure_enriched_diagnostics(raw_diagnostics, exec_root)
         # Verification failed! Check retry condition & cycle detection
         # Hash deterministic semantic fields so recurring errors with duration
         # jitter are detected as cycles immediately.
@@ -1674,10 +1693,10 @@ defmodule IexCode.Engine.SwarmCoordinator do
         else
           # Apply instant auto-fix heuristics if applicable
           auto_fix_res =
-            AutoFix.apply_auto_fix(project_root, diagnostics,
+            AutoFix.apply_auto_fix(exec_root, diagnostics,
               session_id: session_id,
-              project_id: trusted_project_id(state),
-              run_id: state.run_id,
+              project_id: if(isolated?, do: nil, else: trusted_project_id(state)),
+              run_id: if(isolated?, do: nil, else: state.run_id),
               allowed_tools: state.allowed_tools
             )
 
@@ -1706,7 +1725,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
                 "AutoFix applied #{applied} fix(es). Re-verifying directly..."
               )
 
-              verify_res = invoke_verifier(state, root_op_id, project_root)
+              verify_res = invoke_verifier(new_state, root_op_id, exec_root)
 
               case verify_res do
                 {:ok, summary_map} ->
@@ -1725,7 +1744,8 @@ defmodule IexCode.Engine.SwarmCoordinator do
                       iteration: iteration + 1
                   }
 
-                {:error, {:verification_failed, new_diagnostics}} ->
+                {:error, {:verification_failed, raw_new_diagnostics}} ->
+                  new_diagnostics = ensure_enriched_diagnostics(raw_new_diagnostics, exec_root)
                   new_err_sig = compute_error_signature(new_diagnostics)
 
                   if MapSet.member?(new_state.error_signatures, new_err_sig) or
@@ -1798,21 +1818,241 @@ defmodule IexCode.Engine.SwarmCoordinator do
   end
 
   defp invoke_verifier(state, root_op_id, project_root) do
+    isolated? = isolated_worktree?(state)
+
+    verifier_opts =
+      [
+        parent_op_id: root_op_id,
+        project_root: project_root,
+        isolated_worktree: isolated?,
+        run_id: state.run_id,
+        allowed_tools: state.allowed_tools,
+        selective_preflight: state.selective_preflight,
+        workspace_lock_delegation: if(isolated?, do: nil, else: state.workspace_lock_delegation)
+      ]
+      |> maybe_put_verifier_changed_files(state)
+
     invoke_role(
       state,
       :verifier,
       fn target, _targeted_steering ->
-        VerifierAgent.verify(
-          target,
-          parent_op_id: root_op_id,
-          project_root: project_root,
-          run_id: state.run_id,
-          allowed_tools: state.allowed_tools,
-          workspace_lock_delegation: state.workspace_lock_delegation
-        )
+        VerifierAgent.verify(target, verifier_opts)
       end,
       false
     )
+  end
+
+  defp execution_root(%State{worktree: %Worktree{path: wt_path}}) when is_binary(wt_path),
+    do: wt_path
+
+  defp execution_root(%State{project_root: project_root}), do: project_root
+
+  defp isolated_worktree?(%State{worktree: %Worktree{}}), do: true
+  defp isolated_worktree?(_state), do: false
+
+  defp maybe_put_verifier_changed_files(verifier_opts, %State{} = state) do
+    cond do
+      is_list(state.changed_files) or is_binary(state.changed_files) ->
+        Keyword.put(verifier_opts, :changed_files, state.changed_files)
+
+      state.selective_preflight and match?(%Worktree{}, state.worktree) ->
+        case Worktree.changed_files(state.worktree) do
+          {:ok, files} ->
+            filtered = Enum.filter(files, &syncable_worktree_path?/1)
+
+            if filtered != [],
+              do: Keyword.put(verifier_opts, :changed_files, filtered),
+              else: verifier_opts
+
+          _ ->
+            verifier_opts
+        end
+
+      true ->
+        verifier_opts
+    end
+  end
+
+  defp ensure_enriched_diagnostics(%{} = diagnostics, exec_root) do
+    VerifierAgent.enrich_diagnostics(diagnostics, exec_root)
+  end
+
+  defp ensure_enriched_diagnostics(other, exec_root) do
+    VerifierAgent.enrich_diagnostics(
+      %{status: :failed, summary: inspect(other), raw_output: inspect(other)},
+      exec_root
+    )
+  end
+
+  defp build_arbitrated_repair_brief(%{} = diagnostics, exec_root) do
+    enriched = ensure_enriched_diagnostics(diagnostics, exec_root)
+
+    repair_prompt =
+      case Map.get(enriched, :actionable_feedback) do
+        %{repair_prompt: p} when is_binary(p) and p != "" ->
+          p
+
+        _ ->
+          Arbitrator.synthesize_actionable_feedback([]).repair_prompt
+      end
+
+    summary = Map.get(enriched, :summary)
+
+    if is_binary(summary) and summary != "" and not String.contains?(repair_prompt, summary) do
+      "#{repair_prompt}\n\nVerifier Summary:\n#{String.slice(summary, 0, 1_200)}"
+    else
+      repair_prompt
+    end
+  end
+
+  defp build_arbitrated_repair_brief(other, exec_root) do
+    build_arbitrated_repair_brief(
+      %{status: :failed, summary: to_string(other), raw_output: to_string(other)},
+      exec_root
+    )
+  end
+
+  defp with_optional_worktree_isolation(%State{isolate_worktree: true} = state, fun)
+       when is_function(fun, 1) do
+    if git_repo?(state.project_root) do
+      wt_id =
+        "swarm_#{String.slice(to_string(state.session_id), 0, 12)}_#{System.unique_integer([:positive, :monotonic])}"
+
+      case Worktree.create(state.project_root, id: wt_id) do
+        {:ok, %Worktree{} = wt} ->
+          try do
+            overlay_dirty_workspace(state.project_root, wt.path)
+            loop_state = fun.(%State{state | worktree: wt})
+
+            if loop_state.status == :completed do
+              case sync_verified_worktree(wt, state) do
+                {:ok, sync_summary} ->
+                  %State{loop_state | worktree: nil, worktree_sync_result: sync_summary}
+
+                {:error, reason} ->
+                  Logger.error(
+                    "[SwarmCoordinator] Failed to sync verified worktree back to #{state.project_root}: #{inspect(reason)}"
+                  )
+
+                  broadcast_stage(
+                    loop_state,
+                    :failed,
+                    100,
+                    "Worktree sync failed: #{inspect(reason)}"
+                  )
+
+                  %State{
+                    loop_state
+                    | worktree: nil,
+                      status: :failed,
+                      stage: :failed,
+                      verifier_result: %{
+                        status: :failed,
+                        summary: "Worktree sync failed: #{inspect(reason)}"
+                      }
+                  }
+              end
+            else
+              # Verification failed — leave project_root completely untouched!
+              %State{loop_state | worktree: nil}
+            end
+          after
+            _ = Worktree.cleanup(wt)
+          end
+
+        {:error, _reason} ->
+          # Non-committed git directory (e.g. unborn HEAD) — execute directly
+          fun.(state)
+      end
+    else
+      fun.(state)
+    end
+  end
+
+  defp with_optional_worktree_isolation(%State{} = state, fun) when is_function(fun, 1) do
+    fun.(state)
+  end
+
+  defp sync_verified_worktree(%Worktree{} = wt, %State{} = state) do
+    with {:ok, all_changed} <- Worktree.changed_files(wt) do
+      syncable = Enum.filter(all_changed, &syncable_worktree_path?/1)
+
+      if syncable == [] do
+        {:ok, %{applied_files: [], deleted_files: [], target_root: state.project_root}}
+      else
+        with_delegation_if_present(state.workspace_lock_delegation, fn ->
+          Worktree.apply_back(wt, state.project_root, paths: syncable)
+        end)
+      end
+    end
+  end
+
+  defp with_delegation_if_present(nil, fun), do: fun.()
+
+  defp with_delegation_if_present(delegation, fun) do
+    WorkspaceLocks.with_delegation(delegation, fun)
+  end
+
+  defp syncable_worktree_path?(rel_path) when is_binary(rel_path) and rel_path != "" do
+    parts = Path.split(rel_path)
+    first = List.first(parts)
+    base = Path.basename(rel_path)
+
+    first not in @worktree_excluded_dirs and
+      not (String.starts_with?(base, "iex_code_test_") and String.contains?(base, ".db"))
+  end
+
+  defp syncable_worktree_path?(_), do: false
+
+  defp overlay_dirty_workspace(source_root, wt_path) do
+    case Git.status(source_root) do
+      {:ok, %{clean?: true}} ->
+        :ok
+
+      {:ok, status} ->
+        dirty_rel_paths =
+          ((status.staged || []) ++ (status.unstaged || []) ++ (status.untracked || []))
+          |> Enum.map(fn
+            %{path: p} when is_binary(p) -> p
+            p when is_binary(p) -> p
+            _ -> nil
+          end)
+          |> Enum.filter(&syncable_worktree_path?/1)
+          |> Enum.uniq()
+
+        Enum.each(dirty_rel_paths, fn rel_path ->
+          with {:ok, src_full} <- WorkspacePath.resolve(source_root, rel_path),
+               {:ok, dst_full} <- WorkspacePath.resolve(wt_path, rel_path) do
+            case File.lstat(src_full) do
+              {:ok, %File.Stat{type: :regular, mode: mode}} ->
+                dst_Full_dir = Path.dirname(dst_full)
+                File.mkdir_p!(dst_Full_dir)
+
+                case File.read(src_full) do
+                  {:ok, content} ->
+                    File.write!(dst_full, content)
+                    _ = File.chmod(dst_full, mode)
+
+                  _ ->
+                    :ok
+                end
+
+              {:error, :enoent} ->
+                _ = File.rm(dst_full)
+
+              _ ->
+                :ok
+            end
+          else
+            _ -> :ok
+          end
+        end)
+
+      _ ->
+        :ok
+    end
+  rescue
+    _ -> :ok
   end
 
   # Interactive legacy sessions historically degrade missing agent responses into notes.
