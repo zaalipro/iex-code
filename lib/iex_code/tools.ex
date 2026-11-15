@@ -10,12 +10,30 @@ defmodule IexCode.Tools do
   alias IexCode.Research.{Fetcher, Search}
   alias IexCode.Sessions
   alias IexCode.Settings
-  alias IexCode.Tools.{ASTSearch, Git, MultiPatch, TerminalServer, TestRunner}
-  alias IexCode.Tools.MultiPatch.Snapshot
+
+  alias IexCode.Tools.{
+    ASTSearch,
+    Git,
+    MultiPatch,
+    ProcessGroupRunner,
+    RepoMap,
+    TerminalServer,
+    TestRunner
+  }
+
+  alias IexCode.Tools.MultiPatch.{Matcher, Snapshot}
   alias IexCode.WorkspacePath
 
   @max_command_output 256_000
   @excluded_dirs ["_build", "deps", "node_modules", ".git"]
+  @diagnostics_excluded_dirs MapSet.new(["_build", "deps", "node_modules", ".git", "tmp"])
+
+  @tool_aliases %{
+    "view_file" => "read_file",
+    "replace_file_content" => "patch_file",
+    "write_to_file" => "write_file",
+    "find_by_name" => "list_dir"
+  }
 
   @doc """
   Returns tool specifications formatted for Anthropic and OpenAI tool calls.
@@ -55,7 +73,16 @@ defmodule IexCode.Tools do
           properties: %{
             path: %{type: "string", description: "File path to modify"},
             target_content: %{type: "string", description: "Exact string in the file to replace"},
-            replacement_content: %{type: "string", description: "Replacement content string"}
+            replacement_content: %{type: "string", description: "Replacement content string"},
+            anchor_line: %{
+              type: "integer",
+              description: "Optional 1-based line hint used to disambiguate duplicate matches"
+            },
+            allow_multiple: %{
+              type: "boolean",
+              description:
+                "Optional flag to replace all matching occurrences instead of failing on ambiguity"
+            }
           },
           required: ["path", "target_content", "replacement_content"]
         }
@@ -74,7 +101,17 @@ defmodule IexCode.Tools do
                 properties: %{
                   path: %{type: "string", description: "Relative file path"},
                   target_content: %{type: "string", description: "Target code to replace"},
-                  replacement_content: %{type: "string", description: "Replacement code"}
+                  replacement_content: %{type: "string", description: "Replacement code"},
+                  anchor_line: %{
+                    type: "integer",
+                    description:
+                      "Optional 1-based line hint used to disambiguate duplicate matches"
+                  },
+                  allow_multiple: %{
+                    type: "boolean",
+                    description:
+                      "Optional flag to replace all matching occurrences instead of failing on ambiguity"
+                  }
                 },
                 required: ["path", "target_content", "replacement_content"]
               },
@@ -351,6 +388,47 @@ defmodule IexCode.Tools do
           },
           required: ["objective"]
         }
+      },
+      %{
+        name: "repo_map",
+        description:
+          "Generate a compact, bounded structural symbol map (modules, functions, types, behaviors, and top-level definitions) for workspace source files.",
+        parameters: %{
+          type: "object",
+          properties: %{
+            path: %{
+              type: "string",
+              description: "Optional relative file or directory subpath inside workspace"
+            },
+            focus_query: %{
+              type: "string",
+              description: "Optional search query ranking matching files and symbols first"
+            },
+            max_bytes: %{
+              type: "integer",
+              description: "Maximum output size in bytes (default 16000)"
+            }
+          }
+        }
+      },
+      %{
+        name: "diagnostics",
+        description:
+          "Run fast syntax checks across Elixir workspace files (or subpath) and optional Mix compiler verification, returning file:line [severity] message diagnostics.",
+        parameters: %{
+          type: "object",
+          properties: %{
+            path: %{
+              type: "string",
+              description: "Optional relative file or directory subpath inside workspace"
+            },
+            compile: %{
+              type: "boolean",
+              description:
+                "When true, runs a Mix compiler check under exclusive project lock in addition to syntax checks"
+            }
+          }
+        }
       }
     ]
 
@@ -424,25 +502,29 @@ defmodule IexCode.Tools do
   instead of propagating to callers.
   """
   def execute(tool_name, args, root_path, on_progress \\ fn _p, _msg -> :ok end) do
+    canonical_tool = resolve_tool_alias(tool_name)
+
     result =
-      with_mutation_locks(tool_name, args, root_path, fn identity_opts, remaining_timeout_ms ->
+      with_mutation_locks(canonical_tool, args, root_path, fn identity_opts,
+                                                              remaining_timeout_ms ->
         trusted_args =
           args
           |> Map.put("__workspace_lock_identity__", identity_opts)
-          |> put_remaining_command_timeout(tool_name, remaining_timeout_ms)
+          |> put_remaining_command_timeout(canonical_tool, remaining_timeout_ms)
 
-        do_execute(tool_name, trusted_args, root_path, on_progress)
+        do_execute(canonical_tool, trusted_args, root_path, on_progress)
       end)
 
-    if tool_name in ["read_file", "grep_search"],
+    if canonical_tool in ["read_file", "grep_search"],
       do: IexCode.Tools.NativeResponse.envelope(result),
       else: result
   rescue
     exception ->
+      canonical_tool = resolve_tool_alias(tool_name)
       message = Exception.message(exception)
 
       message =
-        if tool_name in ["read_file", "grep_search"],
+        if canonical_tool in ["read_file", "grep_search"],
           do: IexCode.Tools.NativeResponse.preview(message),
           else: message
 
@@ -538,8 +620,16 @@ defmodule IexCode.Tools do
       {:ok, full_path} ->
         if File.exists?(full_path) do
           content = File.read!(full_path)
+          anchor_line = parse_optional_positive_int(Map.get(args, "anchor_line"))
+          allow_multiple = Map.get(args, "allow_multiple") == true
 
-          case MultiPatch.patch_string(content, target, replacement) do
+          patch_opts = [
+            reject_ambiguous: true,
+            allow_multiple: allow_multiple,
+            anchor_line: anchor_line
+          ]
+
+          case MultiPatch.patch_string(content, target, replacement, patch_opts) do
             {:ok, %{content: new_content}} ->
               on_progress.(60, "Replacing target content...")
 
@@ -573,7 +663,14 @@ defmodule IexCode.Tools do
               end
 
             {:error, :not_found} ->
-              {:error, "Target content not found in #{path}"}
+              diag = Matcher.diagnose_failure(content, target)
+              {:error, "Target content not found in #{path}\n#{diag}"}
+
+            {:error, {:ambiguous_match, match_lines}} ->
+              diag = Matcher.diagnose_failure(content, target)
+
+              {:error,
+               "Ambiguous target in #{path} (matched lines: #{Enum.join(match_lines, ", ")})\n#{diag}"}
           end
         else
           {:error, "File does not exist: #{path}"}
@@ -599,6 +696,17 @@ defmodule IexCode.Tools do
 
         {:ok, msg}
 
+      {:error, {:target_not_found, rel_path, target}} ->
+        diag = diagnose_workspace_patch_failure(root_path, rel_path, target)
+        {:error, "MultiPatch failed: Target content not found in #{rel_path}#{diag}"}
+
+      {:error, {:ambiguous_target, rel_path, match_lines}} ->
+        candidate_target = find_patch_target_for_path(patches, rel_path)
+        diag = diagnose_workspace_patch_failure(root_path, rel_path, candidate_target)
+
+        {:error,
+         "MultiPatch failed: Ambiguous target in #{rel_path} (matched lines: #{Enum.join(match_lines, ", ")})#{diag}"}
+
       {:error, reason} ->
         {:error, "MultiPatch failed: #{inspect(reason)}"}
     end
@@ -615,6 +723,71 @@ defmodule IexCode.Tools do
 
       {:error, reason} ->
         {:error, "AST search failed: #{inspect(reason)}"}
+    end
+  end
+
+  defp do_execute("repo_map", args, root_path, on_progress) do
+    on_progress.(25, "Building structural repository map...")
+
+    case RepoMap.generate(root_path, args) do
+      {:ok, map_text} ->
+        on_progress.(100, "Repo map generated")
+        {:ok, map_text}
+
+      {:error, reason} ->
+        {:error, "RepoMap failed: #{reason}"}
+    end
+  end
+
+  defp do_execute("diagnostics", args, root_path, on_progress) do
+    subpath = nonempty_binary(arg_value(args, "path")) || "."
+    compile? = arg_value(args, "compile") == true
+
+    on_progress.(20, "Running diagnostics for #{subpath}...")
+
+    case resolve_path(root_path, subpath) do
+      {:ok, target_path} ->
+        if File.exists?(target_path) do
+          elixir_files = collect_elixir_files(target_path)
+          syntax_diags = scan_syntax_diagnostics(root_path, elixir_files)
+
+          compile_diags =
+            if compile? and File.exists?(Path.join(root_path, "mix.exs")) do
+              on_progress.(60, "Running Mix compiler diagnostics...")
+              run_compile_diagnostics(root_path, subpath)
+            else
+              {:ok, []}
+            end
+
+          case compile_diags do
+            {:ok, compiler_items} ->
+              all_items =
+                (syntax_diags ++ compiler_items)
+                |> Enum.uniq_by(&{&1.file, &1.line, &1.severity, &1.message})
+                |> Enum.sort_by(&{&1.file, &1.line, &1.severity})
+
+              on_progress.(100, "Diagnostics complete (#{length(all_items)} issue(s))")
+
+              if all_items == [] do
+                {:ok, "No diagnostics found (#{length(elixir_files)} Elixir file(s) checked)."}
+              else
+                formatted =
+                  Enum.map_join(all_items, "\n", fn item ->
+                    "#{item.file}:#{item.line} [#{item.severity}] #{item.message}"
+                  end)
+
+                {:ok, formatted}
+              end
+
+            {:error, reason} ->
+              {:error, reason}
+          end
+        else
+          {:error, "Path does not exist: #{subpath}"}
+        end
+
+      {:error, :outside_workspace} ->
+        {:error, "Path escapes the workspace: #{subpath}"}
     end
   end
 
@@ -955,35 +1128,15 @@ defmodule IexCode.Tools do
         )
 
       env_map = IexCode.Tools.SecretMasker.build_sandbox_env(sandbox_mode, custom_env, root_path)
-      port_env = IexCode.Tools.SecretMasker.to_port_env(env_map)
 
-      port =
-        Port.open(
-          {:spawn_executable, "/bin/sh"},
-          [
-            :binary,
-            :exit_status,
-            :stderr_to_stdout,
-            args: ["-c", command],
-            cd: root_path,
-            env: port_env
-          ]
-        )
-
-      deadline = System.monotonic_time(:millisecond) + timeout
-
-      case collect_port_output(port, deadline, {"", false}) do
-        {:done, exit_code, {output, truncated?}} ->
-          suffix =
-            if truncated? do
-              "\n\n[output truncated at #{@max_command_output} bytes]"
-            else
-              ""
-            end
-
-          output =
-            (IexCode.Sessions.sanitize_utf8(output) <> suffix)
-            |> IexCode.Tools.SecretMasker.scrub(known_secrets)
+      case ProcessGroupRunner.run(command,
+             cd: root_path,
+             env: env_map,
+             timeout_ms: timeout,
+             max_output_bytes: @max_command_output
+           ) do
+        {:ok, %{exit_code: exit_code, output: output, truncated?: truncated?}} ->
+          output = finalize_command_output(output, truncated?, known_secrets)
 
           if exit_code == 0 do
             on_progress.(100, "Command exited successfully (0)")
@@ -993,26 +1146,16 @@ defmodule IexCode.Tools do
             {:ok, "Exit Code #{exit_code}:\n#{output}"}
           end
 
-        {:timeout, {output, truncated?}} ->
-          # Closing the port terminates the connected /bin/sh. Best-effort only:
-          # orphaned grandchildren spawned by the command may survive since we do
-          # not track the full OS process tree.
-          Port.close(port)
+        {:timeout, %{output: output, truncated?: truncated?}} ->
           on_progress.(100, "Command timed out after #{requested_timeout}ms")
-
-          suffix =
-            if truncated? do
-              "\n\n[output truncated at #{@max_command_output} bytes]"
-            else
-              ""
-            end
-
-          scrubbed_partial =
-            (IexCode.Sessions.sanitize_utf8(output) <> suffix)
-            |> IexCode.Tools.SecretMasker.scrub(known_secrets)
+          scrubbed_partial = finalize_command_output(output, truncated?, known_secrets)
 
           {:error,
            "Command timed out after #{requested_timeout}ms. Partial output:\n#{scrubbed_partial}"}
+
+        {:error, reason} ->
+          on_progress.(100, "Command failed: #{inspect(reason)}")
+          {:error, "Command failed: #{inspect(reason)}"}
       end
     end
   end
@@ -1335,6 +1478,11 @@ defmodule IexCode.Tools do
 
   defp mutation_resources("run_command", _args), do: [{:project, :exclusive}]
   defp mutation_resources("run_tests", _args), do: [{:project, :exclusive}]
+
+  defp mutation_resources("diagnostics", args) do
+    if arg_value(args, "compile") == true, do: [{:project, :exclusive}], else: []
+  end
+
   defp mutation_resources("git_stage", _args), do: [{:git, :exclusive}]
   defp mutation_resources("git_commit", _args), do: [{:git, :exclusive}]
   defp mutation_resources(_tool_name, _args), do: []
@@ -1482,6 +1630,7 @@ defmodule IexCode.Tools do
 
   defp safe_existing_atom("path"), do: :path
   defp safe_existing_atom("patches"), do: :patches
+  defp safe_existing_atom("compile"), do: :compile
   defp safe_existing_atom("project_id"), do: :project_id
   defp safe_existing_atom("run_id"), do: :run_id
   defp safe_existing_atom("session_id"), do: :session_id
@@ -1534,46 +1683,288 @@ defmodule IexCode.Tools do
     end
   end
 
-  defp collect_port_output(port, deadline, acc) do
-    remaining = deadline - System.monotonic_time(:millisecond)
-
-    if remaining <= 0 do
-      {:timeout, acc}
-    else
-      receive do
-        {^port, {:data, data}} ->
-          collect_port_output(port, deadline, append_capped(acc, data))
-
-        {^port, {:exit_status, status}} ->
-          {:done, status, drain_port(port, acc)}
-      after
-        remaining -> {:timeout, acc}
+  defp finalize_command_output(output, truncated?, known_secrets) do
+    suffix =
+      if truncated? do
+        "\n\n[output truncated at #{@max_command_output} bytes]"
+      else
+        ""
       end
+
+    (IexCode.Sessions.sanitize_utf8(output) <> suffix)
+    |> IexCode.Tools.SecretMasker.scrub(known_secrets)
+  end
+
+  defp resolve_tool_alias(tool_name) when is_atom(tool_name) do
+    tool_name |> Atom.to_string() |> resolve_tool_alias()
+  end
+
+  defp resolve_tool_alias(tool_name) when is_binary(tool_name) do
+    Map.get(@tool_aliases, tool_name, tool_name)
+  end
+
+  defp resolve_tool_alias(other), do: other
+
+  defp parse_optional_positive_int(val) when is_integer(val) and val >= 1, do: val
+
+  defp parse_optional_positive_int(val) when is_binary(val) do
+    case Integer.parse(String.trim(val)) do
+      {parsed, ""} when parsed >= 1 -> parsed
+      _ -> nil
     end
   end
 
-  # Data can still be buffered after the exit status arrives; drain it
-  # without blocking.
-  defp drain_port(port, acc) do
-    receive do
-      {^port, {:data, data}} -> drain_port(port, append_capped(acc, data))
-    after
-      0 -> acc
+  defp parse_optional_positive_int(_), do: nil
+
+  defp diagnose_workspace_patch_failure(_root_path, _rel_path, nil), do: ""
+
+  defp diagnose_workspace_patch_failure(root_path, rel_path, target) when is_binary(target) do
+    case resolve_path(root_path, rel_path) do
+      {:ok, full_path} ->
+        if File.regular?(full_path) do
+          "\n" <> Matcher.diagnose_failure(File.read!(full_path), target)
+        else
+          ""
+        end
+
+      {:error, _} ->
+        ""
     end
   end
 
-  defp append_capped({acc, truncated?}, data) do
+  defp find_patch_target_for_path(patches, rel_path) when is_list(patches) do
+    Enum.find_value(patches, fn patch ->
+      path = Map.get(patch, :path) || Map.get(patch, "path")
+
+      if path == rel_path do
+        Map.get(patch, :target) ||
+          Map.get(patch, "target") ||
+          Map.get(patch, :target_content) ||
+          Map.get(patch, "target_content")
+      end
+    end)
+  end
+
+  defp find_patch_target_for_path(_, _), do: nil
+
+  defp collect_elixir_files(target_path) do
     cond do
-      truncated? ->
-        {acc, true}
+      File.regular?(target_path) ->
+        if Path.extname(target_path) in [".ex", ".exs"], do: [target_path], else: []
 
-      byte_size(acc) + byte_size(data) <= @max_command_output ->
-        {acc <> data, false}
+      File.dir?(target_path) ->
+        target_path
+        |> walk_elixir_files([])
+        |> Enum.sort()
 
       true ->
-        take = max(@max_command_output - byte_size(acc), 0)
-        {acc <> binary_part(data, 0, take), true}
+        []
     end
+  end
+
+  defp walk_elixir_files(dir, acc) do
+    case File.ls(dir) do
+      {:ok, names} ->
+        Enum.reduce(names, acc, fn name, inner_acc ->
+          full_path = Path.join(dir, name)
+
+          case File.lstat(full_path) do
+            {:ok, %File.Stat{type: :directory}} ->
+              if MapSet.member?(@diagnostics_excluded_dirs, name),
+                do: inner_acc,
+                else: walk_elixir_files(full_path, inner_acc)
+
+            {:ok, %File.Stat{type: :regular}} ->
+              if Path.extname(name) in [".ex", ".exs"],
+                do: [full_path | inner_acc],
+                else: inner_acc
+
+            _ ->
+              inner_acc
+          end
+        end)
+
+      {:error, _} ->
+        acc
+    end
+  end
+
+  defp scan_syntax_diagnostics(root_path, files) do
+    canonical_root =
+      case WorkspacePath.resolve(root_path, ".") do
+        {:ok, resolved} -> resolved
+        {:error, _} -> Path.expand(root_path)
+      end
+
+    Enum.flat_map(files, fn abs_path ->
+      rel = Path.relative_to(abs_path, canonical_root)
+      content = File.read!(abs_path)
+
+      case Code.string_to_quoted(content, file: rel, columns: true) do
+        {:ok, _ast} ->
+          []
+
+        {:error, error_tuple} ->
+          {line, msg} = format_syntax_diagnostic(error_tuple)
+          [%{file: rel, line: line, severity: "error", message: msg}]
+      end
+    end)
+  end
+
+  defp format_syntax_diagnostic({meta, info, token}) do
+    line =
+      cond do
+        is_list(meta) -> Keyword.get(meta, :line, 1)
+        is_integer(meta) and meta >= 1 -> meta
+        true -> 1
+      end
+
+    message =
+      case {info, token} do
+        {{prefix, suffix}, tok} when is_binary(prefix) and is_binary(suffix) ->
+          String.trim("#{prefix}#{tok}#{suffix}")
+
+        {prefix, tok} when is_binary(prefix) and is_binary(tok) ->
+          String.trim("#{prefix}#{tok}")
+
+        {other, tok} ->
+          String.trim("#{inspect(other)}#{tok}")
+      end
+
+    {line, message}
+  end
+
+  defp format_syntax_diagnostic(other), do: {1, inspect(other)}
+
+  defp run_compile_diagnostics(root_path, subpath) do
+    env_map = IexCode.Tools.SecretMasker.build_sandbox_env("inherit_filtered", %{}, root_path)
+
+    case ProcessGroupRunner.run("mix compile",
+           cd: root_path,
+           env: env_map,
+           timeout_ms: 60_000,
+           max_output_bytes: @max_command_output
+         ) do
+      {:ok, %{exit_code: exit_code, output: raw_output}} ->
+        clean =
+          raw_output
+          |> Sessions.sanitize_utf8()
+          |> TestRunner.Parser.strip_ansi()
+
+        parsed = TestRunner.Parser.parse(clean, exit_code)
+
+        parser_items =
+          Enum.map(parsed.compilation_errors, fn err ->
+            %{
+              file: normalize_diag_file(err.file, root_path),
+              line: err.line || 1,
+              severity: "error",
+              message: err.message
+            }
+          end)
+
+        block_items = parse_elixir_compiler_blocks(clean, root_path)
+        items = parser_items ++ block_items
+
+        items =
+          if exit_code != 0 and items == [] do
+            first_msg =
+              clean
+              |> String.split(~r/\r?\n/)
+              |> Enum.map(&String.trim/1)
+              |> Enum.find("mix compile exited with code #{exit_code}", &(&1 != ""))
+
+            [%{file: fallback_diag_file(subpath), line: 1, severity: "error", message: first_msg}]
+          else
+            items
+          end
+
+        {:ok, filter_diagnostics_by_subpath(items, subpath)}
+
+      {:timeout, _info} ->
+        {:error, "Diagnostics compile check timed out after 60000ms"}
+
+      {:error, reason} ->
+        {:error, "Diagnostics compile check failed: #{inspect(reason)}"}
+    end
+  end
+
+  defp parse_elixir_compiler_blocks(clean_output, root_path) do
+    lines = String.split(clean_output, ~r/\r?\n/)
+    do_parse_compiler_blocks(lines, nil, root_path, [])
+  end
+
+  defp do_parse_compiler_blocks([], _current, _root_path, acc), do: Enum.reverse(acc)
+
+  defp do_parse_compiler_blocks([line | rest], current, root_path, acc) do
+    trimmed = String.trim(line)
+
+    case Regex.run(~r/^(warning|error):\s+(.+)$/, trimmed) do
+      [_, severity, msg] ->
+        do_parse_compiler_blocks(rest, {severity, String.trim(msg)}, root_path, acc)
+
+      nil when current != nil ->
+        case extract_block_location(trimmed) do
+          {file, line_no} ->
+            {severity, msg} = current
+
+            item = %{
+              file: normalize_diag_file(file, root_path),
+              line: line_no,
+              severity: severity,
+              message: msg
+            }
+
+            do_parse_compiler_blocks(rest, nil, root_path, [item | acc])
+
+          nil ->
+            next_current =
+              if trimmed == "" or String.starts_with?(line, "=="), do: nil, else: current
+
+            do_parse_compiler_blocks(rest, next_current, root_path, acc)
+        end
+
+      nil ->
+        do_parse_compiler_blocks(rest, nil, root_path, acc)
+    end
+  end
+
+  defp extract_block_location(trimmed) do
+    cond do
+      match = Regex.run(~r/^└─\s+([^:\n]+):(\d+)(?::\d+)?/, trimmed) ->
+        [_, file, line_str] = match
+        {String.trim(file), String.to_integer(line_str)}
+
+      match = Regex.run(~r/^([^\s:\n][^:\n]*\.(?:ex|exs|erl|hrl)):(\d+)(?::\d+)?/, trimmed) ->
+        [_, file, line_str] = match
+        {String.trim(file), String.to_integer(line_str)}
+
+      true ->
+        nil
+    end
+  end
+
+  defp normalize_diag_file(nil, _root_path), do: "mix.exs"
+
+  defp normalize_diag_file(file, root_path) when is_binary(file) do
+    trimmed = String.trim(file)
+    Path.relative_to(trimmed, Path.expand(root_path))
+  end
+
+  defp fallback_diag_file("."), do: "mix.exs"
+  defp fallback_diag_file(subpath), do: subpath
+
+  defp filter_diagnostics_by_subpath(items, "."), do: items
+
+  defp filter_diagnostics_by_subpath(items, subpath) do
+    clean_sub = String.trim_trailing(subpath, "/")
+
+    matching =
+      Enum.filter(items, fn item ->
+        item.file == clean_sub or String.starts_with?(item.file, clean_sub <> "/")
+      end)
+
+    if matching == [], do: items, else: matching
   end
 
   defp filter_tool_definitions(definitions, :all), do: definitions
@@ -1584,7 +1975,7 @@ defmodule IexCode.Tools do
   end
 
   defp filter_tool_definitions(definitions, allowlist) when is_list(allowlist) do
-    allowed = MapSet.new(Enum.map(allowlist, &to_string/1))
+    allowed = MapSet.new(Enum.map(allowlist, &resolve_tool_alias/1))
     Enum.filter(definitions, &MapSet.member?(allowed, &1.name))
   end
 
