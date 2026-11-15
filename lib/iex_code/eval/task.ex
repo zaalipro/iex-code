@@ -17,8 +17,22 @@ defmodule IexCode.Eval.Task do
   with `prompt`, then grades with `test_cmd` (exit 0 passes).
   """
 
+  @difficulties ~w(easy medium hard)
+
   @enforce_keys [:id, :prompt, :repo, :test_cmd]
-  defstruct [:id, :prompt, :repo, :test_cmd, timeout_ms: 120_000, max_turns: 8]
+  defstruct [
+    :id,
+    :prompt,
+    :repo,
+    :test_cmd,
+    timeout_ms: 120_000,
+    max_turns: 8,
+    category: "general",
+    difficulty: "medium",
+    tags: []
+  ]
+
+  @type difficulty :: String.t()
 
   @type t :: %__MODULE__{
           id: String.t(),
@@ -26,7 +40,10 @@ defmodule IexCode.Eval.Task do
           repo: String.t(),
           test_cmd: [String.t()],
           timeout_ms: pos_integer(),
-          max_turns: pos_integer()
+          max_turns: pos_integer(),
+          category: String.t(),
+          difficulty: difficulty(),
+          tags: [String.t()]
         }
 
   @doc "Parses and validates a task from a decoded JSON map."
@@ -37,7 +54,10 @@ defmodule IexCode.Eval.Task do
          {:ok, repo} <- required_string(params, "repo"),
          {:ok, test_cmd} <- required_command(params),
          {:ok, timeout_ms} <- optional_pos_int(params, "timeout_ms", 120_000),
-         {:ok, max_turns} <- optional_pos_int(params, "max_turns", 8) do
+         {:ok, max_turns} <- optional_pos_int(params, "max_turns", 8),
+         {:ok, category} <- optional_string(params, "category", "general"),
+         {:ok, difficulty} <- optional_difficulty(params, "difficulty", "medium"),
+         {:ok, tags} <- optional_tags(params, "tags", []) do
       {:ok,
        %__MODULE__{
          id: id,
@@ -45,12 +65,24 @@ defmodule IexCode.Eval.Task do
          repo: repo,
          test_cmd: test_cmd,
          timeout_ms: timeout_ms,
-         max_turns: max_turns
+         max_turns: max_turns,
+         category: category,
+         difficulty: difficulty,
+         tags: tags
        }}
     end
   end
 
   def from_map(_params), do: {:error, :eval_task_must_be_an_object}
+
+  @doc "Filters a list of tasks by `:only` ids, `:category`, and/or `:tag`."
+  @spec filter([t()], keyword()) :: [t()]
+  def filter(tasks, opts \\ []) when is_list(tasks) and is_list(opts) do
+    tasks
+    |> filter_only(Keyword.get(opts, :only))
+    |> filter_category(Keyword.get(opts, :category))
+    |> filter_tag(Keyword.get(opts, :tag))
+  end
 
   @doc "Loads all `*.eval.json` tasks from a directory (sorted by id)."
   @spec load_dir(String.t()) :: {:ok, [t()]} | {:error, term()}
@@ -113,4 +145,44 @@ defmodule IexCode.Eval.Task do
       _invalid -> {:error, {:eval_task_field, key}}
     end
   end
+
+  defp optional_string(params, key, default) do
+    case Map.get(params, key, default) do
+      value when is_binary(value) ->
+        if String.trim(value) == "", do: {:error, {:eval_task_field, key}}, else: {:ok, value}
+
+      _invalid ->
+        {:error, {:eval_task_field, key}}
+    end
+  end
+
+  defp optional_difficulty(params, key, default) do
+    case Map.get(params, key, default) do
+      value when value in @difficulties -> {:ok, value}
+      _invalid -> {:error, {:eval_task_field, key}}
+    end
+  end
+
+  defp optional_tags(params, key, default) do
+    case Map.get(params, key, default) do
+      tags when is_list(tags) ->
+        if Enum.all?(tags, &(is_binary(&1) and String.trim(&1) != "")),
+          do: {:ok, tags},
+          else: {:error, {:eval_task_field, key}}
+
+      _invalid ->
+        {:error, {:eval_task_field, key}}
+    end
+  end
+
+  defp filter_only(tasks, nil), do: tasks
+  defp filter_only(tasks, ids) when is_list(ids), do: Enum.filter(tasks, &(&1.id in ids))
+
+  defp filter_category(tasks, nil), do: tasks
+
+  defp filter_category(tasks, category) when is_binary(category),
+    do: Enum.filter(tasks, &(&1.category == category))
+
+  defp filter_tag(tasks, nil), do: tasks
+  defp filter_tag(tasks, tag) when is_binary(tag), do: Enum.filter(tasks, &(tag in &1.tags))
 end

@@ -1,0 +1,11 @@
+{
+  "id": "elixir-multi-file-contract",
+  "prompt": "Refactor Pricing.calculate_total/1 in lib/pricing.ex to Pricing.calculate_total/2 accepting opts (discount_cents: 0, tax_rate: 0.0), and update both callers in lib/checkout.ex and lib/invoice.ex to pass discount_cents and tax_rate.",
+  "repo": "fixtures/elixir-multi-file-contract",
+  "test_cmd": ["elixir", "grade.exs"],
+  "timeout_ms": 30000,
+  "max_turns": 8,
+  "category": "refactor",
+  "difficulty": "medium",
+  "tags": ["elixir", "refactor", "multi_file"]
+}
