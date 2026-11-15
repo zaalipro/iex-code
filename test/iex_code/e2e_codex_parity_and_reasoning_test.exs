@@ -154,13 +154,21 @@ defmodule IexCode.E2ECodexParityAndReasoningTest do
       assert profile_claude.capabilities.type == :anthropic
 
       # 3. Gemini models: bounds clamping & non-reasoning parameter handling
-      # Gemini 2.5 Pro (standard multimodal model): retains temperature, no reasoning effort
+      # Gemini 2.0 Flash (standard multimodal model): retains temperature, no reasoning effort
+      profile_gemini_std =
+        Reasoning.resolve_profile("google", "gemini-2.0-flash", configured_settings)
+
+      assert profile_gemini_std.capabilities.type == :none
+      assert profile_gemini_std.temperature == configured_settings.temperature
+      assert is_nil(profile_gemini_std.reasoning_effort)
+
+      # Gemini 2.5 Pro (native thinking model): retains temperature, resolves thinking budget
       profile_gemini_pro =
         Reasoning.resolve_profile("google", "gemini-2.5-pro", configured_settings)
 
-      assert profile_gemini_pro.capabilities.type == :none
+      assert profile_gemini_pro.capabilities.type == :gemini
       assert profile_gemini_pro.temperature == configured_settings.temperature
-      assert is_nil(profile_gemini_pro.reasoning_effort)
+      assert profile_gemini_pro.thinking_budget >= 1024
 
       # Gemini thinking model (gemini-2.5-flash-thinking): thinking budget clamped >= 1024
       profile_gemini_thinking =
