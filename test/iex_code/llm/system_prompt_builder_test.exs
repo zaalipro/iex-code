@@ -85,5 +85,34 @@ defmodule IexCode.LLM.SystemPromptBuilderTest do
       prompt = SystemPromptBuilder.build("Base role", "/non/existent/path", nil)
       refute prompt =~ "Project Workspace Rules"
     end
+
+    test "discovers CLAUDE.md when AGENTS.md is absent and supports multi-file rules", %{
+      tmp_dir: tmp_dir
+    } do
+      File.write!(Path.join(tmp_dir, "CLAUDE.md"), "Follow Elixir conventions.")
+      File.write!(Path.join(tmp_dir, "CODEX.md"), "Run precommit checks.")
+
+      prompt = SystemPromptBuilder.build("Base role", tmp_dir, %AppSettings{})
+
+      assert prompt =~ "## Project Workspace Rules (CLAUDE.md)\nFollow Elixir conventions."
+      assert prompt =~ "## Project Workspace Rules (CODEX.md)\nRun precommit checks."
+    end
+  end
+
+  describe "build/4 nested active_paths" do
+    test "discovers nested AGENTS.md files along active_paths", %{tmp_dir: tmp_dir} do
+      File.write!(Path.join(tmp_dir, "AGENTS.md"), "Root rule.")
+      nested_dir = Path.join(tmp_dir, "lib/sub")
+      File.mkdir_p!(nested_dir)
+      File.write!(Path.join(nested_dir, "AGENTS.md"), "Nested sub rule.")
+
+      prompt =
+        SystemPromptBuilder.build("Base role", tmp_dir, %AppSettings{},
+          active_paths: ["lib/sub/worker.ex"]
+        )
+
+      assert prompt =~ "## Project Workspace Rules (AGENTS.md)\nRoot rule."
+      assert prompt =~ "## Project Workspace Rules (lib/sub/AGENTS.md)\nNested sub rule."
+    end
   end
 end
