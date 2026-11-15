@@ -1,0 +1,412 @@
+/*
+ * Aurora Prism & Conic Glass login screen styles.
+ * Scoped under #owner-login-stage so theme switching elsewhere cannot degrade contrast.
+ */
+
+@property --login-conic-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
+@keyframes login-conic-spin {
+  to {
+    --login-conic-angle: 360deg;
+  }
+}
+
+@keyframes login-orb-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.28);
+    opacity: 0.6;
+  }
+}
+
+@keyframes login-aurora-float-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+#owner-login-stage {
+  position: relative;
+  min-height: 100dvh;
+  width: 100%;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  color-scheme: dark;
+  color: #f6f5ff;
+  font-family: var(--font-sans, "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif);
+  background-color: #05040c;
+  background-image:
+    radial-gradient(ellipse 80% 52% at 22% 18%, rgba(99, 102, 241, 0.24), transparent 62%),
+    radial-gradient(ellipse 72% 48% at 78% 24%, rgba(168, 85, 247, 0.22), transparent 60%),
+    radial-gradient(ellipse 68% 44% at 54% 78%, rgba(34, 211, 238, 0.14), transparent 65%),
+    radial-gradient(ellipse 46% 32% at 84% 72%, rgba(244, 63, 94, 0.11), transparent 68%),
+    linear-gradient(135deg, #05040c 0%, #0a071a 50%, #040814 100%);
+}
+
+#owner-login-aurora-canvas {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.login-aurora-vignette {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+  background: radial-gradient(circle at 50% 48%, transparent 32%, rgba(3, 3, 10, 0.54) 100%);
+}
+
+.login-aurora-noise {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+  opacity: 0.04;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.75) 0.65px, transparent 0.65px);
+  background-size: 4px 4px;
+}
+
+.login-aurora-card-slot {
+  position: relative;
+  z-index: 3;
+  width: 100%;
+  max-width: 26.25rem;
+  animation: login-aurora-float-in 460ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.login-aurora-shell {
+  position: relative;
+  padding: 1.5px;
+  border-radius: 22px;
+  background-color: rgba(168, 85, 247, 0.28);
+  background-image: conic-gradient(
+    from var(--login-conic-angle, 0deg),
+    rgba(99, 102, 241, 0.18) 0deg,
+    #22d3ee 60deg,
+    #a855f7 140deg,
+    rgba(244, 63, 94, 0.78) 210deg,
+    rgba(99, 102, 241, 0.18) 310deg,
+    rgba(99, 102, 241, 0.18) 360deg
+  );
+  animation: login-conic-spin 8s linear infinite;
+  box-shadow:
+    0 28px 90px rgba(5, 3, 18, 0.84),
+    0 0 64px rgba(168, 85, 247, 0.18),
+    0 0 32px rgba(34, 211, 238, 0.08);
+}
+
+.login-aurora-core {
+  position: relative;
+  border-radius: 20.5px;
+  background: linear-gradient(180deg, rgba(13, 12, 28, 0.76) 0%, rgba(8, 8, 19, 0.84) 100%);
+  backdrop-filter: blur(28px) saturate(165%);
+  -webkit-backdrop-filter: blur(28px) saturate(165%);
+  padding: 2rem 1.9rem 1.65rem;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    inset 0 -1px 0 rgba(168, 85, 247, 0.08);
+  overflow: hidden;
+}
+
+.login-aurora-brand-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.login-aurora-brand-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #c7c5dc;
+}
+
+.login-aurora-orb {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #22d3ee;
+  box-shadow:
+    0 0 12px #22d3ee,
+    0 0 22px rgba(168, 85, 247, 0.55);
+  animation: login-orb-pulse 2.4s ease-in-out infinite;
+}
+
+.login-aurora-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 0.65rem;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0.24rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(235, 238, 255, 0.8);
+}
+
+.login-aurora-topline {
+  height: 1px;
+  margin: 1rem 0 1.25rem;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(34, 211, 238, 0.7),
+    rgba(168, 85, 247, 0.7),
+    rgba(244, 63, 94, 0.35),
+    transparent
+  );
+}
+
+.login-aurora-title {
+  margin: 0;
+  font-family: var(--ui-font-display, "Clash Display", "Plus Jakarta Sans", ui-sans-serif, sans-serif);
+  font-size: 1.8rem;
+  font-weight: 650;
+  letter-spacing: -0.025em;
+  line-height: 1.15;
+  color: #f8f7ff;
+}
+
+.login-aurora-subtitle {
+  margin: 0.4rem 0 1.35rem;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  color: #a5a3bd;
+}
+
+.login-aurora-error {
+  margin: 0 0 1.1rem;
+  padding: 0.65rem 0.85rem;
+  border-radius: 11px;
+  border: 1px solid rgba(244, 63, 94, 0.45);
+  background: rgba(244, 63, 94, 0.13);
+  color: #fecdd3;
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.login-aurora-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.95rem;
+}
+
+#owner-login-stage .login-aurora-form > div.mb-2 {
+  margin-bottom: 0;
+}
+
+#owner-login-stage .login-aurora-form label {
+  display: block;
+}
+
+#owner-login-stage .login-aurora-form label > span {
+  display: block;
+  margin-bottom: 0.4rem;
+  font-size: 0.76rem;
+  font-weight: 550;
+  letter-spacing: 0.015em;
+  color: #c7c5dc;
+}
+
+#owner-login-stage .login-aurora-input {
+  display: block;
+  width: 100%;
+  border-radius: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  background: rgba(7, 7, 16, 0.86);
+  color: #f6f5ff;
+  caret-color: #22d3ee;
+  padding: 0.72rem 0.9rem;
+  font-size: 0.9rem;
+  line-height: 1.35;
+  outline: none;
+  transition:
+    border-color 0.18s ease,
+    box-shadow 0.18s ease,
+    background-color 0.18s ease;
+}
+
+#owner-login-stage .login-aurora-input::placeholder {
+  color: rgba(165, 163, 189, 0.48);
+}
+
+#owner-login-stage .login-aurora-input:hover {
+  border-color: rgba(255, 255, 255, 0.24);
+  background: rgba(9, 9, 20, 0.9);
+}
+
+#owner-login-stage .login-aurora-input:focus {
+  border-color: rgba(34, 211, 238, 0.85);
+  box-shadow:
+    0 0 0 3px rgba(168, 85, 247, 0.24),
+    0 0 24px rgba(34, 211, 238, 0.18);
+  background: rgba(9, 9, 22, 0.94);
+}
+
+#owner-login-stage .login-aurora-input:-webkit-autofill,
+#owner-login-stage .login-aurora-input:-webkit-autofill:hover,
+#owner-login-stage .login-aurora-input:-webkit-autofill:focus,
+#owner-login-stage .login-aurora-input:-webkit-autofill:active {
+  -webkit-box-shadow: 0 0 0 1000px #080814 inset !important;
+  box-shadow: 0 0 0 1000px #080814 inset !important;
+  -webkit-text-fill-color: #f6f5ff !important;
+  caret-color: #22d3ee !important;
+  border-color: rgba(34, 211, 238, 0.42);
+  transition: background-color 99999s ease-out 0s;
+}
+
+#owner-login-stage .login-aurora-input:-webkit-autofill:focus {
+  -webkit-box-shadow:
+    0 0 0 1000px #090916 inset,
+    0 0 0 3px rgba(168, 85, 247, 0.24),
+    0 0 24px rgba(34, 211, 238, 0.18) !important;
+  box-shadow:
+    0 0 0 1000px #090916 inset,
+    0 0 0 3px rgba(168, 85, 247, 0.24),
+    0 0 24px rgba(34, 211, 238, 0.18) !important;
+  border-color: rgba(34, 211, 238, 0.85);
+}
+
+.login-aurora-submit {
+  position: relative;
+  width: 100%;
+  margin-top: 0.4rem;
+  padding: 0.78rem 1rem;
+  border-radius: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: linear-gradient(135deg, #6366f1 0%, #a855f7 52%, #22d3ee 100%);
+  color: #ffffff;
+  font-size: 0.9rem;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  cursor: pointer;
+  overflow: hidden;
+  box-shadow:
+    0 12px 32px rgba(168, 85, 247, 0.34),
+    inset 0 1px 0 rgba(255, 255, 255, 0.38);
+  transition:
+    transform 0.15s ease,
+    box-shadow 0.2s ease,
+    filter 0.2s ease;
+}
+
+.login-aurora-submit::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -120%;
+  width: 62%;
+  height: 100%;
+  background: linear-gradient(105deg, transparent, rgba(255, 255, 255, 0.42), transparent);
+  transform: skewX(-20deg);
+  transition: left 0.55s ease;
+  pointer-events: none;
+}
+
+.login-aurora-submit:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.06);
+  box-shadow:
+    0 16px 38px rgba(168, 85, 247, 0.42),
+    0 0 24px rgba(34, 211, 238, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.45);
+}
+
+.login-aurora-submit:hover::after {
+  left: 145%;
+}
+
+.login-aurora-submit:active {
+  transform: translateY(0);
+}
+
+.login-aurora-submit:focus-visible {
+  outline: 2px solid #22d3ee;
+  outline-offset: 2px;
+}
+
+.login-aurora-submit-arrow {
+  transition: transform 0.18s ease;
+}
+
+.login-aurora-submit:hover .login-aurora-submit-arrow {
+  transform: translateX(3px);
+}
+
+.login-aurora-footer {
+  margin-top: 1.25rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 0.68rem;
+  color: rgba(226, 232, 255, 0.52);
+}
+
+@media (max-width: 480px) {
+  #owner-login-stage {
+    padding: 1rem;
+  }
+
+  .login-aurora-core {
+    padding: 1.55rem 1.35rem 1.35rem;
+  }
+
+  .login-aurora-title {
+    font-size: 1.6rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .login-aurora-card-slot,
+  .login-aurora-shell,
+  .login-aurora-orb {
+    animation: none;
+  }
+
+  .login-aurora-submit::after,
+  .login-aurora-submit-arrow {
+    transition: none;
+  }
+}

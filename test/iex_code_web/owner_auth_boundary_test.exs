@@ -104,9 +104,31 @@ defmodule IexCodeWeb.OwnerAuthBoundaryTest do
 
     on_exit(fn -> :telemetry.detach(handler) end)
     conn = get(conn, "/login")
+    document = LazyHTML.from_document(conn.resp_body)
 
-    assert LazyHTML.query(LazyHTML.from_document(conn.resp_body), "#owner-login-form")
+    assert LazyHTML.query(document, "#owner-login-stage") |> Enum.count() == 1
+
+    assert LazyHTML.query(
+             document,
+             "#owner-login-stage canvas#owner-login-aurora-canvas[aria-hidden='true']"
+           )
            |> Enum.count() == 1
+
+    assert LazyHTML.query(document, ".login-aurora-shell .login-aurora-core #owner-login-form")
+           |> Enum.count() == 1
+
+    assert LazyHTML.query(document, "#owner-username[autocomplete='username'][required]")
+           |> Enum.count() == 1
+
+    assert LazyHTML.query(
+             document,
+             "#owner-password[type='password'][autocomplete='current-password'][required]"
+           )
+           |> Enum.count() == 1
+
+    assert LazyHTML.query(document, "#owner-password[value]") |> Enum.count() == 0
+    assert LazyHTML.query(document, "#owner-login-submit[type='submit']") |> Enum.count() == 1
+    assert LazyHTML.query(document, "#owner-login-error") |> Enum.count() == 0
 
     assert get(recycle(conn), "/health/ready") |> response(200) == "ok"
     refute_receive {:query, ^ref}
@@ -243,8 +265,9 @@ defmodule IexCodeWeb.OwnerAuthBoundaryTest do
 
     assert bad.status == 401
 
-    assert LazyHTML.query(LazyHTML.from_document(bad.resp_body), "#owner-password[value]")
-           |> Enum.count() == 0
+    bad_document = LazyHTML.from_document(bad.resp_body)
+    assert LazyHTML.query(bad_document, "#owner-login-error[role='alert']") |> Enum.count() == 1
+    assert LazyHTML.query(bad_document, "#owner-password[value]") |> Enum.count() == 0
 
     first = login(fixture)
     second = login(fixture)

@@ -8,6 +8,7 @@ import SidebarResize from "./hooks/sidebar_resize"
 import ModelPicker from "./hooks/model_picker"
 
 import "./appearance"
+import "./login_aurora"
 
 window.addEventListener("phx:reset_run_agent_guidance", (event) => {
   const agentId = event.detail?.agent_id
