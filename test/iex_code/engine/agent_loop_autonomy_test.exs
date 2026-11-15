@@ -3,6 +3,7 @@ defmodule IexCode.Engine.AgentLoopAutonomyTest do
 
   alias IexCode.Engine.AgentLoop
   alias IexCode.Engine.PlanStore
+  alias IexCode.Engine.SubAgent
   alias IexCode.{Projects, Runs, Sessions, Tools}
 
   setup do
@@ -128,12 +129,72 @@ defmodule IexCode.Engine.AgentLoopAutonomyTest do
     assert child.metadata["parent_run_id"] == run.id
     assert child.metadata["spawn_depth"] == 1
     assert child.objective == "Summarize the repo"
+    assert child.status == "completed"
+    assert child.completed_at != nil
+    assert child.lease_owner == nil
 
     all = collect_llm_messages(3)
 
     assert Enum.any?(List.flatten(all), fn message ->
-             message.role == "tool" and String.contains?(message.content, child.id)
+             message.role == "tool" and
+               String.contains?(message.content, child.id) and
+               String.contains?(message.content, "Child summary here.") and
+               String.contains?(message.content, "message_id")
            end)
+  end
+
+  test "SubAgent.run/5 returns summary and message_id and terminalizes failed child runs",
+       context do
+    parent = running_run(context)
+
+    sub_context = %{
+      llm: IexCode.AgentLoopLLMStub,
+      tool_executor: Tools,
+      lease_owner: parent.lease_owner,
+      run_attempt: parent.attempt,
+      run_lease_generation: parent.lease_generation,
+      max_turns: 2
+    }
+
+    Process.put(:agent_loop_responses, [
+      {:ok, %{text: "Detailed child findings.", tool_calls: [], usage: %{"input_tokens" => 12}}}
+    ])
+
+    assert {:ok, summary_map} =
+             SubAgent.run(parent.id, "Inspect architecture", context.root, sub_context)
+
+    assert summary_map["summary"] == "Detailed child findings."
+    assert is_binary(summary_map["message_id"])
+    assert summary_map["depth"] == 1
+    assert summary_map["max_turns"] == 2
+    assert summary_map["turns"] == 1
+    assert summary_map["tool_calls"] == 0
+    assert summary_map["usage"] == %{input_tokens: 12, output_tokens: 0, cost_cents: 0}
+
+    completed_child = Runs.get_run!(summary_map["child_run_id"])
+    assert completed_child.status == "completed"
+    assert completed_child.progress == 100
+
+    _ = collect_llm_messages(1)
+
+    oversized_error = String.duplicate("e", 6_000)
+    Process.put(:agent_loop_responses, [{:error, oversized_error}])
+
+    assert {:error, ^oversized_error} =
+             SubAgent.run(parent.id, "Failing child task", context.root, sub_context)
+
+    _ = collect_llm_messages(1)
+
+    failed_children =
+      context.session.id
+      |> Runs.list_runs()
+      |> Enum.filter(&(&1.metadata["sub_agent"] == true and &1.objective == "Failing child task"))
+
+    assert [failed_child] = failed_children
+    assert failed_child.status == "failed"
+    assert failed_child.completed_at != nil
+    assert is_binary(failed_child.error_message)
+    assert String.length(failed_child.error_message) == 4_000
   end
 
   test "retriable tool errors are retried then settled", context do
