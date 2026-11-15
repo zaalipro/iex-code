@@ -712,7 +712,21 @@ defmodule IexCode.E2E.Tier2BoundaryTest do
     end
 
     test "T2_F11_02_patch_first_occurrence_only", %{workspace_path: path} do
-      workspace_write_file(path, "lib/dups.ex", "foo bar foo")
+      workspace_write_file(path, "lib/dups.ex", "foo\nbar\nfoo")
+
+      assert {:error, err} =
+               Tools.execute(
+                 "patch_file",
+                 %{
+                   "path" => "lib/dups.ex",
+                   "target_content" => "foo",
+                   "replacement_content" => "baz"
+                 },
+                 path
+               )
+
+      assert err =~ "Ambiguous target"
+      assert {:ok, "foo\nbar\nfoo"} = workspace_read_file(path, "lib/dups.ex")
 
       {:ok, _} =
         Tools.execute(
@@ -720,13 +734,14 @@ defmodule IexCode.E2E.Tier2BoundaryTest do
           %{
             "path" => "lib/dups.ex",
             "target_content" => "foo",
-            "replacement_content" => "baz"
+            "replacement_content" => "baz",
+            "anchor_line" => 1
           },
           path
         )
 
       {:ok, content} = workspace_read_file(path, "lib/dups.ex")
-      assert content == "baz bar foo"
+      assert content == "baz\nbar\nfoo"
     end
 
     test "T2_F11_03_patch_nonexistent_file", %{workspace_path: path} do
