@@ -326,12 +326,12 @@ ranked-provider readiness/order, editor auto-save, provider-reported usage, and
 read-only runtime facts. Blank credential fields preserve saved values; the
 explicit **Remove credential** actions clear them.
 
-Configure an OpenAI-compatible or Anthropic endpoint, API key, default model,
+Configure an OpenAI-compatible, Anthropic, or Gemini endpoint, API key, default model,
 temperature, and token limit there. The model gateway has first-class
-OpenAI-compatible and Anthropic adapters. A Gemini model may be used when exposed
-through a compatible endpoint; a direct general-purpose Gemini chat transport remains
-roadmap work. Ollama, LM Studio, and llama.cpp use the OpenAI-compatible adapter and
-local endpoint discovery. This is distinct from the grounded Gemini search transport below.
+OpenAI-compatible, Anthropic, and native Gemini (`v1beta`) adapters, and Gemini models
+may also be routed through an OpenAI-compatible endpoint. Ollama, LM Studio, and
+llama.cpp use the OpenAI-compatible adapter and local endpoint discovery. This is
+distinct from the grounded Gemini search transport below.
 
 The research gateway is independent of the model transport. It includes normalized
 adapters for **Tavily, Brave, Exa, Perplexity Search, Firecrawl Search, Linkup Search,
@@ -514,6 +514,43 @@ explicit run retry retains attempt history while resetting the same immutable lo
 under a new run generation. Steering is not supported for `dag_v1`. Existing legacy coding and
 research rows remain on `legacy_v1`; their descriptive dependency labels are never reinterpreted
 by the DAG scheduler. The dedicated exact-level Research launcher creates new `dag_v1` rows.
+
+## Frontier coding harness capabilities
+
+- **2026 frontier model matrix & native `Gemini` adapter**: `IexCode.LLM.Capabilities` and
+  `IexCode.LLM.Reasoning` detect 2025–2026 frontier models across OpenAI (`gpt-5*`, `codex*`,
+  `o1*`, `o3*`, `o4*` with `minimal`–`xhigh` effort inference), Anthropic extended thinking
+  (`claude-sonnet-4*`, `claude-opus-4*`, `claude-haiku-4-5*`, `claude-5*`), and Gemini
+  (`gemini-2.5*`, `gemini-3*`, `gemini-4*`, `carbon`, `hydrogen`, `argon`), backed by the
+  Req-based `IexCode.LLM.Gemini` `v1beta` chat/streaming adapter (`thinkingBudget`, thought-part
+  extraction, `functionCall`/`functionResponse` tool loops, `usageMetadata`, and
+  `RequestPreparation` payload measurement).
+- **Ambiguity-safe `MultiPatch` with diagnostic hints**: `IexCode.Tools.MultiPatch` and
+  `Matcher` reject ambiguous multi-occurrence targets unless disambiguated via `anchor_line` or
+  `allow_multiple: true`, returning `Matcher.diagnose_failure/2` line numbers or closest
+  matching line windows for self-recovery.
+- **`repo_map` & `diagnostics` tools**: Read-only `repo_map` (`IexCode.Tools.RepoMap`) builds
+  bounded (`16,000`-byte default), `focus_query`-ranked symbol maps from Elixir ASTs and
+  polyglot headers; `diagnostics` performs fast Elixir AST syntax checks plus optional
+  `compile: true` verification under `{:project, :exclusive}` workspace locking, alongside
+  legacy role tool alias resolution (`view_file`, `replace_file_content`, `write_to_file`,
+  `find_by_name`).
+- **POSIX process-group command reaper**: `IexCode.Tools.ProcessGroupRunner` isolates
+  `run_command` and compile diagnostics in dedicated OS process groups (`setsid`), sending
+  `SIGTERM` then `SIGKILL` to `-pgid` on timeout, stop, or port closure so backgrounded
+  descendants never leak.
+- **`LoopGuard` doom-loop protection & runtime hardening**: `IexCode.Engine.LoopGuard` tracks
+  canonical `{tool_name, args_digest, error?, output_digest}` signatures in `AgentLoop` and
+  `CoderAgent`, appending `[HARNESS LOOP GUARD]` guidance on the 3rd consecutive identical
+  failing call and halting cleanly with `{:agent_doom_loop_detected, tool_name}` on the 5th.
+  Agent/coordinator histories cap at `@history_limit 20`, and detached LiveViews validate
+  session UUIDs and existence before `PubSub.subscribe/2`.
+- **6-task `eval/tasks` coding benchmark suite**: `mix iex_code.eval` (`IexCode.Eval.Runner` and
+  `Scoring`) runs 6 reproducible coding benchmarks (`example-markdown-typo`,
+  `elixir-pagination-boundary`, `elixir-multi-file-contract`, `elixir-repeated-block-patch`,
+  `elixir-genserver-bounded-state`, `elixir-compile-repair`) with `--only`, `--category`,
+  `--tag`, `--json-out`, process-group grading timeouts, automatic workdir cleanup, `pass@k`
+  category summaries, and turn/tool/token/cost telemetry.
 
 ## Verification
 
