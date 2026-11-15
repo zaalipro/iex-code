@@ -29,23 +29,42 @@ defmodule IexCode.LLM.OpenAI do
     formatted_messages = system_messages ++ Enum.map(messages, &format_message/1)
 
     openai_tools =
-      Enum.map(tools, fn t ->
-        %{
-          "type" => "function",
-          "function" => %{
-            "name" => t.name,
-            "description" => t.description,
-            "parameters" => t.parameters
+      Enum.map(tools, fn
+        %{name: name, description: desc, parameters: params} ->
+          %{
+            "type" => "function",
+            "function" => %{
+              "name" => name,
+              "description" => desc,
+              "parameters" => params
+            }
           }
-        }
+
+        %{"type" => "function"} = t ->
+          t
+
+        %{"name" => name} = t ->
+          %{
+            "type" => "function",
+            "function" => %{
+              "name" => name,
+              "description" => t["description"],
+              "parameters" => t["parameters"]
+            }
+          }
+
+        t ->
+          t
       end)
 
     caps = IexCode.LLM.Capabilities.detect(provider, model)
 
     reasoning_effort =
-      case Keyword.get(opts, :reasoning_effort) do
-        nil -> if caps.reasoning_supported?, do: caps.default_effort || "medium", else: nil
-        effort -> to_string(effort)
+      if caps.reasoning_supported? do
+        raw_effort = Keyword.get(opts, :reasoning_effort) || caps.default_effort || "medium"
+        IexCode.LLM.Reasoning.normalize_openai_effort(raw_effort)
+      else
+        nil
       end
 
     max_tokens =

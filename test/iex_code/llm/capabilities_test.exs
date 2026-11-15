@@ -140,5 +140,95 @@ defmodule IexCode.LLM.CapabilitiesTest do
       caps_empty = Capabilities.detect(nil, "")
       refute caps_empty.reasoning_supported?
     end
+
+    test "detects 2025-2026 OpenAI frontier reasoning models (gpt-5*, codex*) with effort suffixes" do
+      for model <- ["gpt-5", "gpt-5-mini", "gpt-5.2", "gpt-5.3-codex", "codex", "codex-mini"] do
+        caps = Capabilities.detect("openai", model)
+        assert caps.reasoning_supported? == true
+        assert caps.type == :openai
+        assert caps.reasoning_type == :reasoning_effort
+        refute caps.supports_temperature?
+        assert caps.max_output_tokens == 100_000
+        assert caps.default_effort == "medium"
+      end
+
+      assert Capabilities.detect("openai", "gpt-5-minimal").default_effort == "minimal"
+      assert Capabilities.detect("openai", "gpt-5-low").default_effort == "low"
+      assert Capabilities.detect("openai", "gpt-5-medium").default_effort == "medium"
+      assert Capabilities.detect("openai", "gpt-5-high").default_effort == "high"
+      assert Capabilities.detect("openai", "gpt-5.2-xhigh").default_effort == "xhigh"
+      assert Capabilities.detect("openai", "codex-xhigh").default_effort == "xhigh"
+
+      for std_model <- ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"] do
+        std_caps = Capabilities.detect("openai", std_model)
+        refute std_caps.reasoning_supported?
+        assert std_caps.type == :none
+        assert std_caps.supports_temperature?
+      end
+    end
+
+    test "detects Anthropic Claude 4/4.5/4.6/5 extended thinking prefixes and suffix budgets" do
+      models = [
+        "claude-sonnet-4",
+        "claude-sonnet-4-20250514",
+        "claude-sonnet-4-5",
+        "claude-sonnet-4.6",
+        "claude-opus-4",
+        "claude-opus-4-1",
+        "claude-opus-4-6",
+        "claude-haiku-4-5",
+        "claude-haiku-4.5",
+        "claude-sonnet-5",
+        "claude-opus-5",
+        "claude-5"
+      ]
+
+      for model <- models do
+        caps = Capabilities.detect("anthropic", model)
+        assert caps.reasoning_supported? == true
+        assert caps.type == :anthropic
+        assert caps.reasoning_type == :budget_tokens
+        assert caps.requires_temperature_1_0? == true
+        assert caps.supports_extended_thinking? == true
+        assert caps.max_output_tokens == 64_000
+        assert caps.default_budget == 4_096
+      end
+
+      assert Capabilities.detect("anthropic", "claude-opus-4-6-high").default_budget == 16_384
+      assert Capabilities.detect("anthropic", "claude-opus-4-6-xhigh").default_budget == 32_000
+    end
+
+    test "detects Gemini 2.5/3/4 models across native gemini/google and OpenAI proxy providers" do
+      for provider <- ["gemini", "google"],
+          model <- [
+            "gemini-2.5-pro",
+            "gemini-2.5-flash",
+            "gemini-3-pro",
+            "gemini-3.7-flash-high",
+            "gemini-4-pro",
+            "carbon",
+            "hydrogen",
+            "argon",
+            "gemini-3-carbon"
+          ] do
+        caps = Capabilities.detect(provider, model)
+        assert caps.reasoning_supported? == true
+        assert caps.type == :gemini
+        assert caps.reasoning_type == :thinking_budget
+        assert caps.default_budget == 4_096
+        assert caps.min_budget == 1_024
+        assert caps.max_output_tokens == 65_536
+      end
+
+      proxy_caps = Capabilities.detect("openai", "gemini-3.7-flash-high")
+      assert proxy_caps.type == :openai
+      assert proxy_caps.reasoning_type == :reasoning_effort
+      assert proxy_caps.supports_temperature? == true
+      assert proxy_caps.default_effort == "high"
+      assert proxy_caps.max_output_tokens == 65_536
+
+      assert Capabilities.detect("openai", "gemini-2.5-pro").default_effort == "medium"
+      assert Capabilities.detect("openai", "gemini-4-pro-xhigh").default_effort == "xhigh"
+    end
   end
 end

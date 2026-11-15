@@ -25,12 +25,26 @@ defmodule IexCode.LLM.Anthropic do
       |> merge_consecutive_roles()
 
     anthropic_tools =
-      Enum.map(tools, fn t ->
-        %{
-          "name" => t.name,
-          "description" => t.description,
-          "input_schema" => t.parameters
-        }
+      Enum.map(tools, fn
+        %{name: name, description: desc, parameters: params} ->
+          %{
+            "name" => name,
+            "description" => desc,
+            "input_schema" => params
+          }
+
+        %{"name" => _name, "input_schema" => _schema} = t ->
+          t
+
+        %{"name" => name} = t ->
+          %{
+            "name" => name,
+            "description" => t["description"],
+            "input_schema" => t["parameters"]
+          }
+
+        t ->
+          t
       end)
 
     caps = IexCode.LLM.Capabilities.detect("anthropic", model)
