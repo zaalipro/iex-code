@@ -1,0 +1,11 @@
+{
+  "id": "elixir-ast-rename-refactor",
+  "prompt": "Fix AstRenamer.rename_function/4 in lib/ast_renamer.ex to use Elixir AST parsing and traversal (Code.string_to_quoted/1, Macro.prewalk/2, Macro.to_string/1) instead of regex replacement. Rename only matching-arity def/defp definitions, local calls, remote calls (Mod.fn(...)), and function captures (&fn/arity, &Mod.fn/arity) without altering string literals, atoms, variables, map keys, or different-arity calls, and return {:error, reason} on syntax errors.",
+  "repo": "fixtures/elixir-ast-rename-refactor",
+  "test_cmd": ["elixir", "grade.exs"],
+  "timeout_ms": 30000,
+  "max_turns": 8,
+  "category": "refactor",
+  "difficulty": "hard",
+  "tags": ["elixir", "ast", "refactor", "metaprogramming"]
+}

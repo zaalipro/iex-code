@@ -8,7 +8,19 @@ defmodule IexCode.Consensus.Matrix do
   alias IexCode.Consensus.Assessment
 
   @dimensions [:correctness, :security, :architectural_fit, :maintainability, :testability]
-  @sqrt_5 :math.sqrt(5.0)
+  @default_weights %{
+    correctness: 0.2,
+    security: 0.2,
+    architectural_fit: 0.2,
+    maintainability: 0.2,
+    testability: 0.2
+  }
+
+  @doc """
+  Returns the default uniform dimension weights across the 5 rubric dimensions.
+  """
+  @spec default_weights() :: map()
+  def default_weights, do: @default_weights
 
   @doc """
   Computes vote concordance between two assessments:
@@ -46,21 +58,31 @@ defmodule IexCode.Consensus.Matrix do
   """
   @spec pairwise_agreement(Assessment.t(), Assessment.t()) :: float()
   def pairwise_agreement(a, b) do
-    if a.reviewer_id == b.reviewer_id and a.vote == b.vote and a.scores == b.scores do
+    pairwise_agreement(a, b, @default_weights)
+  end
+
+  @spec pairwise_agreement(Assessment.t(), Assessment.t(), map()) :: float()
+  def pairwise_agreement(a, b, dim_weights) when is_map(dim_weights) do
+    scores_a = clamp_scores(Map.get(a, :scores))
+    scores_b = clamp_scores(Map.get(b, :scores))
+
+    if a.reviewer_id == b.reviewer_id and a.vote == b.vote and scores_a == scores_b do
       1.0
     else
       delta_vote = vote_concordance(a, b)
+      norm_weights = normalize_dimension_weights(dim_weights)
 
-      diff_sq_sum =
+      weighted_diff_sq_sum =
         Enum.reduce(@dimensions, 0.0, fn dim, acc ->
-          s1 = Map.get(a.scores, dim, 0.8)
-          s2 = Map.get(b.scores, dim, 0.8)
+          s1 = Map.fetch!(scores_a, dim)
+          s2 = Map.fetch!(scores_b, dim)
+          w = Map.get(norm_weights, dim, 0.2)
           diff = s1 - s2
-          acc + diff * diff
+          acc + w * diff * diff
         end)
 
-      norm_diff = :math.sqrt(diff_sq_sum)
-      score_agreement = max(0.0, 1.0 - norm_diff / @sqrt_5)
+      weighted_dist = :math.sqrt(weighted_diff_sq_sum)
+      score_agreement = max(0.0, 1.0 - weighted_dist)
 
       agreement = 0.60 * delta_vote + 0.40 * score_agreement
       clamp(agreement, 0.0, 1.0)
@@ -74,6 +96,21 @@ defmodule IexCode.Consensus.Matrix do
   def compute(assessments, opts \\ [])
 
   def compute([], _opts) do
+    empty_result()
+  end
+
+  def compute(assessments, opts) when is_list(assessments) do
+    dedup? = Keyword.get(opts, :deduplicate_reviewers, true)
+    assessments = deduplicate_assessments(assessments, dedup?)
+
+    if assessments == [] do
+      empty_result()
+    else
+      do_compute(assessments, opts)
+    end
+  end
+
+  defp empty_result do
     %{
       decision: :requires_arbitration,
       weighted_score: 0.0,
@@ -85,17 +122,25 @@ defmodule IexCode.Consensus.Matrix do
     }
   end
 
-  def compute(assessments, opts) when is_list(assessments) do
+  defp do_compute(assessments, opts) do
     m = length(assessments)
-
-    # 1. Normalized weights
     weights_opt = Keyword.get(opts, :weights, %{})
+    dim_weights_opt = Keyword.get(opts, :dimension_weights)
 
+    {reviewer_weights_opt, inferred_dim_weights} =
+      partition_weights_opt(assessments, weights_opt, dim_weights_opt)
+
+    dim_weights = normalize_dimension_weights(inferred_dim_weights)
+
+    # 1. Normalized reviewer weights (clamping negatives to 0.0, falling back to uniform if sum == 0)
     raw_weights =
-      if is_map(weights_opt) and map_size(weights_opt) > 0 do
+      if is_map(reviewer_weights_opt) and map_size(reviewer_weights_opt) > 0 do
         Enum.map(assessments, fn a ->
           rev_id = a.reviewer_id || "reviewer"
-          Map.get(weights_opt, rev_id, 1.0)
+
+          reviewer_weights_opt
+          |> Map.get(rev_id, 1.0)
+          |> non_neg_float(0.0)
         end)
       else
         List.duplicate(1.0, m)
@@ -104,7 +149,7 @@ defmodule IexCode.Consensus.Matrix do
     sum_w = Enum.sum(raw_weights)
 
     normalized_weights =
-      if sum_w > 0 do
+      if sum_w > 0.0 do
         Enum.map(raw_weights, &(&1 / sum_w))
       else
         List.duplicate(1.0 / m, m)
@@ -114,7 +159,7 @@ defmodule IexCode.Consensus.Matrix do
     matrix_grid =
       for a <- assessments do
         for b <- assessments do
-          pairwise_agreement(a, b)
+          pairwise_agreement(a, b, dim_weights)
         end
       end
 
@@ -125,31 +170,33 @@ defmodule IexCode.Consensus.Matrix do
       else
         pairs =
           for j <- 0..(m - 2), k <- (j + 1)..(m - 1) do
-            pairwise_agreement(Enum.at(assessments, j), Enum.at(assessments, k))
+            pairwise_agreement(Enum.at(assessments, j), Enum.at(assessments, k), dim_weights)
           end
 
-        Enum.sum(pairs) / length(pairs)
+        clamp(Enum.sum(pairs) / length(pairs), 0.0, 1.0)
       end
 
-    # 4. Weighted score C
+    # 4. Weighted score C (bounded in [-1.0, 1.0])
     weighted_score =
       assessments
       |> Enum.zip(normalized_weights)
       |> Enum.reduce(0.0, fn {a, w}, acc ->
         v_val = vote_value(a.vote)
-        conf = a.confidence || 1.0
+        conf = clamp_unit(a.confidence, 1.0)
         acc + w * conf * v_val
       end)
+      |> clamp(-1.0, 1.0)
 
-    # 5. Dimensional averages \bar{S}
+    # 5. Dimensional averages \bar{S} (bounded in [0.0, 1.0])
     dimensional_averages =
       Enum.reduce(@dimensions, %{}, fn dim, acc ->
         avg =
           assessments
           |> Enum.zip(normalized_weights)
           |> Enum.reduce(0.0, fn {a, w}, d_acc ->
-            d_acc + w * Map.get(a.scores, dim, 0.8)
+            d_acc + w * dimension_score(a, dim)
           end)
+          |> clamp(0.0, 1.0)
 
         Map.put(acc, dim, avg)
       end)
@@ -193,6 +240,117 @@ defmodule IexCode.Consensus.Matrix do
       assessments: assessments
     }
   end
+
+  defp deduplicate_assessments(assessments, false), do: assessments
+
+  defp deduplicate_assessments(assessments, _true) do
+    assessments
+    |> Enum.with_index()
+    |> Enum.uniq_by(fn {assessment, idx} ->
+      case Map.get(assessment, :reviewer_id) do
+        id when is_binary(id) ->
+          trimmed = String.trim(id)
+          if trimmed == "", do: {:anonymous, idx}, else: {:reviewer, trimmed}
+
+        nil ->
+          {:anonymous, idx}
+
+        other ->
+          {:reviewer, other}
+      end
+    end)
+    |> Enum.map(fn {assessment, _idx} -> assessment end)
+  end
+
+  defp partition_weights_opt(assessments, weights_opt, dim_weights_opt) do
+    cond do
+      is_map(dim_weights_opt) ->
+        {weights_opt, dim_weights_opt}
+
+      is_map(weights_opt) and map_size(weights_opt) > 0 and
+          dimension_weight_map?(weights_opt, assessments) ->
+        {%{}, weights_opt}
+
+      true ->
+        {weights_opt, @default_weights}
+    end
+  end
+
+  defp dimension_weight_map?(map, assessments) do
+    dim_keys = MapSet.new(@dimensions ++ Enum.map(@dimensions, &Atom.to_string/1))
+
+    reviewer_ids =
+      assessments
+      |> Enum.map(& &1.reviewer_id)
+      |> Enum.reject(&is_nil/1)
+      |> MapSet.new()
+
+    keys = Map.keys(map)
+
+    Enum.all?(keys, &MapSet.member?(dim_keys, &1)) and
+      not Enum.any?(keys, &MapSet.member?(reviewer_ids, &1))
+  end
+
+  defp normalize_dimension_weights(dim_weights) when is_map(dim_weights) do
+    clamped =
+      Enum.reduce(@dimensions, %{}, fn dim, acc ->
+        raw =
+          case Map.fetch(dim_weights, dim) do
+            {:ok, v} -> v
+            :error -> Map.get(dim_weights, Atom.to_string(dim), 0.0)
+          end
+
+        Map.put(acc, dim, non_neg_float(raw, 0.0))
+      end)
+
+    total = clamped |> Map.values() |> Enum.sum()
+
+    if total > 0.0 do
+      Map.new(clamped, fn {dim, w} -> {dim, w / total} end)
+    else
+      @default_weights
+    end
+  end
+
+  defp normalize_dimension_weights(_), do: @default_weights
+
+  defp clamp_scores(scores) when is_map(scores) do
+    Enum.reduce(@dimensions, %{}, fn dim, acc ->
+      Map.put(acc, dim, dimension_score_from_map(scores, dim))
+    end)
+  end
+
+  defp clamp_scores(_), do: clamp_scores(%{})
+
+  defp dimension_score(assessment, dim) do
+    scores = Map.get(assessment, :scores) || %{}
+    dimension_score_from_map(scores, dim)
+  end
+
+  defp dimension_score_from_map(scores, dim) when is_map(scores) do
+    raw =
+      case fetch_score(scores, dim) do
+        nil when dim == :testability -> fetch_score(scores, :test_coverage)
+        val -> val
+      end
+
+    clamp_unit(raw, 0.8)
+  end
+
+  defp dimension_score_from_map(_, _), do: 0.8
+
+  defp fetch_score(scores, dim) do
+    case Map.fetch(scores, dim) do
+      {:ok, val} when not is_nil(val) -> val
+      _ -> Map.get(scores, Atom.to_string(dim))
+    end
+  end
+
+  defp clamp_unit(val, _default) when is_number(val), do: clamp(val * 1.0, 0.0, 1.0)
+  defp clamp_unit(_, default), do: default
+
+  defp non_neg_float(val, _default) when is_number(val), do: max(0.0, val * 1.0)
+  defp non_neg_float(_, default), do: default
 
   defp vote_value(:approve), do: 1.0
   defp vote_value(:reject), do: -1.0

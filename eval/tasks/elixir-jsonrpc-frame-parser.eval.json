@@ -1,0 +1,11 @@
+{
+  "id": "elixir-jsonrpc-frame-parser",
+  "prompt": "Fix the streaming LSP/JSON-RPC Content-Length frame parser in lib/jsonrpc_framer.ex so JsonRpcFramer.encode/1 and JsonRpcFramer.feed/2 use byte_size/binary_part (handling multi-byte UTF-8 payloads accurately), parse case-insensitive Content-Length headers alongside extra headers, extract multiple frames in a single chunk as well as partial frames split across chunks, and return {:error, reason, state} for missing, invalid, negative, or oversized (> max_content_length) Content-Length headers.",
+  "repo": "fixtures/elixir-jsonrpc-frame-parser",
+  "test_cmd": ["elixir", "grade.exs"],
+  "timeout_ms": 30000,
+  "max_turns": 8,
+  "category": "bugfix",
+  "difficulty": "medium",
+  "tags": ["elixir", "jsonrpc", "protocol", "binary", "streaming"]
+}

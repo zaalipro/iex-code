@@ -60,36 +60,71 @@ defmodule IexCode.Consensus.Assessment do
   end
 
   def parse(%{} = map) do
-    vote = normalize_vote(map["vote"] || map[:vote])
-    confidence = parse_float(map["confidence"] || map[:confidence], 1.0)
+    vote = normalize_vote(fetch_any(map, ["vote", :vote]))
 
-    raw_scores = map["scores"] || map[:scores] || %{}
+    confidence =
+      map |> fetch_any(["confidence", :confidence]) |> parse_float(1.0) |> clamp(0.0, 1.0)
+
+    raw_scores =
+      case fetch_any(map, ["scores", :scores]) do
+        s when is_map(s) -> s
+        _ -> %{}
+      end
 
     scores = %{
-      correctness: parse_float(raw_scores["correctness"] || raw_scores[:correctness], 0.8),
-      security: parse_float(raw_scores["security"] || raw_scores[:security], 0.8),
+      correctness:
+        raw_scores
+        |> fetch_any(["correctness", :correctness])
+        |> parse_float(0.8)
+        |> clamp(0.0, 1.0),
+      security:
+        raw_scores
+        |> fetch_any(["security", :security])
+        |> parse_float(0.8)
+        |> clamp(0.0, 1.0),
       architectural_fit:
-        parse_float(raw_scores["architectural_fit"] || raw_scores[:architectural_fit], 0.8),
+        raw_scores
+        |> fetch_any(["architectural_fit", :architectural_fit])
+        |> parse_float(0.8)
+        |> clamp(0.0, 1.0),
       maintainability:
-        parse_float(raw_scores["maintainability"] || raw_scores[:maintainability], 0.8),
-      testability: parse_float(raw_scores["testability"] || raw_scores[:testability], 0.8)
+        raw_scores
+        |> fetch_any(["maintainability", :maintainability])
+        |> parse_float(0.8)
+        |> clamp(0.0, 1.0),
+      testability:
+        raw_scores
+        |> fetch_any(["testability", :testability, "test_coverage", :test_coverage])
+        |> parse_float(0.8)
+        |> clamp(0.0, 1.0)
     }
 
     critique_points =
-      (map["critique_points"] || map[:critique_points] || [])
-      |> Enum.map(&normalize_critique/1)
+      case fetch_any(map, ["critique_points", :critique_points]) do
+        list when is_list(list) -> Enum.map(list, &normalize_critique/1)
+        _ -> []
+      end
 
     suggested_modifications =
-      map["suggested_modifications"] || map[:suggested_modifications] || []
+      case fetch_any(map, ["suggested_modifications", :suggested_modifications]) do
+        list when is_list(list) -> list
+        _ -> []
+      end
+
+    verdict_reason =
+      case fetch_any(map, ["verdict_reason", :verdict_reason]) do
+        reason when is_binary(reason) -> reason
+        _ -> ""
+      end
 
     assessment = %__MODULE__{
-      reviewer_id: map["reviewer_id"] || map[:reviewer_id],
-      provider: map["provider"] || map[:provider],
-      model: map["model"] || map[:model],
+      reviewer_id: fetch_any(map, ["reviewer_id", :reviewer_id]),
+      provider: fetch_any(map, ["provider", :provider]),
+      model: fetch_any(map, ["model", :model]),
       vote: vote,
       confidence: confidence,
       scores: scores,
-      verdict_reason: map["verdict_reason"] || map[:verdict_reason] || "",
+      verdict_reason: verdict_reason,
       critique_points: critique_points,
       suggested_modifications: suggested_modifications
     }
@@ -157,7 +192,7 @@ defmodule IexCode.Consensus.Assessment do
 
   defp normalize_critique(%{} = c) do
     severity =
-      case c["severity"] || c[:severity] do
+      case fetch_any(c, ["severity", :severity]) do
         s when s in [:blocker, "blocker"] -> :blocker
         s when s in [:minor, "minor"] -> :minor
         s when s in [:major, "major"] -> :major
@@ -166,12 +201,25 @@ defmodule IexCode.Consensus.Assessment do
 
     %{
       severity: severity,
-      category: c["category"] || c[:category] || "general",
-      file_path: c["file_path"] || c[:file_path],
-      line_number: c["line_number"] || c[:line_number],
-      description: c["description"] || c[:description] || ""
+      category: fetch_any(c, ["category", :category]) || "general",
+      file_path: fetch_any(c, ["file_path", :file_path, "file", :file]),
+      line_number: fetch_any(c, ["line_number", :line_number, "line", :line]),
+      description: fetch_any(c, ["description", :description, "message", :message]) || ""
     }
   end
 
   defp normalize_critique(other), do: other
+
+  defp fetch_any(map, keys) when is_map(map) do
+    Enum.find_value(keys, fn key ->
+      case Map.fetch(map, key) do
+        {:ok, val} when not is_nil(val) -> val
+        _ -> nil
+      end
+    end)
+  end
+
+  defp clamp(val, min_val, _max_val) when val < min_val, do: min_val
+  defp clamp(val, _min_val, max_val) when val > max_val, do: max_val
+  defp clamp(val, _min_val, _max_val), do: val
 end
