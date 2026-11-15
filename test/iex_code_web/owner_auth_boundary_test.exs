@@ -66,7 +66,11 @@ defmodule IexCodeWeb.OwnerAuthBoundaryTest do
     :telemetry.attach(
       handler,
       [:iex_code, :repo, :query],
-      fn _, _, _, _ -> send(parent, {:query, ref}) end,
+      fn _, _, _, _ ->
+        if self() == parent or parent in List.wrap(Process.get(:"$callers")) do
+          send(parent, {:query, ref})
+        end
+      end,
       nil
     )
 
@@ -90,7 +94,11 @@ defmodule IexCodeWeb.OwnerAuthBoundaryTest do
     :telemetry.attach(
       handler,
       [:iex_code, :repo, :query],
-      fn _, _, _, _ -> send(parent, {:query, ref}) end,
+      fn _, _, _, _ ->
+        if self() == parent or parent in List.wrap(Process.get(:"$callers")) do
+          send(parent, {:query, ref})
+        end
+      end,
       nil
     )
 
@@ -102,6 +110,44 @@ defmodule IexCodeWeb.OwnerAuthBoundaryTest do
 
     assert get(recycle(conn), "/health/ready") |> response(200) == "ok"
     refute_receive {:query, ^ref}
+  end
+
+  test "repo query telemetry probe ignores unrelated background processes while catching request and Task callers" do
+    ref = make_ref()
+    parent = self()
+    handler = {__MODULE__, {:caller_scope, ref}}
+
+    :telemetry.attach(
+      handler,
+      [:iex_code, :repo, :query],
+      fn _, _, _, _ ->
+        if self() == parent or parent in List.wrap(Process.get(:"$callers")) do
+          send(parent, {:query, ref})
+        end
+      end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    {bg_pid, bg_mon} =
+      spawn_monitor(fn ->
+        Process.delete(:"$callers")
+        :telemetry.execute([:iex_code, :repo, :query], %{total_time: 1}, %{})
+      end)
+
+    assert_receive {:DOWN, ^bg_mon, :process, ^bg_pid, :normal}
+    refute_receive {:query, ^ref}
+
+    Task.async(fn ->
+      :telemetry.execute([:iex_code, :repo, :query], %{total_time: 1}, %{})
+    end)
+    |> Task.await()
+
+    assert_receive {:query, ^ref}
+
+    :telemetry.execute([:iex_code, :repo, :query], %{total_time: 1}, %{})
+    assert_receive {:query, ^ref}
   end
 
   test "authenticated owner reads and downloads a synthetic verified report", fixture do
