@@ -14,9 +14,11 @@ defmodule IexCode.Engine.Agents.CoderAgent do
     OperationManager
   }
 
+  alias IexCode.Consensus.Arbitrator
+  alias IexCode.Engine.Agents.VerifierAgent
   alias IexCode.Execution.ModelRoute
   alias IexCode.{Sessions, Settings, Tools, LLM}
-  alias IexCode.Tools.AutoFix
+  alias IexCode.Tools.{AutoFix, TestRunner}
 
   @outer_timeout 90_000
   @inner_timeout 60_000
@@ -169,14 +171,7 @@ defmodule IexCode.Engine.Agents.CoderAgent do
 
             base_content =
               if diagnostics do
-                diag_str = AutoFix.format_diagnostics(diagnostics)
-
-                """
-                ### ⚠️ Self-Correction Feedback
-                #{diag_str}
-
-                Task: #{prompt}
-                """
+                format_retry_feedback(diagnostics, plan, explorer_context, prompt, project_root)
               else
                 "Plan:\n#{plan}\n\nContext:\n#{explorer_context}\n\nTask:\n#{prompt}"
               end
@@ -544,12 +539,16 @@ defmodule IexCode.Engine.Agents.CoderAgent do
     end
   end
 
-  defp trusted_project_id(_opts, state) do
-    (state.session && state.session.project_id) ||
-      case Sessions.get_session(state.session_id) do
-        %{project_id: project_id} -> project_id
-        _ -> nil
-      end
+  defp trusted_project_id(opts, state) do
+    if Keyword.get(opts, :isolated_worktree, false) == true do
+      nil
+    else
+      (state.session && state.session.project_id) ||
+        case Sessions.get_session(state.session_id) do
+          %{project_id: project_id} -> project_id
+          _ -> nil
+        end
+    end
   end
 
   defp with_workspace_delegation(nil, fun), do: fun.()
@@ -600,6 +599,110 @@ defmodule IexCode.Engine.Agents.CoderAgent do
       end
     else
       :ok
+    end
+  end
+
+  defp format_retry_feedback(diagnostics, plan, explorer_context, prompt, project_root) do
+    {repair_prompt, supplemental_diag} = synthesize_repair_brief(diagnostics, project_root)
+
+    plan_section =
+      if is_binary(plan) and String.trim(plan) != "" do
+        "\nRefined Plan:\n#{plan}\n"
+      else
+        ""
+      end
+
+    context_section =
+      if is_binary(explorer_context) and String.trim(explorer_context) != "" do
+        "\nContext:\n#{String.slice(explorer_context, 0, 2_000)}\n"
+      else
+        ""
+      end
+
+    supplemental_section =
+      if is_binary(supplemental_diag) and String.trim(supplemental_diag) != "" and
+           supplemental_diag != repair_prompt do
+        "\nDiagnostic Summary:\n#{supplemental_diag}\n"
+      else
+        ""
+      end
+
+    """
+    ### ⚠️ Self-Correction Feedback
+    #{repair_prompt}#{supplemental_section}#{plan_section}#{context_section}
+    Task: #{prompt}
+    """
+  end
+
+  defp synthesize_repair_brief(%TestRunner.Result{} = result, project_root) do
+    enriched =
+      VerifierAgent.enrich_diagnostics(
+        %{
+          status: result.status,
+          summary: "TestRunner verification (#{result.status})",
+          failures: result.failures,
+          compilation_errors: result.compilation_errors,
+          raw_output: result.raw_output,
+          result: result
+        },
+        project_root
+      )
+
+    {enriched.actionable_feedback.repair_prompt, AutoFix.format_diagnostics(result)}
+  end
+
+  defp synthesize_repair_brief(assessments, _project_root) when is_list(assessments) do
+    feedback = Arbitrator.synthesize_actionable_feedback(assessments)
+    {feedback.repair_prompt, nil}
+  end
+
+  defp synthesize_repair_brief(%{} = diagnostics, project_root) do
+    cond do
+      match?(
+        %{repair_prompt: p} when is_binary(p) and p != "",
+        Map.get(diagnostics, :actionable_feedback)
+      ) ->
+        fb = Map.get(diagnostics, :actionable_feedback)
+        {fb.repair_prompt, concise_diag_summary(diagnostics)}
+
+      is_binary(Map.get(diagnostics, :repair_prompt)) and
+          Map.get(diagnostics, :repair_prompt) != "" ->
+        {Map.get(diagnostics, :repair_prompt), concise_diag_summary(diagnostics)}
+
+      is_list(Map.get(diagnostics, :assessments)) or is_map(Map.get(diagnostics, :matrix)) ->
+        fb = Arbitrator.synthesize_actionable_feedback(diagnostics)
+        {fb.repair_prompt, concise_diag_summary(diagnostics)}
+
+      true ->
+        enriched = VerifierAgent.enrich_diagnostics(diagnostics, project_root)
+        {enriched.actionable_feedback.repair_prompt, concise_diag_summary(diagnostics)}
+    end
+  end
+
+  defp synthesize_repair_brief(diagnostics, project_root) when is_binary(diagnostics) do
+    enriched =
+      VerifierAgent.enrich_diagnostics(
+        %{status: :failed, summary: diagnostics, raw_output: diagnostics},
+        project_root
+      )
+
+    {enriched.actionable_feedback.repair_prompt, AutoFix.format_diagnostics(diagnostics)}
+  end
+
+  defp synthesize_repair_brief(other, project_root) do
+    synthesize_repair_brief(inspect(other), project_root)
+  end
+
+  defp concise_diag_summary(%{} = diagnostics) do
+    cond do
+      match?(%TestRunner.Result{}, Map.get(diagnostics, :result)) ->
+        AutoFix.format_diagnostics(Map.get(diagnostics, :result))
+
+      is_binary(Map.get(diagnostics, :summary)) and Map.get(diagnostics, :summary) != "" ->
+        String.slice(Map.get(diagnostics, :summary), 0, 1_500)
+
+      true ->
+        nil
     end
   end
 
