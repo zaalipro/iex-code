@@ -14,6 +14,12 @@ defmodule IexCode.SemanticIndex.EmbeddingClient do
   @default_model "nomic-embed-text"
 
   @doc """
+  Returns the default embedding model name.
+  """
+  @spec default_model() :: String.t()
+  def default_model, do: @default_model
+
+  @doc """
   Generates vector embeddings for a single text or batch of texts.
   Always returns `{:ok, [vector, ...]}` where each vector is either a list of floats
   or a packed binary if `return: :binary` is specified.
@@ -26,14 +32,14 @@ defmodule IexCode.SemanticIndex.EmbeddingClient do
 
   def embed(input, opts) do
     texts = if is_list(input), do: input, else: [input]
-    model = Keyword.get(opts, :model) || resolve_default_model()
+    model = resolve_model(opts)
     plug = Keyword.get(opts, :plug)
     explicit_base = Keyword.get(opts, :base_url)
 
     res =
       cond do
         plug != nil ->
-          call_with_plug(texts, model, plug)
+          call_with_plug(texts, model, plug, opts)
 
         is_binary(explicit_base) and explicit_base != "" ->
           call_local_endpoint(texts, model, explicit_base, opts, allow_fallback: false)
@@ -64,20 +70,39 @@ defmodule IexCode.SemanticIndex.EmbeddingClient do
   @doc """
   Returns the vector dimension for the active embedding model.
   """
-  def model_dimension(model \\ @default_model) do
+  @spec model_dimension(String.t() | term()) :: pos_integer()
+  def model_dimension(model \\ @default_model)
+
+  def model_dimension(model) when is_binary(model) do
+    normalized = String.downcase(model)
+
     cond do
-      String.contains?(model, "nomic") -> 768
-      String.contains?(model, "bge-large") -> 1024
-      String.contains?(model, "bge") -> 384
-      String.contains?(model, "minilm") -> 384
-      String.contains?(model, "bert") -> 768
+      String.contains?(normalized, "fallback-hash-768") -> 768
+      String.contains?(normalized, "fallback-hash-384") -> 384
+      String.contains?(normalized, "nomic") -> 768
+      String.contains?(normalized, "bge-large") -> 1024
+      String.contains?(normalized, "mxbai-embed-large") -> 1024
+      String.contains?(normalized, "bge") -> 384
+      String.contains?(normalized, "minilm") -> 384
+      String.contains?(normalized, "bert") -> 768
+      String.contains?(normalized, "text-embedding-3-large") -> 3072
+      String.contains?(normalized, "text-embedding-3-small") -> 1536
       true -> @default_dimension
     end
   end
 
+  def model_dimension(_), do: @default_dimension
+
   # ============================================================================
   # Provider Resolution & Requests
   # ============================================================================
+
+  defp resolve_model(opts) do
+    case Keyword.get(opts, :model) do
+      model when is_binary(model) and model != "" -> model
+      _ -> resolve_default_model()
+    end
+  end
 
   defp resolve_base_url do
     case Process.whereis(IexCode.LLM.Discovery.Server) do
@@ -100,35 +125,17 @@ defmodule IexCode.SemanticIndex.EmbeddingClient do
     @default_model
   end
 
-  defp call_with_plug(texts, model, plug) do
-    req = Req.new(plug: plug, base_url: "http://localhost:11434")
+  defp call_with_plug(texts, model, plug, opts) do
+    timeout = Keyword.get(opts, :timeout, 5000)
+    req = Req.new(plug: plug, base_url: "http://localhost:11434", receive_timeout: timeout)
 
-    case Req.post(req,
-           url: "/v1/embeddings",
-           json: %{model: model, input: texts}
-         ) do
-      {:ok, %{status: 200, body: %{"data" => items}}} when is_list(items) ->
-        vectors =
-          items
-          |> Enum.sort_by(&Map.get(&1, "index", 0))
-          |> Enum.map(fn %{"embedding" => floats} ->
-            Vector.normalize(Vector.pack(floats))
-          end)
-
-        {:ok, vectors}
-
-      {:ok, %{status: 200, body: %{"embedding" => floats}}} when is_list(floats) ->
-        {:ok, [Vector.normalize(Vector.pack(floats))]}
-
-      {:ok, resp} when resp.status >= 400 ->
-        {:error, {:http_error, resp.status, resp.body}}
-
-      {:ok, resp} ->
-        {:error, {:unexpected_response, resp.status, resp.body}}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
+    Req.post(req,
+      url: "/v1/embeddings",
+      json: %{model: model, input: texts}
+    )
+    |> parse_embedding_response()
+  rescue
+    e -> {:error, normalize_error(e)}
   end
 
   defp call_local_endpoint(texts, model, base_url, opts, allow_fallback: allow_fallback) do
@@ -142,28 +149,19 @@ defmodule IexCode.SemanticIndex.EmbeddingClient do
       retry: Keyword.get(opts, :retry, false)
     ]
 
-    case Req.post(url, req_opts) do
-      {:ok, %{status: 200, body: %{"data" => items}}} when is_list(items) ->
-        vectors =
-          items
-          |> Enum.sort_by(&Map.get(&1, "index", 0))
-          |> Enum.map(fn %{"embedding" => floats} ->
-            Vector.normalize(Vector.pack(floats))
-          end)
-
+    case Req.post(url, req_opts) |> parse_embedding_response() do
+      {:ok, vectors} ->
         {:ok, vectors}
-
-      {:ok, %{status: 200, body: %{"embedding" => floats}}} when is_list(floats) ->
-        {:ok, [Vector.normalize(Vector.pack(floats))]}
-
-      {:ok, resp} when resp.status >= 400 ->
-        {:error, {:http_error, resp.status, resp.body}}
 
       {:error, reason} ->
         if allow_fallback do
+          Logger.debug(
+            "Local embedding request failed (#{inspect(reason)}), falling back to synthetic vectors"
+          )
+
           fallback_embeddings(texts, model)
         else
-          {:error, normalize_error(reason)}
+          {:error, reason}
         end
     end
   rescue
@@ -178,6 +176,50 @@ defmodule IexCode.SemanticIndex.EmbeddingClient do
         {:error, normalize_error(e)}
       end
   end
+
+  defp parse_embedding_response({:ok, %{status: 200, body: %{"data" => items} = body}})
+       when is_list(items) and items != [] do
+    sorted = Enum.sort_by(items, &Map.get(&1, "index", 0))
+
+    if Enum.all?(sorted, &valid_embedding_item?/1) do
+      vectors =
+        Enum.map(sorted, fn %{"embedding" => floats} ->
+          Vector.normalize(Vector.pack(floats))
+        end)
+
+      {:ok, vectors}
+    else
+      {:error, {:unexpected_response, 200, body}}
+    end
+  end
+
+  defp parse_embedding_response({:ok, %{status: 200, body: %{"embedding" => floats} = body}})
+       when is_list(floats) and floats != [] do
+    if Enum.all?(floats, &is_number/1) do
+      {:ok, [Vector.normalize(Vector.pack(floats))]}
+    else
+      {:error, {:unexpected_response, 200, body}}
+    end
+  end
+
+  defp parse_embedding_response({:ok, %{status: status, body: body}}) when status >= 400 do
+    {:error, {:http_error, status, body}}
+  end
+
+  defp parse_embedding_response({:ok, %{status: status, body: body}}) do
+    {:error, {:unexpected_response, status, body}}
+  end
+
+  defp parse_embedding_response({:error, reason}) do
+    {:error, normalize_error(reason)}
+  end
+
+  defp valid_embedding_item?(%{"embedding" => floats})
+       when is_list(floats) and floats != [] do
+    Enum.all?(floats, &is_number/1)
+  end
+
+  defp valid_embedding_item?(_), do: false
 
   defp normalize_error(%Mint.TransportError{reason: reason}), do: reason
   defp normalize_error(%Req.TransportError{reason: reason}), do: reason
