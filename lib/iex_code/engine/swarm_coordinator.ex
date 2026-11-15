@@ -28,6 +28,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
   @max_steering_bytes 8_000
   @max_steering_context_bytes 128_000
   @swarm_start_timeout 5_000
+  @history_limit 20
 
   defmodule State do
     defstruct [
@@ -1211,7 +1212,7 @@ defmodule IexCode.Engine.SwarmCoordinator do
     temperature = if is_number(temperature), do: temperature * 1.0, else: temperature
 
     cond do
-      provider not in ["openai", "anthropic", "ollama", "lm_studio", "llama_cpp"] ->
+      provider not in ["openai", "anthropic", "gemini", "ollama", "lm_studio", "llama_cpp"] ->
         raise ArgumentError, "invalid snapshotted model provider"
 
       not Limits.valid_model_name?(model) ->
@@ -1688,12 +1689,11 @@ defmodule IexCode.Engine.SwarmCoordinator do
 
           new_sigs = MapSet.put(state.error_signatures, err_signature)
 
-          new_state = %State{
-            state
-            | verifier_result: diagnostics,
-              error_signatures: new_sigs,
-              history: [{iteration, diagnostics, auto_fix_summary} | state.history]
-          }
+          new_state =
+            record_history_entry(
+              %State{state | verifier_result: diagnostics, error_signatures: new_sigs},
+              {iteration, diagnostics, auto_fix_summary}
+            )
 
           case auto_fix_res do
             {:ok, %{applied: applied}} when applied > 0 ->
@@ -2076,5 +2076,10 @@ defmodule IexCode.Engine.SwarmCoordinator do
 
   defp compute_error_signature(other) do
     :erlang.phash2(other)
+  end
+
+  @doc false
+  def record_history_entry(%State{} = state, entry) do
+    %State{state | history: Enum.take([entry | state.history], @history_limit)}
   end
 end

@@ -13,6 +13,7 @@ defmodule IexCode.Engine.Agents.PlannerAgent do
 
   @outer_timeout 90_000
   @inner_timeout 60_000
+  @history_limit 20
 
   defmodule State do
     defstruct [
@@ -271,7 +272,7 @@ defmodule IexCode.Engine.Agents.PlannerAgent do
           state
           | status: :idle,
             last_result: plan_text,
-            history: [plan_text | state.history]
+            history: Enum.take([plan_text | state.history], @history_limit)
         }
 
         {:reply, {:ok, plan_text}, new_state}

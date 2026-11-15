@@ -11,6 +11,7 @@ defmodule IexCode.Engine.Agents.ExplorerAgent do
 
   @outer_timeout 90_000
   @inner_timeout 60_000
+  @history_limit 20
 
   @stopwords ~w(the and for with this that from into your you are have has will would should could
                 implement create make code file files please using used when then them they what
@@ -236,7 +237,7 @@ defmodule IexCode.Engine.Agents.ExplorerAgent do
           state
           | status: :idle,
             last_result: summary,
-            history: [summary | state.history]
+            history: Enum.take([summary | state.history], @history_limit)
         }
 
         {:reply, {:ok, summary}, new_state}

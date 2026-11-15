@@ -90,6 +90,14 @@ defmodule IexCodeWeb.DetachedWindowsTest do
       assert_error_sent 404, fn ->
         live(conn, ~p"/sessions/#{bad_id}/detached/terminal")
       end
+
+      assert_error_sent 404, fn ->
+        live(conn, ~p"/sessions/#{bad_id}/detached/diff")
+      end
+
+      assert_error_sent 404, fn ->
+        live(conn, ~p"/sessions/#{bad_id}/detached/dag")
+      end
     end
 
     test "T2_R1_LV_02: multiple concurrent detached views on same session run independently", %{
@@ -103,6 +111,49 @@ defmodule IexCodeWeb.DetachedWindowsTest do
       assert has_element?(term_view, "#detached-terminal-container")
       assert has_element?(diff_view, "#detached-diff-container")
       assert has_element?(dag_view, "#detached-dag-container")
+    end
+
+    test "T2_R1_LV_03: malformed non-UUID session IDs return clean 404 across all detached LiveViews",
+         %{conn: conn} do
+      for bad_id <- ["not-a-valid-uuid", "12345", "malformed_session_id"] do
+        assert_error_sent 404, fn ->
+          live(conn, ~p"/sessions/#{bad_id}/detached/terminal")
+        end
+
+        assert_error_sent 404, fn ->
+          live(conn, ~p"/sessions/#{bad_id}/detached/diff")
+        end
+
+        assert_error_sent 404, fn ->
+          live(conn, ~p"/sessions/#{bad_id}/detached/dag")
+        end
+      end
+    end
+
+    test "T2_R1_LV_04: failed detached mounts never leak PubSub subscriptions before session lookup" do
+      connected_socket = %Phoenix.LiveView.Socket{transport_pid: self()}
+
+      for bad_id <- [Ecto.UUID.generate(), "not-a-uuid"] do
+        for mod <- [
+              IexCodeWeb.Detached.TerminalLive,
+              IexCodeWeb.Detached.DagLive,
+              IexCodeWeb.Detached.DiffLive
+            ] do
+          assert_raise Ecto.NoResultsError, fn ->
+            mod.mount(%{"id" => bad_id}, %{}, connected_socket)
+          end
+        end
+
+        for topic <- [
+              "session:#{bad_id}",
+              "session:#{bad_id}:terminal",
+              "runs:session:#{bad_id}",
+              "session:#{bad_id}:research_results"
+            ] do
+          PubSub.broadcast(IexCode.PubSub, topic, {:leak_probe, topic})
+          refute_received {:leak_probe, ^topic}
+        end
+      end
     end
   end
 
